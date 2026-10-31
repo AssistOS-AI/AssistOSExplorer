@@ -557,6 +557,20 @@ test('inputs the worker cannot use are refused or reported, never dropped silent
     assert.equal(unavailable.humanInput, true);
 });
 
+test('workflow catalog capability is requested only by an owner WebChat turn with the required listing skill', async (t) => {
+    for (const required of [true, false]) {
+        const h = await harness(t, { skills: (dir) => [{ name: 'list-workflows', skillDir: dir, enabled: true, required }] });
+        await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'List workflows', owner: h.owner });
+        assert.equal(h.admitted[0].request.specification.workflowCatalog, required ? true : undefined);
+        assert.doesNotMatch(h.admitted[0].request.specification.prompt, /workflow-catalog|request\.sock/);
+    }
+    const child = await harness(t, { execution: { worker: { originRequestId: ORIGIN } },
+        skills: (dir) => [{ name: 'list-workflows', skillDir: dir, enabled: true, required: true }] });
+    await child.engine.executeTurn({ sessionId: child.sessionId, prompt: 'List workflows', owner: { evidence: evidenceOf(freshGrant()) } });
+    assert.equal(child.client.calls.admit[0].body.kind, 'task');
+    assert.equal(child.client.calls.admit[0].body.specification.workflowCatalog, undefined);
+});
+
 test('the workspace root is never granted: a project folder is the writable grant, no project means no grant, and naming the root is refused', async (t) => {
     // A project folder below the root: the writable cwd grant only. Skill mount sources are never sent as folders (B1(b)):
     // a robot controls the `.agents/skills` symlinks of its writable project, so a source can be another project, a managed

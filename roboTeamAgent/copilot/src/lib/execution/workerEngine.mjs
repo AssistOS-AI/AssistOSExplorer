@@ -437,6 +437,8 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 ...(execution.mcpServers ? { mcpServers: execution.mcpServers } : {}),
                 ...(execution.workflowExecution ? { workflowExecution: true } : {}),
                 ...(execution.humanInput === true ? { humanInput: true } : {}),
+                ...(authority.mode === 'grant' && !authority.direct && owner?.coordinator && authority.principal?.startsWith('user:')
+                    && skillsList.some((skill) => skill.name === 'list-workflows' && skill.required === true) ? { workflowCatalog: true } : {}),
             };
             // GUI tasks carry the address of a RoboTeam-local MCP server, which the worker cannot reach.
             if (LOOPBACK_MCP.test(String(execution.mcpServers || ''))) throw new WorkerError('worker_mcp_loopback_unsupported', 400);

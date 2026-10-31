@@ -170,7 +170,7 @@ export function planAlaExecution({ specification, workspaceRoot, logicalKind = n
         env: Object.freeze({ HOME: VIRTUAL_HOME, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: VIRTUAL_SESSIONS }),
         // The worker-hosted channels this execution is admitted for (M-14): the task-failure channel for workflow work, the
         // human-input channel when the specification allows it. Neither reaches ALA: they are sockets in the channels directory.
-        channels: Object.freeze({ taskFailure: specification.workflowExecution === true, humanInput: specification.humanInput === true }),
+        channels: Object.freeze({ taskFailure: specification.workflowExecution === true, humanInput: specification.humanInput === true, workflowCatalog: specification.workflowCatalog === true }),
         prompt
     });
 }

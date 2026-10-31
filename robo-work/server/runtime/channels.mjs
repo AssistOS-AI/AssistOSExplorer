@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import { CATALOG_ERRORS, validateCatalogResult } from './workflowCatalogRequests.mjs';
 
 // The worker-hosted channels of one execution (RoboWork r10, decision M-14; plan sections 5.5 and 9): the task-failure channel that
 // the `report-task-blocked` skill calls and the human-input channel of `require-human-input`, with RoboTeam's local protocol
@@ -86,7 +87,7 @@ function serve({ socketPath, route, token, handle }) {
 
 // `taskFailure({message}) -> {}` and `humanInput({question, options}) -> {id, instruction?}` are the durable handlers; either may be
 // absent (the channel is then not created). Returns { close() }.
-export async function createExecutionChannels({ directory, taskFailure = null, humanInput = null }) {
+export async function createExecutionChannels({ directory, taskFailure = null, humanInput = null, workflowCatalog = null }) {
     const servers = [];
     const defs = [
         ['task-failure', '/report-task-blocked', taskFailure && (async (input) => taskFailure(parseFailure(input)))],
@@ -96,6 +97,11 @@ export async function createExecutionChannels({ directory, taskFailure = null, h
         })]
     ];
     try {
+        if (workflowCatalog) {
+            const catalogDir = path.join(directory, 'workflow-catalog');
+            await fs.mkdir(catalogDir, { mode: 0o700 });
+            servers.push(await serveWorkflowCatalog(path.join(catalogDir, 'request.sock'), workflowCatalog));
+        }
         for (const [name, route, handle] of defs) {
             if (!handle) continue;
             servers.push(await serve({ socketPath: path.join(directory, `${name}.sock`), route, token: null, handle }));
@@ -106,12 +112,51 @@ export async function createExecutionChannels({ directory, taskFailure = null, h
             servers.push(await serve({ socketPath: path.join(compat, 'request.sock'), route, token, handle }));
         }
     } catch (error) {
+        workflowCatalog?.close();
         await Promise.allSettled(servers.map((server) => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); })));
         throw error;
     }
     return {
         async close() {
+            workflowCatalog?.close();
             await Promise.all(servers.map((server) => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); })));
         }
     };
+}
+
+// The catalog socket is execution-local, read-only and tokenless. Its sole request is exactly POST /list-workflows {}.
+function serveWorkflowCatalog(socketPath, catalog) {
+    if (Buffer.byteLength(socketPath) > SOCKET_PATH_MAX) throw new Error('A channel socket path is too long');
+    const server = http.createServer((req, res) => {
+        const controller = new AbortController();
+        res.once('close', () => { if (!res.writableEnded) controller.abort(); });
+        let size = 0;
+        const chunks = [];
+        req.on('data', (chunk) => {
+            size += chunk.length;
+            if (size <= 1024) chunks.push(chunk);
+        });
+        req.on('error', () => {});
+        req.on('end', async () => {
+            const reply = (status, body) => {
+                if (res.destroyed) return;
+                res.writeHead(status, { 'content-type': 'application/json', connection: 'close' });
+                res.end(JSON.stringify(body));
+            };
+            try {
+                if (req.method !== 'POST' || req.url !== '/list-workflows' || size > 1024) throw new Error('invalid_request');
+                const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+                if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 0) throw new Error('invalid_request');
+                reply(200, validateCatalogResult(await catalog.read({ signal: controller.signal })));
+            } catch (error) {
+                const code = CATALOG_ERRORS.includes(error?.code) ? error.code
+                    : error?.message === 'invalid_request' || error instanceof SyntaxError ? 'invalid_request' : 'catalog_unavailable';
+                reply(code === 'invalid_request' ? 400 : 503, { ok: false, error: code });
+            }
+        });
+    });
+    server.requestTimeout = 35000;
+    server.headersTimeout = 10000;
+    server.maxConnections = 8;
+    return new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, () => resolve(server)); });
 }

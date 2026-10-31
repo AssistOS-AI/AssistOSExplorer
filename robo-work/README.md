@@ -19,6 +19,18 @@ Internal worker-state library for the RoboWork execution provider. It is a bound
 | `server/terminal/` | Robot terminals (M-8): `terminalServer.mjs` (the WebSocket endpoint, ownership session, leases, replay, ends), `terminalProtocol.mjs` (the frame schema, a copy of Ploinky's), `wsCodec.mjs` (bounded RFC 6455 server codec), `terminalAuth.mjs` (Router-service tokens through Ploinky's Agent library), `terminalExecutions.mjs` (admit, launch, end, caps), `ptyHost.mjs` (node-pty `open()`, master kept in the worker) |
 | `server/stateObligations.mjs` | S6 source-only subset: obligation and outbox tables, row helpers and the observation-state mapping (Part D) |
 
+## Workflow catalog channel
+
+Version-2 owner WebChat turns may admit `workflowCatalog: true` together with a required `list-workflows` skill. Task and background admissions cannot select it. The worker derives the owner, admitting coordinator, reference, execution, attempt, session, turn and generation from persisted state and checks that binding on every read and settlement.
+
+The workload sends only `POST /list-workflows {}` through its read-only `/run/robo-work/channels/workflow-catalog/request.sock`. Requests are at most 1 KiB, with two pending reads per attempt and 30-second deadlines. Client disconnect, timeout and the first execution end remove pending reads. End rejects them before socket shutdown, and recovery restores none.
+
+RoboTeam polls `POST /v1/coordinator/workflow-catalog/requests {}` over its existing signed private Router hop. The worker returns at most 16 pending identifiers belonging to that coordinator. Replies use `POST /v1/coordinator/references/:id/workflow-catalog/reply {attemptId,requestId,result}`. These coordinator-only operations reject grants and unknown fields and preserve raw-body, exact-path and replay checks. They confer no execution observation, admission or control authority.
+
+Each request causes a fresh `RoboFlowService.listWorkflows()` call. The response is capped at 512 KiB and contains only workflow id, name, description, optional default kind, a default-objective boolean and task names with optional execution types. Task prompts, objectives, paths, coverage and credentials never enter the channel. Worker listing errors exit nonzero; the standalone SDK path remains unchanged. Workflow launch stays hidden and refused in worker mode. The normative contract is in `roboTeamAgent/docs/specs/DS006-ala-task-boundary.md` and `DS007-roboflow-team-workflow.md`.
+
+Focused checks are `node --test robo-work/tests/runtime/workflowCatalogRequests.test.mjs roboTeamAgent/tests/worker-workflow-catalog.test.mjs roboTeamAgent/copilot/tests/worker-workflow-catalog.test.mjs`. The skill subprocess test uses a test-only path remap to an isolated real Unix socket; actual fixed-mount sandbox verification runs separately on Linux.
+
 ## Robot utilities
 
 The coordinator exposes `POST /v1/coordinator/robots/models` with `{robotId, agent}` and `POST /v1/coordinator/robots/agent-status` with `{robotId}`. Both authorize through the `robots/get` rule before reading the worker cache. Native catalogs use protocol-mode ALA with no project grant. Agent status uses a fixed helper in a workload sandbox with the worker robot HOME, no project grant and no provider endpoint. Only model IDs and effort metadata, or agent availability, login booleans and sanitized version tokens, leave those executions.

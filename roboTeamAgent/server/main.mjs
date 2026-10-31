@@ -13,6 +13,7 @@ import { RuntimeLiveSource, composeTaskObservers } from './live-sessions/runtime
 import { workerConfigured } from './mcp-tool-list.mjs';
 import { createWorkerCoordinatorHop } from './worker-coordinator/hop.mjs';
 import { createWorkerClient } from './worker-coordinator/worker-client.mjs';
+import { createWorkflowCatalogBridge } from './worker-coordinator/workflow-catalog.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
@@ -58,6 +59,7 @@ const roboflow = new RoboFlowService({
     workerCoordinator,
 });
 await roboflow.initialize();
+const workflowCatalog = workerConfigured() ? createWorkflowCatalogBridge({ roboflow, hop: workerCoordinator.hop }) : null;
 
 // Live Sessions agent runs. RoboFlow observes runtime events first; the Live
 // Sessions source runs after it and is isolated from it.
@@ -99,6 +101,7 @@ const liveSessionsIpc = await startProductionIpc();
 server.listen(port, host, () => {
     console.log(`RoboTeamAgent listening on ${host}:${port}`);
     roboflow.scheduler.start();
+    workflowCatalog?.start();
     // Downloads must not delay service readiness; requests share this cache's pending preparations.
     void runtimeManager.toolCache.warmup()
         .then(async () => runtimeManager.warmOpenCodePlugins(await robotStore.list()))
@@ -112,6 +115,7 @@ async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
     server.close();
+    await workflowCatalog?.close();
     await roboflow.close();
     await runtimeManager.stopAll();
     await liveSessionsIpc?.close().catch((error) => console.error(`[live-sessions] ${error.message}`));

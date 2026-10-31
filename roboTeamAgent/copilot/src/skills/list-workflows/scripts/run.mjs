@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util';
-import { action } from './action.mjs';
+import { action, formatWorkflows } from './action.mjs';
+import { isWorker, readWorkerCatalog } from './workerChannel.mjs';
 
 let invocation;
 try {
@@ -8,9 +9,14 @@ try {
         strict: true,
         allowPositionals: false,
     });
-    const { createSkillInvocation } = await import('./ploinkyInvocation.mjs');
-    invocation = await createSkillInvocation({ skillName: 'list-workflows', input: values.input ?? '' });
-    console.log(await action(invocation));
+    if (isWorker()) {
+        const result = await readWorkerCatalog(values.input ?? '');
+        console.log(formatWorkflows(result.workflows));
+    } else {
+        const { createSkillInvocation } = await import('./ploinkyInvocation.mjs');
+        invocation = await createSkillInvocation({ skillName: 'list-workflows', input: values.input ?? '' });
+        console.log(await action(invocation));
+    }
 } catch (error) {
     console.error(error?.code === 'ERR_MODULE_NOT_FOUND'
         ? 'The Ploinky MCP client is unavailable; execute this script in a Ploinky-enabled environment.'

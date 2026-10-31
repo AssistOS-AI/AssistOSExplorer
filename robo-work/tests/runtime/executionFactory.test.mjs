@@ -182,7 +182,9 @@ test('a workflow execution hosts its channels with the default channel factory (
     item.specification = spec({ workflowExecution: true, humanInput: true });
     const plan = planAlaExecution({ specification: item.specification, workspaceRoot: '/ws' });
     const handler = async () => ({ ok: true });
-    const execution = await factory.open({ item, plan, context, channels: { taskFailure: handler, humanInput: handler } });
+    let catalogClosed = false;
+    const workflowCatalog = { read: async () => ({ ok: true, workflows: [] }), close() { catalogClosed = true; } };
+    const execution = await factory.open({ item, plan, context, channels: { taskFailure: handler, humanInput: handler, workflowCatalog } });
     // start() hosts the channels right after the runtime directory is published; the rest of start() waits on fakes.
     let startError = null;
     execution.start().catch((error) => { startError = error; });
@@ -193,6 +195,8 @@ test('a workflow execution hosts its channels with the default channel factory (
     await execution.end({ classification: 'cancelled', outputText: '', data: null });
     assert.ok(entries.includes('task-failure') || entries.includes('task-failure.sock'), entries.join(','));
     assert.ok(entries.includes('human-input') || entries.includes('human-input.sock'), entries.join(','));
+    assert.ok(entries.includes('workflow-catalog'), entries.join(','));
+    assert.equal(catalogClosed, true, 'catalog registry handle closes before socket cleanup ends');
     const sockets = fs.readdirSync(path.join(dir, 'channels'), { recursive: true }).filter((name) => String(name).endsWith('.sock'));
     assert.deepEqual(sockets.filter((name) => fs.existsSync(path.join(dir, 'channels', String(name)))), [], 'channel sockets removed at end');
 });

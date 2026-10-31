@@ -9,6 +9,8 @@ import {
 import { createCoordinatorAdapter } from '../server/coordinatorAdapter.mjs';
 import { createDispatcher } from '../server/runtime/dispatcher.mjs';
 import { deriveFlowLogicalId } from '../server/stateProtocol.mjs';
+import { createWorkflowCatalogRequests } from '../server/runtime/workflowCatalogRequests.mjs';
+import { skillsSelectionDigest } from '../server/stateProtocol.mjs';
 import { LIMITS, PROVIDER, S6_LIMITS, WORKSPACE, count, makeTempDir, newId, newOriginId, openStore, rawDb, readyRobot, syntheticContext } from './helpers/synthetic.mjs';
 
 // Coordinator adapter over the actual S1/S1x store in isolated temporary directories, with
@@ -123,6 +125,49 @@ function expectError(fn, name, code, reason) {
         return true;
     });
 }
+
+test('workflow catalog: signed coordinator-only requests bind raw bytes, owner admission, attempt and one settlement', async (t) => {
+    const store = openExtended(makeTempDir(t));
+    t.after(() => store.close());
+    const workflowCatalog = createWorkflowCatalogRequests({ store });
+    t.after(() => workflowCatalog.close());
+    const secret = crypto.randomBytes(32);
+    const verifier = createVerifierConfig({ secret, audience: PROVIDER_PRINCIPAL, coordinators: [COORDINATOR, OTHER_AGENT], replayCache: createReplayCache() });
+    const adapter = createCoordinatorAdapter({ store, workspaceId: WORKSPACE, verifier, workflowCatalog });
+    const robotId = workspaceRobot(store);
+    const skills = [{ name: 'list-workflows', path: '/ws/list-workflows', required: true }];
+    const specification = { version: 2, prompt: 'unchanged', displayText: '', sessionId: 'session', turnId: 'turn', permissions: 'full-access',
+        workflowCatalog: true, skills, skillsDigest: skillsSelectionDigest(skills) };
+    const admitted = adapter.admit(hop(secret, turnBody(robotId, newOriginId(), 'catalog-session', { specification }), { claims: ownerClaims('alice') }));
+    const queued = store.listQueuedAdmissions()[0];
+    const ids = { executionId: queued.executionId, attemptId: queued.attemptId };
+    store.transitionAttempt({ ...ids, expectedState: 'queued', nextState: 'running' });
+    const handle = workflowCatalog.registerAttempt(ids);
+    const result = handle.read();
+    const requestsPath = `${BASE}/workflow-catalog/requests`;
+    const request = hop(secret, {}, { path: requestsPath });
+    const rows = adapter.workflowCatalogRequests(request).requests;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].referenceId, admitted.taskRef.id);
+    expectError(() => adapter.workflowCatalogRequests(request), 'CoordinatorAuthError', 'unauthorized', 'replay');
+    expectError(() => adapter.workflowCatalogRequests(hop(secret, {}, { path: requestsPath, claims: ownerClaims('alice') })), 'CoordinatorAuthError', 'forbidden', 'row_ambiguous');
+    expectError(() => adapter.workflowCatalogRequests(hop(secret, { ownerId: 'user:alice' }, { path: requestsPath })), 'WorkerStateError', 'invalid_request');
+    expectError(() => adapter.workflowCatalogRequests(hop(secret, {}, { path: requestsPath, bodyOverride: Buffer.from('{ }') })), 'CoordinatorAuthError', 'unauthorized', 'rch');
+    expectError(() => adapter.workflowCatalogRequests(hop(secret, {}, { path: `${requestsPath}?q=x` })), 'WorkerStateError', 'invalid_request');
+    const foreign = { sub: OTHER_AGENT, actor: { kind: 'agent', id: OTHER_AGENT }, caller: { kind: 'agent', id: OTHER_AGENT } };
+    assert.deepEqual(adapter.workflowCatalogRequests(hop(secret, {}, { path: requestsPath, claims: foreign })), { requests: [] });
+    const { referenceId, ...row } = rows[0];
+    const replyPath = `${BASE}/references/${referenceId}/workflow-catalog/reply`;
+    const empty = { ok: true, workflows: [] };
+    expectError(() => adapter.workflowCatalogReply(hop(secret, { ...row, result: { ...empty, prompt: 'private' } }, { path: replyPath })), 'WorkerStateError', 'invalid_request');
+    assert.deepEqual(adapter.workflowCatalogReply(hop(secret, { ...row, result: empty }, { path: replyPath, claims: foreign })), { ok: true, settled: false });
+    assert.deepEqual(adapter.workflowCatalogReply(hop(secret, { ...row, result: empty }, { path: `${BASE}/references/${newId()}/workflow-catalog/reply` })), { ok: true, settled: false });
+    const reply = hop(secret, { ...row, result: empty }, { path: replyPath });
+    assert.deepEqual(adapter.workflowCatalogReply(reply), { ok: true, settled: true });
+    assert.deepEqual(await result, empty);
+    expectError(() => adapter.workflowCatalogReply(reply), 'CoordinatorAuthError', 'unauthorized', 'replay');
+    assert.deepEqual(adapter.workflowCatalogReply(hop(secret, { ...row, result: empty }, { path: replyPath })), { ok: true, settled: false });
+});
 
 function expectReplayed(fn) {
     expectError(fn, 'WorkerStateError', 'forbidden', 'token_replayed');

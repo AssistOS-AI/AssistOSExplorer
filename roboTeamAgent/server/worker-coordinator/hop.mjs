@@ -23,7 +23,7 @@ const BASE_PATTERN = /^\/base-agent-additional-server\/[A-Za-z0-9_-]+\/[1-9][0-9
 // operation reads and lifecycle calls (provision, configure, get, delete, and Close terminals) are added
 // to the admission, lookup, binding and reference operations. `robots/list`, `obligations*` and
 // everything else stay refused before any I/O.
-const OPERATION_PATTERN = /^(admissions|lookup|bindings|robots\/(provision|configure|get|models|agent-status|delete|terminals\/close)|operations\/get|references\/[A-Za-z0-9_-]{22,64}\/(read|events|control))$/u;
+const OPERATION_PATTERN = /^(admissions|lookup|bindings|workflow-catalog\/requests|robots\/(provision|configure|get|models|agent-status|delete|terminals\/close)|operations\/get|references\/[A-Za-z0-9_-]{22,64}\/(read|events|control|workflow-catalog\/reply))$/u;
 const GRANT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u;
 const REFUSAL_PATTERN = /^v=1; stage=(route|auth|relay); cause=([a-z-]{1,64})$/u;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -273,6 +273,9 @@ export function createWorkerCoordinatorHop({ env = process.env, routerUrl, reque
     async function prepare(operation, body, grant) {
         if (typeof operation !== 'string' || !OPERATION_PATTERN.test(operation)) throw new WorkerCoordinatorError('invalid_request', 400);
         const sendsGrant = typeof grant === 'string' && grant.length > 0;
+        if (sendsGrant && (operation === 'workflow-catalog/requests' || operation.endsWith('/workflow-catalog/reply'))) {
+            throw new WorkerCoordinatorError('owner_evidence_unavailable', 403);
+        }
         if (sendsGrant && (grant.length > MAX_GRANT_BYTES || !GRANT_PATTERN.test(grant))) {
             throw new WorkerCoordinatorError('owner_evidence_unavailable', 403);
         }

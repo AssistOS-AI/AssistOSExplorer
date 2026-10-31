@@ -62,7 +62,7 @@ export const OPERATIONS = Object.freeze([
 ]);
 // Operations of a coordinator context (S6 Part D): `decide` (accept, reject) and `reconcile`
 // (list, outbox), for the verified coordinator alone.
-export const COORDINATOR_OPERATIONS = Object.freeze(['decide', 'reconcile']);
+export const COORDINATOR_OPERATIONS = Object.freeze(['decide', 'reconcile', 'workflow_catalog']);
 // Operations a service context (no origin row) may carry: workspace robot lifecycle and reads.
 export const SERVICE_OPERATIONS = Object.freeze(['provision', 'configure', 'delete', 'read', 'adapter_complete', 'attest']);
 export const REFERENCE_VERSION = 1;
@@ -451,7 +451,7 @@ function specBytesBetween(value, min, max) {
 
 export function validateSpecificationV2(value, limits) {
     exactObject(value, ['version', 'prompt', 'displayText', 'sessionId', 'turnId', 'permissions'],
-        ['cwd', 'model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution', 'humanInput', 'environment', 'skills', 'skillsDigest']);
+        ['cwd', 'model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution', 'humanInput', 'workflowCatalog', 'environment', 'skills', 'skillsDigest']);
     if (value.version !== SPECIFICATION_VERSION_2) fail('invalid_request');
     if (!specBytesBetween(value.prompt, 1, SPEC_V2_PROMPT_MAX_BYTES)) fail('invalid_request');
     if (!specBytesBetween(value.displayText, 0, SPEC_V2_DISPLAY_MAX_BYTES)) fail('invalid_request');
@@ -464,7 +464,7 @@ export function validateSpecificationV2(value, limits) {
     if (value.model !== undefined && !boundedText(value.model, 1, 128)) fail('invalid_request');
     if (value.effort !== undefined && (typeof value.effort !== 'string' || !SPEC_EFFORT.test(value.effort))) fail('invalid_request');
     if (value.codingAgent !== undefined && !CODING_AGENTS.includes(value.codingAgent)) fail('invalid_request');
-    for (const key of ['resume', 'workflowExecution', 'humanInput']) {
+    for (const key of ['resume', 'workflowExecution', 'humanInput', 'workflowCatalog']) {
         if (value[key] !== undefined && typeof value[key] !== 'boolean') fail('invalid_request');
     }
     if (value.folders !== undefined) {
@@ -487,6 +487,7 @@ export function validateSpecificationV2(value, limits) {
         if (!Array.isArray(value.ignore) || value.ignore.length > SPEC_V2_MAX_IGNORE || !value.ignore.every(isSpecAbsolutePath)) fail('invalid_request');
     }
     validateSpecSkills(value);
+    if (value.workflowCatalog === true && !value.skills?.some((skill) => skill.name === 'list-workflows' && skill.required === true)) fail('invalid_request');
     // eslint-disable-next-line no-control-regex
     if (value.mcpServers !== undefined && (typeof value.mcpServers !== 'string' || value.mcpServers.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.mcpServers))) fail('invalid_request');
     assertWithinBytes(value, limits.requestBytes);

@@ -2,7 +2,7 @@ import { TERMINAL_STATES, deriveOperationId, exactObject, fail, isInternalId, is
 import {
     CoordinatorAuthError, bindingKind, consumeReplay, contextForBinding, contextForBindingRead, contextForCoordinatorRead,
     contextForLifecycle, contextForObligationCoordinator, contextForOrigin, contextForOriginObligation, contextForOwner, requireAdmissionBindingId,
-    requireBindingId, requireReadBindingId, verifyCoordinatorRequest, verifyOriginToken
+    requireBindingId, requireReadBindingId, verifyCoordinatorRequest, verifyOriginToken, contextForWorkflowCatalog
 } from './coordinatorAuth.mjs';
 import { controlRequestFrom, parseJsonBody, projectAcceptance, projectSnapshot, withDurableReplay } from './taskReferenceAdapter.mjs';
 
@@ -69,7 +69,7 @@ function refuse(code, reason) {
 // `body` the raw bytes. `store` must be opened with the S1x extension limits.
 // `terminals` (optional): the worker's terminal path, `{ closeRobot(robotId) -> Promise<{ closed, unverified }> }`. Without it the
 // Close terminals route is operation_unavailable.
-export function createCoordinatorAdapter({ store, workspaceId, verifier, terminals = null, utilities = null }) {
+export function createCoordinatorAdapter({ store, workspaceId, verifier, terminals = null, utilities = null, workflowCatalog = null }) {
     for (const method of ['admit', 'lookupOrigin', 'registerBinding', 'readBindingOwner', 'observeReference', 'listReferenceEvents',
         'controlReference', 'consumeTokenIds', 'beginProvision', 'configure', 'beginDelete', 'listRobots', 'getRobot', 'getOperationOutcome',
         'admitObligation', 'acceptObligation', 'rejectObligation', 'listObligations', 'applyOutbox']) {
@@ -144,6 +144,28 @@ export function createCoordinatorAdapter({ store, workspaceId, verifier, termina
     }
 
     return Object.freeze({
+        workflowCatalogRequests(request) {
+            const hop = verifyCoordinatorRequest(verifier, request);
+            requireRoute(hop, `${COORDINATOR_BASE}/workflow-catalog/requests`);
+            exactObject(parseJsonBody(request.body), []);
+            const context = contextForWorkflowCatalog(workspaceId, hop);
+            consumeReplay(verifier, [hop]);
+            if (!workflowCatalog) refuse('operation_unavailable', 'operation_unmapped');
+            return workflowCatalog.listPending(context);
+        },
+        workflowCatalogReply(request) {
+            const hop = verifyCoordinatorRequest(verifier, request);
+            const referenceId = referenceIdFrom(hop, '/workflow-catalog/reply');
+            const body = exactObject(parseJsonBody(request.body), ['attemptId', 'requestId', 'result']);
+            const context = contextForWorkflowCatalog(workspaceId, hop);
+            consumeReplay(verifier, [hop]);
+            if (!workflowCatalog) refuse('operation_unavailable', 'operation_unmapped');
+            try { return workflowCatalog.reply(context, { referenceId, ...body }); }
+            catch (error) {
+                if (error?.code === 'invalid_request' || error?.code === 'catalog_too_large') fail('invalid_request');
+                throw error;
+            }
+        },
         admit(request) {
             const hop = verifyCoordinatorRequest(verifier, request);
             const verified = [hop];

@@ -482,6 +482,8 @@ class WorkerState {
         // A turn is session work for a verified user: coordinator-API row only, refused before
         // any state access on the MCP and background rows.
         if (kind === 'turn' && !isOwnerRow(context)) fail('invalid_request');
+        if (specification.workflowCatalog === true && (specification.version !== 2 || kind !== 'turn' || !isOwnerRow(context)
+            || !/^user:[^\s]{1,160}$/u.test(context.ownerId) || context.originKey !== `owner:${context.ownerId}`)) fail('invalid_request');
         // The origin mapping is the idempotency key: the operation ID must be the derived one.
         if (operationId !== deriveOperationId(context, originRequestId)) fail('operation_conflict');
         const requestDigest = digest({
@@ -1444,6 +1446,34 @@ class WorkerState {
 
     // Trusted-adapter reads and writes for the execution engine (RoboWork r10 wiring). None takes a context: like
     // transitionAttempt they are called only by the in-process engine, never from the network.
+
+    // Trusted worker-only catalog binding. The persisted reference owns the coordinator and origin; no caller supplies owner fields.
+    workflowCatalogBinding(request) {
+        exactObject(request, ['executionId', 'attemptId']);
+        validateInternalId(request.executionId);
+        validateInternalId(request.attemptId);
+        return this.#state.read((db) => {
+            const generation = this.#fence(db);
+            const row = db.prepare(`SELECT a.*, r.id AS reference_id, r.namespace, r.origin_key FROM admission a
+                JOIN reference r ON r.execution_id = a.execution_id AND r.attempt_id = a.attempt_id
+                WHERE a.execution_id = ? AND a.attempt_id = ?`).get(request.executionId, request.attemptId);
+            if (!row || row.generation_id !== generation.id || row.state !== 'running' || row.kind !== 'turn'
+                || !/^user:[^\s]{1,160}$/u.test(row.owner_id) || row.origin_key !== `owner:${row.owner_id}`) fail('forbidden');
+            const coordinator = coordinatorOf(row.namespace);
+            const specification = JSON.parse(row.specification);
+            if (!coordinator || specification.version !== 2 || specification.workflowCatalog !== true
+                || !specification.skills?.some((skill) => skill.name === 'list-workflows' && skill.required === true)) fail('forbidden');
+            return Object.freeze({ coordinator, ownerId: row.owner_id, originNamespace: row.namespace, originKey: row.origin_key,
+                referenceId: row.reference_id, executionId: row.execution_id, attemptId: row.attempt_id,
+                generationId: generation.id, sessionId: specification.sessionId, turnId: specification.turnId });
+        });
+    }
+
+    requireWorkflowCatalogCoordinator(context) {
+        requireContext(context, this.#workspaceId, 'workflow_catalog');
+        if (!context.coordinator || context.originNamespace !== null || context.originKey !== null
+            || context.ownerId !== `coordinator:${context.coordinator}`) fail('forbidden');
+    }
 
     // Robot terminals (M-8, schema 9; plan-review B-1, delta notes 1-3). Trusted in-process call of the worker's terminal path only:
     // the network never reaches it (a coordinator admit with kind `terminal` is invalid_request). It runs after the launch evidence was

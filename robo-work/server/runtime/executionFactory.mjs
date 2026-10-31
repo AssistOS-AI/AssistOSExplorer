@@ -381,8 +381,8 @@ export function createExecutionFactory({
                 await ledger.startKeeper();
                 await ledger.publish({ kind: 'runtime-dir' });
                 // The admitted channels live in the channels directory of the runtime directory (read-only in every workload).
-                if (channels.taskFailure || channels.humanInput) {
-                    hosted = await make.channels({ directory: `${supervisor.runtimeDir}/channels`, taskFailure: channels.taskFailure ?? null, humanInput: channels.humanInput ?? null });
+                if (channels.taskFailure || channels.humanInput || channels.workflowCatalog) {
+                    hosted = await make.channels({ directory: `${supervisor.runtimeDir}/channels`, taskFailure: channels.taskFailure ?? null, humanInput: channels.humanInput ?? null, workflowCatalog: channels.workflowCatalog ?? null });
                 }
                 // M-26: the Soul Gateway model channel of an OpenCode robot with a gateway model. Its socket is in the `model/` directory,
                 // which only the endpoint sandbox sees; the endpoint relays 127.0.0.1:MODEL_RELAY_PORT of the execution network to it.

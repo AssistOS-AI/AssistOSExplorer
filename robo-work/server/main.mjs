@@ -15,6 +15,7 @@ import { createWalker } from './execution/recoveryWalk.mjs';
 import { createSandboxLauncher } from './sandbox/sandboxLauncher.mjs';
 import { createRecoveryView, sandboxRecordFor } from './sandbox/executionSupervisor.mjs';
 import { createRobotUtilities } from './runtime/robotUtilities.mjs';
+import { createWorkflowCatalogRequests } from './runtime/workflowCatalogRequests.mjs';
 import { createDispatcher } from './runtime/dispatcher.mjs';
 import { createExecutionFactory } from './runtime/executionFactory.mjs';
 import { createRuntimeSourceProvider, defaultRuntimeSourcesFetch } from './runtime/executionGrants.mjs';
@@ -253,9 +254,10 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     let terminalServer = null;
     let utilityRunner = null;
     const utilities = { read: (...args) => utilityRunner ? utilityRunner.read(...args) : Promise.reject(new Error('utility_unavailable')) };
+    const workflowCatalog = createWorkflowCatalogRequests({ store, clock });
     const terminals = { closeRobot: (robotId) => (terminalServer ? terminalServer.closeRobot(robotId) : Promise.resolve({ closed: 0, unverified: 0 })) };
     const coordinatorHandler = createCoordinatorHttpHandler({
-        adapter: createCoordinatorAdapter({ store, workspaceId: config.workspaceId, verifier, terminals, utilities }), limits: httpLimits, onRefusal
+        adapter: createCoordinatorAdapter({ store, workspaceId: config.workspaceId, verifier, terminals, utilities, workflowCatalog }), limits: httpLimits, onRefusal
     });
     const taskReferenceHandler = createTaskReferenceHttpHandler({
         adapter: createTaskReferenceAdapter({ store, workspaceId: config.workspaceId, verifier, basePath: TASK_REFERENCES_PATH }),
@@ -287,7 +289,7 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     }
     utilityRunner = createRobotUtilities({ store, factory, modelUpstream, workspaceId: config.workspaceId, log });
     const dispatcher = factory
-        ? createDispatcher({ store, workspaceId: config.workspaceId, workspaceRoot: config.workspaceRoot, factory, options: { maxConcurrent: config.maxConcurrent, inactivityTimeoutMs: config.inactivityTimeoutMs, maxAttemptMs: config.maxAttemptMs, approvalTimeoutMs: config.approvalTimeoutMs }, log })
+        ? createDispatcher({ store, workspaceId: config.workspaceId, workspaceRoot: config.workspaceRoot, factory, workflowCatalog, options: { maxConcurrent: config.maxConcurrent, inactivityTimeoutMs: config.inactivityTimeoutMs, maxAttemptMs: config.maxAttemptMs, approvalTimeoutMs: config.approvalTimeoutMs }, log })
         : null;
 
     // M-8 robot terminals: their own path (terminal/terminalExecutions.mjs) and caps; the dispatcher never sees them.
@@ -322,6 +324,7 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
         close() {
             closing ??= (async () => {
                 await terminalServer.close().catch(() => {});
+                workflowCatalog.close();
                 await Promise.allSettled([closeServer(coordinatorServer), closeServer(providerServer)]);
                 lifecycle.stop();
                 await utilityRunner?.close();

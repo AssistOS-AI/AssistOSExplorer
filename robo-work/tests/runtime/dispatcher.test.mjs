@@ -4,6 +4,8 @@ import test from 'node:test';
 
 import { DISPATCHER_DEFAULTS, createDispatcher, fitOutcome } from '../../server/runtime/dispatcher.mjs';
 import { EVENT_PREFIX } from '../../server/runtime/alaStreams.mjs';
+import { createWorkflowCatalogRequests } from '../../server/runtime/workflowCatalogRequests.mjs';
+import { createVerifiedCoordinatorContext, skillsSelectionDigest } from '../../server/stateProtocol.mjs';
 import { LIMITS, WORKSPACE, admitRequest, makeTempDir, newId, openStore, readyRobot, syntheticContext } from '../helpers/synthetic.mjs';
 
 // The dispatcher over a real S1 store and a FAKE execution factory: the fake ALA child writes real stream bytes (event
@@ -27,12 +29,14 @@ const wait = async (predicate, label, ms = 2000) => {
     }
 };
 
-function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, controlPollMs = 10, storeWrap = (store) => store, timeouts = {}, quarantineOnEnd = false } = {}) {
+function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, controlPollMs = 10, storeWrap = (store) => store, timeouts = {}, quarantineOnEnd = false, catalog = false } = {}) {
     const store = openStore(makeTempDir(t), { limits: LIMITS_X });
     t.after(() => store.close());
     const robotId = readyRobot(store, syntheticContext({ robotOwnerId: ROBOTS, scope: 'scope-robots' }));
     const runs = [];
     const logs = [];
+    const workflowCatalog = catalog ? createWorkflowCatalogRequests({ store }) : null;
+    t.after(() => workflowCatalog?.close());
     const factory = {
         async open({ item, plan, context, channels, activity }) {
             if (openFails) throw openFails;
@@ -79,15 +83,34 @@ function rig(t, { openFails = null, startFails = null, maxConcurrent = 2, contro
         }
     };
     const dispatcher = createDispatcher({
-        store: storeWrap(store), workspaceId: WORKSPACE, workspaceRoot: '/ws', factory, log: (event, fields) => logs.push({ event, ...fields }),
+        store: storeWrap(store), workspaceId: WORKSPACE, workspaceRoot: '/ws', factory, workflowCatalog, log: (event, fields) => logs.push({ event, ...fields }),
         options: { pollMs: 10, controlPollMs, drainMs: 100, exitGraceMs: 80, failureAbortMs: 20, humanInputGraceMs: 150, ...timeouts, maxConcurrent, resultBytes: 1500 }
     });
     t.after(() => dispatcher.close());
     const alice = owner('alice');
     const admit = (specification = spec(), overrides = {}) => store.admit(alice, admitRequest(robotId, { specification, ...overrides }, alice));
     const view = (admitted) => store.observeReference(alice, { referenceId: admitted.reference.id });
-    return { store, robotId, runs, logs, dispatcher, alice, admit, view };
+    return { store, robotId, runs, logs, dispatcher, alice, admit, view, workflowCatalog };
 }
+
+test('workflow catalog dispatcher registers only the admitted running attempt and rejects pending reads on the first end', async (t) => {
+    const h = rig(t, { catalog: true });
+    const skills = [{ name: 'list-workflows', path: '/ws/list-workflows', required: true }];
+    const admitted = h.admit(spec({ workflowCatalog: true, skills, skillsDigest: skillsSelectionDigest(skills) }), { kind: 'turn', logical: { sessionKey: 'catalog-turn' } });
+    const coordinator = createVerifiedCoordinatorContext({ workspaceId: WORKSPACE, scope: 'catalog', coordinator: 'agent:fixtures/roboteam', operations: ['workflow_catalog'] });
+    h.dispatcher.start();
+    await wait(() => h.runs[0]?.prompt, 'catalog execution started');
+    const pending = h.runs[0].channels.workflowCatalog.read();
+    const rejected = assert.rejects(pending, { code: 'execution_ended' });
+    const rows = h.workflowCatalog.listPending(coordinator).requests;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].referenceId, admitted.reference.id);
+    h.runs[0].finishWith('done');
+    await rejected;
+    await wait(() => h.view(admitted).state === 'completed', 'catalog attempt completed');
+    assert.deepEqual(h.workflowCatalog.listPending(coordinator), { requests: [] });
+    assert.deepEqual(h.workflowCatalog.reply(coordinator, { ...rows[0], result: { ok: true, workflows: [] } }), { ok: true, settled: false });
+});
 
 test('a task runs: the prompt record first, ALA records relayed in order, the stdout text is the result', async (t) => {
     const { dispatcher, runs, admit, view, store, alice } = rig(t);

@@ -52,7 +52,7 @@ export function alaDiagnostics(tail) {
 }
 
 export function createDispatcher({
-    store, workspaceId, workspaceRoot, factory, controlLimits, options = {}, log = () => {}, timers = { setInterval, clearInterval, setTimeout, clearTimeout }
+    store, workspaceId, workspaceRoot, factory, workflowCatalog = null, controlLimits, options = {}, log = () => {}, timers = { setInterval, clearInterval, setTimeout, clearTimeout }
 }) {
     for (const method of ['listQueuedAdmissions', 'transitionAttempt', 'beginAttemptEnd', 'recordReferenceEvents', 'takePendingControls', 'ackControl',
         'recordApprovalRequest', 'resolveApproval', 'rejectApprovalAnswer', 'finalizeControl']) {
@@ -138,6 +138,7 @@ export function createDispatcher({
         let failureMessage = null;
         let humanRequest = null;
         let channelTimer = null;
+        let catalogReads = null;
         const endLater = (ms, outcome, { replace = false } = {}) => {
             if (replace && channelTimer !== null) { timers.clearTimeout(channelTimer); channelTimer = null; }
             channelTimer ??= timers.setTimeout(() => { finish(outcome()).catch((error) => log('end_failed', { error: describe(error) })); }, ms);
@@ -280,7 +281,7 @@ export function createDispatcher({
         // The one end of this attempt, whoever asks first (exit, stop, a fatal stream error, shutdown). `final` keeps the outcome as given:
         // a revoke (source_activated) is never relabelled human-input or task_blocked by `normalize`.
         const finish = (outcome, { final = false } = {}) => {
-            if (finishing === null) signalEnded();
+            if (finishing === null) { catalogReads?.close(); signalEnded(); }
             finishing ??= (async () => {
                 watchdog.stop();
                 for (const timer of openApprovals.values()) timers.clearTimeout(timer);
@@ -395,6 +396,11 @@ export function createDispatcher({
 
         try {
             starting = (async () => {
+                if (plan.channels.workflowCatalog) {
+                    if (!workflowCatalog) throw new Error('catalog_unavailable');
+                    catalogReads = workflowCatalog.registerAttempt({ executionId: item.executionId, attemptId: item.attemptId });
+                    channels.workflowCatalog = catalogReads;
+                }
                 execution = await factory.open({ item, plan, context, channels, activity: () => watchdog.touch() });
                 if (typeof execution.revoked?.then === 'function') execution.revoked.then(revoke, () => {});
                 return execution.start();

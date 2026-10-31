@@ -58,7 +58,7 @@ function recordingAdapter(names, result = { ok: true }) {
 }
 
 const COORDINATOR_METHODS = ['admit', 'lookup', 'bind', 'readReference', 'referenceEvents', 'controlReference', 'provision', 'configure', 'delete', 'listRobots', 'getRobot', 'models', 'agentStatus', 'getOperation',
-    'admitObligation', 'listObligations', 'acceptObligation', 'rejectObligation', 'applyOutbox'];
+    'admitObligation', 'listObligations', 'acceptObligation', 'rejectObligation', 'applyOutbox', 'workflowCatalogRequests', 'workflowCatalogReply'];
 const TASK_METHODS = ['read', 'events', 'control', 'lookup'];
 
 test('coordinator route table: every route dispatches exactly; unknown paths and methods are 404 without an adapter call', async () => {
@@ -66,6 +66,8 @@ test('coordinator route table: every route dispatches exactly; unknown paths and
     const handler = createCoordinatorHttpHandler({ adapter, limits: LIMITS });
     const routes = [
         ['/v1/coordinator/admissions', 'admit'], ['/v1/coordinator/lookup', 'lookup'], ['/v1/coordinator/bindings', 'bind'],
+        ['/v1/coordinator/workflow-catalog/requests', 'workflowCatalogRequests'],
+        [`/v1/coordinator/references/${REF}/workflow-catalog/reply`, 'workflowCatalogReply'],
         [`/v1/coordinator/references/${REF}/read`, 'readReference'], [`/v1/coordinator/references/${REF}/events`, 'referenceEvents'],
         [`/v1/coordinator/references/${REF}/control`, 'controlReference'], ['/v1/coordinator/robots/provision', 'provision'],
         ['/v1/coordinator/robots/configure', 'configure'], ['/v1/coordinator/robots/delete', 'delete'], ['/v1/coordinator/robots/list', 'listRobots'],
@@ -87,7 +89,9 @@ test('coordinator route table: every route dispatches exactly; unknown paths and
     for (const [method, url] of [['GET', '/v1/coordinator/admissions'], ['PUT', '/v1/coordinator/admissions'], ['POST', '/v1/coordinator/unknown'],
         ['POST', '/v1/coordinator/references/short/read'], ['POST', `/v1/coordinator/references/${REF}/delete`], ['POST', '/v1/task-refs/lookup'],
         ['POST', '/v1/coordinator/admissions/'], ['POST', `/v1/coordinator/obligations/${REF}/delete`], ['POST', '/v1/coordinator/obligations/short/accept'],
-        ['GET', '/v1/coordinator/obligations'], ['POST', `/v1/coordinator/obligations/${REF}`]]) {
+        ['GET', '/v1/coordinator/obligations'], ['POST', `/v1/coordinator/obligations/${REF}`],
+        ['GET', '/v1/coordinator/workflow-catalog/requests'], ['POST', '/v1/coordinator/workflow-catalog/requests/'],
+        ['POST', '/v1/coordinator/references/short/workflow-catalog/reply'], ['POST', `/v1/coordinator/references/${REF}/workflow-catalog/read`]]) {
         const res = await call(handler, { method, url });
         assert.equal(res.statusCode, 404, `${method} ${url}`);
         assert.deepEqual(res.body, { error: 'not_found' });

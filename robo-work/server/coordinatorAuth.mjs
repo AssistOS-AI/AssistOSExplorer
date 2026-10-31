@@ -514,6 +514,16 @@ export function contextForObligationCoordinator(workspaceId, coordinatorFacts, o
     });
 }
 
+// Catalog service operations carry only the verified coordinator identity, never an owner grant.
+export function contextForWorkflowCatalog(workspaceId, coordinatorFacts) {
+    requireFacts(coordinatorFacts, 'coordinator');
+    if (coordinatorFacts.owner) refuse('forbidden', 'row_ambiguous');
+    return createVerifiedCoordinatorContext({
+        workspaceId, scope: scopeFor(`coordinator:${coordinatorFacts.coordinator}`, 'workflow-catalog'),
+        coordinator: coordinatorFacts.coordinator, operations: ['workflow_catalog'],
+    });
+}
+
 // Coordinator-API row: `coordinator:<principal>` / `owner:user:<id>` from the verified hop
 // claims, with the grant user's administrator status.
 export function contextForOwner(workspaceId, coordinatorFacts, operation) {

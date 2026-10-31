@@ -19,6 +19,10 @@ Definition-derived defaults follow description or task-prompt edits when the sav
 
 The `roboflow_start_flow` MCP schema makes objective optional, with server validation authoritative for workflows that require it. WebChat's launch-workflow skill passes a self-contained explicit user request whenever the requested scope differs, and may omit objective only to execute a selected workflow unchanged. Its list-workflows output indicates whether a default is available or an explicit objective is required. Conversation history is not supplied to the workflow team.
 
+### Worker workflow listing
+
+Worker WebChat listing reads the current workspace-global catalog through the attempt-bound read-only channel defined in [DS006](DS006-ala-task-boundary.md). The admitting owner's verified turn delegates catalog discovery for that attempt's lifetime; each call refreshes workflow file sources through the existing service. It adds no per-workflow actor filter. The workload receives only listing fields and whether a default objective exists, never the objective or task prompts. Empty catalogs retain the ordinary empty-list message, and oversized catalogs fail explicitly. Worker mode continues to hide and refuse workflow launch.
+
 ### Graph contract and editor
 
 A workflow has an id, name, description, entryTaskId, tasks, edges and layout. Each ordinary task has a unique id, name, prompt, skill selections and one executionType: terminal, desktop or browser. It may set creator:true. A managed Run workflows task uses kind:run-workflows and has no robot, prompt or execution type. The `skillsets` array holds exact selection IDs that are either named skillsets or individual skills. An edge has id, sourceTaskId, targetTaskId and optional sourcePort/targetPort values of left or right. Older edges without port values normalize to right-to-left. All referenced nodes must exist. Cycles and self-loops are allowed in stored/generated graphs; the manual editor does not create a same-node self-loop. Unreachable nodes produce diagnostics. Workflow definitions contain no robot assignments.

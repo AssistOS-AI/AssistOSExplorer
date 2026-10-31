@@ -233,6 +233,7 @@ export function createCoordinatorHttpHandler({ adapter, limits, onRefusal, strea
         [`${COORDINATOR_BASE}/admissions`, 'admit'],
         [`${COORDINATOR_BASE}/lookup`, 'lookup'],
         [`${COORDINATOR_BASE}/bindings`, 'bind'],
+        [`${COORDINATOR_BASE}/workflow-catalog/requests`, 'workflowCatalogRequests'],
         [`${COORDINATOR_BASE}/robots/provision`, 'provision'],
         [`${COORDINATOR_BASE}/robots/configure`, 'configure'],
         [`${COORDINATOR_BASE}/robots/delete`, 'delete'],
@@ -249,9 +250,11 @@ export function createCoordinatorHttpHandler({ adapter, limits, onRefusal, strea
     const referenceRoutes = { read: 'readReference', events: 'referenceEvents', control: 'controlReference' };
     const obligation = new RegExp(`^${COORDINATOR_BASE}/obligations/${REFERENCE_ID}/(accept|reject|outbox)$`);
     const obligationRoutes = { accept: 'acceptObligation', reject: 'rejectObligation', outbox: 'applyOutbox' };
+    const catalogReply = new RegExp(`^${COORDINATOR_BASE}/references/${REFERENCE_ID}/workflow-catalog/reply$`);
     const resolve = (method, path) => {
         if (method !== 'POST') return null;
         let name = exact.get(path);
+        if (!name && catalogReply.test(path)) name = 'workflowCatalogReply';
         if (!name) {
             const match = reference.exec(path);
             if (match) name = referenceRoutes[match[2]];
