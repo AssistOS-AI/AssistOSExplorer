@@ -90,6 +90,8 @@ test('actual skill subprocess uses a real Unix catalog channel without /Agent an
     await fs.writeFile(file, JSON.stringify(definition));
     const before = await f.script();
     assert.match(before.stdout, /Daily 工作.*Review \(terminal\).*saved default prompt/s);
+    assert.match(before.stdout, /Start workflows from the RoboFlow page\./);
+    assert.doesNotMatch(before.stdout, /launch-workflow|Requires a prompt when starting|omit the prompt|Accepts executionType/);
     assert.doesNotMatch(before.stdout, /SECRET|\/tmp\/|coverage|robot/);
     await fs.writeFile(file, JSON.stringify({ ...definition, name: 'Edited now' }));
     assert.match((await f.script()).stdout, /Edited now/);

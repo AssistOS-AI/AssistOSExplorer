@@ -11,7 +11,7 @@ try {
     });
     if (isWorker()) {
         const result = await readWorkerCatalog(values.input ?? '');
-        console.log(formatWorkflows(result.workflows));
+        console.log(formatWorkflows(result.workflows, { workerMode: true }));
     } else {
         const { createSkillInvocation } = await import('./ploinkyInvocation.mjs');
         invocation = await createSkillInvocation({ skillName: 'list-workflows', input: values.input ?? '' });

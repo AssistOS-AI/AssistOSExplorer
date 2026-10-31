@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { normalizeRequest as normalizeLaunch, action as launchWorkflow } from '../src/skills/launch-workflow/scripts/action.mjs';
-import { action as listWorkflows } from '../src/skills/list-workflows/scripts/action.mjs';
+import { action as listWorkflows, formatWorkflows } from '../src/skills/list-workflows/scripts/action.mjs';
 import fs from 'node:fs';
 
 test('launch-workflow takes only a workflow name and an optional prompt', () => {
@@ -87,4 +87,17 @@ test('list-workflows is a self-contained skill folder', () => {
     for (const file of fs.readdirSync(new URL('scripts/', root))) {
         assert.doesNotMatch(fs.readFileSync(new URL(`scripts/${file}`, root), 'utf8'), /launch-workflow\//);
     }
+});
+
+test('worker catalog output describes workflows and sends starts to the page without launcher arguments', () => {
+    const output = formatWorkflows([
+        { id: 'default', name: 'Standard development', kind: 'default', hasDefaultObjective: false,
+            tasks: [{ name: 'Execute objective', executionType: 'terminal' }] },
+        { id: 'daily', name: 'Daily 工作', hasDefaultObjective: true, tasks: [{ name: 'Review' }] },
+    ], { workerMode: true });
+    assert.match(output, /default — Standard development.*Execute objective \(terminal\).*Supported modes: terminal, desktop or browser\. No saved default prompt\./);
+    assert.match(output, /daily — Daily 工作.*Review\. A saved default prompt is available\./);
+    assert.equal(output.split('Start workflows from the RoboFlow page.').length, 2);
+    assert.doesNotMatch(output, /launch-workflow|executionType|omit the prompt|Requires a prompt when starting/);
+    assert.equal(formatWorkflows([], { workerMode: true }), 'No RoboFlow workflow types are defined yet.');
 });

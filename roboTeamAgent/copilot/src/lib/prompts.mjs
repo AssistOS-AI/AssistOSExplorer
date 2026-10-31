@@ -37,6 +37,12 @@ export const DESKTOP_TASK_INSTRUCTIONS = 'You operate a separate virtual desktop
 
 export const WORKSPACE_COPILOT_PROMPT = "You are the workspace copilot. Use list-workflows to get the current workflow types and their ids, then choose and start one workflow for the user's request using launch-workflow with the workflow name and a self-contained prompt. Only for workflow default, you may also pass executionType desktop or browser when the task needs one; it runs in terminal otherwise. For other workflows their task definitions determine execution modes; never pass executionType. Do not launch individual robots or control graph traversal. Never invent workflow IDs.";
 
+const WORKER_COPILOT_PROMPT = "You are the workspace copilot. Handle the user's request directly using the available tools and admitted skills. Use list-workflows to answer questions about workflow types and their ids. If the user asks to start a workflow, tell them: Start workflows from the RoboFlow page. This chat cannot start workflows. Do not search for or install commands for starting workflows. Do not launch individual robots or control graph traversal. Never invent workflow IDs.";
+
+export function workspaceCopilotPrompt({ workerMode = false } = {}) {
+    return workerMode ? WORKER_COPILOT_PROMPT : WORKSPACE_COPILOT_PROMPT;
+}
+
 export function buildWorkflowTaskPrompt({ objective, currentTaskId, graph, previousFinalResponses, continuationPrompt = '', previousSubflowFinalResponse }) {
     return JSON.stringify({
         instruction: 'Execute only the task identified by currentTaskId, following its prompt and the objective. Use previousFinalResponses as context: response contains only the technical output of each phase. Human reports are user-only and are excluded from this context. When supplied, previousSubflowFinalResponse is the technical output of the last task in the preceding sub-workflow; inspect the current files before building on that work. Do not execute other graph nodes. Return a final answer, following routing instructions only when supplied. ' + WORKFLOW_HANDOFF_INSTRUCTIONS + ' ' + MARKDOWN_RESPONSE_INSTRUCTIONS,

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { WORKSPACE_COPILOT_PROMPT } from '../copilot/src/lib/prompts.mjs';
+import { workspaceCopilotPrompt } from '../copilot/src/lib/prompts.mjs';
 import { prepareCopilotContext } from './copilot-context.mjs';
+import { workerConfigured } from './mcp-tool-list.mjs';
 import path from 'node:path';
 import { errorFields, logDiagnostic } from '../copilot/src/lib/storage/copilotDiagnostics.mjs';
 
@@ -37,7 +38,7 @@ try {
     // The copilot publishes its runs to Live Sessions; robot tasks never do.
     process.env.ROBOTEAM_LIVE_PUBLISH = 'copilot';
     const { main } = await import('../copilot/src/index.mjs');
-    await main(args, { workflowSkills: true, systemPrompt: WORKSPACE_COPILOT_PROMPT });
+    await main(args, { workflowSkills: true, systemPrompt: workspaceCopilotPrompt({ workerMode: workerConfigured() }) });
 } catch (error) {
     logDiagnostic(diagnosticsDir, 'process.robot-cli.failed', errorFields(error));
     console.error('Robot CLI failed:', error.message);
