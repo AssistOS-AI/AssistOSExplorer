@@ -56,7 +56,7 @@ test('final: every env name is checked on its own: empty, digit-first and metach
 test('prep: a marker that begins with a dash (an S1 id does so about once in 64) is passed verbatim to prep and to bwrap', () => tmp((dir) => {
     const dashed = '-abc_DEF-0123456789xyz';
     const stage = prepFixture(dir, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(path.join(dir, 'prep.arg'))}, process.argv[2]);`, '#!/bin/sh\necho "$@"\n');
-    const r = spawnSync('/bin/sh', [stage, 'prep', dashed, String(process.pid), '', '4', SPEC, '--', '/bin/cmd'], { encoding: 'utf8' });
+    const r = spawnSync('/bin/sh', [stage, 'prep', dashed, String(process.pid), '', '4', SPEC, '0,1,2,4', '--', '/bin/cmd'], { encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
     assert.equal(fs.readFileSync(path.join(dir, 'prep.arg'), 'utf8'), dashed);
     assert.equal(r.stdout, `--unshare-uts --unsetenv ${dashed} --args 4 -- /bin/cmd\n`);
@@ -79,10 +79,11 @@ function prepFixture(dir, prepBody, bwrapBody) {
 }
 const MARKER = 'rwMarker0123456789_-ab';
 const SPEC = '{"spec":1}';
+const KEEP = '0,1,2,3,4';
 
 test('prep: non-zero exit of prep is propagated and bwrap never runs', () => tmp((dir) => {
     const stage = prepFixture(dir, 'process.exit(37);', '#!/bin/sh\ntouch "$0.ran"\n');
-    const r = spawnSync('/bin/sh', [stage, 'prep', MARKER, String(process.pid), '5', '4', SPEC, '--', '/bin/true'], { encoding: 'utf8' });
+    const r = spawnSync('/bin/sh', [stage, 'prep', MARKER, String(process.pid), '5', '4', SPEC, '0,1,2,4,5', '--', '/bin/true'], { encoding: 'utf8' });
     assert.equal(r.status, 37);
     assert.ok(!fs.existsSync(path.join(dir, 'fake-bwrap.ran')));
 }));
@@ -96,7 +97,7 @@ test('prep: success closes grant fds and execs bwrap with the marker on real arg
         const stage = prepFixture(dir,
             `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(path.join(dir, 'prep.out'))}, process.argv.slice(2).join(' ') + ' grant=' + fs.existsSync('/proc/self/fd/3'));`,
             '#!/bin/sh\necho "$@"\nfor f in /proc/self/fd/*; do l=$(readlink "$f" 2>/dev/null) || continue; case $l in */fd) continue;; esac; echo "fd ${f##*/}"; done\n');
-        const r = spawnSync('/bin/sh', [stage, 'prep', MARKER, String(process.pid), '3', '4', SPEC, '--', '/bin/cmd', 'a b', '--x'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', grant, keep] });
+        const r = spawnSync('/bin/sh', [stage, 'prep', MARKER, String(process.pid), '3', '4', SPEC, '0,1,2,3,4', '--', '/bin/cmd', 'a b', '--x'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', grant, keep] });
         assert.equal(r.status, 0, r.stderr);
         assert.ok(r.stdout.startsWith(`--unshare-uts --unsetenv ${MARKER} --args 4 -- /bin/cmd a b --x\n`), r.stdout);
         const open = r.stdout.split('\n').filter((l) => l.startsWith('fd ')).map((l) => Number(l.split(' ')[1])).filter((n) => n >= 3);
@@ -108,18 +109,25 @@ test('prep: success closes grant fds and execs bwrap with the marker on real arg
 
 test('prep: a changed parent (PPID mismatch) refuses before bwrap', () => tmp((dir) => {
     const stage = prepFixture(dir, '', '#!/bin/sh\ntouch "$0.ran"\n');
-    const r = spawnSync('/bin/sh', [stage, 'prep', MARKER, String(process.pid + 1), '5', '4', SPEC, '--', '/bin/true'], { encoding: 'utf8' });
+    const r = spawnSync('/bin/sh', [stage, 'prep', MARKER, String(process.pid + 1), '5', '4', SPEC, '0,1,2,4,5', '--', '/bin/true'], { encoding: 'utf8' });
     assert.equal(r.status, 70);
     assert.ok(!fs.existsSync(path.join(dir, 'fake-bwrap.ran')));
 }));
 
 test('prep: malformed arguments are refused', () => {
     assert.equal(run(['prep', 'bad', '1', '3', '4', SPEC, '--', '/bin/true']).status, 64, 'too short');
-    assert.equal(run(['prep', 'rw bad marker1', '1', '3', '4', SPEC, '--', '/bin/true']).status, 64, 'characters outside the marker set');
-    assert.equal(run(['prep', MARKER, 'x', '3', '4', SPEC, '--', '/bin/true']).status, 64);
-    assert.equal(run(['prep', MARKER, '1', '3', '4', SPEC, 'nodashes', '/bin/true']).status, 64);
-    assert.equal(run(['prep', MARKER, '1', '3', '4', SPEC, '--']).status, 64, 'a command is required');
-    assert.equal(run(['prep', 'a'.repeat(65), '1', '3', '4', SPEC, '--', '/bin/true']).status, 64, 'too long');
+    assert.equal(run(['prep', 'rw bad marker1', '1', '3', '4', SPEC, KEEP, '--', '/bin/true']).status, 64, 'characters outside the marker set');
+    assert.equal(run(['prep', MARKER, 'x', '3', '4', SPEC, KEEP, '--', '/bin/true']).status, 64);
+    assert.equal(run(['prep', MARKER, '1', '3', '4', SPEC, KEEP, 'nodashes', '/bin/true']).status, 64);
+    assert.equal(run(['prep', MARKER, '1', '3', '4', SPEC, KEEP, '--']).status, 64, 'a command is required');
+    assert.equal(run(['prep', 'a'.repeat(65), '1', '3', '4', SPEC, KEEP, '--', '/bin/true']).status, 64, 'too long');
+    // M-65 keep set: digits only, no empty element, and it must list the args fd and every grant fd
+    for (const keep of ['', ',', '0,,1,3,4', '0,1,3,4,', ',0,1,3,4', '0,1,x,3,4', '0 1 3 4', '0;1,3,4']) {
+        assert.equal(run(['prep', MARKER, '1', '3', '4', SPEC, keep, '--', '/bin/true']).status, 64, `keep ${JSON.stringify(keep)}`);
+    }
+    assert.equal(run(['prep', MARKER, '1', '3', '4', SPEC, '0,1,2,3', '--', '/bin/true']).status, 64, 'args fd not in the keep set');
+    assert.equal(run(['prep', MARKER, '1', '3,5', '4', SPEC, '0,1,2,3,4', '--', '/bin/true']).status, 64, 'a grant fd not in the keep set');
+    assert.equal(run(['prep', MARKER, '1', '3,,5', '4', SPEC, '0,1,2,3,4,5', '--', '/bin/true']).status, 64, 'an empty grant element');
 });
 
 test('M-47: the setpriv that starts node prep, and node prep itself, carry the marker on their argv; so does the final exec of bwrap', () => tmp((dir) => {
@@ -129,7 +137,7 @@ test('M-47: the setpriv that starts node prep, and node prep itself, carry the m
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, 'setpriv'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(path.join(dir, 'setpriv.argv'))}\nshift 3\nexec "$@"\n`, { mode: 0o755 });
     const dashed = '-qZ9_prepMarker0123456789';
-    const r = spawnSync('/bin/sh', [stage, 'prep', dashed, String(process.pid), '', '4', SPEC, '--', '/bin/cmd'], { encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}` } });
+    const r = spawnSync('/bin/sh', [stage, 'prep', dashed, String(process.pid), '', '4', SPEC, '0,1,2,4', '--', '/bin/cmd'], { encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}` } });
     assert.equal(r.status, 0, r.stderr);
     assert.ok(fs.readFileSync(path.join(dir, 'setpriv.argv'), 'utf8').split('\n').includes(dashed), 'setpriv');
     assert.ok(JSON.parse(fs.readFileSync(path.join(dir, 'prep.argv'), 'utf8')).includes(dashed), 'node sandboxPrep.mjs');

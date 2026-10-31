@@ -165,7 +165,7 @@ test('stage.sh run with stub binaries and a dashed marker: node script and bwrap
             fs.writeFileSync(file, 'x');
             const fd = fs.openSync(file, 'r');
             try {
-                const r = spawnSync('/bin/sh', [stage, 'prep', DASHED, String(process.pid), grants, '4', '{"s":1}', '--', '/bin/cmd', '-x'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', ...(grants ? [fd] : [])] });
+                const r = spawnSync('/bin/sh', [stage, 'prep', DASHED, String(process.pid), grants, '4', '{"s":1}', '0,1,2,3,4', '--', '/bin/cmd', '-x'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', ...(grants ? [fd] : [])] });
                 assert.equal(r.status, 0, r.stderr);
                 const nodeArgv = JSON.parse(fs.readFileSync(path.join(dir, 'prep.argv'), 'utf8'));
                 assert.equal(nodeArgv[0], path.join(dir, 'sandboxPrep.mjs'));

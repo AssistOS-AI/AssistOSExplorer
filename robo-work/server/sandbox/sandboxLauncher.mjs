@@ -34,11 +34,14 @@
 //   onIdentity   optional async (identity) => void: commit hook; when given, the gate byte is written after it returns
 //   timeouts     prepTimeoutMs (default 120000), gateTimeoutMs (10000), verifyTimeoutMs (5000)
 //
-// Descriptor layout (every descriptor handed through the chain sits at a slot of the spawn's stdio array; Node marks
-// everything else close-on-exec). No directory descriptor is handed over; all slots are below 10.
+// Descriptor layout (every descriptor handed through the chain sits at a slot of the spawn's stdio array). No directory
+// descriptor is handed over; all slots are below 10.
 //   workload, terminal   0-2 streams | 3 seccomp | 4 block | 5 info | 6 json-status | 7 bwrap args
 //   orchestration        0-2 streams | 3 pair socket | 4 seccomp | 5 block | 6 info | 7 json-status | 8 args
 //   endpoint             0-2 streams | 3 pair socket | 4 frames | 5 seccomp | 6 block | 7 info | 8 json-status | 9 args
+// Node marks only its OWN descriptors close-on-exec; one the worker holds without it (node-pty's PTY master) would reach the
+// chain, so the slots in use are passed to `stage.sh prep` as an explicit keep set and every other fd is closed there,
+// before node prep and bwrap run (M-65).
 //
 // Failure codes: sandbox_unavailable, mask_scan_limit, mask_unverified, identity_mismatch, commit_timeout, setup_failed,
 // invalid_request. Nothing is committed on bwrap's word: the identity is read from /proc.
@@ -183,6 +186,17 @@ export function createSandboxLauncher({
             stdio[layout.status] = 'pipe';
             stdio[layout.args] = argsFd;
 
+            // --- M-65 keep set: the exact descriptors the chain may hold, passed to `stage.sh prep`, which closes every other fd
+            // >= 3 before node prep and bwrap run. The worker process can hold descriptors WITHOUT close-on-exec (node-pty's
+            // PTY master of a robot terminal, for one) and Node/libuv does not close them at spawn, so every sandbox of every
+            // robot would otherwise inherit them. A slot >= 3 left 'ignore' is NOT in the set: libuv leaves that fd number
+            // untouched in the child, so whatever the worker holds there (possibly such a leaked descriptor) passes through.
+            // No grant descriptor is handed over (the grants csv is empty); if one were, it would have to be listed here too.
+            // The worker's own short-lived trusted helpers spawned directly (ip, nft) may inherit a leaked fd: accepted, they
+            // run no robot input and never enter a sandbox.
+            const grantFds = [];
+            const keepFds = [...stdio.keys()].filter((slot) => slot < 3 || stdio[slot] !== 'ignore').concat(grantFds);
+
             // --- the chain: marker trails the stage.sh command line, and is again on bwrap's real argv
             const prepSpec = {
                 supervisorMntNs: view.selfNamespaces().mntNs,
@@ -192,7 +206,7 @@ export function createSandboxLauncher({
             const command = ['--pdeathsig', 'KILL', '--'];
             if (needNetns) command.push('nsenter', `--net=${spec.netns}`, '--');
             command.push('unshare', '--mount', '--propagation', 'private', '--', '/bin/sh', stageScript, 'prep', spec.marker,
-                String(supervisorPid), '', String(layout.args), JSON.stringify(prepSpec), '--', ...bwrapTail);
+                String(supervisorPid), grantFds.join(','), String(layout.args), JSON.stringify(prepSpec), keepFds.join(','), '--', ...bwrapTail);
             child = spawnImpl('setpriv', command, { stdio, env: { PATH: toolPath }, cwd: '/', detached: false });
             for (const fd of closeLater.splice(0)) { try { fsImpl.closeSync(fd); } catch { /* closed */ } }
 

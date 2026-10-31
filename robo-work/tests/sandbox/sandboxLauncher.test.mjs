@@ -63,10 +63,11 @@ test('workload: the chain, the marker on argv, the descriptor map, and a gated i
         assert.equal(record.args[prep + 2], String(SUPERVISOR_PID));
         assert.equal(record.args[prep + 3], '', 'no directory descriptor is handed over: prep re-opens them in its own namespace');
         assert.equal(record.args[prep + 4], '7', 'bwrap args at slot 7');
-        assert.deepEqual(record.args.slice(prep + 6), ['--', '/bin/sh', '/rw-stage/stage.sh', 'final', '0,1,2', 'HOME', '/usr/bin/echo', 'hi'],
+        assert.equal(record.args[prep + 6], '0,1,2,3,4,5,6,7', 'M-65: the keep set is exactly the slots in use');
+        assert.deepEqual(record.args.slice(prep + 7), ['--', '/bin/sh', '/rw-stage/stage.sh', 'final', '0,1,2', 'HOME', '/usr/bin/echo', 'hi'],
             'the bwrap command is the tail of the chain, not part of the args buffer; stage.sh final runs at its in-sandbox path');
         const prepSpec = JSON.parse(record.args[prep + 5]);
-        assert.equal(record.args[prep + 6], '--');
+        assert.equal(record.args[prep + 7], '--');
         assert.equal(prepSpec.supervisorMntNs, '2000');
         const here = fs.statSync(world.dir, { bigint: true });
         const identity0 = { path: world.dir, dev: String(here.dev), ino: String(here.ino) };
@@ -121,6 +122,7 @@ test('orchestration: no nsenter, pair socket at slot 3, RW_FD_ALLOW in the buffe
         assert.equal(record.args[prep + 3], '', 'no grant descriptors to close');
         assert.deepEqual(JSON.parse(record.args[prep + 5]).binds.map((bind) => bind.name), ['session']);
         assert.equal(record.args[prep + 4], '8');
+        assert.equal(record.args[prep + 6], '0,1,2,3,4,5,6,7,8', 'M-65 keep set: streams, pair socket, control slots');
         const args = nulSplit(record.fdContents.args).join(' ');
         assert.ok(args.includes('--setenv RW_FD_ALLOW 0,1,2,3'));
         assert.ok(args.includes('--seccomp 4 --block-fd 5 --info-fd 6 --json-status-fd 7'));
@@ -144,6 +146,7 @@ test('endpoint: joins the netns, pair socket at 3, frame channel at 4, control f
         const [record] = world.spawned;
         assert.ok(record.args.includes('nsenter'));
         assert.equal(record.args[record.args.indexOf('prep') + 4], '9');
+        assert.equal(record.args[record.args.indexOf('prep') + 6], '0,1,2,3,4,5,6,7,8,9', 'M-65 keep set: streams, pair socket, frames, control slots');
         assert.equal(record.options.stdio.length, 10);
         assert.ok(nulSplit(record.fdContents.args).join(' ').includes('--setenv RW_FD_ALLOW 0,1,2,3,4'));
         assert.ok(sandbox.channel, 'the supervisor end of the frame channel is slot 4');
