@@ -1,13 +1,31 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { createObservationLog, heldRoleArgv, measureFixture, validateHeld } from './live/ptyLeakMeasurement.mjs';
-import { createSampler, validateWatchFinish } from './live/ptyleak.mjs';
+import { createSampler, nodePtyPreload, validateWatchFinish } from './live/ptyleak.mjs';
 
 const identity = (pid, startTime = '1') => ({ pid, startTime, state: 'S', threads: 1 });
+
+test('actual node-pty data-URL preload loads an absolute CommonJS package and invokes its spawn', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rw-pty-loader ' "));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ main: 'index.cjs' }));
+    fs.writeFileSync(path.join(root, 'dependency.cjs'), "module.exports = 'fixture-loaded';\n");
+    fs.writeFileSync(path.join(root, 'index.cjs'), "exports.spawn = (command, args, options) => ({ command, args, options, marker: require('./dependency.cjs') });\n");
+    const result = spawnSync(process.execPath, ['--import', nodePtyPreload(root), '--input-type=module', '-e',
+        'console.log(JSON.stringify(globalThis.__ptyleakA));'], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(result.status, 0, result.stderr);
+    const loaded = JSON.parse(result.stdout);
+    assert.equal(loaded.marker, 'fixture-loaded');
+    assert.equal(loaded.command, '/bin/sh');
+    assert.deepEqual(loaded.args, ['-c', 'sleep 3600']);
+    assert.deepEqual(loaded.options, { name: 'xterm', cols: 80, rows: 24, env: { PATH: '/usr/bin:/bin' } });
+});
 
 test('measurement begins before launch, validates held identities, freezes sampling before teardown, then awaits cleanup', async () => {
     const events = [];

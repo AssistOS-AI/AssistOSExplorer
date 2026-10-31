@@ -247,6 +247,13 @@ async function positiveControl(masterFd, masters, supervisorPid = null) {
 }
 
 // ---- modes ---------------------------------------------------------------------------------------------------------------------
+export function nodePtyPreload(moduleDir) {
+    const modulePath = path.resolve(moduleDir);
+    const preload = `import { createRequire } from 'node:module'; const pty = createRequire(${JSON.stringify(path.join(modulePath, 'package.json'))})(${JSON.stringify(modulePath)}); `
+        + "globalThis.__ptyleakA = pty.spawn('/bin/sh', ['-c', 'sleep 3600'], { name: 'xterm', cols: 80, rows: 24, env: { PATH: '/usr/bin:/bin' } });";
+    return `data:text/javascript,${encodeURIComponent(preload)}`;
+}
+
 async function defaultMode() {
     evidence.mode = opt('--node-pty') ? 'node-pty' : 'inherited';
     const ptmx = fs.openSync('/dev/ptmx', fs.constants.O_RDWR | fs.constants.O_NOCTTY);
@@ -254,9 +261,7 @@ async function defaultMode() {
     const ptyDir = opt('--node-pty');
     if (ptyDir) {
         // robot A's terminal opened by node-pty inside the supervisor process itself (the real T1 mechanism)
-        const preload = `import { createRequire } from 'node:module'; const pty = createRequire(import.meta.url)(${JSON.stringify(path.resolve(ptyDir))}); `
-            + "globalThis.__ptyleakA = pty.spawn('/bin/sh', ['-c', 'sleep 3600'], { name: 'xterm', cols: 80, rows: 24, env: { PATH: '/usr/bin:/bin' } });";
-        args.push('--import', `data:text/javascript,${encodeURIComponent(preload)}`);
+        args.push('--import', nodePtyPreload(ptyDir));
     }
     args.push(path.join(HERE, 'ptyLeakFixture.mjs'));
     const stdio = ['pipe', 'pipe', 'inherit', ...Array(LEAK_FD - 3).fill('ignore'), ptyDir ? 'ignore' : ptmx];
