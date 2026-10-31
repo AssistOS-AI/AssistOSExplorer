@@ -98,7 +98,9 @@ test.describe('RoboWork interaction scenarios', () => {
         const fixture = createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
         const prompt = 'This is an automated test on disposable synthetic files. You must ask the user exactly ONE question, using the required require-human-input skill, '
           + 'with exactly these three options: ALPHA, BRAVO, CHARLIE. Do not decide for the user. After the user answers, write the chosen answer text, exactly as '
-          + 'chosen, followed by a newline, to the file answer.txt in the project directory with a shell command (printf), then reply DONE.';
+          + 'chosen, followed by a newline, to the file answer.txt in the project directory with a shell command (printf), then reply DONE.'
+          + ' This is an execution request. Use a shell or read tool now to read /run/robo-work/skills/require-human-input/SKILL.md. Follow that skill to ask the required question now, then end this execution as instructed. '
+          + 'Do not acknowledge readiness or ask for another task. On the later continuation with the user\'s answer, call the bash tool to perform the printf write above before replying DONE.';
         const workflow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/workflows', body: singleTaskWorkflow({ name: `e2e human ${stamp()}`, prompt, allowsHumanInput: true, skill }) }, [201])).workflow;
         const startMs = Date.now() - 1000;
         const flow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/flows', body: { workflowTypeId: workflow.id, folder: fixture.root, objective: `Human input e2e ${stamp()}` } }, [201])).flow;
@@ -203,7 +205,9 @@ test.describe('RoboWork interaction scenarios', () => {
         const nonce = crypto.randomBytes(5).toString('hex');
         const message = `BLOCKED-${nonce}: the required database is unavailable`;
         const prompt = 'This is an automated test on disposable synthetic files. This task cannot be fulfilled: the required database is unavailable and no workaround is allowed. '
-          + `Report that with the bundled report-task-blocked skill, using exactly this message: ${message}   Do nothing else.`;
+          + `Report that with the bundled report-task-blocked skill, using exactly this message: ${message}   Do nothing else.`
+          + ' This is an execution request. Use a shell or read tool now to read /run/robo-work/skills/report-task-blocked/SKILL.md. Follow that skill now to report exactly the blocker message above. '
+          + 'Do not acknowledge readiness, ask for another task, or replace the required report with a plain-text answer. Do not continue after invoking the skill.';
         const workflow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/workflows', body: singleTaskWorkflow({ name: `e2e fail ${stamp()}`, prompt, skill }) }, [201])).workflow;
         const startMs = Date.now() - 1000;
         const flow = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/roboflow/flows', body: { workflowTypeId: workflow.id, folder: fixture.root, objective: `Task failure e2e ${nonce}` } }, [201])).flow;

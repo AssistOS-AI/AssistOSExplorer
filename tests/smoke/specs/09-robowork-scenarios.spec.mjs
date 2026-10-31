@@ -195,9 +195,11 @@ function readFiles(root, nonce) {
 
 const phasePrompts = (nonce, { sleepSeconds = 0 } = {}) => ({
   p1: `This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: `
-    + `${sleepSeconds ? `sleep ${sleepSeconds} && ` : ''}printf 'PHASE1-${nonce}\\n' > phase1.txt   Then reply DONE1.`,
+    + `${sleepSeconds ? `sleep ${sleepSeconds} && ` : ''}printf 'PHASE1-${nonce}\\n' > phase1.txt   Then reply DONE1.`
+    + ' This is an execution request. Call the bash tool now with the exact command above. Do not acknowledge readiness or ask for a task. Reply DONE1 only after that tool returns.',
   p2: 'This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: '
-    + `cat phase1.txt > phase2.txt && echo PHASE2 >> phase2.txt   Then reply DONE2.`,
+    + `cat phase1.txt > phase2.txt && echo PHASE2 >> phase2.txt   Then reply DONE2.`
+    + ' This is an execution request. Call the bash tool now with the exact command above. Do not acknowledge readiness or ask for a task. Reply DONE2 only after that tool returns.',
 });
 
 // ---------------------------------------------------------------------------------------------------------------- A

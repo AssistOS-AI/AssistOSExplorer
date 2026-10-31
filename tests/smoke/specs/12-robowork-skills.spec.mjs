@@ -60,7 +60,7 @@ test.describe('RoboWork admitted skills', () => {
                 const startMs = Date.now();
                 const prompt = `Use the admitted ${skillName} skill at /run/robo-work/skills. Use a shell tool to run `
                     + "`p=/run/robo-work/skills/nonce-marker; printf 'READ_PATH=%s\\n' \"$p\"; cat \"$p/marker.txt\"`. "
-                    + 'Return the exact marker contents. Do not write or modify any files.';
+                    + 'This is an execution request. Call the bash tool now with the exact command above. Do not acknowledge readiness or ask for a task. After the tool returns, return its exact output. Do not write or modify any files.';
                 assert.ok(!prompt.includes(nonce));
                 const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: startMs, scope: () => ({ cwd: withProject ? project : undefined, robotName: run }) });
                 const answer = await chatTurn(page, {
