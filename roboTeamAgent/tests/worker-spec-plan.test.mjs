@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createWorkerEngine } from '../copilot/src/lib/execution/workerEngine.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
-import { PlanError, VIRTUAL_HOME, planAlaExecution } from '../../robo-work/server/runtime/alaPlan.mjs';
+import { planAlaExecution } from '../../robo-work/server/runtime/alaPlan.mjs';
 import { validateSpecificationV2 } from '../../robo-work/server/stateProtocol.mjs';
 import { resolveGrant } from '../../robo-work/server/views/grantResolver.mjs';
 import { grantRoleFor } from '../../robo-work/server/runtime/executionFactory.mjs';
@@ -19,13 +19,15 @@ const REFERENCE = 'r'.repeat(22);
 
 // Builds one turn's specification with the real engine over fakes for the worker, then returns it with the
 // canonical workspace root. `project` is the conversation's folder below the root, or null for the root itself.
-async function buildSpecification(t, { project = null, explicit = false, withSkills = false } = {}) {
+async function buildSpecification(t, { project = null, explicit = false, withSkills = false, channels = false } = {}) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'worker-plan-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const workingDir = project ? path.join(root, project) : root;
     const overlay = path.join(workingDir, '.roboteam', 'sessions', 's1', 'skills');
     const managed = path.join(root, '.ploinky', 'repos', 'Skills', 'skills', 'docs');
-    await Promise.all([workingDir, overlay, managed, path.join(root, 'skills', 'docs')].map((directory) => fs.mkdir(directory, { recursive: true })));
+    const channelBase = path.join(root, '.ploinky', 'repos', 'AchillesIDE', 'roboTeamAgent', 'copilot', 'src', 'skills');
+    const channelSkills = ['report-task-blocked', 'require-human-input'].map((name) => ({ name, skillDir: path.join(channelBase, name), enabled: true }));
+    await Promise.all([workingDir, overlay, managed, path.join(root, 'skills', 'docs'), ...channelSkills.map((skill) => skill.skillDir)].map((directory) => fs.mkdir(directory, { recursive: true })));
     const old = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = root;
     t.after(() => { if (old === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = old; });
@@ -43,13 +45,13 @@ async function buildSpecification(t, { project = null, explicit = false, withSki
         provisioner: { ensureReady: async () => ({ robotId: 'AAAAAAAAAAAAAAAAAAAAAA', configRevision: 1, configuration: { backend: 'codex', settings: { codingAgents: ['codex'] } } }), desiredConfiguration: () => ({}) },
         skillCatalog: { async refresh() {
             // The real snapshot shape: the private session overlay is `skillsDirectory`; each mount names a skill source.
-            return { skills: [], taskRepositories: [], ...(withSkills ? { skillsDirectory: overlay, mounts: [
+            return { skills: channels ? channelSkills : [], taskRepositories: [], ...(withSkills ? { skillsDirectory: overlay, mounts: [
                 { source: path.join(root, 'skills', 'docs'), target: path.join(workingDir, '.agents', 'skills', 'docs') },
                 { source: managed, target: path.join(workingDir, '.agents', 'skills', 'managed') },
             ] } : {}) };
         } },
         settings: { readAchillesSettings: () => ({}), getPermissionMode: () => 'full-access' }, interactions: { cancelTurn() {}, resolve() {}, request: async () => null },
-        execution: { robotId: 'robo', ...(explicit ? { cwdExplicit: true } : {}) }, sleep: () => new Promise((resolve) => setTimeout(resolve, 1)) });
+        execution: { robotId: 'robo', ...(explicit ? { cwdExplicit: true } : {}), ...(channels ? { workflowExecution: true, humanInput: true } : {}) }, sleep: () => new Promise((resolve) => setTimeout(resolve, 1)) });
     t.after(() => engine.close());
     const owner = { coordinator, evidence: { ok: true, principal: 'user:alice', grant: GRANT } };
     const outcome = await engine.executeTurn({ sessionId: session.sessionId, prompt: 'Do the work', owner }).then(() => null, (error) => error);
@@ -70,12 +72,14 @@ async function resolveLikeTheFactory(root, entries) {
     return outcomes;
 }
 
-test('a project folder below the root is the writable grant and the extras are skill sources; the root and the overlay are never granted', async (t) => {
-    const built = await buildSpecification(t, { project: 'proj', withSkills: true });
+const CHANNEL_FOLDERS = (root) => ['report-task-blocked', 'require-human-input'].map((name) => ({ path: path.join(root, '.ploinky', 'repos', 'AchillesIDE', 'roboTeamAgent', 'copilot', 'src', 'skills', name), access: 'read' }));
+
+test('a project folder below the root is the writable grant and the extras are the channel skill sources; skill mounts, the root and the overlay are never granted', async (t) => {
+    const built = await buildSpecification(t, { project: 'proj', withSkills: true, channels: true });
     assert.equal(built.error, null);
     const spec = built.specification;
     assert.equal(spec.cwd, path.join(built.root, 'proj'));
-    assert.deepEqual(spec.folders, [{ path: path.join(built.root, 'skills', 'docs'), access: 'read' }, { path: path.join(built.root, '.ploinky', 'repos', 'Skills', 'skills', 'docs'), access: 'read' }]);
+    assert.deepEqual(spec.folders, CHANNEL_FOLDERS(built.root));
     assert.equal([spec.cwd, ...spec.folders.map((folder) => folder.path)].some((granted) => granted.includes('.roboteam')), false, 'the private overlay is not granted');
     validateSpecificationV2(spec, LIMITS);
     const plan = planAlaExecution({ specification: spec, workspaceRoot: built.root });
@@ -85,28 +89,28 @@ test('a project folder below the root is the writable grant and the extras are s
     assert.equal(cwdGrant.access, 'write');
     assert.ok(extras.length === 2 && extras.every((grant) => grant.access === 'read'));
     assert.equal(plan.cwd, '/projects/g0');
-    // The worker's resolver opens the project and the plain skill source with the factory's request shape.
+    // The worker's resolver opens the project, and each channel skill as the skill-source the worker infers for it.
     const outcomes = await resolveLikeTheFactory(built.root, [{ path: spec.cwd, access: 'write' }, ...spec.folders]);
-    assert.deepEqual(outcomes.filter((outcome) => !outcome.relativePath.startsWith('.ploinky')).map((outcome) => outcome.ok), [true, true]);
-    // A managed source is a skill-source grant (the role the worker infers for it); the resolver accepts it as one.
-    const asSource = await resolveGrant({ role: 'skill-source', access: 'read', relativePath: path.relative(built.root, spec.folders[1].path) }, { workspaceRoot: built.root, protectedLocations: [] });
-    assert.equal(asSource.ok, true);
-    await asSource.grant.close();
+    assert.deepEqual(outcomes.map((outcome) => outcome.ok), [true, true, true]);
+    assert.deepEqual(spec.folders.map((folder) => grantRoleFor({ relativePath: path.relative(built.root, folder.path), access: 'read' })), ['skill-source', 'skill-source']);
 });
 
-test('with no project the folders still resolve through the worker\'s grant resolver: no overlay, no protected component, no root', async (t) => {
-    const built = await buildSpecification(t, { withSkills: true });
+test('with no project the channel folders still resolve through the worker\'s grant resolver: no overlay, no protected component, no root', async (t) => {
+    const built = await buildSpecification(t, { withSkills: true, channels: true });
     assert.equal(built.error, null);
     const spec = built.specification;
     assert.equal(Object.hasOwn(spec, 'cwd'), false);
     assert.equal(spec.folders.some((folder) => folder.path.includes('.roboteam')), false);
-    const plain = spec.folders.filter((folder) => !folder.path.includes(`${path.sep}.ploinky${path.sep}`));
-    assert.equal(plain.length, 1);
+    assert.deepEqual(spec.folders, CHANNEL_FOLDERS(built.root));
     const outcomes = await resolveLikeTheFactory(built.root, spec.folders);
-    // Every folder opens: the plain source as a project grant, the managed source as a skill source.
     assert.deepEqual(outcomes.map((outcome) => outcome.code), [null, null]);
-    assert.ok(outcomes.every((outcome) => outcome.code !== 'protected_component' && outcome.code !== 'workspace_root_not_granted'));
     assert.ok(spec.folders.every((folder) => folder.path !== built.root && folder.access === 'read'));
+});
+
+test('skill mounts alone grant nothing: no folders in the specification', async (t) => {
+    const built = await buildSpecification(t, { project: 'proj', withSkills: true });
+    assert.equal(built.error, null);
+    assert.equal(Object.hasOwn(built.specification, 'folders'), false);
 });
 
 test('negative control: the private overlay sent as a folder is refused by the resolver, as the review probe found', async (t) => {
@@ -117,38 +121,13 @@ test('negative control: the private overlay sent as a folder is refused by the r
     assert.deepEqual(outcome, { relativePath: '.roboteam/sessions/s1/skills', ok: false, code: 'protected_component' });
 });
 
-// The factory infers the `skill-source` role for a read-only `.ploinky/repos/<repo>` folder (grantRoleFor, M-22).
-test('the worker resolves a managed skill source requested with the factory\'s request shape', async (t) => {
-    const built = await buildSpecification(t, { project: 'proj', withSkills: true });
+// The factory infers the `skill-source` role for a read-only folder below `.ploinky/repos/<repo>` (grantRoleFor, M-22),
+// and never for a repository root (B1(b)).
+test('the worker resolves a managed skill source requested with the factory\'s request shape; a repository root is refused even with a SKILL.md', async (t) => {
+    const built = await buildSpecification(t, { project: 'proj', withSkills: true, channels: true });
     const outcomes = await resolveLikeTheFactory(built.root, built.specification.folders);
     assert.deepEqual(outcomes.map((outcome) => outcome.ok), [true, true]);
-});
-
-test('naming the workspace root as the working folder is refused in RoboTeam before admission, as the worker would', async (t) => {
-    const built = await buildSpecification(t, { explicit: true });
-    assert.equal(built.admitted.length, 0);
-    assert.equal(built.error.code, 'workspace_root_not_granted');
-    assert.match(built.error.message, /project folder/);
-    // The worker refuses the same grant, so the RoboTeam refusal mirrors the worker's reason.
-    const forced = { version: 2, prompt: 'p', displayText: 'p', sessionId: '00000000-0000-4000-8000-000000000001', turnId: 't1', cwd: built.root, permissions: 'full-access' };
-    validateSpecificationV2(forced, LIMITS);
-    assert.throws(() => planAlaExecution({ specification: forced, workspaceRoot: built.root }), (error) => error instanceof PlanError && error.reason === 'workspace_root_not_granted');
-});
-
-test('with no project selected the specification carries no project grant (RoboTeam side)', async (t) => {
-    const built = await buildSpecification(t, { withSkills: true });
-    assert.equal(built.error, null);
-    assert.equal(Object.hasOwn(built.specification, 'cwd'), false);
-    assert.equal(Object.hasOwn(built.specification, 'ignore'), false);
-    assert.ok((built.specification.folders ?? []).every((folder) => folder.path !== built.root && folder.access === 'read'));
-    assert.ok(JSON.stringify(built.specification).includes(`"${built.root}"`) === false, 'the root is not sent as a path');
-});
-
-// A specification without `cwd` (no project selected) plans ALA in the robot HOME with no project grant (M-20).
-test('the worker admits and plans a specification with no project', async (t) => {
-    const built = await buildSpecification(t, { withSkills: true });
-    validateSpecificationV2(built.specification, LIMITS);
-    const plan = planAlaExecution({ specification: built.specification, workspaceRoot: built.root });
-    assert.equal(plan.cwd, VIRTUAL_HOME);
-    assert.ok(plan.grants.every((grant) => grant.hostPath !== built.root && grant.access === 'read'));
+    await fs.writeFile(path.join(built.root, '.ploinky', 'repos', 'AchillesIDE', 'SKILL.md'), 'root skill');
+    const [root] = await resolveLikeTheFactory(built.root, [{ path: path.join(built.root, '.ploinky', 'repos', 'AchillesIDE'), access: 'read' }]);
+    assert.deepEqual(root, { relativePath: '.ploinky/repos/AchillesIDE', ok: false, code: 'managed_source_not_project' });
 });

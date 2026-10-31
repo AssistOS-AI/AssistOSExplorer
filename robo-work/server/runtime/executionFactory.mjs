@@ -28,11 +28,11 @@ function deferred() {
     return control;
 }
 
-// The grant role of a plan grant. A read-only folder under `.ploinky/repos/<repo>/` is a skill source (the resolver's only exemption
+// The grant role of a plan grant. A read-only folder below `.ploinky/repos/<repo>/` is a skill source (the resolver's only exemption
 // for a managed source, never writable); every other grant, and every writable one (the cwd is always writable), is a project.
 export function grantRoleFor(entry) {
     const segments = String(entry.relativePath).split('/');
-    const managed = segments.length >= 3 && foldPathName(segments[0]) === '.ploinky' && segments[1] === 'repos';
+    const managed = segments.length >= 4 && foldPathName(segments[0]) === '.ploinky' && segments[1] === 'repos';
     return managed && entry.access === 'read' ? 'skill-source' : 'project';
 }
 

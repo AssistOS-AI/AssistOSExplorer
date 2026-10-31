@@ -330,19 +330,20 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             // channels are the worker's own (below).
             const nativePrompt = buildNativePrompt({ prompt, resume, selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
             // Extra folders are explicit read-only grants strictly below the workspace root, never the root and never
-            // the project itself: the skill mount SOURCES and the channel skills. The session skills overlay
+            // the project itself: the channel skills only. The session skills overlay
             // (`<project>/.roboteam/sessions/<id>/skills`) is private storage the worker refuses at open, so it is
             // never sent, and neither is any path with a protected component (a managed `.ploinky/repos/<repo>`
             // skill source excepted, which the worker resolves as a skill source). The placement modifiers (`as`,
             // `at`, `expose`) cannot run in the worker, so a source is granted at its own path.
             const candidates = [];
-            if (snapshot.skillsDirectory || snapshot.mounts?.length) {
-                for (const mount of snapshot.mounts || []) candidates.push(mount.source);
-                await emit({ type: 'diagnostic', message: 'Skills are granted as read-only folders; their .agents/skills placement is not available through the worker.' });
-            }
+            // Skill mount sources (`snapshot.mounts`) are deliberately never granted: a robot controls the symlinks under its
+            // writable project's `.agents/skills`, so a mount source can be another project, a managed repository root or `/`.
             // The worker hosts the task-failure and human-input channels (decision M-14): their skills are ordinary
             // read-only grants (RoboTeam's bundled skills by their managed-repository workspace path) and the prompt
             // names the granted path and the channel directory, which are the same in every workload.
+            if (snapshot.mounts?.length) {
+                await emit({ type: 'diagnostic', message: 'The selected skills are not available through the worker yet; this turn runs without them.' });
+            }
             const channelSkills = [];
             for (const [skillName, channel, wanted] of [['report-task-blocked', 'task-failure', execution.workflowExecution === true],
                 ['require-human-input', 'human-input', execution.humanInput === true]]) {

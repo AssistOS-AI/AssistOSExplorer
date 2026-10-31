@@ -53,13 +53,19 @@ test('protected names and managed sources stay refused: .roboteam, a writable ma
     assert.deepEqual(await outcome({ path: path.join(root, 'proj/.roboteam/skills'), access: 'read' }), ['proj/.roboteam/skills', 'project', 'read', 'protected_component']);
     assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos/AssistOS/skills/search'), access: 'write' }), ['.ploinky/repos/AssistOS/skills/search', 'project', 'write', 'managed_source_writable']);
     assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos'), access: 'read' }), ['.ploinky/repos', 'project', 'read', 'managed_source_not_project']);
-    assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos/AssistOS'), access: 'read' }), ['.ploinky/repos/AssistOS', 'skill-source', 'read', 'ok']);
+    assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos/AssistOS'), access: 'read' }), ['.ploinky/repos/AssistOS', 'project', 'read', 'managed_source_not_project']);
+    // B1(b): a repository root is never a grantable skill source, even when it holds a SKILL.md; a folder below it is.
+    fs.writeFileSync(path.join(root, '.ploinky/repos/AssistOS/SKILL.md'), 'root skill');
+    assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos/AssistOS'), access: 'read' }), ['.ploinky/repos/AssistOS', 'project', 'read', 'managed_source_not_project']);
+    assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos/AssistOS/skills'), access: 'read' }), ['.ploinky/repos/AssistOS/skills', 'skill-source', 'read', 'ok']);
+    assert.equal(grantRoleFor({ relativePath: '.ploinky/repos/AssistOS', access: 'read' }), 'project');
+    assert.equal(grantRoleFor({ relativePath: '.ploinky/repos/AssistOS/skills/x', access: 'read' }), 'skill-source');
     assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/data'), access: 'read' }), ['.ploinky/data', 'project', 'read', 'protected_component']);
     // M-22: nothing else under .ploinky resolves, and a link is never followed (an escape link, a linked repo, a path through either).
     assert.deepEqual(await outcome({ path: path.join(root, '.ploinky'), access: 'read' }), ['.ploinky', 'project', 'read', 'protected_component']);
     assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos/AssistOS/skills/escape'), access: 'read' }), ['.ploinky/repos/AssistOS/skills/escape', 'skill-source', 'read', 'symlink_in_path']);
     assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos/AssistOS/skills/escape/secret'), access: 'read' }), ['.ploinky/repos/AssistOS/skills/escape/secret', 'skill-source', 'read', 'symlink_in_path']);
-    assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos/Linked'), access: 'read' }), ['.ploinky/repos/Linked', 'skill-source', 'read', 'symlink_in_path']);
+    assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos/Linked'), access: 'read' }), ['.ploinky/repos/Linked', 'project', 'read', 'managed_source_not_project']);
     // A protected name below a repo is refused in the skill view too.
     fs.mkdirSync(path.join(root, '.ploinky/repos/AssistOS/.roboteam'), { recursive: true });
     assert.deepEqual(await outcome({ path: path.join(root, '.ploinky/repos/AssistOS/.roboteam'), access: 'read' }), ['.ploinky/repos/AssistOS/.roboteam', 'skill-source', 'read', 'protected_component']);

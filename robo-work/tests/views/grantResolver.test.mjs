@@ -119,13 +119,22 @@ for (const [relativePath, access, role, code] of REFUSALS) {
 
 test('an explicitly selected read-only skill-source grant under .ploinky/repos is accepted, and only that', async (t) => {
     const root = workspace(t);
-    for (const relativePath of ['.ploinky/repos/r1', '.ploinky/repos/r1/skills']) {
+    for (const relativePath of ['.ploinky/repos/r1/skills']) {
         const result = await resolve(root, project(relativePath, 'read', 'skill-source'));
         assert.equal(result.ok, true, `${relativePath}: ${JSON.stringify(result)}`);
         assert.equal(result.grant.managedSource, true);
         assert.equal(result.grant.access, 'read');
         await result.grant.close();
     }
+});
+
+test('a repository root under .ploinky/repos is not a grantable skill source, even when it holds a SKILL.md', async (t) => {
+    const root = workspace(t);
+    fs.writeFileSync(path.join(root, '.ploinky/repos/r1/SKILL.md'), 'root skill');
+    const result = await resolve(root, project('.ploinky/repos/r1', 'read', 'skill-source'));
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'managed_source_root_not_grantable');
+    assert.deepEqual(classifyGrantRequestPath(['.ploinky', 'repos', 'r1'], { access: 'read', role: 'skill-source' }), { ok: false, code: 'managed_source_root_not_grantable' });
 });
 
 test('a refused request does not touch the file system: existing and missing protected paths get the same answer', async (t) => {
@@ -141,7 +150,7 @@ test('a refused request does not touch the file system: existing and missing pro
 });
 
 test('the same classification is available without a file system', () => {
-    assert.deepEqual(classifyGrantRequestPath(['.ploinky', 'repos', 'r1'], { access: 'read', role: 'skill-source' }), { ok: true, managedSource: true });
+    assert.deepEqual(classifyGrantRequestPath(['.ploinky', 'repos', 'r1', 'skills'], { access: 'read', role: 'skill-source' }), { ok: true, managedSource: true });
     assert.deepEqual(classifyGrantRequestPath(['.ploinky', 'repos', 'r1'], { access: 'write', role: 'skill-source' }), { ok: false, code: 'managed_source_writable' });
     assert.deepEqual(classifyGrantRequestPath(['p', 'q'], { access: 'write', role: 'project' }), { ok: true, managedSource: false });
 });
@@ -269,7 +278,7 @@ test('the worker store, other HOMEs and management sockets are refused in both d
 test('a managed-source skill grant is not refused because controller state elsewhere in .ploinky is listed as a location', async (t) => {
     const root = workspace(t);
     fs.writeFileSync(path.join(root, '.ploinky/run/mgmt.sock'), '');
-    const result = await resolve(root, project('.ploinky/repos/r1', 'read', 'skill-source'),
+    const result = await resolve(root, project('.ploinky/repos/r1/skills', 'read', 'skill-source'),
         { protectedLocations: [{ label: 'management socket', path: path.join(root, '.ploinky/run/mgmt.sock') }] });
     assert.equal(result.ok, true, JSON.stringify(result));
     await result.grant.close();
@@ -682,18 +691,18 @@ test('unproven is not sticky, through the real resolver: unproven, then bound ag
 
 test('verifyBinding: managed sources stay bound in place and are unbound when renamed, re-cloned or moved', async (t) => {
     const root = workspace(t);
-    const inPlace = await grantFor(root, '.ploinky/repos/r1', 'read', 'skill-source');
+    const inPlace = await grantFor(root, '.ploinky/repos/r1/skills', 'read', 'skill-source');
     assert.equal(inPlace.managedSource, true);
     assert.deepEqual(await inPlace.verifyBinding(), { state: 'bound' }, 'segments 0-1 are not reclassified');
     fs.writeFileSync(path.join(root, '.ploinky/repos/r1/skills/new.md'), 'pulled');
     assert.deepEqual(await inPlace.verifyBinding(), { state: 'bound' }, 'a git pull in place keeps the directory identity');
     mv(root, '.ploinky/repos/r1', '.ploinky/repos/r2');
-    assert.deepEqual(await inPlace.verifyBinding(), { state: 'unbound', code: 'root_unbound', index: 2 });
+    assert.deepEqual(await inPlace.verifyBinding(), { state: 'unbound', code: 'ancestor_unbound', index: 2 });
     fs.mkdirSync(path.join(root, '.ploinky/repos/r1'));
     assert.deepEqual(await inPlace.verifyBinding(), { state: 'unbound', code: 'identity_mismatch', index: 2 }, 're-cloned under the same name');
     await inPlace.close();
 
-    const moved = await grantFor(root, '.ploinky/repos/r2', 'read', 'skill-source');
+    const moved = await grantFor(root, '.ploinky/repos/r2/skills', 'read', 'skill-source');
     mv(root, '.ploinky/repos/r2', '.data/r1');
     assert.equal((await moved.verifyBinding()).state, 'unbound');
     await moved.close();

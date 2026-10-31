@@ -99,14 +99,14 @@ function parseRequest(request, limits) {
 }
 
 // The one place where a protected component is allowed in a grant's own path: an explicitly selected, read-only,
-// skill-source grant of `<repo>` (or deeper) under the workspace's `.ploinky/repos`. `repos` is compared exactly, as
+// skill-source grant below `<repo>` under the workspace's `.ploinky/repos`. `repos` is compared exactly, as
 // Ploinky does, and everything below it is checked with the ordinary predicate, so a nested `.ploinky` or `.data` is refused.
 function classifyRequestPath(segments, request) {
     const managed = segments.length >= 2 && foldPathName(segments[0]) === '.ploinky' && segments[1] === 'repos';
     if (managed) {
         if (request.access === 'write') return refuse('managed_source_writable', 'Managed agent sources under .ploinky/repos are never writable grants');
         if (request.role !== 'skill-source') return refuse('managed_source_not_project', 'A managed source is never the working project');
-        if (segments.length < 3) return refuse('managed_source_root_not_grantable', 'A grant names a repository below .ploinky/repos, not the whole tree');
+        if (segments.length < 4) return refuse('managed_source_root_not_grantable', 'A grant names a folder below a repository under .ploinky/repos, not the whole tree or a repository root');
         const below = firstProtectedComponent(segments.slice(2));
         return below ? refuse('protected_component', `Protected component (${below.class}) in the path`) : { ok: true, managedSource: true };
     }

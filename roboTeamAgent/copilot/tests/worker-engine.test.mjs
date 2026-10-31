@@ -512,18 +512,19 @@ test('inputs the worker cannot use are refused or reported, never dropped silent
 });
 
 test('the workspace root is never granted: a project folder is the writable grant, no project means no grant, and naming the root is refused', async (t) => {
-    // A project folder below the root: the writable cwd grant plus explicit read-only extras, never the root.
+    // A project folder below the root: the writable cwd grant only. Skill mount sources are never sent as folders (B1(b)):
+    // a robot controls the `.agents/skills` symlinks of its writable project, so a source can be another project, a managed
+    // repository root or `/`.
     const withSkills = await harness(t, { snapshotExtra: (dir) => ({ skillsDirectory: path.join(dir, '.roboteam', 'sessions', 's1', 'skills'), mounts: [{ source: path.join(path.dirname(dir), 'skill-src'), target: path.join(dir, '.agents', 'skills', 'x') }] }) });
-    const events = [];
-    await withSkills.engine.executeTurn({ sessionId: withSkills.sessionId, prompt: 'p', owner: withSkills.owner, onEvent: (event) => events.push(event) });
+    const skillEvents = [];
+    await withSkills.engine.executeTurn({ sessionId: withSkills.sessionId, prompt: 'p', owner: withSkills.owner, onEvent: (event) => skillEvents.push(event) });
     const spec = withSkills.admitted[0].request.specification;
     const root = path.dirname(await fs.realpath(withSkills.workingDir));
     assert.equal(spec.cwd, await fs.realpath(withSkills.workingDir));
-    // Only the skill sources: the private session overlay is never sent.
-    assert.deepEqual(spec.folders, [{ path: path.join(path.dirname(withSkills.workingDir), 'skill-src'), access: 'read' }]);
-    for (const folder of spec.folders) assert.deepEqual(Object.keys(folder).sort(), ['access', 'path'], 'no as, at or expose');
-    assert.ok([spec.cwd, ...spec.folders.map((folder) => folder.path)].every((granted) => granted !== root));
-    assert.ok(events.some((event) => event.type === 'diagnostic' && /\.agents\/skills placement/.test(event.message)));
+    assert.equal(Object.hasOwn(spec, 'folders'), false, 'a skill mount source is not granted');
+    assert.equal(Object.hasOwn(spec, 'skills'), false);
+    assert.ok(skillEvents.some((event) => event.type === 'diagnostic' && /selected skills are not available through the worker/.test(event.message)),
+        'selected skills are reported, never dropped silently');
 
     // No project selected (the conversation sits at the workspace root): no project grant at all.
     const none = await harness(t, { atRoot: true });
@@ -630,6 +631,33 @@ async function channelSkills(root) {
     return [{ name: 'report-task-blocked', skillDir: path.join(base, 'report-task-blocked'), enabled: true },
         { name: 'require-human-input', skillDir: path.join(base, 'require-human-input'), enabled: true }];
 }
+
+test('a project .agents/skills symlink to another project, a managed repository root or / yields no folder grant; the channel skills still do', async (t) => {
+    const targets = [
+        ['another project', (root) => path.join(root, 'other-project')],
+        ['a .ploinky/repos repository root', (root) => path.join(root, '.ploinky', 'repos', 'Victim')],
+        ['the filesystem root', () => '/'],
+    ];
+    for (const [label, sourceOf] of targets) {
+        for (const channels of [false, true]) {
+            let list = [];
+            let source;
+            const built = await harness(t, { atRoot: true, execution: channels ? { workflowExecution: true, humanInput: true } : {},
+                skills: () => list, snapshotExtra: (dir) => ({ skillsDirectory: path.join(dir, '.roboteam', 'sessions', 's1', 'skills'), mounts: [{ source, target: path.join(dir, 'proj', '.agents', 'skills', 'x') }] }) });
+            const root = await fs.realpath(built.workingDir);
+            source = sourceOf(root);
+            if (source !== '/') await fs.mkdir(source, { recursive: true });
+            list = await channelSkills(root);
+            await built.engine.executeTurn({ sessionId: built.sessionId, prompt: 'p', owner: built.owner });
+            const spec = built.admitted[0].request.specification;
+            const granted = (spec.folders || []).map((folder) => folder.path);
+            assert.equal(granted.some((granted_) => granted_ === source || (source !== '/' && granted_.startsWith(`${source}${path.sep}`)) || granted_ === '/'), false, `${label}: the mount source is not granted`);
+            assert.equal(Object.hasOwn(spec, 'skills'), false);
+            if (channels) assert.deepEqual(granted.map((entry) => path.basename(entry)), ['report-task-blocked', 'require-human-input'], `${label}: channel skills remain`);
+            else assert.equal(Object.hasOwn(spec, 'folders'), false, `${label}: no folders at all`);
+        }
+    }
+});
 
 test('the channel skills are read-only grants, the prompt names their granted path and the worker channel, and humanInput is set only where asked', async (t) => {
     const withChannelSkills = async (options) => {
