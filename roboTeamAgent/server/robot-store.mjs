@@ -125,6 +125,8 @@ export class RobotStore {
     constructor(options = {}) {
         this.dataDir = path.resolve(options.dataDir || DATA_DIR);
         this.robotsDir = path.join(this.dataDir, 'robots');
+        // With the worker the robot's HOME is the worker's, so RoboTeam neither creates nor writes `robots/<id>/home` (decision M-72).
+        this.writesOldHome = options.writesOldHome !== false;
     }
 
     async initialize() {
@@ -149,11 +151,12 @@ export class RobotStore {
     }
 
     async _ensureLayout(robotRoot, codingAgents) {
-        for (const directory of ['home', 'workspace', 'downloads', 'logs', 'runtime']) {
+        for (const directory of this.writesOldHome ? ['home', 'workspace', 'downloads', 'logs', 'runtime'] : ['workspace', 'downloads', 'logs', 'runtime']) {
             const target = path.join(robotRoot, directory);
             await fs.mkdir(target, { recursive: true, mode: 0o700 });
             await fs.chmod(target, 0o700);
         }
+        if (!this.writesOldHome) return;
         const codexHome = path.join(robotRoot, 'home', '.codex');
         await fs.mkdir(codexHome, { recursive: true, mode: 0o700 });
         await fs.chmod(codexHome, 0o700);
@@ -270,7 +273,7 @@ export class RobotStore {
         const selected = normalizeCodingAgents(codingAgents);
         return this.withRobot(robotId, async (robot, save) => {
             // ALA reads the robot's agent from its config in the robot home.
-            await ensureAgentConfig(path.join(this.robotPath(robotId), 'home'), { codingAgents: selected, codingAgent: selected[0], model, effort });
+            if (this.writesOldHome) await ensureAgentConfig(path.join(this.robotPath(robotId), 'home'), { codingAgents: selected, codingAgent: selected[0], model, effort });
             // The model and effort chosen for a one-agent robot, kept as desired state for the worker.
             const unchanged = JSON.stringify(robot.codingAgents) === JSON.stringify(selected);
             const chosen = typeof model === 'string' ? model.trim() : '';

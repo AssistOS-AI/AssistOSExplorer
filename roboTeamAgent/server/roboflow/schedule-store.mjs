@@ -1,11 +1,12 @@
+import { GUI_EXECUTION_TYPES, guiUnavailableWithWorkerError } from '../gui-unavailable.mjs';
 import crypto from 'node:crypto';
 import { invalid, textField, resolveWorkflowObjective } from './graph.mjs';
 import { normalizeTiming, nextRun } from './schedule-timing.mjs';
 
 const conflict = message => Object.assign(invalid(message), { statusCode: 409 });
 export class ScheduleStore {
-    constructor({ database, registry, resolveCwd, defaultFolder, now = Date.now }) {
-        Object.assign(this, { database, registry, resolveCwd, defaultFolder, now });
+    constructor({ database, registry, resolveCwd, defaultFolder, now = Date.now, refuseGui = false }) {
+        Object.assign(this, { database, registry, resolveCwd, defaultFolder, now, refuseGui });
     }
     getSync(id) {
         const row = this.database.db.prepare('SELECT record FROM workflow_schedules WHERE id=?').get(id);
@@ -34,6 +35,9 @@ export class ScheduleStore {
         if (!selectedWorkflow) throw invalid('Choose an existing workflow type');
         resolveWorkflowObjective(selectedWorkflow, objective);
         if (selectedWorkflow.kind === 'default' ? !['terminal', 'browser', 'desktop'].includes(value.executionType) : input.executionType !== undefined) throw invalid('Execution mode is required only for Standard development');
+        // With the worker a Browser or Desktop schedule is refused when it is saved enabled (decision M-67), before anything is stored. A
+        // schedule saved disabled is accepted, so a leftover one from before the worker can still be paused with its definition kept.
+        if (this.refuseGui && value.enabled !== false && selectedWorkflow.kind === 'default' && GUI_EXECUTION_TYPES.includes(value.executionType)) throw guiUnavailableWithWorkerError();
         const selectedFolder = textField(value.folder, 'folder', 4096);
         const folder = selectedFolder ? await this.resolveCwd(selectedFolder) : await this.defaultFolder();
         return this.database.transaction(() => {

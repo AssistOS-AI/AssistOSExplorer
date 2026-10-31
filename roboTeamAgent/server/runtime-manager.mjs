@@ -26,6 +26,7 @@ import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { taskOriginId, workerBindingFor } from './worker-coordinator/flow-origins.mjs';
 import { COORDINATOR_BASE_ENV } from './worker-coordinator/hop.mjs';
+import { GUI_UNAVAILABLE_MESSAGE, GUI_UNAVAILABLE_WITH_WORKER, guiUnavailableWithWorkerError } from './gui-unavailable.mjs';
 import { workerNotConfiguredError } from './worker-coordinator/errors.mjs';
 import { STOP_NOT_CONFIRMED_EXIT } from './worker-coordinator/task-exit.mjs';
 import { STOP_MESSAGE_LINE } from './worker-coordinator/stop-reasons.mjs';
@@ -35,6 +36,7 @@ import { NFT_COMMAND, NSENTER_COMMAND, writeContainerFirewallRules } from './pro
 const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
 const GUI_MODES = new Set(['desktop', 'browser']);
+export { GUI_UNAVAILABLE_MESSAGE, GUI_UNAVAILABLE_WITH_WORKER, guiUnavailableWithWorkerError };
 const ALA_FAILURE_DETAIL_LIMIT = 4096;
 const TASK_LOG_TAIL_LIMIT = 1024 * 1024;
 const TASK_RESULT_LIMIT = 1024 * 1024;
@@ -269,6 +271,7 @@ export class RuntimeManager {
             podmanCommand: this.podmanCommand,
             desktopImage: this.images.desktop,
             browserImage: this.images.browser,
+            workerMode: this.workerMode,
         });
         this.sessions = new Map();
         this.tasks = new Map();
@@ -341,12 +344,24 @@ export class RuntimeManager {
         return { cwd: task.request.cwd, sessionId: task.alaSessionId, assistantMessageId: task.transcriptRef.assistantMessageId };
     }
 
+    // With the worker the robot's HOME is the worker's (decisions M-10, M-72): every writer of RoboTeam's old robot home is a no-op,
+    // and old-home data of earlier deployments is neither read nor deleted. The notice is logged once per process.
+    _oldHomeDisabled() {
+        if (!this.workerMode) return false;
+        if (!this.oldHomeNoticeLogged) {
+            this.oldHomeNoticeLogged = true;
+            console.log('[roboTeamAgent] worker mode: the old robot HOME is not prepared, seeded or written (decision M-72)');
+        }
+        return true;
+    }
+
     // Shell and Soul Gateway socket preparation, then (unless `seed` is false) the plugin seed.
     // `prepare` lets the caller wait for the shared plugin template (one npm install per OpenCode
     // version, coalesced across robots); without it only a ready template is used. Either way a
     // missing template leaves OpenCode to install its own dependency as before.
     async prepareOpenCode(robotId, { prepare = false, seed = true } = {}) {
         if (!/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) throw new Error('Invalid robot ID.');
+        if (this._oldHomeDisabled()) return;
         const home = path.join(this.dataDir, 'robots', robotId, 'home');
         // The template wait (possibly an npm install) stays outside the per-robot lock so that a
         // delete never waits for it.
@@ -377,6 +392,7 @@ export class RuntimeManager {
     // A background seed and a task start on the same robot do not copy the template twice: the
     // second finds the home current.
     async seedOpenCode(robotId, { prepare = false } = {}) {
+        if (this._oldHomeDisabled()) return { status: 'unavailable' };
         const home = path.join(this.dataDir, 'robots', robotId, 'home');
         const template = await this.openCodePluginTemplate({ prepare });
         return this._withRobotFiles(robotId, async () => this.deletedRobots.has(robotId)
@@ -386,6 +402,7 @@ export class RuntimeManager {
     // Robot creation answers first; the copy (seconds) finishes in the background, and a task that
     // starts sooner waits for it through the same chain.
     seedOpenCodeInBackground(robot) {
+        if (this._oldHomeDisabled()) return;
         if (!robotCodingAgents(robot).includes('opencode')) return;
         this.seedOpenCode(robot.id, { prepare: true }).catch(error => {
             console.warn(`[roboTeamAgent] OpenCode seeding failed for ${robot.id}: ${error?.message || error}`);
@@ -409,6 +426,7 @@ export class RuntimeManager {
     // After startup preparation: install the template once and seed every OpenCode robot,
     // so no first turn or catalog call waits for OpenCode's dependency installation.
     async warmOpenCodePlugins(robots) {
+        if (this._oldHomeDisabled()) return;
         for (const robot of robots) {
             if (!robotCodingAgents(robot).includes('opencode')) continue;
             await this.prepareOpenCode(robot.id, { prepare: true }).catch(error => {
@@ -472,7 +490,10 @@ export class RuntimeManager {
             && ['queued', 'starting', 'running', 'pausing'].includes(task.state));
     }
 
+    // Every path that starts RoboTeam's own robot container goes through here, so the worker-mode refusal (M-67) comes before
+    // the robot's state is touched or a container is planned.
     async ensureContainer(robot, mode, cwdValue, options = {}) {
+        if (this.workerMode) throw guiUnavailableWithWorkerError();
         return this._serialize(robot.id, async () => {
             const defaultCwd = path.join(this.dataDir, 'robots', robot.id);
             if (!cwdValue) await fs.mkdir(defaultCwd, { recursive: true });
@@ -559,11 +580,12 @@ export class RuntimeManager {
     }
 
     async openDesktop(robot, cwd) {
+        if (this.workerMode) throw guiUnavailableWithWorkerError();
         const session = await this.ensureContainer(robot, 'desktop', cwd);
         return { state: session.state, mode: session.mode, sessionUrl: session.sessionUrl };
     }
 
-    start(robot, mode) { return this.ensureContainer(robot, mode, null).then(() => this.status(robot.id)); }
+    async start(robot, mode) { return this.ensureContainer(robot, mode, null).then(() => this.status(robot.id)); }
     stop(robotId) {
         const session = this.sessions.get(robotId);
         return session ? this.stopContainer(robotId, session.mode) : Promise.resolve({ state: 'stopped' });
@@ -604,6 +626,8 @@ export class RuntimeManager {
         if (this.deletedRobots.has(robot.id)) throw new Error('robot was deleted');
         // No local execution path: an AI task is refused here, before any task record exists and before anything is spawned.
         if (!this.workerMode) throw workerNotConfiguredError();
+        // A Browser or Desktop task is refused here too (M-67): no task record, queue entry or event exists for it.
+        if (GUI_MODES.has(type)) throw guiUnavailableWithWorkerError();
         // The request's own Router-minted grant is held apart from the request, which is persisted.
         const { ownerGrant, ...persistable } = request;
         request = structuredClone(persistable);
@@ -1011,6 +1035,7 @@ export class RuntimeManager {
         }
         // _enqueueTask refuses without a worker; check that first so a refused resume has saved nothing.
         if (!this.workerMode) throw workerNotConfiguredError();
+        if (GUI_MODES.has(internal.type)) throw guiUnavailableWithWorkerError();
         if (this.skillsets) {
             const policyId = internal.request.skillPolicyRef || internal.alaSessionId;
             // A current conversation policy always wins over a terminal task's old request.

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
-import { toolConfigFor } from '../server/mcp-tool-list.mjs';
+import { toolConfigFor, WORKER_HIDDEN_TOOLS } from '../server/mcp-tool-list.mjs';
 
 // Decision M-55: the launch-workflow cancellation pauses its flow through a system stop that the worker must accept (a), and the
 // MCP pause tool is not offered with the worker configured (b).
@@ -101,7 +101,7 @@ test('M-55 (b): the tool list omits roboflow_pause_flow only in worker mode', as
     const worker = toolConfigFor(config, { workerMode: true });
     assert.equal(names(worker).includes('roboflow_pause_flow'), false);
     // Decision M-61 also hides roboflow_start_flow in worker mode (tests/m61-start-flow-hidden.test.mjs).
-    assert.deepEqual(names(worker), names(config).filter((name) => !['roboflow_pause_flow', 'roboflow_start_flow'].includes(name)), 'every other tool stays, in order');
+    assert.deepEqual(names(worker), names(config).filter((name) => !WORKER_HIDDEN_TOOLS.includes(name)), 'every other tool stays, in order');
     // The launcher script writes exactly that list for AgentServer when the worker is configured and writes nothing otherwise.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-list-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true }));

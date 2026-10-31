@@ -3,7 +3,10 @@
 // RoboFlow page's Pause button is the way. For the same reason the start tool is not offered either (decision M-61): an
 // internal-token request carries no user grant, so the flows route refuses it before the flow exists; workflows are started
 // from the RoboFlow page.
-export const WORKER_HIDDEN_TOOLS = Object.freeze(['roboflow_pause_flow', 'roboflow_start_flow']);
+// The Browser and Desktop tools only make sense with RoboTeam's own GUI container, which the worker mode refuses (decision M-67).
+export const WORKER_HIDDEN_TOOLS = Object.freeze(['roboflow_pause_flow', 'roboflow_start_flow',
+    'openDesktopForRobot', 'startDesktopTaskForRobot', 'stopDesktopTaskForRobot', 'startBrowserTaskForRobot', 'stopBrowserTaskForRobot',
+    'getSessionUrlForRobotDesktop', 'getSessionUrlForRobotBrowser', 'stopDesktopContainerForRobot', 'stopBrowserContainerForRobot']);
 
 export function toolConfigFor(config, { workerMode }) {
     if (!workerMode) return config;

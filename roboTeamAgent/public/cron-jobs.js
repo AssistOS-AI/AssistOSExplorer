@@ -41,7 +41,7 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
     const control = name => form.elements.namedItem(name);
     const pendingMutations = new Set();
     const folderPicker = initScheduleFolderPicker({ root, api, input: control('folder') });
-    let workflows = [], jobs = [], admin = false, editing = null, loading = null, busy = false, stopped = false, timer = null, newDraft = null, opener = trigger, savedClose = false, requestEpoch = 0, requestController = null;
+    let guiUnavailable = '', workflows = [], jobs = [], admin = false, editing = null, loading = null, busy = false, stopped = false, timer = null, newDraft = null, opener = trigger, savedClose = false, requestEpoch = 0, requestController = null;
     const close = root.querySelector('#cronClose'), cancel = root.querySelector('#cronCancel');
     const owner = initCreateRobotDialog({ dialog, trigger, closeButton: close, cancelButton: cancel, onOpen: () => open(null, trigger, false) });
     const date = (value, timing) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', ...(timing.kind === 'daily' ? { timeZone: timing.timeZone } : {}) }).format(new Date(value));
@@ -74,6 +74,11 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
         const workflow = workflows.find(workflow => workflow.id === control('workflowTypeId').value);
         const defaultWorkflow = workflow?.kind === 'default';
         root.querySelector('#cronExecutionField').hidden = !defaultWorkflow; control('executionType').disabled = !defaultWorkflow || busy;
+        // With the worker, Browser and Desktop are not offered (decision M-67); the reason is the option's title.
+        for (const option of control('executionType').options) {
+            const gui = option.value === 'browser' || option.value === 'desktop';
+            option.disabled = gui && Boolean(guiUnavailable); option.title = gui ? guiUnavailable : '';
+        }
         // The prompt each scheduled run starts with (the run's objective). It is always shown; it is required only when
         // the workflow has no default objective (its generation request or description) to fall back on.
         const requiresObjective = !workflow?.defaultObjective;
@@ -208,5 +213,5 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
     window.addEventListener('pagehide', () => { stopped = true; requestEpoch++; requestController?.abort(); clearInterval(timer); });
     window.addEventListener('pageshow', resume);
     resume();
-    return { refresh, setContext(catalog, canAdmin) { workflows = catalog; admin = canAdmin; trigger.disabled = !admin || !workflows.length; if (!admin) { folderPicker.close(); if (dialog.open) dialog.close(); } void refresh(true); } };
+    return { refresh, setGuiUnavailable(message) { guiUnavailable = typeof message === 'string' ? message : ''; syncFields(); }, setContext(catalog, canAdmin) { workflows = catalog; admin = canAdmin; trigger.disabled = !admin || !workflows.length; if (!admin) { folderPicker.close(); if (dialog.open) dialog.close(); } void refresh(true); } };
 }

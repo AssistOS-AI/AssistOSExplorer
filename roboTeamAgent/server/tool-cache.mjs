@@ -88,6 +88,8 @@ export class ToolCache {
             desktop: options.desktopImage || DESKTOP_IMAGE,
             browser: options.browserImage || BROWSER_IMAGE,
         };
+        // With the worker configured RoboTeam starts no Browser or Desktop container (decision M-67), so their tools are not warmed.
+        this.workerMode = options.workerMode === true;
         this.execFileImpl = options.execFileImpl || execFileAsync;
         this.fetchImpl = options.fetchImpl || globalThis.fetch;
         this.arch = options.arch || process.arch;
@@ -112,7 +114,7 @@ export class ToolCache {
 
     async warmup() {
         this.log('[tool-cache] preparing startup tools');
-        const families = ['shell', 'desktop', 'browser'];
+        const families = this.workerMode ? ['shell'] : ['shell', 'desktop', 'browser'];
         const results = await Promise.allSettled(families.map(async (family) => {
             const tools = await (family === 'shell' ? this.prepareShellTools() : this.prepareMode(family));
             this.log(`[tool-cache] startup ${family} tools ready`);

@@ -7,13 +7,22 @@ import { ToolCache } from './tool-cache.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { DATA_DIR } from './constants.mjs';
+import { workerConfigured } from './mcp-tool-list.mjs';
 import { CODING_AGENT_NAMES, robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
+
+let oldHomeNoticeLogged = false;
 
 // One CLI process owns one robot context; browser input cannot change its home.
 // `prepareHome: false` is the AI task child's call (decision M-5): its robot HOME is the worker's, so RoboTeam's old robot home is
 // neither required nor prepared. The terminal REPL and the catalog tool keep the default, because they use RoboTeam's home.
 export async function prepareCopilotContext(robotName = 'default', { prepareTools = true, usePreparedTools = false, holdUsage = false,
     dataDir = DATA_DIR, alaCommand, toolCache, prepareHome = true } = {}) {
+    // With the worker configured the robot HOME is the worker's (decision M-72): whatever the caller passes, RoboTeam's old home is
+    // neither required nor prepared. Logged once per process, on stderr because stdout is conversation content.
+    if (workerConfigured()) {
+        prepareHome = false;
+        if (!oldHomeNoticeLogged) { oldHomeNoticeLogged = true; console.error('[roboTeamAgent] worker mode: the old robot HOME is not prepared (decision M-72)'); }
+    }
     const workspaceRoot = requireWorkspaceRoot();
     const store = new RobotStore({ dataDir });
     await store.initialize();
@@ -52,7 +61,7 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
             // This process is spawned per call, outside the server's per-robot chain, so it never
             // seeds the OpenCode plugin dependency: a copy here could race the deletion of the robot.
             // Only the service seeds (startup, creation, task, GUI, Terminal, model listing).
-            await prepareRobotShell(home, { codingAgents, binPath: tools.binPath, cacheRoot: cache.root });
+            if (prepareHome) await prepareRobotShell(home, { codingAgents, binPath: tools.binPath, cacheRoot: cache.root });
         }
         const skillsets = new RobotSkillsets({ robotStore: store,
             workspaceRoot, alaCommand: process.env.ACHILLES_ALA_COMMAND });

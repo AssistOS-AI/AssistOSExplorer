@@ -10,6 +10,7 @@ import { removeLegacyStorage } from './legacy-storage-cleanup.mjs';
 import { LiveSessionsRegistry } from './live-sessions/registry.mjs';
 import { startLiveSessionsIpc } from './live-sessions/ipc-server.mjs';
 import { RuntimeLiveSource, composeTaskObservers } from './live-sessions/runtime-source.mjs';
+import { workerConfigured } from './mcp-tool-list.mjs';
 import { createWorkerCoordinatorHop } from './worker-coordinator/hop.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
@@ -24,7 +25,8 @@ if (!internalToken) {
 
 const publicBasePath = PUBLIC_BASE_PATH;
 await removeLegacyStorage({ dataDir, workspaceRoot, log: (line) => console.log(line) });
-const robotStore = new RobotStore({ dataDir });
+// With the worker configured the robot HOME is the worker's: RoboTeam writes no old home (decision M-72, no migration).
+const robotStore = new RobotStore({ dataDir, writesOldHome: !workerConfigured() });
 await robotStore.initialize();
 await robotStore.ensureDefaultRobot();
 

@@ -231,7 +231,7 @@ async function robotManager(t, toolCache, version = '1.18.35') {
     const home = path.join(root, 'robots', robotId, 'home');
     await fs.mkdir(home, { recursive: true });
     const prepared = [];
-    const manager = new RuntimeManager({ workerMode: true, dataDir: root, toolCache, workspaceRoot: root,
+    const manager = new RuntimeManager({ workerMode: false, dataDir: root, toolCache, workspaceRoot: root,
         soulGateway: { prepare: async directory => prepared.push(directory), close: async () => {} } });
     return { manager, robotId, home, config: path.join(home, '.config', 'opencode'), prepared, version };
 }
@@ -269,7 +269,7 @@ test('startup warming seeds every OpenCode robot once and tolerates a failed pre
     const robots = [{ id: 'one-a1b2c3', codingAgents: ['opencode'] }, { id: 'two-a1b2c3', codingAgents: ['codex'] },
         { id: 'three-a1b2c3', codingAgents: ['opencode'] }];
     for (const robot of robots) await fs.mkdir(path.join(root, 'robots', robot.id, 'home'), { recursive: true });
-    const manager = new RuntimeManager({ workerMode: true, dataDir: root, toolCache: cache, workspaceRoot: root,
+    const manager = new RuntimeManager({ workerMode: false, dataDir: root, toolCache: cache, workspaceRoot: root,
         soulGateway: { prepare: async () => {}, close: async () => {} } });
     await manager.warmOpenCodePlugins(robots);
     assert.equal(calls.length, 1, 'one install serves every robot');
@@ -359,7 +359,7 @@ async function readyRuntime(t, robots) {
     cache.prepareCodingAgents = async () => shell.agents;
     await cache.prepareOpenCodePlugin('1.18.35');
     for (const robot of robots) await fs.mkdir(path.join(root, 'robots', robot.id, 'home'), { recursive: true });
-    const manager = new RuntimeManager({ workerMode: true, dataDir: root, toolCache: cache, workspaceRoot: root,
+    const manager = new RuntimeManager({ workerMode: false, dataDir: root, toolCache: cache, workspaceRoot: root,
         soulGateway: { prepare: async () => {}, remove: async () => {}, close: async () => {} } });
     const configOf = id => path.join(root, 'robots', id, 'home', '.config', 'opencode');
     return { root, manager, configOf, calls };

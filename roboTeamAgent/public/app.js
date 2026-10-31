@@ -19,6 +19,8 @@ const useProxyField = document.querySelector('#useProxyField');
 const useProxyToggle = document.querySelector('#useProxyToggle');
 let canCreateRobots = false;
 let allRobots = [];
+// Set while the worker is configured: RoboTeam's own Browser and Desktop robots are refused (decision M-67).
+let guiUnavailableMessage = '';
 const robotFilters = readRobotFilters(location.search);
 const robotSearch = document.querySelector('#robotSearch');
 const robotLoginFilter = document.querySelector('#robotLoginFilter');
@@ -138,6 +140,7 @@ function reportSessionFailure(sessionWindow, error) {
 }
 
 async function startRobot(robot, mode, button) {
+    if (guiUnavailableMessage) { showError(new Error(guiUnavailableMessage)); return; }
     const sessionWindow = openPendingSession(robot, mode);
     button.disabled = true;
     try {
@@ -276,6 +279,9 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
         const desktopRunning = running && robot.run.mode === 'desktop';
         browserButton.disabled = running && !(ready && robot.run.mode === 'browser');
         desktopButton.disabled = running && !(ready && robot.run.mode === 'desktop');
+        if (guiUnavailableMessage && !running) {
+            for (const button of [browserButton, desktopButton]) { button.disabled = true; button.title = guiUnavailableMessage; }
+        }
         const stopButton = card.querySelector('.stop-workstation');
         stopButton.hidden = !running;
         stopButton.disabled = !ready;
@@ -500,6 +506,8 @@ async function loadRobots() {
         robotImport.setContext(canCreateRobots);
         updateCreateControls();
         allRobots = result.robots || [];
+        guiUnavailableMessage = typeof result.guiUnavailable?.message === 'string' ? result.guiUnavailable.message : '';
+        cronJobs.setGuiUnavailable(guiUnavailableMessage);
         applyRobotFilters();
         // Leases live in the optional proxyAgent, so a slow or missing one never holds the robot list.
         void loadRobotProxies();

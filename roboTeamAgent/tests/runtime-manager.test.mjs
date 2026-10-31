@@ -8,10 +8,9 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { buildRobotRunArgs, RuntimeManager, runtimeManagerInternals } from '../server/runtime-manager.mjs';
+import { buildRobotRunArgs, GUI_UNAVAILABLE_MESSAGE, GUI_UNAVAILABLE_WITH_WORKER, RuntimeManager, runtimeManagerInternals } from '../server/runtime-manager.mjs';
 import { CHROMIUM_LAUNCHER } from '../server/desktop-launchers.mjs';
 import { CONTAINER_FIREWALL_RULES } from '../server/proxy-pool/container-firewall.mjs';
-import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
 import { emailInstructions } from '../server/robot-email.mjs';
 
 const preparedToolCache = {
@@ -140,6 +139,11 @@ test('mounts the opened workspace root once and writable when cwd is the root', 
     assert.equal(plan.args[plan.args.indexOf('-w') + 1], '/workspace');
 });
 
+// Decision M-67: with the worker configured every path to RoboTeam's own Browser/Desktop container is refused with this error
+// before anything is prepared, planned or started.
+const guiRefusal = (error) => error.code === GUI_UNAVAILABLE_WITH_WORKER && error.publicCode === GUI_UNAVAILABLE_WITH_WORKER
+    && error.statusCode === 409 && error.message === GUI_UNAVAILABLE_MESSAGE && error.message === "Browser and Desktop robots aren't available with the worker yet";
+
 test('reads only the active GUI container log', async () => {
     const calls = [];
     const manager = new RuntimeManager({ workerMode: true,
@@ -163,7 +167,7 @@ test('reads only the active GUI container log', async () => {
     assert.equal(await manager.logs('idle-a1b2c3'), '');
 });
 
-test('a robot named by an email address is told its identity in browser and desktop tasks only', async (t) => {
+test('a robot named by an email address is told its identity in no terminal task; Browser and Desktop tasks are refused with the worker', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-email-task-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const dataDir = path.join(root, 'data');
@@ -198,7 +202,10 @@ test('a robot named by an email address is told its identity in browser and desk
     };
 
     assert.equal((await run('simple')).systemPrompt, 'Route it', 'a terminal task works outside Chromium and is not told the address');
-    assert.equal((await run('browser')).systemPrompt, `${emailInstructions('mailer@example.com')}\n\nRoute it`);
+    for (const type of ['browser', 'desktop']) {
+        assert.throws(() => manager.startTask(robot, type, { cwd: workspace, task: 'Write to the client', ca: 'codex', systemPrompt: 'Route it' }), guiRefusal, type);
+    }
+    assert.equal(written.length, 1, 'only the terminal task spawned a child');
     assert.match(emailInstructions('mailer@example.com'), /You are the robot mailer@example\.com/u);
 });
 
@@ -268,64 +275,28 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
     }
 });
 
-test('preserves explicit GUI agents and leaves automatic selection to the robot home', async (t) => {
+test('a GUI task already on record fails at run with the refusal before any container or child starts', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-gui-agent-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const dataDir = path.join(root, 'data');
     const workspace = path.join(root, 'workspace');
     await fs.mkdir(workspace, { recursive: true });
-    const listener = http.createServer((_request, response) => response.end());
-    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-    t.after(() => listener.close());
-    const port = listener.address().port;
-    const invocations = [];
-    const manager = new RuntimeManager({ workerMode: true,
-        dataDir,
-        workspaceRoot: root,
-        publicBasePath: '/rt/',
-        execFileImpl: async (_command, args) => {
-            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
-            return { stdout: '', stderr: '' };
-        },
-        spawnImpl: (_command, args, options) => {
-            invocations.push({ args, env: options.env });
-            const child = new EventEmitter();
-            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-            setImmediate(() => child.emit('close', 0, null));
-            return child;
-        },
-        toolCache: preparedToolCache,
-    });
+    const podman = [], spawned = [];
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root,
+        execFileImpl: async (_command, args) => { podman.push(args); return { stdout: '', stderr: '' }; },
+        spawnImpl: (...args) => { spawned.push(args); throw new Error('spawned'); },
+        toolCache: preparedToolCache });
     t.after(() => manager.stopAll());
-
-    const openCodeRobot = { id: 'gui-opencode-a1b2c3', name: 'OpenCode GUI', codingAgents: ['opencode'] };
-    const accepted = manager.startTask(openCodeRobot, 'desktop', { cwd: workspace, task: 'Show the desktop.', ca: 'opencode' });
-    while (!['completed', 'failed'].includes(manager.taskStatus(openCodeRobot.id, accepted.taskId).state)) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
+    for (const [type, codingAgents] of [['desktop', ['opencode']], ['browser', ['pi']]]) {
+        const robot = { id: `gui-${type}-a1b2c3`, name: `${type} GUI`, codingAgents };
+        const task = manager._newTask(robot, type, { cwd: workspace, task: 'Show the screen.', ca: 'auto' });
+        await manager._runTask(robot, task);
+        assert.equal(task.state, 'failed', type);
+        assert.ok(String(task.error).includes(GUI_UNAVAILABLE_MESSAGE), `${type}: ${task.error}`);
+        assert.equal(manager.sessions.size, 0);
     }
-    assert.equal(manager.taskStatus(openCodeRobot.id, accepted.taskId).state, 'completed',
-        manager.taskStatus(openCodeRobot.id, accepted.taskId).error);
-    assert.equal(invocations.length, 1);
-    assert.equal(invocations[0].args[invocations[0].args.indexOf('--ca') + 1], 'opencode');
-    assert.equal(invocations[0].args[invocations[0].args.indexOf('--MCPServers') + 1], `desktop=http://127.0.0.1:${port}/mcp`);
-    assert.equal(invocations[0].env.OPENCODE_BIN, process.env.OPENCODE_BIN, 'the manager adds no local coding-agent binary to the child environment');
-
-    const piRobot = { id: 'gui-pi-a1b2c3', name: 'Pi GUI', codingAgents: ['pi'] };
-    const inherited = manager._newTask(piRobot, 'browser', { cwd: workspace, task: 'Browse.', ca: 'auto' });
-    await manager._runTask(piRobot, inherited);
-    assert.equal(inherited.state, 'completed', inherited.error);
-    assert.equal(invocations.length, 2);
-    assert.equal(invocations[1].args.includes('--ca'), false);
-    assert.equal(invocations[1].env.PI_BIN, process.env.PI_BIN, 'the manager adds no local coding-agent binary to the child environment');
-    assert.equal(invocations[1].args[invocations[1].args.indexOf('--MCPServers') + 1], `browser=http://127.0.0.1:${port}/mcp`);
-
-    const autoRobot = { id: 'gui-auto-a1b2c3', name: 'Auto GUI', codingAgents: ['codex', 'opencode'] };
-    const auto = manager._newTask(autoRobot, 'desktop', { cwd: workspace, task: 'Auto.', ca: 'auto' });
-    await manager._runTask(autoRobot, auto);
-    assert.equal(auto.state, 'completed', auto.error);
-    assert.equal(invocations[2].args.includes('--ca'), false);
-    assert.equal(invocations[2].args.includes('--model'), false);
-    assert.equal(invocations[2].args.includes('--effort'), false);
+    assert.deepEqual(podman, [], 'no container was started');
+    assert.deepEqual(spawned, [], 'no robot-task child was spawned');
 });
 
 test('extracts visible coding-agent messages from the ALA event stream', () => {
@@ -402,7 +373,8 @@ test('keeps task prompts private and rejects a mismatched stop operation', async
     const runTask = manager._runTask.bind(manager);
     t.mock.method(manager, '_runTask', (...args) => { execution = runTask(...args); return execution; });
     manager.startTask(robot, 'simple', { cwd: workspace, task: 'secret prompt' });
-    while (manager.taskStatus(robot.id).state === 'queued') await new Promise((resolve) => setTimeout(resolve, 5));
+    // Wait for the child itself: a stop during 'starting' (before the spawn) has no stdin to write the record to.
+    while (!spawnedChild) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal('task' in manager.taskStatus(robot.id), false);
     assert.throws(() => manager.stopTask(robot, 'desktop', manager.taskStatus(robot.id).taskId), /active simple task/);
     manager.stopTask(robot, 'simple');
@@ -452,7 +424,7 @@ test('can stop one parallel CLI task without interrupting another', async (t) =>
     assert.equal(children.length, 2);
 });
 
-test('holds the robot queue during manual GUI control and resumes the interrupted task first', async () => {
+test('holds the robot queue during manual GUI control and refuses to resume the interrupted GUI task', async () => {
     const robot = { id: 'manual-a1b2c3', name: 'Manual' };
     const killed = [];
     const records = [];
@@ -499,16 +471,14 @@ test('holds the robot queue during manual GUI control and resumes the interrupte
     await manager._drainTaskQueue(robot);
     assert.equal(manager.taskStatus(robot.id, waiting.taskId).state, 'queued');
 
+    // M-67: resuming the interrupted GUI task would start RoboTeam's own container, so it is refused before anything is rewritten.
     interrupted.child = null;
-    const resumed = await manager.resumeTask(robot, interrupted.taskId);
-    const resumedInternal = manager.tasks.get(resumed.taskId);
-    assert.equal(manager.manualControl.has(robot.id), false);
-    assert.deepEqual(manager.taskQueues.get(robot.id), [resumed.taskId, waiting.taskId]);
-    assert.match(resumedInternal.request.task, /^Continue\./u);
-    assert.equal(resumedInternal.request.alaSessionId, interrupted.alaSessionId);
-    assert.equal(resumedInternal.request.resumeSession, true);
-    assert.match(resumedInternal.request.task, /Inspect the current visible desktop or browser state/u);
-    assert.equal(resumedInternal.request.cwd, interrupted.request.cwd);
+    const tasksBefore = manager.tasks.size;
+    await assert.rejects(manager.resumeTask(robot, interrupted.taskId), guiRefusal);
+    assert.equal(manager.tasks.size, tasksBefore, 'no continuation task exists');
+    assert.equal(manager.manualControl.get(robot.id), interrupted.taskId);
+    assert.deepEqual(manager.taskQueues.get(robot.id), [waiting.taskId]);
+    assert.equal(interrupted.request.resumeSession, undefined, 'the record was not rewritten');
     manager.shuttingDown = true;
 });
 
@@ -609,7 +579,7 @@ test('allows exactly one active mode per robot and removes only its exact contai
         if (args[0] === 'inspect') return { stdout: 'true\n', stderr: '' };
         return { stdout: '', stderr: '' };
     };
-    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root, publicBasePath: '/rt/', execFileImpl, toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ workerMode: false, dataDir, workspaceRoot: root, publicBasePath: '/rt/', execFileImpl, toolCache: preparedToolCache });
     await manager.initialize();
     const running = await manager.start(robot, 'desktop');
     assert.equal(running.mode, 'desktop');
@@ -627,7 +597,7 @@ test('allows exactly one active mode per robot and removes only its exact contai
     assert.ok(calls.some((args) => args[0] === 'rm' && args[2] === 'roboteam-desktop-research-a1b2c3'));
 });
 
-test('recreates a reused desktop when an Achilles task requests a different cwd', async (t) => {
+test('recreates a reused desktop when the next container request names a different cwd', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-remount-test-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const dataDir = path.join(root, 'workspace', '.data', 'roboTeamAgent');
@@ -654,38 +624,20 @@ test('recreates a reused desktop when an Achilles task requests a different cwd'
         if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
         return { stdout: '', stderr: '' };
     };
-    let written = '';
-    const spawnImpl = () => {
-        const child = new EventEmitter();
-        child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-        child.stdin = new PassThrough(); child.stdin.on('data', (chunk) => { written += chunk; });
-        setImmediate(() => child.emit('close', 0, null));
-        return child;
-    };
-    const manager = new RuntimeManager({ workerMode: true,
+    const manager = new RuntimeManager({ workerMode: false,
         dataDir,
         workspaceRoot,
         publicBasePath: '/rt/',
         execFileImpl,
-        spawnImpl,
         toolCache: preparedToolCache,
     });
 
     await manager.openDesktop(robot, firstCwd);
-    const accepted = manager.startTask(robot, 'desktop', {
-        cwd: secondCwd,
-        task: 'Show the files in the current directory.',
-        ca: 'codex',
-    });
-    while (!['completed', 'failed'].includes(manager.taskStatus(robot.id, accepted.taskId).state)) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await manager.ensureContainer(robot, 'desktop', secondCwd, { taskId: 'next-task' });
 
-    assert.equal(manager.taskStatus(robot.id, accepted.taskId).state, 'completed');
     assert.equal(manager.status(robot.id).state, 'running');
     assert.equal(manager.sessions.get(robot.id).cwd, secondCwd);
-    // The coding agent's shell is not the desktop; the prompt says so and the desktop shows Chromium.
-    assert.deepEqual(JSON.parse(written.split('\n')[0]), { type: 'prompt', prompt: 'Show the files in the current directory.', systemPrompt: DESKTOP_TASK_INSTRUCTIONS });
+    // The desktop shows Chromium.
     assert.equal(await fs.readFile(path.join(dataDir, 'robots', robot.id, 'home', 'Desktop', 'chromium.desktop'), 'utf8'), CHROMIUM_LAUNCHER);
     const runCalls = podmanCalls.filter((args) => args[0] === 'run');
     assert.equal(runCalls.length, 2);
@@ -698,31 +650,31 @@ test('recreates a reused desktop when an Achilles task requests a different cwd'
     )));
 });
 
-test('returns the deterministic live URL with an asynchronous GUI task', async () => {
+test('an asynchronous GUI task is refused with the worker: no id, no record, no container', async () => {
+    const podman = [];
     const manager = new RuntimeManager({ workerMode: true,
         dataDir: '/data',
         publicBasePath: '/base-agent-additional-server/roboTeamAgent/3001/',
         workspaceRoot: '/workspace',
-        execFileImpl: async () => ({ stdout: '', stderr: '' }),
+        execFileImpl: async (...args) => { podman.push(args); return { stdout: '', stderr: '' }; },
         toolCache: preparedToolCache,
     });
-    const accepted = manager.startTask(
-        { id: 'analyst-a1b2c3', name: 'Analyst' },
-        'desktop',
-        { cwd: '/workspace/project', task: 'Inspect the visible application.', ca: 'codex' },
-    );
-    assert.match(accepted.taskId, /^[0-9a-f-]{36}$/);
-    assert.equal(
-        accepted.sessionUrl,
-        '/base-agent-additional-server/roboTeamAgent/3001/api/robots/analyst-a1b2c3/session/',
-    );
-    assert.equal(manager.taskStatus('analyst-a1b2c3', accepted.taskId).sessionUrl, accepted.sessionUrl);
-    while (!['failed', 'paused'].includes(manager.taskStatus('analyst-a1b2c3', accepted.taskId).state)) {
-        await new Promise((resolve) => setTimeout(resolve, 1));
+    const events = [];
+    manager.setTaskObserver((event) => events.push(event));
+    for (const type of ['desktop', 'browser']) {
+        assert.throws(() => manager.startTask({ id: 'analyst-a1b2c3', name: 'Analyst' }, type,
+            { cwd: '/workspace/project', task: 'Inspect the visible application.', ca: 'codex', ownerGrant: 'h.e30.SECRETSIGNATURE' }), guiRefusal, type);
     }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(manager.tasks.size, 0, 'no task record');
+    assert.equal(manager.taskGrants.size, 0, 'no grant was kept');
+    assert.equal(manager.taskQueues.size, 0, 'nothing is queued');
+    assert.equal(manager.status('analyst-a1b2c3').state, 'stopped');
+    assert.deepEqual(events, [], 'no admitted event');
+    assert.deepEqual(podman, [], 'no container command ran');
 });
 
-test('replaces the retained GUI container when the next queued task needs another mode', async (t) => {
+test('replaces the retained GUI container when the next container request needs another mode', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-mode-queue-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const dataDir = path.join(root, 'data');
@@ -738,8 +690,7 @@ test('replaces the retained GUI container when the next queued task needs anothe
     t.after(() => listener.close());
     const port = listener.address().port;
     const podmanCalls = [];
-    const children = [];
-    const manager = new RuntimeManager({ workerMode: true,
+    const manager = new RuntimeManager({ workerMode: false,
         dataDir,
         workspaceRoot: root,
         execFileImpl: async (_command, args) => {
@@ -747,65 +698,40 @@ test('replaces the retained GUI container when the next queued task needs anothe
             if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
             return { stdout: '', stderr: '' };
         },
-        spawnImpl: () => {
-            const child = new EventEmitter();
-            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-            children.push(child);
-            return child;
-        },
         toolCache: preparedToolCache,
     });
-    const desktop = manager.startTask(robot, 'desktop', { cwd: workspace, task: 'Desktop', ca: 'codex' });
-    const browser = manager.startTask(robot, 'browser', { cwd: workspace, task: 'Browser', ca: 'codex' });
-    while (children.length < 1) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(manager.taskStatus(robot.id, browser.taskId).state, 'queued');
-    children[0].emit('close', 0, null);
-    while (children.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(manager.taskStatus(robot.id, desktop.taskId).state, 'completed');
+    await manager.ensureContainer(robot, 'desktop', workspace, { taskId: 'desktop-task' });
+    assert.equal(manager.sessions.get(robot.id).mode, 'desktop');
+    await manager.ensureContainer(robot, 'browser', workspace, { taskId: 'browser-task' });
     assert.equal(manager.sessions.get(robot.id).mode, 'browser');
     assert.ok(podmanCalls.some((args) => args[0] === 'rm' && args[2] === `roboteam-desktop-${robot.id}`));
-    children[1].emit('close', 0, null);
-    while (manager.taskStatus(robot.id, browser.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
 });
 
-test('new GUI work clears manual control after every previous GUI task was paused', async () => {
+test('refused GUI work neither clears nor extends manual control', async () => {
     const robot = { id: 'restart-a1b2c3', name: 'Restart' };
     const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     const active = manager._newTask(robot, 'browser', { cwd: '/workspace' });
-    active.state = 'running';
-    active.child = { kill() {} };
-    manager.activeTasks.set(robot.id, active.taskId);
-    const waiting = manager.startTask(robot, 'browser', { cwd: '/workspace' });
-    manager.takeControl(robot, active.taskId);
-    manager.stopTask(robot, null, waiting.taskId);
-    await new Promise(resolve => setImmediate(resolve));
-    active.state = 'paused'; // the child's confirmed exit
-    assert.equal(manager.manualControl.has(robot.id), true);
-    // An unrelated CLI conversation must not keep the GUI pause alive.
-    manager._newTask(robot, 'simple', {}).state = 'running';
-    const executed = [];
-    manager._runTask = async (_robot, task) => { executed.push(task.taskId); task.state = 'completed'; };
-    const next = manager.startTask(robot, 'browser', { cwd: '/workspace' });
-    assert.equal(manager.manualControl.has(robot.id), false);
-    await manager._drainTaskQueue(robot);
-    assert.deepEqual(executed, []); // Old process still holds the execution slot.
-    manager.activeTasks.delete(robot.id);
-    await manager._drainTaskQueue(robot);
-    assert.deepEqual(executed, [next.taskId]);
+    active.state = 'paused';
+    manager.manualControl.set(robot.id, active.taskId);
+    const known = manager.tasks.size;
+    assert.throws(() => manager.startTask(robot, 'browser', { cwd: '/workspace' }), guiRefusal);
+    assert.equal(manager.manualControl.get(robot.id), active.taskId, 'the pause is untouched');
+    assert.equal(manager.tasks.size, known, 'no new task record');
+    assert.equal(manager.taskQueues.size, 0);
     manager.shuttingDown = true;
 });
 
-test('new work keeps manual control while a previous GUI task is still queued', async () => {
+test('a queued GUI task on record keeps manual control and is not started', async () => {
     const robot = { id: 'paused-a1b2c3', name: 'Paused' };
     const manager = new RuntimeManager({ workerMode: true, toolCache: preparedToolCache });
     manager.manualControl.set(robot.id, 'interrupted');
     const old = manager._newTask(robot, 'desktop', {});
     manager.taskQueues.set(robot.id, [old.taskId]);
-    const next = manager.startTask(robot, 'browser', {});
+    assert.throws(() => manager.startTask(robot, 'browser', {}), guiRefusal);
     await manager._drainTaskQueue(robot);
     assert.equal(manager.manualControl.has(robot.id), true);
-    assert.equal(manager.taskStatus(robot.id, next.taskId).blockedReason, 'manual-control');
-    assert.equal(manager.taskStatus(robot.id, next.taskId).state, 'queued');
+    assert.equal(manager.taskStatus(robot.id, old.taskId).state, 'queued');
+    assert.equal(manager.tasks.size, 1, 'the refused request left no record');
     manager.shuttingDown = true;
 });
 
@@ -860,7 +786,7 @@ test('puts a proxied workstation behind its own relay and the managed Chromium p
     const port = listener.address().port;
     const calls = [], relays = [], leases = [];
     let upstream = { id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' };
-    const manager = new RuntimeManager({ workerMode: true,
+    const manager = new RuntimeManager({ workerMode: false,
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
         proxyPool: { lease: async (...args) => { leases.push(args); return { upstream, locale: { timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' } }; }, release: async () => true },
@@ -922,7 +848,7 @@ test('a proxied desktop keeps its network for other programs and a failed firewa
     t.after(() => listener.close());
     const port = listener.address().port;
     const calls = [], relays = [];
-    const manager = new RuntimeManager({ workerMode: true,
+    const manager = new RuntimeManager({ workerMode: false,
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
         proxyPool: { lease: async () => ({ upstream: { id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' },
@@ -965,7 +891,7 @@ test('an active pool without a free proxy keeps the workstation from starting', 
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-none-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const calls = [];
-    const manager = new RuntimeManager({ workerMode: true,
+    const manager = new RuntimeManager({ workerMode: false,
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
         proxyPool: { lease: async () => { throw Object.assign(new Error('No free proxy is available in the shared proxy pool.'), { statusCode: 409 }); } },
@@ -987,7 +913,7 @@ test('without a proxy lease the workstation connects directly with the service t
     t.after(() => listener.close());
     const port = listener.address().port;
     const calls = [];
-    const manager = new RuntimeManager({ workerMode: true,
+    const manager = new RuntimeManager({ workerMode: false,
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
         // What the proxyAgent client answers when the agent is missing, unreachable or has no usable proxy.
@@ -1017,7 +943,7 @@ test('with Use Proxy off the workstation connects directly without asking for a 
     t.after(() => listener.close());
     const port = listener.address().port;
     const calls = [];
-    const manager = new RuntimeManager({ workerMode: true,
+    const manager = new RuntimeManager({ workerMode: false,
         dataDir: path.join(root, 'data'),
         workspaceRoot: root,
         proxyPool: { lease: async () => assert.fail('no lease while Use Proxy is off'), release: async () => false },
@@ -1046,13 +972,16 @@ test('queued admission is observed with owner and phase association, without a s
     manager.shuttingDown = true;
     const events = [];
     manager.setTaskObserver((event) => events.push(event));
-    const queued = manager.startTask(robot, 'browser', { cwd: '/workspace/project', task: 'Look', ownerPrincipal: 'user:alice',
+    const queued = manager.startTask(robot, 'simple', { cwd: '/workspace/project', task: 'Look', ownerPrincipal: 'user:alice',
         workflowRunId: `flow_${'a'.repeat(24)}`, workflowInstanceId: `inv_${'b'.repeat(24)}` });
-    assert.deepEqual(events, [{ kind: 'admitted', robotId: robot.id, robotName: 'Admit', taskId: queued.taskId, type: 'browser', state: 'queued',
+    assert.deepEqual(events, [{ kind: 'admitted', robotId: robot.id, robotName: 'Admit', taskId: queued.taskId, type: 'simple', state: 'queued',
         cwd: '/workspace/project', ownerPrincipal: 'user:alice', workflowRunId: `flow_${'a'.repeat(24)}`, workflowInstanceId: `inv_${'b'.repeat(24)}` }]);
     const status = manager.taskStatus(robot.id, queued.taskId);
     assert.equal(status.startedAt, undefined);
     for (const key of ['ownerPrincipal', 'workflowInstanceId', 'transcriptRef', 'terminalEmitted']) assert.equal(Object.hasOwn(status, key), false, key);
+    events.length = 0;
+    assert.throws(() => manager.startTask(robot, 'browser', { cwd: '/workspace/project', task: 'Look', ownerPrincipal: 'user:alice' }), guiRefusal);
+    assert.deepEqual(events, [], 'a refused GUI task is never admitted');
     // Only a signed user principal is kept; anything else is the system owner.
     for (const owner of ['alice', 'user:', '', null, 7, { id: 'user:alice' }]) {
         events.length = 0;
@@ -1072,7 +1001,9 @@ test('a queued GUI task cancelled before it runs ends with exactly one terminal 
     manager.activeTasks.set(robot.id, active.taskId);
     const events = [];
     manager.setTaskObserver((event) => events.push(event));
-    const waiting = manager.startTask(robot, 'browser', { cwd: '/workspace', task: 'Later' });
+    // A queued GUI task can only be on record (admission now refuses it); the cancel path still ends it once.
+    const waiting = manager._newTask(robot, 'browser', { cwd: '/workspace', task: 'Later' });
+    manager.taskQueues.set(robot.id, [waiting.taskId]);
     const stop = manager.stopTask(robot, null, waiting.taskId);
     await new Promise((resolve) => setImmediate(resolve));
     manager.stopTask(robot, null, waiting.taskId);
@@ -1120,7 +1051,8 @@ test('shutdown reports queued work once and running work through its own exit', 
     manager.shuttingDown = true;
     const events = [];
     manager.setTaskObserver((event) => events.push(event));
-    const queued = manager.startTask(robot, 'desktop', { cwd: '/workspace', task: 'Later' });
+    const queued = manager._newTask(robot, 'desktop', { cwd: '/workspace', task: 'Later' });
+    manager.taskQueues.set(robot.id, [queued.taskId]);
     await manager.stopAll();
     await manager.stopAll();
     assert.deepEqual(events.filter((event) => event.kind === 'terminal').map((event) => [event.taskId, event.state]), [[queued.taskId, 'paused']]);
@@ -1380,4 +1312,61 @@ test('each continuation is a new attempt: own id, phase only when RoboFlow resum
     const viaRoboFlow = await manager.resumeTask(robot, viaControl.taskId, 'go', { runtimeTaskId: '55555555-1234-4123-8123-123456789abc', workflowInstanceId: instance });
     const flowEvent = events.find((event) => event.kind === 'admitted' && event.taskId === viaRoboFlow.taskId);
     assert.deepEqual([flowEvent.workflowRunId, flowEvent.workflowInstanceId, flowEvent.ownerPrincipal], [flow, instance, 'user:alice']);
+});
+
+// Decision M-67: every path that would start RoboTeam's own robot container is refused with the worker, before the robot's old
+// HOME is prepared, a lease is taken or any podman command runs. Without the worker the same calls are unchanged (tests above).
+test('with the worker every container path is refused with a code and starts no container', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-gui-refused-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const dataDir = path.join(root, 'data');
+    const workspace = path.join(root, 'workspace');
+    await fs.mkdir(workspace, { recursive: true });
+    const commands = [], leases = [], spawned = [], prepared = [];
+    const manager = new RuntimeManager({ workerMode: true, dataDir, workspaceRoot: root,
+        execFileImpl: async (command, args) => { commands.push([command, ...args]); return { stdout: '', stderr: '' }; },
+        spawnImpl: (...args) => { spawned.push(args); throw new Error('spawned'); },
+        proxyPool: { lease: async (...args) => { leases.push(args); return null; }, release: async () => false },
+        toolCache: { ...preparedToolCache, prepareMode: async (mode) => { prepared.push(mode); return preparedToolCache.prepareMode(mode); } } });
+    t.after(() => manager.stopAll());
+    const robot = { id: 'refused-a1b2c3', name: 'Refused' };
+    const events = [];
+    manager.setTaskObserver((event) => events.push(event));
+
+    for (const mode of ['desktop', 'browser']) {
+        assert.throws(() => manager.startTask(robot, mode, { cwd: workspace, task: 'Do it', ca: 'codex' }), guiRefusal, `${mode} task`);
+        await assert.rejects(manager.start(robot, mode), guiRefusal, `start ${mode}`);
+        await assert.rejects(manager.ensureContainer(robot, mode, workspace, { taskId: 'x' }), guiRefusal, `ensureContainer ${mode}`);
+    }
+    await assert.rejects(manager.openDesktop(robot, workspace), guiRefusal, 'openDesktop');
+    await assert.rejects(manager.openDesktop(robot), guiRefusal, 'openDesktop without cwd');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    assert.deepEqual(commands, [], 'no podman or other container command ran');
+    assert.deepEqual(spawned, []);
+    assert.deepEqual(leases, [], 'no proxy lease was taken');
+    assert.deepEqual(prepared, [], 'no GUI tool generation was prepared');
+    assert.equal(manager.sessions.size, 0);
+    assert.equal(manager.tasks.size, 0, 'no task record exists');
+    assert.equal(manager.taskQueues.size, 0);
+    assert.deepEqual(events, [], 'no admitted event');
+    await assert.rejects(fs.stat(path.join(dataDir, 'robots', robot.id)), { code: 'ENOENT' }, 'the robot home was not touched');
+    assert.equal(manager.status(robot.id).state, 'stopped');
+});
+
+test('without the worker the container paths are not refused by M-67', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-gui-nonworker-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const listener = http.createServer((_request, response) => response.end());
+    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+    t.after(() => listener.close());
+    const port = listener.address().port;
+    const runs = [];
+    const manager = new RuntimeManager({ workerMode: false, dataDir: path.join(root, 'data'), workspaceRoot: root, publicBasePath: '/rt/',
+        execFileImpl: async (_command, args) => { if (args[0] === 'run') runs.push(args); return { stdout: args[0] === 'port' ? `127.0.0.1:${port}\n` : '', stderr: '' }; },
+        toolCache: preparedToolCache });
+    t.after(() => manager.stopAll());
+    const opened = await manager.openDesktop({ id: 'open-a1b2c3', name: 'Open' });
+    assert.equal(opened.mode, 'desktop');
+    assert.equal(runs.length, 1, 'the container started');
 });

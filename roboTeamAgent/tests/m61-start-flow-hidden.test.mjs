@@ -40,7 +40,9 @@ test('M-61: the worker-mode tool list omits roboflow_start_flow and roboflow_pau
     assert.equal(names(worker).includes('roboflow_start_flow'), false);
     assert.equal(names(worker).includes('roboflow_pause_flow'), false);
     assert.deepEqual(names(worker), names(config).filter((name) => !WORKER_HIDDEN_TOOLS.includes(name)));
-    assert.deepEqual([...WORKER_HIDDEN_TOOLS].sort(), ['roboflow_pause_flow', 'roboflow_start_flow']);
+    // M-67 adds the Browser and Desktop tools, which need RoboTeam's own GUI container.
+    assert.deepEqual([...WORKER_HIDDEN_TOOLS].sort(), ['getSessionUrlForRobotBrowser', 'getSessionUrlForRobotDesktop', 'openDesktopForRobot', 'roboflow_pause_flow', 'roboflow_start_flow',
+        'startBrowserTaskForRobot', 'startDesktopTaskForRobot', 'stopBrowserContainerForRobot', 'stopBrowserTaskForRobot', 'stopDesktopContainerForRobot', 'stopDesktopTaskForRobot']);
 });
 
 test('M-61: with the worker configured a direct start-flow call is refused plainly before any request', { timeout: 10000 }, async (t) => {

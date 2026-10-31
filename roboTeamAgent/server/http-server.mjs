@@ -28,6 +28,7 @@ import { deleteRobotEverywhere } from './robot-delete.mjs';
 import { createRobotProvisioner } from './worker-coordinator/robot-provisioning.mjs';
 import { ensureRobotWithGrant, prepareFlowStart, removeRobotOnWorker, workerGrantFor } from './worker-coordinator/grant-actions.mjs';
 import { COORDINATOR_BASE_ENV } from './worker-coordinator/hop.mjs';
+import { GUI_UNAVAILABLE_MESSAGE, GUI_UNAVAILABLE_WITH_WORKER, guiUnavailableWithWorkerError } from './gui-unavailable.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
@@ -756,10 +757,17 @@ function emptyJsonBody(raw) {
     return Boolean(parsed) && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
 }
 
-async function handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager }) {
+// Interim until the worker's terminals (decision M-72): the old robot Terminal runs in RoboTeam's old robot home.
+export const ROBOT_TERMINALS_UNAVAILABLE_MESSAGE = 'Robot terminals arrive with the worker update';
+
+async function handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager, workerOn = false }) {
     if (!TERMINAL_PROFILES_PATH.test(pathname)) return false;
     const decision = terminalProfileAccess(access);
     if (!decision.ok) { sendError(res, decision.status, decision.error); return true; }
+    if (workerOn && req.method === 'POST') {
+        sendJson(res, 409, { ok: false, error: ROBOT_TERMINALS_UNAVAILABLE_MESSAGE, code: 'robot_terminals_unavailable_with_worker' });
+        return true;
+    }
     const workspaceRoot = runtimeManager.workspaceRoot;
     if (pathname === '/api/terminal-profiles' && req.method === 'GET') {
         sendJson(res, 200, { ok: true, profiles: await listTerminalProfiles(robotStore) });
@@ -874,7 +882,10 @@ export function createRoboTeamServer(options) {
                     return { ...view, codingAgent: await codingAgentStatus.activeAgent(robot),
                         ...(listing.canAdmin ? { codingAgentLogins: await codingAgentStatus.logins(robot.id) } : {}) };
                 }));
-                return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: views });
+                // With the worker, RoboTeam's own Browser and Desktop containers are refused (M-67); the page shows the message instead.
+                const guiUnavailable = worker.enabled || runtimeManager.workerMode === true;
+                return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: views,
+                    ...(guiUnavailable ? { guiUnavailable: { code: GUI_UNAVAILABLE_WITH_WORKER, message: GUI_UNAVAILABLE_MESSAGE } } : {}) });
             }
             // Every other route needs an internal token or a verified, Explorer-entitled user.
             const access = await authorizeWorkspaceRequest(req, url, {
@@ -900,7 +911,7 @@ export function createRoboTeamServer(options) {
                 return await handleLiveSessions({ req, res, pathname, viewer: { principal: live.principal, canAdmin: live.canAdmin },
                     registry: liveSessions, publicDir, publicBasePath, streamLifetimeMs: liveStreamLifetimeMs, worker });
             }
-            if (await handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager })) return;
+            if (await handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager, workerOn: worker.enabled || runtimeManager.workerMode === true })) return;
             const actor = requestActor(req, internalToken);
             if (!actor) return sendError(res, 401, 'authenticated Ploinky user is required');
 
@@ -1077,6 +1088,8 @@ export function createRoboTeamServer(options) {
                 }
                 const startTypes = { 'start-desktop-task': 'desktop', 'start-browser-task': 'browser', 'start-simple-task': 'simple' };
                 if (startTypes[operation]) {
+                    // Browser and Desktop are refused before the grant check or any policy or task record exists (M-67).
+                    if (startTypes[operation] !== 'simple' && (worker.enabled || runtimeManager.workerMode)) throw guiUnavailableWithWorkerError();
                     // With the worker configured, this request's own grant goes to the task child over its stdin
                     // for the one admission (decision M-21); a start without one is refused.
                     const ownerGrant = worker.enabled ? worker.grant(req) : null;

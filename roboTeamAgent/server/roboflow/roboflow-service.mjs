@@ -1,3 +1,4 @@
+import { GUI_EXECUTION_TYPES, guiUnavailableWithWorkerError } from '../gui-unavailable.mjs';
 import { Subflows, CONTINUE_PROMPT } from './subflows.mjs';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -89,7 +90,9 @@ export class RoboFlowService {
         this.store = new TaskFlowStore({ database: this.database });
         this.runFolders = new RunFolders({ folders: this.scheduleFolders,
             resolveCwd: folder => this.runtimeManager.resolveCwd(folder), now: options.scheduleNow });
-        this.schedules = new ScheduleStore({ database: this.database, registry: this.registry,
+        // With the worker configured, a Browser or Desktop default flow or schedule is refused (decision M-67).
+        this.refuseGui = options.workerMode ?? String(process.env[COORDINATOR_BASE_ENV] || '').trim() !== '';
+        this.schedules = new ScheduleStore({ database: this.database, registry: this.registry, refuseGui: this.refuseGui,
             resolveCwd: folder => this.runFolders.base(folder),
             defaultFolder: () => this.scheduleFolders.defaultFolder(), now: options.scheduleNow });
         this.scheduler = new WorkflowScheduler({ schedules: this.schedules, flows: this.store,
@@ -308,6 +311,7 @@ export class RoboFlowService {
         if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
         assertRunnable(graph);
         if (graph.kind === 'default' ? !EXECUTION_TYPES.includes(input.executionType) : input.executionType !== undefined) throw invalid('executionType is required only for the default workflow');
+        if (this.refuseGui && graph.kind === 'default' && GUI_EXECUTION_TYPES.includes(input.executionType)) throw guiUnavailableWithWorkerError();
         const objective = textField(input.objective, 'objective', 32768);
         resolveWorkflowObjective(graph, objective);
         const allocated = Boolean(scheduleId) || !input.folder;

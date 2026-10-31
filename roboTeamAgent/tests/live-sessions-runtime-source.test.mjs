@@ -176,7 +176,11 @@ test('with the real runtime, a queued GUI task cancelled before it runs ends its
     active.state = 'running';
     active.child = { kill() {} };
     manager.activeTasks.set(ROBOT.id, active.taskId);
-    const waiting = manager.startTask(ROBOT, 'browser', { cwd: '/workspace/app', task: 'Later', ownerPrincipal: 'user:alice' });
+    // M-67: admission now refuses a GUI task, so the queued task is put on record and announced exactly as admission did.
+    const waiting = manager._newTask(ROBOT, 'browser', { cwd: '/workspace/app', task: 'Later', ownerPrincipal: 'user:alice' });
+    manager.taskQueues.set(ROBOT.id, [waiting.taskId]);
+    manager._emitTaskEvent({ kind: 'admitted', robotId: ROBOT.id, robotName: ROBOT.name, taskId: waiting.taskId, type: 'browser', state: 'queued',
+        cwd: '/workspace/app', ownerPrincipal: 'user:alice', workflowRunId: null, workflowInstanceId: null });
     const [row] = registry.list(ALICE);
     assert.equal(row.status, 'waiting', 'a queued task is waiting');
     assert.deepEqual(await registry.stop(row.id, ALICE), { ok: true });
