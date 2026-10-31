@@ -71,6 +71,7 @@ function scripted(rows, { snapshot = DONE, hold = false } = {}) {
 
 const COMPLETE_ROWS = () => [state('queued', 1), state('running', 2), ala(SELECTED, 3), ala(MESSAGE, 4), ala(FINAL('Final answer'), 5), state('completed', 6)];
 
+
 async function harness(t, { rows = COMPLETE_ROWS(), execution = {}, permission = 'full-access', client = scripted(rows), engineOptions = {},
     robot = { id: 'robo', name: 'default', codingAgents: ['codex'], worker: { robotId: ROBOT } }, grant = freshGrant('admission'), freshest = null,
     atRoot = false, snapshotExtra = null, configuration = CONFIGURATION, skills = null } = {}) {
@@ -107,6 +108,33 @@ async function harness(t, { rows = COMPLETE_ROWS(), execution = {}, permission =
     const owner = { coordinator, evidence: evidenceOf(grant), freshest };
     return { engine, client, store, workingDir, sessionId: session.sessionId, ensured, admitted, owner, coordinator, grant };
 }
+
+test('M57: a worker terminal result wins a concurrent task stop', async (t) => {
+    for (const classification of ['completed', 'failed', 'cancelled', 'interrupted']) {
+        const rows = [state('running', 1)];
+        const client = scripted(rows, { hold: true, snapshot: { state: classification, result: { classification, outputText: 'Final answer' } } });
+        const controller = new AbortController();
+        client.control = async () => {
+            rows.push(state(classification, 2, { classification, outputText: 'Final answer' }));
+            return { outcome: 'accepted' };
+        };
+        const h = await harness(t, { client });
+        const pending = h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'p', owner: h.owner, signal: controller.signal })
+            .then((result) => ({ result }), (error) => ({ error }));
+        for (let i = 0; i < 500 && !client.calls.subscribe.length; i++) await tick(2);
+        assert.ok(client.calls.subscribe.length, 'worker subscription opened');
+        controller.abort(stopReason({ owner: { evidence: evidenceOf(freshGrant('stop')) } }));
+        const outcome = await pending;
+        if (classification === 'completed') {
+            assert.equal(outcome.error, undefined);
+            assert.equal(outcome.result.workerClassification, 'completed');
+            assert.equal(outcome.result.outputText, 'Final answer');
+        } else {
+            assert.equal(outcome.error.workerClassification, classification);
+            assert.equal(outcome.error.name === 'AbortError', classification !== 'failed');
+        }
+    }
+});
 
 test('a turn is admitted as a version-2 specification and the relayed ALA records produce the events alaEngine emits', async (t) => {
     const h = await harness(t);

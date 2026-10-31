@@ -12,6 +12,7 @@ import { startLiveSessionsIpc } from './live-sessions/ipc-server.mjs';
 import { RuntimeLiveSource, composeTaskObservers } from './live-sessions/runtime-source.mjs';
 import { workerConfigured } from './mcp-tool-list.mjs';
 import { createWorkerCoordinatorHop } from './worker-coordinator/hop.mjs';
+import { createWorkerClient } from './worker-coordinator/worker-client.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
@@ -33,7 +34,10 @@ await robotStore.ensureDefaultRobot();
 // The shared proxy pool lives in the optional proxyAgent; without it robots connect directly.
 const proxyPool = new ProxyAgentClient();
 
+const workerCoordinator = { hop: createWorkerCoordinatorHop({ env: process.env }) };
 const runtimeManager = new RuntimeManager({
+    // Reads the worker about stored unfinished tasks after a restart (decision M-57).
+    ...(workerConfigured() ? { workerClient: createWorkerClient({ hop: workerCoordinator.hop }) } : {}),
     dataDir,
     publicBasePath,
     workspaceRoot,
@@ -46,7 +50,6 @@ await runtimeManager.initialize();
 // Shell and socket only: seeding copies thousands of files per robot and runs after the service is listening.
 for (const robot of await robotStore.list()) await runtimeManager.prepareOpenCode(robot.id, { seed: false });
 
-const workerCoordinator = { hop: createWorkerCoordinatorHop({ env: process.env }) };
 const roboflow = new RoboFlowService({
     robotStore,
     runtimeManager,

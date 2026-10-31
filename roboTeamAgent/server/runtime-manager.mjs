@@ -1,4 +1,6 @@
-import { registerProject, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
+import { registerProject, saveTaskExecution, findProjectRecord, projectDirectories, projectOptions } from './project-storage.mjs';
+import { assertSafeAchillesPrivatePath } from '../copilot/src/lib/storage/privateDataRoot.mjs';
+import { isReferenceId } from './worker-coordinator/identities.mjs';
 import { assertNoSymlinks, rebaseOnRoot } from './no-follow-path.mjs';
 import { requireWorkspaceRoot } from './workspace-root.mjs';
 import { workspaceDataPath } from './workspace-paths.mjs';
@@ -6,6 +8,7 @@ import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
@@ -262,6 +265,10 @@ export class RuntimeManager {
         // it as an explicit stdin record (a SIGTERM only detaches), and flow phases pass their binding and deterministic origin on
         // its command line. There is no local execution path: without the coordinator base an AI task is refused at admission.
         this.workerMode = options.workerMode ?? String(process.env[COORDINATOR_BASE_ENV] || '').trim() !== '';
+        // Reads a worker reference after a restart (decision M-57); without one, stored attempts keep their state.
+        this.workerClient = options.workerClient || null;
+        this.reconcileMs = Number.isSafeInteger(options.workerReconcileMs) && options.workerReconcileMs > 0 ? options.workerReconcileMs : 5000;
+        this.reconcileTimers = new Set();
         this.execFileImpl = options.execFileImpl || execFileAsync;
         this.spawnImpl = options.spawnImpl || spawn;
         this.toolCache = options.toolCache || new ToolCache({
@@ -451,6 +458,101 @@ export class RuntimeManager {
             const id = String(record?.Id || record?.ID || '').trim();
             if (id) await this._podman(['rm', '-f', id]).catch(() => {});
         }
+        if (this.workerMode) await this.reconcileStoredTasks();
+    }
+
+    // Decision M-57 (plan section 9): a RoboTeam restart keeps continuity. Every stored task still `starting`, `running` or
+    // `pausing` is asked of the worker before its state changes. Only a confirmed absent admission is paused.
+    // The reads use the flow binding of a RoboFlow task; a plain task has only its owner's grant, which a restart does not
+    // have, so it stays `running`, unconfirmed, until a request carrying a grant (resume) or a later read settles it.
+    async reconcileStoredTasks() {
+        for (const record of this._storedUnfinishedTasks()) {
+            if (this.tasks.has(record.taskId)) continue;
+            const task = { ...record, child: null, cancelRequested: false, logSeq: 0, logTruncated: false, pendingMessages: [], terminalEmitted: true,
+                result: record.result || '', logTail: record.logTail || '', error: record.error ?? null,
+                request: { ...record.request, ownerPrincipal: this._boundOwner(record) || undefined },
+                workerReferenceId: isReferenceId(record.workerReferenceId) ? record.workerReferenceId : null };
+            this.tasks.set(task.taskId, task);
+            if (!this.latestTask.has(task.robotId)) this.latestTask.set(task.robotId, task.taskId);
+            task.workerStatus = 'unconfirmed';
+            await this._reconcileTask(task);
+        }
+    }
+
+    _storedUnfinishedTasks() {
+        const found = [];
+        const id = /^[0-9a-f-]{36}$/u;
+        let projects = [];
+        try { projects = projectDirectories(this); } catch (error) { console.error('[roboTeamAgent] stored tasks unreadable:', error?.message || error); }
+        for (const cwd of projects) {
+            try {
+                const options = projectOptions(this);
+                const root = assertSafeAchillesPrivatePath(cwd, 'tasks', { ...options, type: 'directory' });
+                for (const session of fsSync.existsSync(root) ? fsSync.readdirSync(root).filter((name) => id.test(name)) : []) {
+                    const directory = assertSafeAchillesPrivatePath(cwd, `tasks/${session}/executions`, { ...options, type: 'directory' });
+                    if (!fsSync.existsSync(directory)) continue;
+                    for (const name of fsSync.readdirSync(directory)) {
+                        if (!/^[0-9a-f-]{36}\.json$/u.test(name)) continue;
+                        try {
+                            const record = JSON.parse(fsSync.readFileSync(assertSafeAchillesPrivatePath(cwd, `tasks/${session}/executions/${name}`, { ...options, type: 'file' }), 'utf8'));
+                            if (record.taskId === name.slice(0, -5) && ['starting', 'running', 'pausing'].includes(record.state)
+                                && ['simple', 'browser', 'desktop'].includes(record.type) && record.request) found.push({ ...record, request: { ...record.request, cwd } });
+                        } catch { /* an unreadable record is left as it is */ }
+                    }
+                }
+            } catch (error) { console.error('[roboTeamAgent] stored tasks unreadable:', error?.message || error); }
+        }
+        return found;
+    }
+
+    // Asks the worker about one adopted task and maps its answer. Never throws. An answer that cannot be had (no evidence,
+    // unreachable worker, unknown state) leaves the task as it is and is retried by a bounded timer and by status reads.
+    async _reconcileTask(task, { grant = null } = {}) {
+        if (!this.workerClient || task.reconciling) return;
+        const binding = workerBindingFor(task.request, task.taskId);
+        const auth = binding ? { bindingId: binding.bindingId } : (grant ? { grant } : null);
+        if (!auth) return;
+        task.reconciling = true;
+        task.lastReconcile = Date.now();
+        try {
+            if (!task.workerReferenceId) {
+                // Admission can succeed before the child's reference event arrives. Only an authorized lookup can prove absence.
+                const admitted = await this.workerClient.lookup(binding?.originRequestId || taskOriginId(task.taskId), auth);
+                if (!admitted) {
+                    Object.assign(task, { state: 'paused', workerStatus: null, error: 'interrupted before worker admission', completedAt: new Date().toISOString() });
+                    await this._saveTask(task);
+                    return;
+                }
+                if (!isReferenceId(admitted.referenceId)) throw new Error('worker_reply_unknown');
+                task.workerReferenceId = admitted.referenceId;
+                await this._saveTask(task);
+            }
+            const snapshot = await this.workerClient.read(task.workerReferenceId, auth);
+            const result = snapshot?.result || {};
+            const text = typeof result.outputText === 'string' ? result.outputText : '';
+            const reason = typeof result.reason === 'string' ? result.reason : null;
+            if (snapshot?.state === 'completed') Object.assign(task, { state: 'completed', result: text || task.result });
+            else if (snapshot?.state === 'failed') Object.assign(task, { state: 'failed', result: text || task.result, error: `Worker execution failed${reason ? ` (${reason})` : ''}.` });
+            else if (['cancelled', 'interrupted', 'paused', 'human-input'].includes(snapshot?.state)) Object.assign(task, { state: 'paused', result: text || task.result });
+            else if (['queued', 'running', 'stopping'].includes(snapshot?.state)) { task.state = 'running'; task.workerStatus = 'running'; this._scheduleReconcile(task); return; }
+            else throw new Error('worker_reply_unknown');
+            task.workerStatus = null;
+            task.completedAt ||= new Date().toISOString();
+            await this._saveTask(task).catch(() => {});
+        } catch (error) {
+            task.workerStatus = 'unconfirmed';
+            if (!task.reconcileLogged) { task.reconcileLogged = true; console.error(`[roboTeamAgent] task ${task.taskId}: the worker state is not confirmed yet (${error?.code || error?.message || 'unavailable'}); the stored state is kept`); }
+            this._scheduleReconcile(task);
+        } finally { task.reconciling = false; }
+    }
+
+    _scheduleReconcile(task) {
+        if (this.shuttingDown || !task.workerStatus) return;
+        task.reconcileAttempts = (task.reconcileAttempts || 0) + 1;
+        if (task.reconcileAttempts > 120) return;
+        const timer = setTimeout(() => { this.reconcileTimers.delete(timer); void this._reconcileTask(task); }, this.reconcileMs);
+        timer.unref?.();
+        this.reconcileTimers.add(timer);
     }
 
     _serialize(robotId, operation) {
@@ -820,6 +922,13 @@ export class RuntimeManager {
                         worker: { referenceId: event.referenceId, requestId: event.requestId } }))
                         .catch((error) => { forcedFailure ||= error; this._stopChild(task.child); });
                 }
+                // The worker's terminal classification of the attempt, as the child read it (robot-task.mjs).
+                if (event.type === 'worker-terminal' && typeof event.classification === 'string') task.workerClassification = event.classification;
+                // The worker reference of the attempt: stored so a restart can ask the worker about it (decision M-57).
+                if (event.type === 'worker-reference' && isReferenceId(event.referenceId) && !task.workerReferenceId) {
+                    task.workerReferenceId = event.referenceId;
+                    void this._saveTask(task).catch(() => {});
+                }
                 if (event.type === 'skill-catalog') task.skillExecution = { revision: event.revision, policyVersion: event.policyVersion };
                 // Only the identifiers of the first turn are kept, never the event body.
                 if (event.type === 'turn-started' && !task.transcriptRef
@@ -851,7 +960,7 @@ export class RuntimeManager {
                     progressParser.finish();
                     task.result += resultDecoder.end();
                     if (forcedFailure) return reject(forcedFailure);
-                    if (task.resultOverflow) return reject(new Error('Final response exceeds the 1 MiB limit'));
+                    if (task.resultOverflow) return reject(forcedFailure ||= new Error('Final response exceeds the 1 MiB limit'));
                     task.exitCode = code;
                     if (code === 0) resolve();
                     else {
@@ -861,11 +970,21 @@ export class RuntimeManager {
                     }
                 });
             });
-            if (!task.cancelRequested) task.state = 'completed';
+            // The end state is the worker's classification, not the exit code: a stop that raced a clean finish is `completed`.
+            if (task.workerClassification === 'failed') { task.state = 'failed'; task.error ||= 'Worker execution failed.'; }
+            else if (['cancelled', 'interrupted', 'paused', 'human-input'].includes(task.workerClassification)) task.state = 'paused';
+            else if (!task.cancelRequested || task.workerClassification === 'completed') task.state = 'completed';
             else if (task.state === 'pausing') task.state = 'paused';
             task.completedAt = new Date().toISOString();
         } catch (error) {
-            if (task.stopNotConfirmed && task.cancelRequested) {
+            if (task.detached) {
+                // RoboTeam is shutting down and detached from an attempt the worker owns: its state is not decided here.
+            } else if (!forcedFailure && task.workerClassification && !task.stopNotConfirmed) {
+                task.state = task.workerClassification === 'completed' ? 'completed'
+                    : ['cancelled', 'interrupted', 'paused', 'human-input'].includes(task.workerClassification) ? 'paused' : 'failed';
+                task.error = task.state === 'failed' ? String(error?.message || error) : null;
+                task.completedAt = new Date().toISOString();
+            } else if (task.stopNotConfirmed && task.cancelRequested) {
                 // The worker did not confirm the stop: the execution may still be running there. Never shown as paused.
                 task.state = 'failed'; task.error = 'stop_not_confirmed: the worker did not confirm the stop; the execution may still be running'; task.completedAt = new Date().toISOString();
             } else if (task.state === 'pausing' && !forcedFailure && !(Number.isInteger(task.exitCode) && task.exitCode !== 130)) {
@@ -887,13 +1006,13 @@ export class RuntimeManager {
                 this.messageWaiters.delete(id);
             }
             // No end path leaves a task `pausing`: it is only ever a wait for the worker's confirmation of a stop.
-            if (task.state === 'pausing') {
+            if (task.state === 'pausing' && !task.detached) {
                 task.state = task.cancelRequested && !Number.isInteger(task.exitCode) ? 'paused' : 'failed';
                 task.error ||= task.state === 'failed' ? 'The task ended without a final state' : null;
                 task.completedAt ||= new Date().toISOString();
             }
             await this._saveTask(task).catch(() => {});
-            if (['completed', 'failed', 'paused'].includes(task.state)) {
+            if (!task.detached && ['completed', 'failed', 'paused'].includes(task.state)) {
                 this._emitTaskTerminal(task, {
                     state: task.state,
                     result: task.result, error: task.error || (task.resultOverflow ? 'Final response exceeds the 1 MiB limit' : null),
@@ -942,7 +1061,8 @@ export class RuntimeManager {
         const id = taskId || this.activeTasks.get(robotId) || this.latestTask.get(robotId);
         const task = id ? this.tasks.get(id) : null;
         if (!task || task.robotId !== robotId) return null;
-        const { child, request, cancelRequested, pendingMessages, controlReady, transcriptRef, terminalEmitted, ownerBinding, ...status } = task;
+        if (task.workerStatus && !task.reconciling && Date.now() - (task.lastReconcile || 0) >= this.reconcileMs) void this._reconcileTask(task);
+        const { child, request, cancelRequested, pendingMessages, controlReady, transcriptRef, terminalEmitted, ownerBinding, workerReferenceId, reconciling, lastReconcile, reconcileLogged, reconcileAttempts, ...status } = task;
         return { ...status, cwd: request.cwd,
             skillPolicyRef: request.skillPolicyRef || null,
             skillExecution: task.skillExecution ? structuredClone(task.skillExecution) : null,
@@ -1005,7 +1125,7 @@ export class RuntimeManager {
     // Every continuation is a new attempt with its own task id. Its owner is the
     // original owner (never the caller); a phase association is set only by
     // RoboFlow, which names the phase it resumes.
-    async resumeTask(robot, taskId, prompt = '', { runtimeTaskId = null, workflowInstanceId = null } = {}) {
+    async resumeTask(robot, taskId, prompt = '', { runtimeTaskId = null, workflowInstanceId = null, ownerGrant = null } = {}) {
         if (!/^[0-9a-f-]{36}$/u.test(String(taskId))) throw new Error('Invalid task id.');
         let internal = this.tasks.get(taskId);
         let owner = internal?.request?.ownerPrincipal;
@@ -1015,8 +1135,19 @@ export class RuntimeManager {
             const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
             try { internal = JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
             if (internal.taskId !== taskId) throw new Error('Task execution record identity mismatch.');
-            if (['starting', 'running'].includes(internal.state)) internal.state = 'paused';
+            if (this.workerMode && ['starting', 'running', 'pausing'].includes(internal.state)) {
+                internal.workerStatus = 'unconfirmed';
+                this.tasks.set(taskId, internal);
+            } else if (['starting', 'running'].includes(internal.state)) internal.state = 'paused';
             owner = this._boundOwner(internal);
+        }
+        // Decision M-57: an attempt the worker still runs is never continued by a second one.
+        if (this.workerMode && internal.robotId === robot.id && (internal.workerReferenceId || internal.workerStatus
+            || ['starting', 'running', 'pausing'].includes(internal.state))) {
+            internal.workerStatus = 'unconfirmed';
+            await this._reconcileTask(internal, { grant: ownerGrant });
+            if (internal.workerStatus === 'unconfirmed') throw Object.assign(new Error('The state of this task on the worker is not confirmed yet; try again in a moment.'), { statusCode: 409, code: 'task_state_unconfirmed' });
+            if (['starting', 'running', 'pausing'].includes(internal.state)) throw Object.assign(new Error('This task is still running on the worker.'), { statusCode: 409, code: 'task_running_on_worker' });
         }
         if (internal.robotId !== robot.id || !['desktop', 'browser', 'simple'].includes(internal.type)
             || !['paused', 'completed', 'failed'].includes(internal.state)) {
@@ -1048,6 +1179,7 @@ export class RuntimeManager {
         const { runtimeTaskId: previousTaskId, workflowInstanceId: previousPhase, ownerPrincipal: storedOwner, ...inherited } = internal.request;
         const resumed = this._enqueueTask(robot, internal.type, {
             ...inherited,
+            ...(ownerGrant ? { ownerGrant } : {}),
             alaSessionId: internal.alaSessionId, resumeSession: true,
             ...(owner ? { ownerPrincipal: owner } : {}),
             ...(runtimeTaskId ? { runtimeTaskId } : {}),
@@ -1119,8 +1251,17 @@ export class RuntimeManager {
     async stopAll() {
         this.shuttingDown = true;
         this.taskGrants.clear();
+        for (const timer of this.reconcileTimers) clearTimeout(timer);
+        this.reconcileTimers.clear();
         for (const task of this.tasks.values()) {
-            if (!['queued', 'starting', 'running'].includes(task.state)) continue;
+            if (!['queued', 'starting', 'running', 'pausing'].includes(task.state)) continue;
+            // With the worker, a live child or an adopted unfinished attempt may still belong to the worker. RoboTeam only
+            // detaches (the child's SIGTERM is a detach) and leaves its state alone for the reconciliation after the restart.
+            if (this.workerMode && (task.child || task.workerReferenceId || task.workerStatus)) {
+                task.detached = true;
+                task.child?.kill('SIGTERM');
+                continue;
+            }
             const neverStarted = task.state === 'queued';
             task.cancelRequested = true;
             task.state = 'paused';

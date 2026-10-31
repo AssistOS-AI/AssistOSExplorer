@@ -447,6 +447,8 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 robotId: ready.robotId, configRevision: ready.configRevision, sessionId, specification });
             const referenceId = admitted.referenceId;
             phase('admitted', { referenceId });
+            // The reference id is not a secret; the parent persists it so a restart can ask the worker about this attempt (decision M-57).
+            await emit({ type: 'worker-reference', referenceId });
 
             let failure = null;
             // Returns {retry: true} when the answer did not reach the worker and the request may still be open: the record handler then
@@ -507,19 +509,20 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             const outcome = await followReference({ referenceId, authority, controller, operation, records, emit, sanitize, phase, openAuth: admissionAuth, getFailure: () => failure });
             live?.childExited();
             if (failure) throw failure;
-            controller.signal.throwIfAborted();
+            // followReference has settled the worker's outcome. A concurrent stop cannot replace that result.
             const outputText = sanitize(String(outcome.outputText ?? '').trimEnd());
             const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, outputText,
                 { durationMs: Math.max(0, Math.round(performance.now() - responseStarted)), thinkingUrl: '' });
             phase('completeTurn.done');
             liveResult = { status: 'finished', code: 0 };
-            return { outputText, session: completed, turnId, userMessageId: turn.userMessageId,
+            return { outputText, workerClassification: outcome.workerClassification, session: completed, turnId, userMessageId: turn.userMessageId,
                 assistantMessageId: turn.assistantMessageId, backend: records.backend || backend };
         } catch (cause) {
             phase('catch', errorFields(cause));
             const workerFailure = cause instanceof WorkerError;
             const detached = controller.signal.aborted && isDetach(controller.signal.reason);
-            const cancelled = !workerFailure && (controller.signal.aborted || cause?.exitCode === 130 || cause?.name === 'AbortError');
+            const cancelled = !workerFailure && (!cause?.workerClassification || ['cancelled', 'interrupted', 'paused'].includes(cause.workerClassification))
+                && (controller.signal.aborted || cause?.exitCode === 130 || cause?.name === 'AbortError');
             const error = workerFailure ? cause : cancelled ? (detached ? controller.signal.reason : interrupted())
                 : new Error(sanitize(cause?.message || String(cause)), { cause });
             if (!cancelled && !workerFailure && cause?.exitCode !== undefined) error.exitCode = cause.exitCode;
@@ -747,7 +750,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             try { await queued; } catch (error) { await fatal(error); }
             if (getFailure()) await fatal(getFailure());
             // A stop the worker confirmed by ending the execution needs no result, and so no fresh grant.
-            if (stopSent && terminalRow && ['cancelled', 'interrupted', 'paused'].includes(terminalRow.state)) throw interrupted();
+            if (stopSent && terminalRow && ['cancelled', 'interrupted', 'paused'].includes(terminalRow.state)) throw Object.assign(interrupted(), { workerClassification: terminalRow.state });
             if (terminalRow?.result && typeof terminalRow.result === 'object') return outcomeOf({ state: terminalRow.state, result: terminalRow.result }, sanitize, blocked);
             // The result is a read: it needs a fresh grant, so it waits for the user's next envelope. The
             // execution is finished and its result stays retrievable when the user comes back.
@@ -811,17 +814,18 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
     function outcomeOf(snapshot, sanitize, blocked = null) {
         const result = snapshot.result || {};
         const classification = result.classification ?? snapshot.state;
-        if (snapshot.state === 'completed') return { outputText: result.outputText ?? '' };
+        if (snapshot.state === 'completed') return { outputText: result.outputText ?? '', workerClassification: 'completed' };
         // A human-input question ended the attempt: the turn ends normally with the model's last text and RoboFlow waits for the answer.
-        if (snapshot.state === 'human-input') return { outputText: result.outputText ?? '', humanInput: result.data?.requestId ?? true };
+        if (snapshot.state === 'human-input') return { outputText: result.outputText ?? '', humanInput: result.data?.requestId ?? true, workerClassification: 'human-input' };
         // A blocked-task report fails the turn with the model's message, exactly as the local failure channel does.
         if (snapshot.state === 'failed' && (result.data?.reason === 'task_blocked' || blocked)) {
             const error = new Error(sanitize(String(result.data?.message || blocked || 'The task is blocked.')));
             error.exitCode = 1;
             error.taskBlocked = true;
+            error.workerClassification = 'failed';
             throw error;
         }
-        if (snapshot.state === 'cancelled' || snapshot.state === 'interrupted' || snapshot.state === 'paused') throw interrupted();
+        if (snapshot.state === 'cancelled' || snapshot.state === 'interrupted' || snapshot.state === 'paused') throw Object.assign(interrupted(), { workerClassification: snapshot.state });
         const reason = typeof result.reason === 'string' ? result.reason : (typeof result.data?.reason === 'string' ? result.data.reason : null);
         // The worker stopped the attempt itself (no activity, or the maximum duration): plain words, a failure, never retried here.
         const stopped = plainStopMessage(reason, result.data);

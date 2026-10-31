@@ -3,9 +3,13 @@ import { prepareCopilotContext } from './copilot-context.mjs';
 import { setRobotContext } from '../copilot/src/lib/execution/robotContext.mjs';
 import { createCliRuntime } from '../copilot/src/index.mjs';
 import { messageForEngine, stopReasonFromRecord, taskExitCode } from './worker-coordinator/task-exit.mjs';
-import { detachReason } from '../copilot/src/lib/execution/abortReasons.mjs';
+import { detachReason, isDetach } from '../copilot/src/lib/execution/abortReasons.mjs';
 
 import { pathToFileURL } from 'node:url';
+
+function classify(classification) {
+    process.stderr.write(`@@ALA_EVENT@@${JSON.stringify({ type: 'worker-terminal', classification })}\n`);
+}
 
 export async function runRobotTask(argv = process.argv.slice(2), contextOptions = {}) {
     const options = {};
@@ -68,9 +72,13 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
             ...(ownerGrant && !options['--worker-binding'] ? { owner: { evidence: { ok: true, grant: ownerGrant } } } : {}),
             onControl: (send) => { control = send; },
             onEvent: (event) => { process.stderr.write('@@ALA_EVENT@@' + JSON.stringify(event) + '\n'); } });
+        // The worker's terminal classification goes to the parent, which decides the task's end state from it, not from the exit code.
+        classify(result.workerClassification || 'completed');
         process.stdout.write(result.outputText);
     } catch (error) {
         console.error(error.message);
+        // A detach (RoboTeam shutdown) is not a terminal state: the worker keeps the execution.
+        if (!isDetach(controller.signal.reason)) classify(error.workerClassification ?? (controller.signal.aborted && error.execution !== 'may_still_run' ? 'cancelled' : 'failed'));
         // A stop the worker did not confirm is not an interruption: the execution may still be running there.
         process.exitCode = taskExitCode(error, controller.signal.aborted);
     } finally {

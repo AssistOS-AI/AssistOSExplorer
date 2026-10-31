@@ -1063,7 +1063,7 @@ export function createRoboTeamServer(options) {
                     });
                 }
                 if (operation === 'resume-task') {
-                    const task = await runtimeManager.resumeTask(robot, body.taskId, body.prompt);
+                    const task = await runtimeManager.resumeTask(robot, body.taskId, body.prompt, worker.enabled ? { ownerGrant: worker.grant(req) } : undefined);
                     return sendJson(res, 202, {
                         ok: true,
                         robotId: robot.id,
