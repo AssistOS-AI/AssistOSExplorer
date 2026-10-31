@@ -496,6 +496,20 @@ test.describe('RoboWork robot terminals', () => {
             expect((await terminalSnapshot(page, first)).exits).toEqual([]);
             // Four terminals on A coexist with its task capacity; the fifth refuses without a fifth running admission.
             for (let index = 1; index < 4; index += 1) await ctx.launch(a);
+            // Ploinky sessionManager.mjs WEBTTY_SESSION_LIMITS allows five creates per 60 seconds.
+            // Let the first owned launch leave that Router window before probing the worker's independent terminal limit.
+            const capProbeAt = first.startedMs + 60_000 + 1000;
+            await waitFor('Router creation window expires with the L9 AI and all owned terminals alive', async () => {
+                if (taskOutcome?.error) throw taskOutcome.error;
+                const turn = runningL9Turn(readB(), { robotName: b.name, workerRobotId, sessionId: selectedConversation.sessionId, sinceMs: sentAt, executionId: admitted.execution_id });
+                expect(turn?.state).toBe('running');
+                const aLive = readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: a.name }).executions;
+                expect(aLive.filter((row) => row.kind === 'terminal' && row.state === 'running')).toHaveLength(4);
+                expect(readB().executions.filter((row) => row.kind === 'terminal' && row.state === 'running')).toHaveLength(1);
+                expect((await terminalSnapshot(page, first)).exits).toEqual([]);
+                expect((await terminalSnapshot(page, second)).exits).toEqual([]);
+                return Date.now() >= capProbeAt;
+            }, { timeoutMs: 65_000, intervalMs: 1000 });
             // Five terminal SSE streams plus WebChat fill the browser HTTP/1 pool. Both proof and API call use its separate request context.
             const origin = new URL(page.url()).origin;
             const proofReply = await page.request.get('/auth/token?mutationRoute=roboTeamAgent', { timeout: 15_000 });
@@ -558,6 +572,7 @@ test.describe('RoboWork robot terminals', () => {
         } catch (error) { primaryError = error; }
         const cleanupErrors = [];
         const clean = async (action) => { try { await action(); } catch (error) { cleanupErrors.push(error); } };
+        await clean(() => ctx.save('primary-error.json', primaryError ? { name: primaryError.name, message: primaryError.message } : null));
         {
             // Abort this measurement before product cleanup, even when setup or finish validation failed.
             await clean(() => { if (watcher && watcher.exitCode === null && !watcher.stdin.writableEnded) watcher.stdin.end('{"type":"abort"}\n'); });
