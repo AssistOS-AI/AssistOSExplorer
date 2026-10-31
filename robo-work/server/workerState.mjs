@@ -1,7 +1,7 @@
 import {
     ACTIVE_STATES, LOGICAL_KINDS, PROCESS_TREE_KIND, REFERENCE_VERSION, TERMINAL_STATES, WorkerStateError, byteLength, canonicalJson,
     isPublicReferenceId, deriveFlowLogicalId, deriveOperationId, digest, exactObject, fail, hasOriginRow, isOriginId, randomId, requireContext,
-    robotOwnerOf,
+    refuseEnvironmentSelection, robotOwnerOf,
     validateAdmissionRequest, validateAttemptOutcome, validateConfiguration, validateInternalId, validateLimits, validateName,
     validateOperationId, validateRevision, validateSpecification, isInternalId
 } from './stateProtocol.mjs';
@@ -1011,6 +1011,7 @@ class WorkerState {
         const operationId = validateOperationId(request.operationId);
         if (!isOriginId(request.originRequestId)) fail('invalid_request');
         if (!OBLIGATION_KINDS.includes(request.obligationKind)) fail('invalid_request');
+        refuseEnvironmentSelection(request.request);
         validateSpecification(request.request, this.#limits);
         let continuationOf = null;
         if (request.obligationKind === 'flow-continuation') {

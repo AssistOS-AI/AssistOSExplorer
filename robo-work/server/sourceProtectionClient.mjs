@@ -1,8 +1,8 @@
 // Worker-side client of Ploinky's source-protection interlock (proof slice P5; T0 section 6 + A2-A6).
 //
-// It implements exactly the five-method `interlock` that `createWritableReservationController` takes by injection
-// (`describeStore`, `advanceWorkerGeneration`, `acknowledgeSourceStore`, `reserveWritableResources`,
-// `releaseWritableReservation`) plus `readSourceState` for admission. Each call is one request over an injected
+// It implements the five interlock operations (`describeStore`, `advanceWorkerGeneration`, `acknowledgeSourceStore`,
+// `reserveWritableResources`, `releaseWritableReservation`) plus `readSourceState` for admission. (The reservation
+// controller that consumed them was removed with the execution-target library, r10 Q1 = A.) Each call is one request over an injected
 // `transport(bytes) -> Promise<{status, body}>`; the host composes the transport from Ploinky's agent-side channel
 // (`Agent/lib/sourceProtectionTransport.mjs`: signed private agent assertion to the Router's private listener). The
 // Router derives the worker principal, instance and enable generation from that assertion, so the opaque

@@ -987,3 +987,51 @@ test('R-1: after a pause (fence revision 1) and a cancel through the paused refe
     assert.deepEqual(outbox(store, second.admitted.obligationId, 2, 2, 'progress', {}),
         { obligationId: second.admitted.obligationId, revision: 2, applied: false, fenced: 'cancelled', fenceRevision: 3 });
 });
+
+// r10 Q1 = A. The Environment refusal belongs to admission validation only: the obligation REQUEST is an admission-time
+// payload, but recorded outbox data is not, and a refusal there would strand an accepted obligation's later revisions.
+test('r10 Q1 = A: an obligation request with a nonempty Environment is refused before any row; outbox data with an environment key still applies', (t) => {
+    const { dir, store } = setup(t);
+    const alice = ownerRow('alice');
+    const before = tableCounts(dir);
+    for (const environment of ['Repo/agent', ' ']) {
+        expectCode(assert, () => obligate(store, alice, 'flow-launch', { request: { flow: 'synthetic', environment } }), 'environment_unavailable');
+    }
+    expectCode(assert, () => obligate(store, alice, 'flow-launch', { request: { flow: 'synthetic', environment: 7 } }), 'invalid_request');
+    assert.deepEqual(tableCounts(dir), before, 'nothing recorded for a refused obligation request');
+    succeeds(() => obligate(store, alice, 'flow-launch', { request: { flow: 'synthetic', environment: '' } }), 'a blank Environment is the ordinary backend');
+    const { admitted } = launch(store);
+    outbox(store, admitted.obligationId, 1, 0, 'bound', { capturedInputsDigest: 'abc' });
+    for (const [revision, data] of [[2, { environment: 'Repo/agent', step: 1 }], [3, { environment: 7 }], [4, { environment: '' }]]) {
+        const reply = succeeds(() => outbox(store, admitted.obligationId, revision, 0, 'progress', data), `a progress revision with data.environment ${JSON.stringify(data.environment)} applies`);
+        assert.equal(reply.applied, true);
+    }
+    assert.equal(obligationRow(dir, admitted.obligationId).last_revision, 4);
+});
+
+test('r10 Q1 = A: a stored obligation and a recorded outbox revision without Environment replay and continue after reopen and recovery', (t) => {
+    const dir = makeTempDir(t);
+    const clock = { now: BASE_NOW };
+    let store = openStore(dir, { limits: S6_LIMITS, now: () => clock.now });
+    readyRobot(store, syntheticContext({ robotOwnerId: ROBOTS, scope: 'scope-robots' }));
+    const alice = ownerRow('alice');
+    const pendingRequest = obligationRequest(alice, 'flow-launch', { request: { flow: 'stored-before', project: null } });
+    const pending = store.admitObligation(alice, pendingRequest);
+    const { admitted } = launch(store);
+    const bound = outbox(store, admitted.obligationId, 1, 0, 'bound', { capturedInputsDigest: 'abc' });
+    const progress = outbox(store, admitted.obligationId, 2, 0, 'progress', { step: 1 });
+    store.close();
+    clock.now = BASE_NOW + 100;
+    store = openStore(dir, { limits: S6_LIMITS, now: () => clock.now, create: false });
+    t.after(() => store.close());
+    const generation = store.beginGenerationRecovery(store.generationId);
+    store.completeGenerationRecovery(generation.generationId);
+    // Recorded revisions replay to their recorded acknowledgements; the chain continues; no environment key was ever stored.
+    assert.deepEqual(outbox(store, admitted.obligationId, 1, 0, 'bound', { capturedInputsDigest: 'abc' }), bound);
+    assert.deepEqual(outbox(store, admitted.obligationId, 2, 0, 'progress', { step: 1 }), progress);
+    assert.equal(outbox(store, admitted.obligationId, 3, 0, 'progress', { step: 2 }).applied, true);
+    assert.equal(outbox(store, admitted.obligationId, 4, 0, 'terminal', { status: 'completed', outputText: 'done' }).applied, true);
+    // The obligation stored before replays as recorded and is still acceptable.
+    assert.deepEqual(store.admitObligation(alice, { ...pendingRequest }), pending);
+    assert.equal(accept(store, pending.obligationId, flowId()).decision, 'accepted');
+});

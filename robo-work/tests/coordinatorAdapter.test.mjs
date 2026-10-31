@@ -7,6 +7,7 @@ import {
     createVerifierConfig, rawBodyHash
 } from '../server/coordinatorAuth.mjs';
 import { createCoordinatorAdapter } from '../server/coordinatorAdapter.mjs';
+import { createDispatcher } from '../server/runtime/dispatcher.mjs';
 import { deriveFlowLogicalId } from '../server/stateProtocol.mjs';
 import { LIMITS, PROVIDER, S6_LIMITS, WORKSPACE, count, makeTempDir, newId, newOriginId, openStore, rawDb, readyRobot, syntheticContext } from './helpers/synthetic.mjs';
 
@@ -1038,4 +1039,62 @@ test('default runtime: obligation admission is runtime_unavailable with zero obl
     expectError(() => admitObligationAs(adapter, secret, 'alice'), 'WorkerStateError', 'runtime_unavailable');
     assert.deepEqual(obligationCounts(dir), before);
     assert.equal(count(dir, 'obligation'), 0);
+});
+
+// r10 Q1 = A (AC14, second half): existing-agent environments are not available. A nonempty Environment selection is refused
+// during admission validation, before any row is written and before the dispatcher could start a process, on every row
+// (owner, MCP, background) and for every kind (task, continuation, turn) and for the obligation request. The dispatcher
+// below runs over the same real store with a counting factory; the blank-Environment control proves the counter can move.
+test('AC14: a nonempty Environment admission is refused environment_unavailable with zero rows and zero process starts', async (t) => {
+    const dir = makeTempDir(t);
+    const store = openExtended(dir);
+    t.after(() => store.close());
+    const { secret, adapter } = rig(store);
+    const robotId = workspaceRobot(store);
+    const binding = rootBinding(adapter, secret, 'alice');
+    const specV2 = (extra = {}) => ({
+        version: 2, prompt: 'native prompt', displayText: 'plain', sessionId: 'session-env-1', turnId: 'turn-1', cwd: '/ws/proj',
+        permissions: 'full-access', ...extra
+    });
+    const spawns = [];
+    const factory = { async open({ item }) { spawns.push(item.executionId); throw new Error('counted start'); } };
+    const dispatcher = createDispatcher({
+        store, workspaceId: WORKSPACE, workspaceRoot: '/ws', factory,
+        options: { pollMs: 10, controlPollMs: 10, drainMs: 100, exitGraceMs: 80, failureAbortMs: 20 }
+    });
+    t.after(() => dispatcher.close());
+    dispatcher.start();
+    const before = counts(dir);
+    const beforeObligations = obligationCounts(dir);
+    const environment = 'Repo/agent';
+    const owner = (extra, specification) => hop(secret, admitBody(robotId, newOriginId(), { specification, ...extra }), { claims: ownerClaims('alice') });
+    const refused = {
+        'owner task, v2': owner({}, specV2({ environment })),
+        'owner task, legacy specification': owner({}, { prompt: 'legacy', environment }),
+        'owner task, blank-space value': owner({}, specV2({ environment: ' ' })),
+        'MCP task': hop(secret, mcpBody(secret, robotId, newOriginId(), {}, { specification: specV2({ environment }) })),
+        'background task': hop(secret, admitBody(robotId, newOriginId(), { bindingId: binding, specification: specV2({ environment }) })),
+        'owner continuation': owner({ kind: 'continuation', logical: { logicalId: newId() } }, specV2({ environment })),
+        'MCP continuation': hop(secret, mcpBody(secret, robotId, newOriginId(), {}, { kind: 'continuation', logical: { logicalId: newId() }, specification: specV2({ environment }) })),
+        'owner turn, v2': hop(secret, turnBody(robotId, newOriginId(), 'conv-env', { specification: specV2({ environment }) }), { claims: ownerClaims('alice') }),
+        'owner turn, v1': hop(secret, turnBody(robotId, newOriginId(), 'conv-env', { specification: { version: 1, prompt: 'x', environment } }), { claims: ownerClaims('alice') })
+    };
+    for (const [label, request] of Object.entries(refused)) {
+        assert.throws(() => adapter.admit(request), (error) => error.name === 'WorkerStateError' && error.code === 'environment_unavailable', label);
+    }
+    expectError(() => adapter.admit(owner({}, specV2({ environment: 7 }))), 'WorkerStateError', 'invalid_request');
+    // The obligation request is an admission-time payload too.
+    expectError(() => adapter.admitObligation(hop(secret, obligationBody(newOriginId(), { request: { flow: 'synthetic', environment } }), { path: OBLIGATIONS_PATH, claims: ownerClaims('alice') })),
+        'WorkerStateError', 'environment_unavailable');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual(counts(dir), before);
+    assert.deepEqual(obligationCounts(dir), beforeObligations);
+    assert.equal(count(dir, 'admission'), 0);
+    assert.equal(count(dir, 'session'), 0);
+    assert.equal(spawns.length, 0, 'no process start for a refused Environment');
+    // Controls: a blank Environment is the ordinary worker backend and reaches the factory.
+    const control = adapter.admit(owner({}, specV2({ environment: '' })));
+    assert.equal(control.state, 'queued');
+    for (let waited = 0; spawns.length === 0 && waited < 2000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(spawns.length, 1, 'the counter moves for the ordinary backend');
 });

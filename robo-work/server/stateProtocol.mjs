@@ -7,7 +7,7 @@ import { isSessionKey } from './stateSessions.mjs';
 export const ERROR_CODES = Object.freeze([
     'invalid_request', 'not_found', 'forbidden', 'operation_conflict', 'revision_conflict',
     'robot_busy', 'runtime_unavailable', 'recovery_pending', 'resource_quarantined',
-    'resource_present', 'stale_generation', 'capacity_exceeded', 'state_corrupt'
+    'resource_present', 'stale_generation', 'capacity_exceeded', 'state_corrupt', 'environment_unavailable'
 ]);
 
 const PUBLIC_MESSAGES = Object.freeze({
@@ -23,7 +23,8 @@ const PUBLIC_MESSAGES = Object.freeze({
     resource_present: 'The resource is still present.',
     stale_generation: 'The writer generation is stale.',
     capacity_exceeded: 'A configured capacity limit is exhausted.',
-    state_corrupt: 'The worker state is unusable.'
+    state_corrupt: 'The worker state is unusable.',
+    environment_unavailable: 'Existing-agent environments are not available.'
 });
 
 // Bounded, enumerated reason details. A reason never carries paths, content or SQLite text.
@@ -239,6 +240,19 @@ export function validateConfiguration(value, limits) {
     return normalized;
 }
 
+// RoboTeam may carry a terminal phase's Environment selection (`repo/agent`) in the specification; blank or absent selects
+// the ordinary worker backend. Existing-agent environments are not available in this version (r10 Q1 = A), so a nonempty
+// selection is refused during admission validation: before any state access, persistence or process start. Only the
+// admission validators call this (`validateAdmissionRequest`, and the obligation request in workerState.admitObligation).
+// It is deliberately NOT part of `validateSpecification`, which also validates recorded outbox data that must stay
+// applicable.
+export function refuseEnvironmentSelection(specification) {
+    if (!isPlainObject(specification) || !Object.hasOwn(specification, 'environment')) return;
+    const { environment } = specification;
+    if (typeof environment !== 'string') fail('invalid_request');
+    if (environment.length > 0) fail('environment_unavailable');
+}
+
 export function validateSpecification(value, limits) {
     if (!isPlainObject(value)) fail('invalid_request');
     // Version 2 (execution specification, RoboWork r10 wiring) is validated field by field below.
@@ -419,7 +433,7 @@ function specBytesBetween(value, min, max) {
 
 export function validateSpecificationV2(value, limits) {
     exactObject(value, ['version', 'prompt', 'displayText', 'sessionId', 'turnId', 'permissions'],
-        ['cwd', 'model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution', 'humanInput']);
+        ['cwd', 'model', 'effort', 'codingAgent', 'resume', 'folders', 'ignore', 'mcpServers', 'workflowExecution', 'humanInput', 'environment']);
     if (value.version !== SPECIFICATION_VERSION_2) fail('invalid_request');
     if (!specBytesBetween(value.prompt, 1, SPEC_V2_PROMPT_MAX_BYTES)) fail('invalid_request');
     if (!specBytesBetween(value.displayText, 0, SPEC_V2_DISPLAY_MAX_BYTES)) fail('invalid_request');
@@ -493,6 +507,8 @@ export function validateAdmissionRequest(request, limits) {
     validateInternalId(request.robotId);
     if (!Number.isSafeInteger(request.configRevision) || request.configRevision < 1) fail('invalid_request');
     if (!ADMISSION_KINDS.includes(request.kind)) fail('invalid_request');
+    // Every row (owner, MCP, background) and every kind (task, continuation, turn) reaches this validator before any state access.
+    refuseEnvironmentSelection(request.specification);
     if (request.kind === 'turn') {
         exactObject(request.logical, ['sessionKey']);
         if (!isSessionKey(request.logical.sessionKey)) fail('invalid_request');

@@ -114,7 +114,7 @@ test('verified contexts are an internal brand: forged, serialized, foreign and u
 });
 
 test('public errors use stable bounded codes and expose no paths or SQLite detail', (t) => {
-    assert.equal(new Set(ERROR_CODES).size, 13);
+    assert.equal(new Set(ERROR_CODES).size, 14);
     for (const code of ERROR_CODES) {
         const error = new WorkerStateError(code);
         assert.equal(error.code, code);

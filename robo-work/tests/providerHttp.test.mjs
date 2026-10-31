@@ -134,6 +134,7 @@ test('error mapping table: status and body for every code; no reason, token or c
         [new WorkerStateError('forbidden', 'token_replayed'), 401, 'unauthorized'],
         ...['operation_conflict', 'revision_conflict', 'robot_busy', 'resource_quarantined', 'resource_present'].map((code) => [new WorkerStateError(code), 409, code]),
         ...['runtime_unavailable', 'recovery_pending', 'stale_generation', 'capacity_exceeded'].map((code) => [new WorkerStateError(code), 503, code]),
+        [new WorkerStateError('environment_unavailable'), 400, 'environment_unavailable'],
         [new WorkerStateError('state_corrupt'), 500, 'state_corrupt'],
         [new Error('bug with /secret/path and token xyz'), 500, 'internal_error']
     ];

@@ -4,7 +4,7 @@ import {
     CHANNEL_EVENT_RESERVE, EVENTS_PAGE_MAX_BYTES, OUTPUT_EVENTS_PER_REFERENCE, OUTPUT_EVENT_MAX_BYTES, RESERVED_MARKER_SLOTS, TRUNCATED_EVENTS_PER_REFERENCE
 } from '../server/stateObservation.mjs';
 import { ANSWER_MAX_CHARS, CHANNEL_EVENT_MAX_BYTES } from '../server/stateObservation.mjs';
-import { SPECIFICATION_VERSION_2, validateSpecificationV2 } from '../server/stateProtocol.mjs';
+import { SPECIFICATION_VERSION_2, refuseEnvironmentSelection, validateSpecification, validateSpecificationV2 } from '../server/stateProtocol.mjs';
 import {
     LIMITS, WORKSPACE, admitRequest, expectCode, makeTempDir, newId, openStore, readyRobot, robotConfig, syntheticContext
 } from './helpers/synthetic.mjs';
@@ -39,6 +39,22 @@ function running(store, robotId, owner = user('alice'), overrides = {}) {
     store.transitionAttempt({ executionId: admitted.executionId, attemptId: admitted.attemptId, expectedState: 'queued', nextState: 'running' });
     return { owner, admitted, ids: { executionId: admitted.executionId, attemptId: admitted.attemptId } };
 }
+
+test('r10 Q1 = A: refuseEnvironmentSelection refuses a nonempty Environment only; the specification validators leave the key alone', () => {
+    refuseEnvironmentSelection(spec2({ environment: '' }));
+    refuseEnvironmentSelection(spec2());
+    refuseEnvironmentSelection('not an object');
+    for (const environment of ['Repo/agent', ' ', 'x'.repeat(5000)]) {
+        assert.throws(() => refuseEnvironmentSelection(spec2({ environment })), (error) => error.code === 'environment_unavailable', JSON.stringify(environment).slice(0, 20));
+    }
+    for (const environment of [7, null, true, ['a/b'], { ref: 'a/b' }]) {
+        assert.throws(() => refuseEnvironmentSelection(spec2({ environment })), (error) => error.code === 'invalid_request', JSON.stringify(environment));
+    }
+    // Recorded data (outbox) goes through validateSpecification and must not be refused by the admission rule.
+    validateSpecificationV2(spec2({ environment: 'Repo/agent' }), LIMITS_X);
+    validateSpecification(spec2({ environment: 'Repo/agent' }), LIMITS_X);
+    validateSpecification({ environment: 'Repo/agent', step: 1 }, LIMITS_X);
+});
 
 test('version 2 specification: every field is checked, optional fields and folders are accepted', () => {
     assert.equal(spec2().version, SPECIFICATION_VERSION_2);

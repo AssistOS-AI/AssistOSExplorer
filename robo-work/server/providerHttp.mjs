@@ -21,7 +21,7 @@ const STATE_STATUS = Object.freeze({
     invalid_request: 400, not_found: 404, forbidden: 403,
     operation_conflict: 409, revision_conflict: 409, robot_busy: 409, resource_quarantined: 409, resource_present: 409,
     runtime_unavailable: 503, recovery_pending: 503, stale_generation: 503, capacity_exceeded: 503,
-    state_corrupt: 500
+    state_corrupt: 500, environment_unavailable: 400
 });
 // Terminal-target inventory bound (interface note 2.3 (9)): the body is exactly {error}.
 const INVENTORY_STATUS = Object.freeze({ target_inventory_too_large: 503 });
