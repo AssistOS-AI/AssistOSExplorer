@@ -11,6 +11,7 @@ import { ACHILLES_PRIVATE_DIRECTORY_NAME } from '../src/lib/storage/privateDataR
 import { WorkerError, stopOperationId } from '../../server/worker-coordinator/worker-client.mjs';
 import { WorkerCoordinatorError } from '../../server/worker-coordinator/errors.mjs';
 import { phaseOriginId } from '../../server/worker-coordinator/flow-origins.mjs';
+import { buildNativePrompt } from '../src/lib/prompts.mjs';
 
 // The worker engine against a fake coordinator hop (decision M-12): an interactive turn opens one event
 // subscription with its admission grant and reattaches only with a grant the user supplies; each user
@@ -692,6 +693,33 @@ async function channelSkills(root) {
     return [{ name: 'report-task-blocked', skillDir: path.join(base, 'report-task-blocked'), enabled: true },
         { name: 'require-human-input', skillDir: path.join(base, 'require-human-input'), enabled: true }];
 }
+
+test('worker copilot framing places admitted channel context before the unchanged request; ordinary workers retain prompt order', async (t) => {
+    const prompt = '  Inspect π.\nReturn the exact requested result.\n';
+    const channelPrompt = "\n\nRead /run/robo-work/skills/report-task-blocked/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan. Its channel here is /run/robo-work/channels/task-failure: run the script from the skill directory (/run/robo-work/skills/report-task-blocked) as `node scripts/run.mjs --directory /run/robo-work/channels/task-failure --input '<json>'`."
+        + "\n\nRead /run/robo-work/skills/require-human-input/SKILL.md. Use this required skill to ask the user for a business decision. Its channel here is /run/robo-work/channels/human-input: run the script from the skill directory (/run/robo-work/skills/require-human-input) as `node scripts/run.mjs --directory /run/robo-work/channels/human-input --input '<json>'`.";
+    for (const workflowSkills of [undefined, false, true]) {
+        let list;
+        const h = await harness(t, { atRoot: true, execution: { workflowSkills, workflowExecution: true, humanInput: true, systemPrompt: 'Worker persona.' }, skills: () => list });
+        list = await channelSkills(await fs.realpath(h.workingDir));
+        await h.engine.executeTurn({ sessionId: h.sessionId, prompt, skillName: 'report-task-blocked', owner: h.owner });
+        const spec = h.admitted[0].request.specification;
+        assert.equal(spec.displayText, prompt);
+        assert.deepEqual(spec.skills.map((skill) => skill.name), ['report-task-blocked', 'require-human-input']);
+        if (workflowSkills) {
+            assert.match(spec.prompt, /^# Runtime context\n\n/);
+            const requestAt = spec.prompt.indexOf('# Current user request\n\n');
+            assert.ok(requestAt > 0);
+            assert.ok(spec.prompt.includes(channelPrompt));
+            assert.match(spec.prompt, /Use the selected skill at \/run\/robo-work\/skills\/report-task-blocked\/SKILL.md\./);
+            assert.ok(spec.prompt.indexOf(channelPrompt) < requestAt);
+            assert.ok(spec.prompt.indexOf('Use the selected skill at /run/robo-work/skills/report-task-blocked/SKILL.md.') < requestAt);
+            assert.equal(spec.prompt.slice(requestAt + '# Current user request\n\n'.length), prompt);
+        } else {
+            assert.equal(spec.prompt, buildNativePrompt({ prompt, systemPrompt: 'Worker persona.', selectedSkillName: 'report-task-blocked', skillsRoot: '/run/robo-work/skills' }) + channelPrompt);
+        }
+    }
+});
 
 test('B1 cross-side: a project .agents/skills symlink to another project, a managed repository root or / yields no folder and no skills entry; the channel skills are skills[] entries', async (t) => {
     const targets = [

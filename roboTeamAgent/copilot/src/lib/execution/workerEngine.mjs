@@ -377,7 +377,6 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             // no path of the RoboTeam robot home is sent. The task-script context is a RoboTeam-local
             // resource outside the shared workspace and is not sent; the task-failure and human-input
             // channels are the worker's own (below).
-            const nativePrompt = buildNativePrompt({ prompt, resume, selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt, skillsRoot: SKILLS_ROOT });
             // The robot's skills (T2, decision M-22, deltas B1/M2, M-53 Q1/Q2): the enabled entries of the robot's admitted skill policy,
             // its required skills and each channel skill only when its channel is admitted for this attempt, sent as `skills[]`
             // {name, path, required?}. The worker resolves each path itself (anchored, no-follow) and stages exactly these folders
@@ -423,10 +422,12 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                     await emit({ type: 'diagnostic', message: `The ${skillName} skill is not available through the worker (its folder is not in the shared workspace); the ${channel} channel has no skill this turn.` });
                 }
             }
+            const nativePrompt = buildNativePrompt({ prompt, resume, selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt,
+                skillsRoot: SKILLS_ROOT, frameUserRequest: execution.workflowSkills === true, additionalContext: channelPrompt });
             const overridden = Boolean(session.modelOverride || execution.model);
             const specification = {
                 version: SPEC_VERSION,
-                prompt: sanitize(nativePrompt + channelPrompt),
+                prompt: sanitize(nativePrompt),
                 displayText: sanitize(context.rawText || prompt),
                 sessionId, turnId, ...(projectCwd ? { cwd: projectCwd } : {}), permissions: permissionMode,
                 ...(overridden && backend && models[backend] ? { model: models[backend], effort: efforts[backend] || 'default' } : {}),

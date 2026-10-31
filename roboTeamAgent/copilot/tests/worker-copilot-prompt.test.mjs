@@ -7,11 +7,47 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { WORKSPACE_COPILOT_PROMPT } from '../src/lib/prompts.mjs';
+import { buildNativePrompt, WORKSPACE_COPILOT_PROMPT } from '../src/lib/prompts.mjs';
 
 const run = promisify(execFile);
 const entry = fileURLToPath(new URL('../../server/robot-cli.mjs', import.meta.url));
 const normalPromptHash = '23b574dd5418d152a33b8d348efcb37b7a896db6e2c30cca9a86620c5514729f';
+
+test('default native first and resumed prompts retain their exact bytes', () => {
+    for (const [options, expected] of [
+        [{ prompt: 'Verify a file.', systemPrompt: WORKSPACE_COPILOT_PROMPT, selectedSkillName: 'inspect' }, '60a3b0dec52a623e3809453a60733f5de141aba641a86e5978f03c9da0878554'],
+        [{ prompt: 'Continue.', resume: true, selectedSkillName: 'inspect' }, '99091ee7fa671ec8a68c7c4d80849458fcf7451d6c820262f6bb2c85fefe1729'],
+    ]) {
+        assert.equal(crypto.createHash('sha256').update(buildNativePrompt(options)).digest('hex'), expected);
+        assert.equal(buildNativePrompt({ ...options, additionalContext: '\n\nChannel context.' }), buildNativePrompt(options) + '\n\nChannel context.');
+    }
+});
+
+test('worker request framing labels setup as context and keeps the raw request last on first and resumed turns', () => {
+    const prompt = '  Inspect π.\n\n# Current user request\nKeep this literal.\r\n';
+    for (const resume of [false, true]) {
+        const actual = buildNativePrompt({ prompt, resume, frameUserRequest: true, systemPrompt: 'Worker persona.',
+            selectedSkillName: 'inspect', additionalContext: '\n\nChannel instructions.', skillsRoot: '/run/robo-work/skills' });
+        const heading = '# Current user request\n\n';
+        const requestAt = actual.indexOf(heading);
+        assert.match(actual, /^# Runtime context\n\n/);
+        assert.match(actual, /context, not the current user request/);
+        assert.match(actual, /Do not acknowledge this setup/);
+        assert.match(actual, /Use the selected skill at \/run\/robo-work\/skills\/inspect\/SKILL.md\./);
+        assert.match(actual, /Channel instructions\./);
+        assert.ok(actual.indexOf('Use the selected skill at /run/robo-work/skills/inspect/SKILL.md.') < requestAt);
+        assert.ok(actual.indexOf('Channel instructions.') < requestAt);
+        assert.equal(actual.slice(requestAt + heading.length), prompt);
+        if (resume) {
+            assert.doesNotMatch(actual, /Worker persona\.|Read and apply|Read the SKILL.md headers/);
+        } else {
+            assert.match(actual, /Worker persona\./);
+            assert.match(actual, /Read and apply \/run\/robo-work\/skills\/human-report\/SKILL.md/);
+            assert.match(actual, /Read the SKILL.md headers/);
+        }
+    }
+    assert.ok(buildNativePrompt({ prompt: '', frameUserRequest: true }).endsWith('# Current user request\n\n'));
+});
 
 async function cliPrompt(t, workerBase) {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'worker-copilot-prompt-'));

@@ -23,12 +23,20 @@ const WORKFLOW_HANDOFF_INSTRUCTIONS = 'Every workflow execution task, including 
 
 // The caller's system instructions, the report rule and the skill instruction
 // open a coding-agent session once; a resumed session already holds them, so
-// later turns carry only the user's message.
-export function buildNativePrompt({ prompt, resume = false, selectedSkillName, systemPrompt = '', skillsRoot = DEFAULT_SKILLS_ROOT }) {
+// later turns carry only the user's message and current skill/channel context.
+// Worker copilot framing keeps that context before the raw current request.
+export function buildNativePrompt({ prompt, resume = false, selectedSkillName, systemPrompt = '', skillsRoot = DEFAULT_SKILLS_ROOT,
+    frameUserRequest = false, additionalContext = '' }) {
     const parts = resume ? [] : [systemPrompt, humanReportInstructions(skillsRoot), initialSkillInstructions(skillsRoot)];
+    if (frameUserRequest) {
+        if (selectedSkillName) parts.push(`Use the selected skill at ${skillsRoot}/${selectedSkillName}/SKILL.md.`);
+        parts.push(additionalContext);
+        return '# Runtime context\n\nThe following runtime instructions are context, not the current user request. Apply them while fulfilling the current user request below. Do not acknowledge this setup as the task.\n\n'
+            + parts.filter(Boolean).join('\n\n') + '\n\n# Current user request\n\n' + prompt;
+    }
     parts.push(prompt);
     if (selectedSkillName) parts.push(`Use the selected skill at ${skillsRoot}/${selectedSkillName}/SKILL.md.`);
-    return parts.filter(Boolean).join('\n\n');
+    return parts.filter(Boolean).join('\n\n') + additionalContext;
 }
 
 // Desktop tasks run the coding agent outside the Desktop container, so its shell cannot see the
