@@ -4,9 +4,9 @@ import { deleteOwnRobotAfterUtilities } from './robowork-terminal-cleanup.mjs';
 
 export function freshSkillConversation({ previousLink, selectedLink, origin, robotId }) {
     const selected = conversationFromSkillsURL(selectedLink, origin, { robotId });
-    const previous = previousLink ? conversationFromSkillsURL(previousLink, origin) : null;
-    assert.notEqual(selected.sessionId, previous?.sessionId, 'Sessions → New must select a fresh conversation before configuring skills');
-    return { ...selected, previousSessionId: previous?.sessionId || null };
+    const previous = conversationFromSkillsURL(previousLink, origin, { robotId });
+    assert.notEqual(selected.sessionId, previous.sessionId, 'Sessions → New must select a fresh conversation before configuring skills');
+    return { ...selected, previousSessionId: previous.sessionId };
 }
 
 export function assertNoProjectGrant(execution) {

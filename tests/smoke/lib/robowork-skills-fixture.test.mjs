@@ -65,8 +65,12 @@ test('fresh conversation selection uses a new UUID and the exact robot, includin
     const previousLink = link(sessionId);
     const freshId = '87654321-4321-4321-8321-cba987654321';
     const selectedLink = link(freshId);
-    assert.equal(freshSkillConversation({ previousLink: null, selectedLink, origin, robotId }).sessionId, freshId);
+    for (const missing of [null, undefined, '']) {
+        assert.throws(() => freshSkillConversation({ previousLink: missing, selectedLink, origin, robotId }));
+    }
     assert.equal(freshSkillConversation({ previousLink, selectedLink, origin, robotId }).previousSessionId, sessionId);
+    assert.equal(freshSkillConversation({ previousLink, selectedLink, origin, robotId }).sessionId, freshId);
+    assert.throws(() => freshSkillConversation({ previousLink: link(sessionId, 'another-robot'), selectedLink, origin, robotId }));
     assert.throws(() => freshSkillConversation({ previousLink, selectedLink: previousLink, origin, robotId }));
     assert.throws(() => freshSkillConversation({ previousLink, selectedLink: link(freshId, 'another-robot'), origin, robotId }));
     assert.throws(() => freshSkillConversation({ previousLink, selectedLink: null, origin, robotId }));

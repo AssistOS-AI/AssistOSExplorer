@@ -67,10 +67,17 @@ test.describe('RoboWork admitted skills', () => {
                     // The outer CLI requires a metadata directory even when the worker receives no project grant.
                     robot: run, project: withProject ? path.basename(project) : '.', prompt, check: withProject ? guard : null,
                     beforeSend: async (chatPage) => {
-                        const previousLink = await chatPage.locator('#sessionSettingsLink').getAttribute('href');
                         await expect(chatPage.locator('#sessionsBtn')).toBeEnabled();
                         await chatPage.locator('#sessionsBtn').click();
                         await expect(chatPage.locator('#sessionList .wa-session-list-new')).toBeVisible();
+                        await expect.poll(async () => {
+                            try {
+                                conversationFromSkillsURL(await chatPage.locator('#sessionSettingsLink').getAttribute('href'), smokeConfig.baseURL, { robotId: robot.id });
+                                return true;
+                            } catch { return false; }
+                        }).toBe(true);
+                        const previousLink = await chatPage.locator('#sessionSettingsLink').getAttribute('href');
+                        conversationFromSkillsURL(previousLink, smokeConfig.baseURL, { robotId: robot.id });
                         await chatPage.locator('#sessionList .wa-session-list-new').click();
                         await expect.poll(async () => {
                             try {
