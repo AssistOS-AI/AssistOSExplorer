@@ -12,6 +12,7 @@ import { apiOk, makeStallGuard, toolOutputs, markerOf, workerProcesses } from '.
 import { chatTurn, stopChatTurn, applySelectedModel, postQuietly } from '../lib/robowork-interaction.mjs';
 import { projectManifest, runtimeIdentity, requireRoboWorkGateFlags } from '../lib/robowork-terminal.mjs';
 import { scopedSkillTurn, assertAdmittedMarker, throwScenarioFailures, freshSkillConversation, assertNoProjectGrant, deleteOwnSkillRobotAfterChat } from '../lib/robowork-skills-fixture.mjs';
+import { observeWebchatCleanup } from '../lib/webchat-cleanup.mjs';
 
 // H / S3-S4, fresh deployment only:
 // SMOKE_ROBOWORK_SKILLS=1 node scripts/run-robowork-e2e.mjs specs/12-robowork-skills.spec.mjs
@@ -52,8 +53,14 @@ test.describe('RoboWork admitted skills', () => {
             let primaryError = null;
             let sessionId;
             let turnStartedMs;
+            let webchatCleanup;
             try {
-                await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH);
+                const initialRobots = page.waitForResponse((response) => response.request().method() === 'GET'
+                    && new URL(response.url()).origin === new URL(smokeConfig.baseURL).origin
+                    && new URL(response.url()).pathname === `${ROBOTEAM_BASE_PATH}api/robots`);
+                const [listed] = await Promise.all([initialRobots, signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH)]);
+                expect(listed.status(), 'The initial robot list loads successfully before leaving RoboTeam').toBe(200);
+                expect(await listed.finished(), 'The complete initial robot-list response is received before navigation').toBeNull();
                 robot = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name: run, codingAgents: ['opencode'] } }, [201])).robot;
                 await applySelectedModel(roboTeamApi, page, robot);
                 await apiOk(roboTeamApi, page, { method: 'POST', path: `api/robots/${robot.id}/skillsets`, body: { name: 'markerrepo', source: repository, description: 'Diagnostic marker skill' } });
@@ -63,6 +70,7 @@ test.describe('RoboWork admitted skills', () => {
                     + 'This is an execution request. Call the bash tool now with the exact command above. Do not acknowledge readiness or ask for a task. After the tool returns, return its exact output. Do not write or modify any files.';
                 assert.ok(!prompt.includes(nonce));
                 const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: startMs, scope: () => ({ cwd: withProject ? project : undefined, robotName: run }) });
+                webchatCleanup = observeWebchatCleanup(page, withProject ? path.basename(project) : '.');
                 const answer = await chatTurn(page, {
                     // The outer CLI requires a metadata directory even when the worker receives no project grant.
                     robot: run, project: withProject ? path.basename(project) : '.', prompt, check: withProject ? guard : null,
@@ -137,7 +145,10 @@ test.describe('RoboWork admitted skills', () => {
                 try {
                     await deleteOwnSkillRobotAfterChat({
                         robot, ownedNamePrefix: run,
-                        detachOwnChat: () => page.goto(ROBOTEAM_BASE_PATH, { waitUntil: 'load' }),
+                        detachOwnChat: async () => {
+                            if (webchatCleanup) await webchatCleanup.quiesce();
+                            await page.goto(ROBOTEAM_BASE_PATH, { waitUntil: 'load' });
+                        },
                         readLedger: () => readLedger({ workspaceRoot, scratchDir: evidenceDir, robotName: run }),
                         removeRobot: (robotId) => postQuietly(page, ROBOTEAM_BASE_PATH, 'api/control', { robotId, operation: 'robot-delete' }),
                         record: (event) => events.push(event),
@@ -161,6 +172,7 @@ test.describe('RoboWork admitted skills', () => {
             if (!robot || robotDeleted) await cleanup(() => {
                 for (const directory of [repository, project]) removeRunDirectory({ workspaceRoot, name: path.basename(directory), prefixes: ['e2e-h-'] });
             });
+            await cleanup(() => webchatCleanup?.dispose());
             await cleanup(() => save('cleanup-errors.json', cleanupErrors.map((error) => ({ name: error.name, message: error.message }))));
             throwScenarioFailures(primaryError, cleanupErrors);
         });

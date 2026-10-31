@@ -387,7 +387,7 @@ test.describe('RoboWork robot terminals', () => {
             await terminalInput(page, terminal, "node -e 'const b=Buffer.alloc(32768,120); const t=setInterval(()=>process.stdout.write(b),20); setTimeout(()=>{clearInterval(t);process.exit(0)},360000)'\n");
             await waitFor('flood actually produces output', async () => (await terminalSnapshot(page, terminal)).outputChars > 2 * 1024 * 1024, { timeoutMs: 30_000, intervalMs: 500 });
             let done = false;
-            task = chatTurn(chatPage, { robot: b.name, project: '', prompt: 'Use your shell tool to run sleep 5; printf FLOOD_B_DONE, then reply FLOOD_B_DONE.', timeoutMs: 5 * 60_000 })
+            task = chatTurn(chatPage, { robot: b.name, project: '.', prompt: 'Use your shell tool to run sleep 5; printf FLOOD_B_DONE, then reply FLOOD_B_DONE.', timeoutMs: 5 * 60_000 })
                 .then((answer) => ({ answer }), (error) => ({ error })).finally(() => { done = true; });
             while (!done) {
                 measurements.push({ phase: 'flood', ...measure() });
@@ -447,7 +447,7 @@ test.describe('RoboWork robot terminals', () => {
                 return stderr.includes('MEASUREMENT_READY');
             });
             const second = await ctx.launch(b);
-            task = chatTurn(chatPage, { robot: b.name, project: '', prompt: 'Use one shell command to run sleep 90, then printf TASK_B_DONE. Do not end or stop the command early. Reply TASK_B_DONE after it finishes.', timeoutMs: 5 * 60_000 });
+            task = chatTurn(chatPage, { robot: b.name, project: '.', prompt: 'Use one shell command to run sleep 90, then printf TASK_B_DONE. Do not end or stop the command early. Reply TASK_B_DONE after it finishes.', timeoutMs: 5 * 60_000 });
             task.catch(() => {});
             await waitFor('B AI admission running while both robot terminals remain open', () => {
                 const rows = readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: b.name }).executions;
