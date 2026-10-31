@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 
-import { test, expect } from '../lib/fixtures.mjs';
+import { test, expect, attachPageDiagnostics, assertPageDiagnosticsClean } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { signIn } from '../lib/auth.mjs';
-import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
+import { ROBOTEAM_BASE_PATH, roboTeamApi, conversationFromSkillsURL } from '../lib/conversation-skills.mjs';
 import { discoverContainers, createProjectFixture, readLedger, nested, nestedLogsMerged, startPoller, readPoll, stopPoller, bwrapMarkerProcesses, removeRunDirectory } from '../lib/robowork-e2e.mjs';
 import { waitFor, apiOk, markerOf, workerProcesses } from '../lib/robowork-scenarios.mjs';
 import { applySelectedModel, chatTurn, stopChatTurn, postQuietly } from '../lib/robowork-interaction.mjs';
@@ -16,6 +16,10 @@ import { collectExactRoutingServerIdentity, workspaceHash } from '../lib/webtty-
 import { openExplorer, assertExplorerDirectory } from '../lib/explorer.mjs';
 import { extendTerminalFixture, terminalMatrixSource, networkInventorySource } from '../lib/robowork-terminal-matrix.mjs';
 import { deleteOwnRobotAfterUtilities } from '../lib/robowork-terminal-cleanup.mjs';
+import { observeHSessionSelection } from '../lib/robowork-h-session-observer.mjs';
+import { observeWebchatCleanup } from '../lib/webchat-cleanup.mjs';
+import { throwScenarioFailures } from '../lib/robowork-skills-fixture.mjs';
+import { runningL9Turn } from '../lib/robowork-l9-fixture.mjs';
 
 // Fresh-deploy live suite. No restart is performed unless its specific flag is set.
 // SMOKE_ROBOWORK_TERMINALS=1: L1-L6/L8, M-51 logs, M-54 Close terminals, project launch latency.
@@ -416,14 +420,19 @@ test.describe('RoboWork robot terminals', () => {
         }
     });
 
-    test('L9/M-65: terminal A stays open while terminal and AI task B run; no inherited PTY master', async ({ page, context }) => {
+    test('L9/M-65: terminal A stays open while terminal and AI task B run; no inherited PTY master', async ({ page, context }, testInfo) => {
         test.skip(process.env.SMOKE_ROBOWORK_TERMINAL_CONCURRENT !== '1', 'Opt in with SMOKE_ROBOWORK_TERMINAL_CONCURRENT=1 (real model turn).');
         test.setTimeout(10 * 60_000);
         const ctx = await setup(page, 'terminal-concurrent');
         const chatPage = await context.newPage();
+        const chatDiagnostics = attachPageDiagnostics(chatPage, testInfo, 'l9-chat');
         let watcher;
         let watchResult;
         let task;
+        let stdout = ''; let stderr = '';
+        let watchOutcome; let watchFailure; let taskOutcome;
+        let conversationObserver; let chatCleanup; let selectedConversation;
+        let primaryError = null;
         try {
             const a = await ctx.createRobot('-a');
             const b = await ctx.createRobot('-b');
@@ -432,7 +441,6 @@ test.describe('RoboWork robot terminals', () => {
             // The probe has its own inherited-master positive control and rejects unreadable live fd tables.
             watcher = spawn('podman', ['exec', '-i', ctx.containers.box, 'podman', 'exec', '-i', '-e', 'PTYLEAK_TERMINAL_ARGV=/bin/bash', ctx.containers.worker,
                 'node', '/code/tests/sandbox/live/ptyleak.mjs', '--watch', '180', '--controlled', '--worker-pid', String(workerPid)], { stdio: ['pipe', 'pipe', 'pipe'] });
-            let stdout = ''; let stderr = '';
             watcher.stdin.on('error', () => {}); // A closed control pipe is reported by watchResult/exit, never as success.
             watcher.stdout.on('data', (chunk) => { stdout += chunk; });
             watcher.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -440,28 +448,77 @@ test.describe('RoboWork robot terminals', () => {
                 watcher.on('error', reject);
                 watcher.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
             });
-            watchResult.catch(() => {});
+            watchResult.then((value) => { watchOutcome = value; }, (error) => { watchFailure = error; });
             // Explicit readiness follows the inherited-master positive control and the first sampler observation.
             await waitFor('fd watch measurement started', () => {
+                if (watchFailure) throw watchFailure;
                 if (watcher.exitCode !== null) throw new Error(`fd watcher exited ${watcher.exitCode}`);
                 return stderr.includes('MEASUREMENT_READY');
             });
             const second = await ctx.launch(b);
-            task = chatTurn(chatPage, { robot: b.name, robotId: b.id, project: '.', prompt: 'Use one shell command to run sleep 90, then printf TASK_B_DONE. Do not end or stop the command early. Reply TASK_B_DONE after it finishes.', timeoutMs: 5 * 60_000 });
-            task.catch(() => {});
-            await waitFor('B AI admission running while both robot terminals remain open', () => {
-                const rows = readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: b.name }).executions;
-                return rows.some((row) => row.kind !== 'terminal' && row.state === 'running') && rows.some((row) => row.kind === 'terminal' && row.state === 'running');
+            const readB = () => readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: b.name });
+            const workerRobotId = readB().robot.id;
+            let sentAt;
+            conversationObserver = await observeHSessionSelection(chatPage, { baseURL: smokeConfig.baseURL, agent: smokeConfig.webchatAgent, robot: b.name, directory: '.' });
+            chatCleanup = observeWebchatCleanup(chatPage, '.');
+            task = chatTurn(chatPage, { robot: b.name, robotId: b.id, project: '.', prompt: 'Use one shell command to run sleep 90, then printf TASK_B_DONE. Do not end or stop the command early. Reply TASK_B_DONE after it finishes.', timeoutMs: 5 * 60_000,
+                beforeSend: async () => {
+                    await expect(chatPage.locator('#sessionsBtn')).toBeEnabled();
+                    const listMark = conversationObserver.checkpoint();
+                    await chatPage.locator('#sessionsBtn').click();
+                    await expect(chatPage.locator('#sessionList .wa-session-list-new')).toBeVisible();
+                    let baseline;
+                    await expect.poll(() => Boolean(baseline = conversationObserver.listAfter(listMark))).toBe(true);
+                    const newMark = conversationObserver.checkpoint();
+                    await chatPage.locator('#sessionList .wa-session-list-new').click();
+                    await expect.poll(() => Boolean(selectedConversation = conversationObserver.selectedAfter(newMark, baseline))).toBe(true);
+                    await expect.poll(async () => {
+                        const href = await chatPage.locator('#sessionSettingsLink').getAttribute('href');
+                        if (!href) return false;
+                        try { return conversationFromSkillsURL(href, smokeConfig.baseURL, { robotId: b.id }).sessionId === selectedConversation.sessionId; }
+                        catch { return false; }
+                    }).toBe(true);
+                    conversationObserver.assertSelected(selectedConversation);
+                    ctx.save('fresh-b-conversation.json', selectedConversation);
+                    sentAt = Date.now();
+                },
+            });
+            task.then((answer) => { taskOutcome = { answer }; }, (error) => { taskOutcome = { error }; });
+            const liveTurn = () => {
+                if (taskOutcome?.error) throw taskOutcome.error;
+                if (!selectedConversation || !Number.isFinite(sentAt)) return null;
+                return runningL9Turn(readB(), { robotName: b.name, workerRobotId, sessionId: selectedConversation.sessionId, sinceMs: sentAt });
+            };
+            const admitted = await waitFor('B AI admission running while both robot terminals remain open', () => {
+                const turn = liveTurn();
+                return turn && readB().executions.some((row) => row.kind === 'terminal' && row.state === 'running') ? turn : null;
             });
             expect((await terminalSnapshot(page, first)).exits).toEqual([]);
             // Four terminals on A coexist with its task capacity; the fifth refuses without a fifth running admission.
             for (let index = 1; index < 4; index += 1) await ctx.launch(a);
-            const capTarget = await robotTarget(page, a);
+            // Five terminal SSE streams plus WebChat fill the browser HTTP/1 pool. Both proof and API call use its separate request context.
+            const origin = new URL(page.url()).origin;
+            const proofReply = await page.request.get('/auth/token?mutationRoute=roboTeamAgent', { timeout: 15_000 });
+            expect(proofReply.status()).toBe(200);
+            const proof = (await proofReply.json()).browserMutation;
+            expect(proof?.routeKey).toBe('roboTeamAgent');
+            expect(proof?.csrfToken).toBeTruthy();
+            if (proof.origin) expect(proof.origin).toBe(origin);
+            const targetReply = await page.request.post(`${ROBOTEAM_BASE_PATH}api/worker/robots/terminal-target`, {
+                headers: { origin, 'x-ploinky-browser-csrf-token': proof.csrfToken }, data: { robotId: a.id }, timeout: 15_000,
+            });
+            expect(targetReply.status()).toBe(200);
+            const capTarget = await targetReply.json();
+            expect(capTarget.ok).toBe(true);
+            expect(capTarget.targetId).toBe(readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: a.name }).robot.id);
             const refusal = await launchTerminal(page, capTarget, { onCreated: (terminal) => ctx.terminals.push(terminal) });
             expect(refusal.status).toBeGreaterThanOrEqual(400);
             expect(JSON.stringify(refusal.payload)).toContain('terminal_limit');
             expect(readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: a.name }).executions.filter((row) => row.kind === 'terminal' && row.state === 'running')).toHaveLength(4);
             await waitFor('fd watch covers every required live role', () => {
+                if (taskOutcome?.error) throw taskOutcome.error;
+                if (taskOutcome?.answer !== undefined) throw new Error('B AI turn completed before live fd measurement finish');
+                if (watchFailure) throw watchFailure;
                 if (watcher.exitCode !== null) throw new Error(`fd watcher exited ${watcher.exitCode}`);
                 const rows = stderr.split('\n').filter((line) => line.includes('MEASUREMENT_COVERAGE '));
                 if (!rows.length) return false;
@@ -470,20 +527,24 @@ test.describe('RoboWork robot terminals', () => {
             }, { timeoutMs: 60_000, intervalMs: 100 });
             const aRows = readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: a.name }).executions;
             const bRows = readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: b.name }).executions;
+            const ai = runningL9Turn(readB(), { robotName: b.name, workerRobotId, sessionId: selectedConversation.sessionId, sinceMs: sentAt, executionId: admitted.execution_id });
+            expect(ai, 'The exact fresh B AI turn is alive at measurement finish').toBeTruthy();
             expect(aRows.filter((row) => row.kind === 'terminal' && row.state === 'running')).toHaveLength(4);
-            expect(bRows.some((row) => row.kind !== 'terminal' && row.state === 'running')).toBe(true);
+            expect(ai.state).toBe('running');
             expect(bRows.some((row) => row.kind === 'terminal' && row.state === 'running')).toBe(true);
             expect((await terminalSnapshot(page, first)).exits).toEqual([]);
             expect((await terminalSnapshot(page, second)).exits).toEqual([]);
-            const monitors = [...aRows.map((row) => ({ ...row, group: 'terminal-a' })), ...bRows.map((row) => ({ ...row, group: row.kind === 'terminal' ? 'terminal-b' : 'ai' }))]
+            const monitors = [...aRows.filter((row) => row.kind === 'terminal').map((row) => ({ ...row, group: 'terminal-a' })),
+                ...bRows.filter((row) => row.kind === 'terminal').map((row) => ({ ...row, group: 'terminal-b' })), { ...ai, group: 'ai' }]
                 .filter((row) => row.state === 'running').flatMap((row) => row.blockers
                 .filter((blocker) => ['endpoint', 'process-tree'].includes(blocker.kind) && blocker.identity && blocker.settled_at === null)
                 .map((blocker) => ({ ...JSON.parse(blocker.identity), marker: markerOf(blocker), group: row.group })));
             expect(monitors.length).toBeGreaterThan(0);
+            expect(monitors.some((monitor) => monitor.group === 'ai'), 'Finish evidence contains actual AI process identities').toBe(true);
             ctx.save('measurement-finish.json', { monitors, aRows, bRows });
             // The watch validates exact ledger pid/startTime identities and stops before the task or terminals are torn down.
             watcher.stdin.end(`${JSON.stringify({ type: 'finish', monitors })}\n`);
-            const result = await watchResult;
+            const result = await waitFor('controlled fd watcher exits after finish', () => { if (watchFailure) throw watchFailure; return watchOutcome; }, { timeoutMs: 10_000, intervalMs: 100 });
             ctx.save('ptyleak.json', result.stdout);
             ctx.save('ptyleak-stderr.txt', result.stderr);
             expect(result.code).toBe(0);
@@ -493,15 +554,37 @@ test.describe('RoboWork robot terminals', () => {
             for (const role of ['prep', 'bwrap', 'orchestration', 'endpoint', 'workload', 'terminal']) expect(probe.counts[role], `${role} actually sampled`).toBeGreaterThan(0);
             expect(await terminalCommand(page, second, 'echo TERMINAL_B_OK; ls -l /proc/$$/fd')).toContain('TERMINAL_B_OK');
             expect(await task).toContain('TASK_B_DONE');
-        } finally {
+            conversationObserver.assertSelected(selectedConversation);
+        } catch (error) { primaryError = error; }
+        const cleanupErrors = [];
+        const clean = async (action) => { try { await action(); } catch (error) { cleanupErrors.push(error); } };
+        {
             // Abort this measurement before product cleanup, even when setup or finish validation failed.
-            if (watcher && watcher.exitCode === null && !watcher.stdin.writableEnded) watcher.stdin.end('{"type":"abort"}\n');
-            await watchResult?.catch(() => {});
-            await stopChatTurn(chatPage);
-            await task?.catch(() => {});
-            await chatPage.close();
-            await cleanup(ctx, page);
+            await clean(() => { if (watcher && watcher.exitCode === null && !watcher.stdin.writableEnded) watcher.stdin.end('{"type":"abort"}\n'); });
+            if (watcher) await clean(() => waitFor('controlled fd watcher closes after abort', () => { if (watchFailure) throw watchFailure; return watchOutcome; }, { timeoutMs: 10_000, intervalMs: 100 }));
+            await clean(() => ctx.save('ptyleak.json', stdout));
+            await clean(() => ctx.save('ptyleak-stderr.txt', stderr));
+            // End owned terminals only after the measurement has finished/aborted, freeing browser slots before WebChat controls.
+            for (const terminal of ctx.terminals) await clean(() => closeTerminal(page, terminal));
+            if (task) await clean(async () => { expect(await stopChatTurn(chatPage), 'Own chat cancellation completes before stream navigation').toBe(true); });
+            let detachedAt;
+            if (chatCleanup) await clean(async () => { await chatCleanup.quiesce(); detachedAt = Date.now(); });
+            await clean(() => ctx.save('conversation-stream.json', conversationObserver?.evidence() || null));
+            await clean(() => conversationObserver?.assertNoFailure());
+            await clean(() => conversationObserver?.dispose());
+            await clean(() => chatCleanup?.dispose());
+            await clean(() => chatPage.close());
+            detachedAt ||= Date.now();
+            if (task) await clean(() => waitFor('own chat task settles after close', () => taskOutcome, { timeoutMs: 10_000, intervalMs: 100 }));
+            await clean(() => ctx.save('task-outcome.json', { state: taskOutcome ? (taskOutcome.error ? 'failed' : 'completed') : 'unsettled',
+                error: taskOutcome?.error && { name: taskOutcome.error.name, message: taskOutcome.error.message } }));
+            if (task) await clean(() => waitFor('own CLI disconnected-runtime grace expires', () => Date.now() >= detachedAt + 121_000, { timeoutMs: 122_000, intervalMs: 1000 }));
+            await clean(() => cleanup(ctx, page));
+            await clean(() => chatDiagnostics.flush());
+            await clean(() => assertPageDiagnosticsClean(chatPage, 'L9 chat has no unrelated browser errors'));
         }
+        await clean(() => ctx.save('cleanup-errors.json', cleanupErrors.map((error) => ({ name: error.name, message: error.message }))));
+        throwScenarioFailures(primaryError, cleanupErrors);
     });
 
     test('L7/A11: RoboTeam restart preserves the shell; worker restart ends it and a new terminal opens', async ({ page }) => {
