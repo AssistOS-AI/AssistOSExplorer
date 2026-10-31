@@ -19,6 +19,8 @@ import { controlRequestFrom, parseJsonBody, projectAcceptance, projectSnapshot, 
 //   /v1/coordinator/references/<id>/events     referenceEvents
 //   /v1/coordinator/references/<id>/control    controlReference
 //   /v1/coordinator/robots/provision|configure|delete|list|get
+//   /v1/coordinator/robots/terminals/close     closeTerminals (M-54): an administrator grant ends every open robot terminal of one robot
+//                                              through the terminal path's normal shutdown end (cause `shutdown`), then retries configure
 //   /v1/coordinator/operations/get
 //   /v1/coordinator/obligations                          admitObligation (S6 Part D)
 //   /v1/coordinator/obligations/list                     listObligations
@@ -65,7 +67,9 @@ function refuse(code, reason) {
 // `request`: {authInfo, method, path, query, body} as received by the provider: `authInfo`
 // is the trusted `x-ploinky-auth-info` value, `query` the received `search` ('' or '?...'),
 // `body` the raw bytes. `store` must be opened with the S1x extension limits.
-export function createCoordinatorAdapter({ store, workspaceId, verifier }) {
+// `terminals` (optional): the worker's terminal path, `{ closeRobot(robotId) -> Promise<{ closed, unverified }> }`. Without it the
+// Close terminals route is operation_unavailable.
+export function createCoordinatorAdapter({ store, workspaceId, verifier, terminals = null }) {
     for (const method of ['admit', 'lookupOrigin', 'registerBinding', 'readBindingOwner', 'observeReference', 'listReferenceEvents',
         'controlReference', 'consumeTokenIds', 'beginProvision', 'configure', 'beginDelete', 'listRobots', 'getRobot', 'getOperationOutcome',
         'admitObligation', 'acceptObligation', 'rejectObligation', 'listObligations', 'applyOutbox']) {
@@ -387,6 +391,27 @@ export function createCoordinatorAdapter({ store, workspaceId, verifier }) {
 
         getRobot(request) {
             return coordinatorRead(request, `${COORDINATOR_BASE}/robots/get`, ['robotId'], (context, body) => store.getRobot(context, body));
+        },
+
+        // M-54 Close terminals: the lifecycle administrator rule (verified direct administrator grant). The token ID is consumed durably
+        // first, so a replay is refused; the robot must be a workspace robot the store knows (not_found otherwise). Each terminal of the
+        // robot ends through the normal end path; the answer counts them (`unverified`: ends whose termination could not be proven,
+        // which leave the robot nonready with resource_quarantined). Nothing else is changed.
+        async closeTerminals(request) {
+            const hop = verifyCoordinatorRequest(verifier, request);
+            const body = withDurableReplay(store, [hop], (replay) => {
+                store.consumeTokenIds(replay);
+                requireRoute(hop, `${COORDINATOR_BASE}/robots/terminals/close`);
+                const parsed = exactObject(parseJsonBody(request.body), ['robotId']);
+                if (!isInternalId(parsed.robotId)) fail('invalid_request');
+                // The administrator rule of every lifecycle call (refuses a missing grant, a non-administrator and a guest).
+                contextForLifecycle(workspaceId, hop, 'configure');
+                store.getRobot(contextForCoordinatorRead(workspaceId, hop), { robotId: parsed.robotId });
+                return parsed;
+            });
+            if (!terminals || typeof terminals.closeRobot !== 'function') refuse('operation_unavailable', 'operation_unmapped');
+            const outcome = await terminals.closeRobot(body.robotId);
+            return { robotId: body.robotId, closed: outcome.closed, unverified: outcome.unverified };
         },
 
         getOperation(request) {

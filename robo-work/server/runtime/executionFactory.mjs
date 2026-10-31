@@ -82,6 +82,19 @@ export function hasRegularSkillFile(fd, { open = (target, flags) => fs.openSync(
 export const skillStageName = (index) => `s${index}`;
 const OPT = '/opt/robo-work';
 const TOOLS = '/opt/robo-work-tools';
+// M-8 robot terminal: the fixed, worker-chosen shell (M-8 SPEC "Sandbox" row). setsid makes a new session and takes the PTY slave
+// (stdio 0) as its controlling terminal, so job control and ^C work; --wait keeps the exit status. A login bash reads the robot's own
+// HOME profile only (inside the sandbox).
+export const TERMINAL_ARGV = Object.freeze(['/usr/bin/setsid', '--ctty', '--wait', '/bin/bash', '-l']);
+// /usr/local/sbin first: the image links the coding agents there (into /opt/robo-work-tools), so `command -v codex` works (M-10 logins).
+export const TERMINAL_ENV = Object.freeze({ HOME: '/home/robot', TERM: 'xterm-256color', PATH: '/usr/local/sbin:/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' });
+export const TERMINAL_HOME = '/home/robot';
+
+// The virtual name of a terminal's project grant: the selected folder's own name when it is a plain component, else `project`.
+export function terminalGrantName(selection) {
+    const name = String(selection).split('/').at(-1);
+    return /^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$/u.test(name) && !name.endsWith(' ') ? name : 'project';
+}
 
 // The read-only image binds shared by every role: /usr and the certificate directories, plus symlinks for the merged-usr
 // directories. A system without a merged /usr binds the directories themselves.
@@ -145,6 +158,63 @@ export function createExecutionFactory({
     const grantOptions = { workspaceRoot, workerStore: robots.root, sourceProvider: runtimeSources, log };
 
     return Object.freeze({
+        // M-8 robot terminal. `item` { robotId, executionId, attemptId } of an admitted terminal; `project` null (HOME) or { selection }
+        // (a workspace-relative folder, already syntax-checked). HOME is opened exactly as for a workload (robot store, O_NOFOLLOW; it is
+        // not a workspace path, so it cannot go through the workspace grant resolver). The project folder is resolved ONLY through
+        // resolveExecutionGrants (role `project`, access `write`: the active-source rule M-63 applies, fresh list for this launch) and, while
+        // the terminal runs, registered with the factory's source watch (M-67 Q2): a folder that becomes an active source ends the terminal
+        // (`revoked`). Refusals throw ExecutionSetupError (grant_<code>, runtime_sources_unavailable, robot_storage_unavailable) with
+        // nothing opened or started. Returns { cwd, start({ slave }), exited, revoked, lost, end(outcome) }: start publishes the anchor, the
+        // runtime directory, the execution network (the workload firewall) and the terminal process tree, in that order; no endpoint, no
+        // ALA and no activity watchdog (the Router's WebTTY limits govern idle time, M-51 Q2).
+        async openTerminal({ item, project = null, context }) {
+            const fds = [];
+            const grants = [];
+            const closeAll = async () => {
+                for (const fd of fds.splice(0)) { try { make.closeFd(fd); } catch { /* closed */ } }
+                for (const grant of grants.splice(0)) { try { await grant.close(); } catch { /* closed */ } }
+            };
+            try {
+                const where = robots.paths(item.robotId);
+                let homeFd;
+                try {
+                    homeFd = make.openDirectory(where.home);
+                    fds.push(homeFd);
+                } catch {
+                    throw new ExecutionSetupError('robot_storage_unavailable');
+                }
+                let resolved = [];
+                let writeGrants = [];
+                let cwd = TERMINAL_HOME;
+                if (project !== null) {
+                    const projectGrants = await make.executionGrants([{ role: 'project', access: 'write', relativePath: project.selection }], grantOptions);
+                    grants.push(...projectGrants);
+                    const name = terminalGrantName(project.selection);
+                    resolved = [{ name, path: `/projects/${name}`, hostPath: path.join(workspaceRoot, ...project.selection.split('/')), access: 'write', fd: projectGrants[0].fd }];
+                    writeGrants = projectGrants.filter((grant) => grant.access === 'write');
+                    cwd = `/projects/${name}`;
+                }
+                const image = make.image();
+                const roles = {
+                    terminal: { roBinds: [...image.roBinds, ...(image.toolBinds ?? [])], symlinks: image.symlinks, env: { ...TERMINAL_ENV }, argv: [...TERMINAL_ARGV] }
+                };
+                const lost = deferred();
+                const supervisor = make.supervisor({
+                    launcher, view, roles, home: { path: where.home, fd: homeFd }, grants: resolved, mode: 'terminal',
+                    onInfrastructureLoss: (reason) => lost.resolve(`infrastructure_lost:${reason}`)
+                });
+                const layout = { runtimeDir, cgroupSubtree: path.join(runtimeDir, 'cgroup') };
+                const ledger = make.ledger({
+                    state: store, context, robotId: item.robotId, executionId: item.executionId, attemptId: item.attemptId,
+                    referenceId: null, layout, sandbox: supervisor, walker, clock
+                });
+                return buildTerminal({ supervisor, ledger, closeAll, lost, cwd, executionId: item.executionId, writeGrants });
+            } catch (error) {
+                await closeAll();
+                throw error;
+            }
+        },
+
         async open({ item, plan, context, channels = {}, activity = () => {} }) {
             const fds = [];
             const grants = [];
@@ -236,6 +306,42 @@ export function createExecutionFactory({
             }
         }
     });
+
+    function buildTerminal({ supervisor, ledger, closeAll, lost: lostRef, cwd, executionId, writeGrants }) {
+        let ended = null;
+        let unwatch = null;
+        const exitedControl = deferred();
+        exitedControl.promise.catch(() => {});
+        const revokedControl = deferred();
+        return {
+            cwd,
+            exited: exitedControl.promise,
+            lost: lostRef.promise,
+            revoked: revokedControl.promise,
+            // `slave`: the PTY slave descriptor the caller holds (it stays the caller's; the spawn duplicates it into stdio 0-2).
+            async start({ slave }) {
+                if (ended === null && unwatch === null) unwatch = sourceWatch.register({ executionId, grants: writeGrants, onOverlap: (reason) => revokedControl.resolve(reason) });
+                await ledger.startKeeper();
+                await ledger.publish({ kind: 'runtime-dir' });
+                await ledger.publish({ kind: 'netns' });
+                const published = await ledger.publish({ kind: 'process-tree', spec: { role: 'terminal', slave, cwd } });
+                published.handle.wait().then(({ exitCode, signal }) => exitedControl.resolve({ exitCode, signal }), (error) => exitedControl.reject(error));
+            },
+            // The section 5.5 end path (beginAttemptEnd first), then the local cleanup. Resolves with the ledger's { releaseLog }.
+            end(outcome) {
+                ended ??= (async () => {
+                    if (unwatch !== null) { unwatch(); unwatch = null; }
+                    try {
+                        return await ledger.endExecution(outcome);
+                    } finally {
+                        await supervisor.exit().catch(() => {});
+                        await closeAll();
+                    }
+                })();
+                return ended;
+            }
+        };
+    }
 
     function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, channels, activity, gatewayModel, gatewayProvider, executionId, writeGrants = [] }) {
         let endpointServer = null;

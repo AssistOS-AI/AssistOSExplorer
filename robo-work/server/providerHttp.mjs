@@ -21,7 +21,7 @@ const STATE_STATUS = Object.freeze({
     invalid_request: 400, not_found: 404, forbidden: 403,
     operation_conflict: 409, revision_conflict: 409, robot_busy: 409, resource_quarantined: 409, resource_present: 409,
     runtime_unavailable: 503, recovery_pending: 503, stale_generation: 503, capacity_exceeded: 503,
-    state_corrupt: 500, environment_unavailable: 400
+    state_corrupt: 500, environment_unavailable: 400, terminals_open: 409
 });
 // Terminal-target inventory bound (interface note 2.3 (9)): the body is exactly {error}.
 const INVENTORY_STATUS = Object.freeze({ target_inventory_too_large: 503 });
@@ -46,6 +46,10 @@ export function mapRefusal(error) {
     if (error instanceof WorkerStateError && Object.hasOwn(STATE_STATUS, error.code)) {
         // A durably consumed token presented again is an authentication refusal.
         if (error.reason === 'token_replayed') return { status: 401, body: { error: 'unauthorized' }, code: 'unauthorized', reason: 'token_replayed' };
+        // M-54: the count of open robot terminals travels with `terminals_open` (a number, never an id), so RoboTeam can name it.
+        if (error.code === 'terminals_open' && Number.isSafeInteger(error.terminals)) {
+            return { status: 409, body: { error: 'terminals_open', terminals: error.terminals }, code: 'terminals_open', reason: null };
+        }
         return { status: STATE_STATUS[error.code], body: { error: error.code }, code: error.code, reason: error.reason ?? null };
     }
     return { status: 500, body: { error: 'internal_error' }, code: 'internal_error', reason: null };
@@ -196,7 +200,8 @@ function createHandler({ resolve, maxBody, onRefusal, streaming = {} }) {
             if (!match) throw new HttpRefusal(404, 'not_found');
             route = match.route;
             const body = await readBody(req, maxBody);
-            const result = match.call({ authInfo: authInfoFrom(req.headers), method, path, query, body });
+            // An adapter call may be asynchronous (closeTerminals waits for the normal end path of each terminal).
+            const result = await match.call({ authInfo: authInfoFrom(req.headers), method, path, query, body });
             if (result && result.follow) {
                 if (streamState.open >= settings.maxStreams) throw new HttpRefusal(503, 'capacity_exceeded');
                 streamState.open += 1;
@@ -233,6 +238,7 @@ export function createCoordinatorHttpHandler({ adapter, limits, onRefusal, strea
         [`${COORDINATOR_BASE}/robots/delete`, 'delete'],
         [`${COORDINATOR_BASE}/robots/list`, 'listRobots'],
         [`${COORDINATOR_BASE}/robots/get`, 'getRobot'],
+        [`${COORDINATOR_BASE}/robots/terminals/close`, 'closeTerminals'],
         [`${COORDINATOR_BASE}/operations/get`, 'getOperation'],
         [`${COORDINATOR_BASE}/obligations`, 'admitObligation'],
         [`${COORDINATOR_BASE}/obligations/list`, 'listObligations']

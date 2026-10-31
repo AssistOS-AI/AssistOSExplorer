@@ -16,6 +16,10 @@ export const isWorkerRoute = (pathname) => WORKER_ROUTE.test(pathname);
 export const ADMISSIONS_PATH = '/api/worker/admissions';
 // An administrator asks RoboTeam to provision or configure one robot on the worker (decision M-6).
 export const ROBOT_ENSURE_PATH = '/api/worker/robots/ensure';
+// M-8 / F-3: an administrator asks for the worker robot ID a robot terminal targets (after the same ensure). M-54: an administrator
+// closes every open robot terminal of one robot (Close terminals), through the worker's normal end path.
+export const ROBOT_TERMINAL_TARGET_PATH = '/api/worker/robots/terminal-target';
+export const ROBOT_TERMINALS_CLOSE_PATH = '/api/worker/robots/terminals/close';
 const REFERENCE_ROUTE = /^\/api\/worker\/references\/([^/]+)\/(read|events|control)$/u;
 const TASK_TYPES = new Set(['simple', 'browser', 'desktop']);
 const CONTROL_OP = /^[a-z][a-z-]{0,31}$/u;
@@ -154,9 +158,33 @@ async function ensureRobot(input, { access, grant, provisioning }) {
     }
 }
 
+// Robot terminals are for a verified direct administrator only (M-51 Q1): anyone else gets `forbidden` and the page hides the action.
+// The body names only the RoboTeam robot; the worker robot ID comes from RoboTeam's own record after the ensure.
+async function robotTerminals(pathname, input, { access, grant, provisioning }) {
+    if (access.canAdmin !== true) return refusal('forbidden');
+    if (!provisioning?.terminalTarget || !provisioning?.closeTerminals) return refusal('worker_coordinator_unavailable');
+    const body = exact(input, ['robotId']);
+    if (typeof body.robotId !== 'string' || !/^[a-z0-9][a-z0-9-]{2,63}$/u.test(body.robotId)) throw new BadRequest();
+    try {
+        if (pathname === ROBOT_TERMINAL_TARGET_PATH) {
+            const { targetId, label, provider } = await provisioning.terminalTarget(body.robotId, { grant });
+            return { status: 200, body: { ok: true, targetId, label, provider } };
+        }
+        const { closed, unverified } = await provisioning.closeTerminals(body.robotId, { grant });
+        return { status: 200, body: { ok: true, closed, unverified } };
+    } catch (error) {
+        if (error?.name === 'WorkerError') {
+            const message = typeof error.message === 'string' && error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : undefined;
+            return { status: error.status || 503, body: { error: error.code, ...(message ? { message } : {}) } };
+        }
+        throw error;
+    }
+}
+
 async function route(pathname, input, { access, grant, hop, records, provisioning }) {
     if (pathname === ADMISSIONS_PATH) return admitWithRecovery(hop, admissionBody(input), grant);
     if (pathname === ROBOT_ENSURE_PATH) return ensureRobot(input, { access, grant, provisioning });
+    if (pathname === ROBOT_TERMINAL_TARGET_PATH || pathname === ROBOT_TERMINALS_CLOSE_PATH) return robotTerminals(pathname, input, { access, grant, provisioning });
     if (pathname === '/api/worker/lookup') {
         const body = exact(input, ['originRequestId']);
         if (!isOriginId(body.originRequestId)) throw new BadRequest();
@@ -176,7 +204,7 @@ async function route(pathname, input, { access, grant, hop, records, provisionin
     return mapHopOutcome(await hop.call(`references/${referenceId}/${action}`, body, { grant }));
 }
 
-const knownPath = (pathname) => ['/api/worker/admissions', '/api/worker/lookup', '/api/worker/bindings', ROBOT_ENSURE_PATH].includes(pathname)
+const knownPath = (pathname) => ['/api/worker/admissions', '/api/worker/lookup', '/api/worker/bindings', ROBOT_ENSURE_PATH, ROBOT_TERMINAL_TARGET_PATH, ROBOT_TERMINALS_CLOSE_PATH].includes(pathname)
     || REFERENCE_ROUTE.test(pathname);
 
 // Writes the response itself and never throws. `access` is the verified request decision,

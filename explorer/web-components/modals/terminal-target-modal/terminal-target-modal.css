@@ -19,59 +19,15 @@ terminal-target-modal .terminal-target-body {
     padding-right: 0;
     padding-bottom: 0;
     padding-left: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden;
 }
 
 terminal-target-modal .terminal-target-status,
-terminal-target-modal .terminal-target-notice,
-terminal-target-modal .terminal-target-robot-note {
+terminal-target-modal .terminal-target-notice {
     margin: 0;
     color: var(--text-soft);
     font-size: var(--font-sm);
     line-height: var(--line-normal);
-}
-
-terminal-target-modal .terminal-target-robot {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    min-width: 0;
-    margin: 0;
-}
-
-terminal-target-modal .terminal-target-robot-note:empty {
-    display: none;
-}
-
-terminal-target-modal .terminal-target-field-label {
-    color: var(--text);
-    font-size: var(--font-sm);
-    font-weight: var(--font-semibold);
-}
-
-terminal-target-modal .terminal-target-select {
-    width: 100%;
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    color: var(--text);
-    background: var(--surface);
-    font: inherit;
-}
-
-terminal-target-modal .terminal-target-select:disabled {
-    color: var(--text-soft);
-    background: var(--surface-soft);
-    cursor: not-allowed;
-}
-
-terminal-target-modal .terminal-target-notice p {
-    margin: 0;
-}
-
-terminal-target-modal .terminal-target-notice p + p {
-    margin-top: var(--space-xs);
 }
 
 terminal-target-modal .terminal-target-notice {
@@ -105,7 +61,7 @@ terminal-target-modal .terminal-target-list {
     flex-direction: column;
     gap: var(--space-sm);
     min-height: 88px;
-    max-height: min(36vh, 360px);
+    max-height: min(52vh, 520px);
     margin: 0;
     padding: var(--space-xs);
     overflow-y: auto;
@@ -133,19 +89,7 @@ terminal-target-modal .terminal-target-button {
     transition: border-color var(--transition-base) ease, background-color var(--transition-base) ease, box-shadow var(--transition-base) ease;
 }
 
-terminal-target-modal .terminal-target-button:disabled {
-    border-color: var(--border);
-    color: var(--text-soft);
-    background: var(--surface-soft);
-    cursor: not-allowed;
-}
-
-terminal-target-modal .terminal-target-button[aria-pressed="true"] {
-    border-color: var(--accent);
-    box-shadow: var(--shadow-sm);
-}
-
-terminal-target-modal .terminal-target-button:not(:disabled):hover {
+terminal-target-modal .terminal-target-button:hover {
     border-color: var(--accent);
     background: var(--surface-soft);
 }
@@ -196,18 +140,12 @@ terminal-target-modal .terminal-target-access-ro {
 }
 
 terminal-target-modal .terminal-target-detail,
-terminal-target-modal .terminal-target-cwd,
-terminal-target-modal .terminal-target-reason {
+terminal-target-modal .terminal-target-cwd {
     min-width: 0;
     overflow-wrap: anywhere;
     color: var(--text-soft);
     font-size: var(--font-sm);
     line-height: var(--line-normal);
-}
-
-terminal-target-modal .terminal-target-reason {
-    color: var(--warning);
-    font-weight: var(--font-semibold);
 }
 
 terminal-target-modal .terminal-target-cwd {
@@ -224,4 +162,14 @@ terminal-target-modal .terminal-target-cwd {
         max-height: none;
         flex: 1 1 auto;
     }
+}
+
+.terminal-target-providers {
+    margin: 0;
+    padding-left: 1.25rem;
+    color: var(--text-secondary, inherit);
+}
+
+.terminal-target-kind-provider {
+    background: var(--surface-muted, transparent);
 }

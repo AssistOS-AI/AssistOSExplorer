@@ -142,5 +142,7 @@ export function createWorkerClient({ hop } = {}) {
         provision: (body, auth) => call('robots/provision', body, auth),
         configure: (body, auth) => call('robots/configure', body, auth),
         deleteRobot: (body, auth) => call('robots/delete', body, auth),
+        // M-54 Close terminals: ends every open robot terminal of one worker robot (administrator grant).
+        closeTerminals: (body, auth) => call('robots/terminals/close', body, auth),
     });
 }

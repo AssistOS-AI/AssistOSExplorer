@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { RuntimeManager } from '../server/runtime-manager.mjs';
-import { createRoboTeamServer, ROBOT_TERMINALS_UNAVAILABLE_MESSAGE } from '../server/http-server.mjs';
+import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
 import { routedHeaders } from './helpers/router-worker.mjs';
@@ -85,29 +85,23 @@ test('with the worker robot create, import and coding-agent updates create and w
     assert.equal((await f.robotStore.get(id)).codingAgents[0], 'codex');
 });
 
-test('with the worker the old robot Terminal profile is refused plainly and writes no home', async (t) => {
+test('with the worker the old robot Terminal profile routes are gone (M-54) and write no home', async (t) => {
     const f = await setup(t, true);
     const robot = (await f.post('/api/robots', { name: 'termbot' })).body.robot;
     for (const target of [`/api/terminal-profiles/${robot.id}/prepare`, '/api/terminal-profiles/resolve']) {
         const result = await f.post(target, target.endsWith('resolve') ? { id: robot.id, version: 1 } : {});
-        assert.equal(result.status, 409, target);
-        assert.equal(result.body.error, 'Robot terminals arrive with the worker update', target);
-        assert.equal(result.body.error, ROBOT_TERMINALS_UNAVAILABLE_MESSAGE);
-        assert.equal(result.body.code, 'robot_terminals_unavailable_with_worker');
+        assert.equal(result.status, 404, target);
     }
     assert.equal(await exists(f.home(robot.id)), false);
 });
 
-test('without the worker the old home is created and written as before and the Terminal profile prepares', async (t) => {
+test('without the worker the old home is created and written as before', async (t) => {
     const f = await setup(t, false);
     const created = await f.post('/api/robots', { name: 'plainbot', codingAgents: ['opencode'] });
     assert.equal(created.status, 201);
     const id = created.body.robot.id;
     assert.equal(await exists(path.join(f.home(id), '.codex')), true, 'create prepared the home');
     assert.equal(await exists(path.join(f.home(id), '.roboteam-env.sh')), true, 'the shell was prepared');
-    const prepared = await f.post(`/api/terminal-profiles/${id}/prepare`, {});
-    assert.notEqual(prepared.status, 409);
-    assert.equal(prepared.status, 200, JSON.stringify(prepared.body));
 });
 
 test('a copilot context in worker mode neither requires, creates nor writes the old home, whatever the caller passes', async (t) => {

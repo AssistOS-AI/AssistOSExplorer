@@ -90,11 +90,9 @@ Concurrent component mounts may share template, stylesheet and presenter fetches
 
 A toolbar plugin normally mounts on its first click. A plugin config may set `mountOnStart: true` to have the toolbar mount it at start instead. The value must be a boolean: server discovery drops a config with any other value, and the browser's runtime normalization rejects the entry. Only `live-sessions` sets it. Other toolbar plugins keep their on-demand triggers, and on the mobile layout the dropdown slot already mounts every toolbar plugin.
 
-### Terminal profile sources
+### Terminal profile sources (removed)
 
-An owning agent declares an application contribution with `id`, `label`, `contributionType: 'terminal-profile-source'`, `location: ['terminal-profiles:source']` and `terminalProfiles: {version: 1, base}` in its `IDE-plugins/*/config.json`. It needs no component, and the `location` array must hold exactly that one value. Server discovery assigns the declaring agent from the source directory, applies the same `base` validation as a Live Session source, including both route forms `/<agent>/...` and `/base-agent-additional-server/<agent>/<port>/...`, and drops invalid declarations. Browser normalization preserves this contribution type and repeats the validation without registering a component. The agent's own `manifest.json` declaration that lets Ploinky resolve a profile into a home folder is a separate contract and names only the agent-port form; see [DS002](specsLoader.html?spec=DS002-ploinky-runtime.md).
-
-Explorer's Open Terminal Here dialog reads each source and requires administrator access. Every source authorizes each call from its verified Router identity, never from a client-declared actor.
+`terminal-profile-source` is no longer a contribution type (RoboWork M-54): robot terminals are provider targets of Ploinky's WebTTY discovery (see [DS002](specsLoader.html?spec=DS002-ploinky-runtime.md)), not home folders an agent lends to another target. Server discovery refuses a plugin that still declares the type, with a warning, and the browser's runtime normalization drops such an entry in any slot, so a stale plugin never becomes a mount or a menu entry.
 
 | Endpoint | Contract |
 | --- | --- |

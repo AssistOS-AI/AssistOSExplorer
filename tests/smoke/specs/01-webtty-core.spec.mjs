@@ -271,71 +271,51 @@ function isWebttyNavigation(request) {
     && target.pathname === '/webtty/';
 }
 
-// A plain {dir} discovery carries a launch on every row. A discovery for a chosen robot also echoes its profile, and a
-// row whose target cannot reach the robot's home has no launch and a precise `unavailable` reason instead.
-// The returned `targets` are the launchable rows; the others are returned as `unavailableTargets`.
-async function readTargetDiscovery(response, expectedDirectory, { profiled = false } = {}) {
+// A {dir} discovery carries a launch on every row: the Box (first, exactly one), agent rows and, with RoboWork, robot terminal rows
+// (kind `provider`, with the provider name; RoboWork M-8). A provider that cannot be asked is a `providers` notice, never a row.
+async function readTargetDiscovery(response, expectedDirectory) {
   expect(response.status()).toBe(201);
   const payload = await response.json();
   expect(Object.keys(payload).sort()).toEqual(['discovery', 'ok']);
   expect(payload.ok).toBe(true);
-  expect(Object.keys(payload.discovery).sort()).toEqual([
-    'agentTargetsAvailable',
-    'directory',
-    'expiresAt',
-    'id',
-    ...(profiled ? ['profile'] : []),
-    'targets',
-  ]);
+  const keys = Object.keys(payload.discovery).sort();
+  expect(keys.filter((key) => key !== 'providers')).toEqual(['agentTargetsAvailable', 'directory', 'expiresAt', 'id', 'targets']);
   expect(payload.discovery).toMatchObject({
     id: expect.stringMatching(/^[A-Za-z0-9_-]{32,128}$/),
     directory: expectedDirectory,
     expiresAt: expect.any(Number),
     agentTargetsAvailable: expect.any(Boolean),
   });
-  if (profiled) {
-    expect(Object.keys(payload.discovery.profile).sort()).toEqual(['id', 'label', 'provider']);
-    expect(payload.discovery.profile).toMatchObject({
-      provider: expect.any(String), id: expect.any(String), label: expect.any(String),
-    });
+  for (const notice of payload.discovery.providers || []) {
+    expect(Object.keys(notice).sort()).toEqual(['available', 'name', 'reason']);
+    expect(notice.available).toBe(false);
   }
   expect(Number.isSafeInteger(payload.discovery.expiresAt)).toBe(true);
   expect(payload.discovery.targets.length).toBeGreaterThan(0);
   expect(payload.discovery.targets[0].kind).toBe('box');
   expect(payload.discovery.targets.filter((target) => target.kind === 'box')).toHaveLength(1);
-  const launchable = [];
-  const unavailable = [];
   for (const target of payload.discovery.targets) {
-    const isUnavailable = profiled && !Object.hasOwn(target, 'launch');
-    expect(Object.keys(target).sort()).toEqual([
-      'access',
-      'cwdDisplay',
-      'detail',
-      'kind',
-      'label',
-      isUnavailable ? 'unavailable' : 'launch',
-    ].sort());
+    const providerKeys = target.kind === 'provider' ? ['provider', ...(Object.hasOwn(target, 'targetId') ? ['targetId'] : [])] : [];
+    expect(Object.keys(target).sort()).toEqual(['access', 'cwdDisplay', 'detail', 'kind', 'label', 'launch', ...providerKeys].sort());
     expect(target).toMatchObject({
-      ...(isUnavailable
-        ? { unavailable: expect.stringMatching(/^(?:home-unreachable|home-read-only)$/) }
-        : { launch: expect.stringMatching(/^[A-Za-z0-9_-]{32,128}$/) }),
-      kind: expect.stringMatching(/^(?:box|agent)$/),
+      launch: expect.stringMatching(/^[A-Za-z0-9_-]{32,128}$/),
+      kind: expect.stringMatching(/^(?:box|agent|provider)$/),
       label: expect.any(String),
       detail: expect.any(String),
       access: expect.stringMatching(/^(?:rw|ro)$/),
       cwdDisplay: expect.any(String),
     });
-    (isUnavailable ? unavailable : launchable).push(target);
   }
-  return { ...payload.discovery, targets: launchable, unavailableTargets: unavailable };
+  return payload.discovery;
 }
 
 function assertSessionCreation(payload) {
   expect(Object.keys(payload).sort()).toEqual(['ok', 'session', 'view']);
   expect(Object.keys(payload.view)).toEqual(['id']);
   expect(payload.view.id).toMatch(/^[A-Za-z0-9_-]{32,128}$/);
-  expect(Object.keys(payload.session).sort()).toEqual([
-    'closePolicy', 'cols', 'cwd', 'id', 'pendingStopUntil', 'profileLabel', 'role', 'rows', 'state', 'target',
+  // `profileLabel` is gone with the robot home profiles (RoboWork M-54); tolerated while an older Router still sends it.
+  expect(Object.keys(payload.session).filter((key) => key !== 'profileLabel').sort()).toEqual([
+    'closePolicy', 'cols', 'cwd', 'id', 'pendingStopUntil', 'role', 'rows', 'state', 'target',
   ]);
   expect(Object.keys(payload.session.target).sort()).toEqual([
     'access',
@@ -352,9 +332,8 @@ function assertSessionCreation(payload) {
       state: 'detached',
       closePolicy: 'keep',
       pendingStopUntil: null,
-      profileLabel: expect.any(String),
       target: {
-        kind: expect.stringMatching(/^(?:box|agent)$/),
+        kind: expect.stringMatching(/^(?:box|agent|provider)$/),
         label: expect.any(String),
         access: expect.stringMatching(/^(?:rw|ro)$/),
         cwdDisplay: expect.any(String),
@@ -371,58 +350,21 @@ async function waitForConnectedTerminal(page) {
   await expect(page.locator('#terminal .xterm-helper-textarea')).toBeAttached();
 }
 
-// Every row of the chooser: launchable rows keep their launch, the others show why they are disabled.
+// Every row of the chooser carries its launch; robot terminal rows are labelled Robot.
 async function assertChooserRows(chooser, discovery) {
-  const unavailableTargets = discovery.unavailableTargets || [];
-  await expect(chooser.locator('.terminal-target-button')).toHaveCount(
-    discovery.targets.length + unavailableTargets.length,
-  );
+  await expect(chooser.locator('.terminal-target-button')).toHaveCount(discovery.targets.length);
   for (const target of discovery.targets) {
     const targetButton = chooser.locator(`.terminal-target-button[data-launch="${target.launch}"]`);
     await expect(targetButton).toHaveCount(1);
-    await expect(targetButton).toHaveAttribute('data-launch', target.launch);
+    await expect(targetButton).toBeEnabled();
     await expect(targetButton.locator('.terminal-target-label')).toHaveText(target.label);
     await expect(targetButton.locator('.terminal-target-detail')).toHaveText(target.detail);
     await expect(targetButton.locator('.terminal-target-cwd')).toHaveText(target.cwdDisplay);
     await expect(targetButton.locator('.terminal-target-access')).toHaveText(
       target.access === 'ro' ? 'Read only' : 'Read and write',
     );
+    if (target.kind === 'provider') await expect(targetButton.locator('.terminal-target-kind')).toHaveText('Robot');
   }
-  for (const target of unavailableTargets) {
-    const row = chooser.locator('.terminal-target-button:not([data-launch])').filter({ hasText: target.detail });
-    await expect(row).toHaveCount(1);
-    await expect(row).toBeDisabled();
-    await expect(row.locator('.terminal-target-reason')).toContainText(
-      target.unavailable === 'home-read-only' ? "can only read" : "cannot see",
-    );
-  }
-}
-
-// The dialog starts with no robot: the {dir} discovery is listed but every row is disabled until a robot is chosen.
-// The chooser then replaces that discovery with the one for the chosen robot. This needs at least one robot in the
-// deployment (created in RoboTeam); the spec does not create one.
-async function chooseTerminalRobot(chooserState, expectedDirectory) {
-  const { chooser, page } = chooserState;
-  const select = chooser.locator('#terminalTargetRobot');
-  await expect(select).toBeEnabled({ timeout: smokeConfig.timeouts.navigation });
-  const robotOptions = select.locator('option:not([disabled])');
-  expect(await robotOptions.count(), 'a RoboTeam robot must exist before a terminal can be opened').toBeGreaterThan(0);
-  await expect(select.locator('option[disabled]')).toHaveText('Choose a robot');
-  await expect(chooser.locator('#terminalTargetOpen')).toBeDisabled();
-  const robotValue = await robotOptions.first().getAttribute('value');
-  const plainDiscoveryId = chooserState.discovery.id;
-  const cancelled = page.waitForResponse((response) => (
-    response.url() === new URL(`/webtty/target-discoveries/${encodeURIComponent(plainDiscoveryId)}`, smokeConfig.baseURL).toString()
-    && response.request().method() === 'DELETE'
-  ), { timeout: smokeConfig.timeouts.action });
-  const profiledResponse = page.waitForResponse(isTargetDiscovery, { timeout: smokeConfig.timeouts.navigation });
-  await select.selectOption(robotValue);
-  expect((await cancelled).status()).toBe(200);
-  chooserState.plainDiscovery = chooserState.discovery;
-  chooserState.discovery = await readTargetDiscovery(await profiledResponse, expectedDirectory.replace(/^\/+/, ''), { profiled: true });
-  chooserState.profiled = true;
-  await assertChooserRows(chooser, chooserState.discovery);
-  return chooserState.discovery;
 }
 
 async function openTerminalChooser(page, directoryPath) {
@@ -446,15 +388,8 @@ async function openTerminalChooser(page, directoryPath) {
   await expect(chooser).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
   await expect(chooser.locator('#terminalTargetDirectory')).toHaveText(directoryPath);
   await assertChooserRows(chooser, discovery);
-  for (const button of await chooser.locator('.terminal-target-button').all()) {
-    await expect(button, 'rows are disabled until a robot is chosen').toBeDisabled();
-    await expect(button.locator('.terminal-target-reason')).toHaveText('Choose a robot first');
-  }
   expect(context.pages().length, 'opening the chooser must not open or navigate a terminal tab').toBe(initialPageCount);
-
-  const chooserState = { page, chooser, discovery, context, profiled: false };
-  await chooseTerminalRobot(chooserState, directoryPath);
-  return chooserState;
+  return { page, chooser, discovery, context };
 }
 
 async function selectTerminalTarget(chooserState, predicate, terminals) {
@@ -474,10 +409,8 @@ async function selectTerminalTarget(chooserState, predicate, terminals) {
     predicate: isSessionCreation,
     timeout: smokeConfig.timeouts.navigation,
   });
-  // A row only selects the target; Open prepares the robot, reserves the tab and starts the terminal.
+  // Choosing a row reserves the isolated tab and starts that terminal (no robot selector, no prepare step: RoboWork M-54).
   await selectedButton.click();
-  await expect(selectedButton).toHaveAttribute('aria-pressed', 'true');
-  await chooserState.chooser.getByRole('button', { name: 'Open', exact: true }).click();
   const createResponse = await createPromise;
   // Register the shell for DELETE cleanup before any later wait or assertion can fail; shells survive detach.
   // A 201 body is registered by its raw session id first; the strict shape checks run afterwards.
@@ -510,9 +443,7 @@ async function refreshTerminalChooser(chooserState, expectedDirectory) {
     timeout: smokeConfig.timeouts.navigation,
   });
   await chooserState.chooser.getByRole('button', { name: 'Refresh' }).click();
-  chooserState.discovery = await readTargetDiscovery(await responsePromise, expectedDirectory.replace(/^\/+/, ''), {
-    profiled: chooserState.profiled,
-  });
+  chooserState.discovery = await readTargetDiscovery(await responsePromise, expectedDirectory.replace(/^\/+/, ''));
   await assertChooserRows(chooserState.chooser, chooserState.discovery);
   return chooserState.discovery;
 }

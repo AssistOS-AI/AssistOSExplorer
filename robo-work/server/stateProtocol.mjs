@@ -7,7 +7,7 @@ import { isSessionKey } from './stateSessions.mjs';
 export const ERROR_CODES = Object.freeze([
     'invalid_request', 'not_found', 'forbidden', 'operation_conflict', 'revision_conflict',
     'robot_busy', 'runtime_unavailable', 'recovery_pending', 'resource_quarantined',
-    'resource_present', 'stale_generation', 'capacity_exceeded', 'state_corrupt', 'environment_unavailable'
+    'resource_present', 'stale_generation', 'capacity_exceeded', 'state_corrupt', 'environment_unavailable', 'terminals_open'
 ]);
 
 const PUBLIC_MESSAGES = Object.freeze({
@@ -24,7 +24,9 @@ const PUBLIC_MESSAGES = Object.freeze({
     stale_generation: 'The writer generation is stale.',
     capacity_exceeded: 'A configured capacity limit is exhausted.',
     state_corrupt: 'The worker state is unusable.',
-    environment_unavailable: 'Existing-agent environments are not available.'
+    environment_unavailable: 'Existing-agent environments are not available.',
+    // M-54: configure and delete refuse while robot terminals are open; the error carries `terminals` (the count), never ids.
+    terminals_open: 'Robot terminals are open.'
 });
 
 // Bounded, enumerated reason details. A reason never carries paths, content or SQLite text.

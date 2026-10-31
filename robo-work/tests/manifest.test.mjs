@@ -24,7 +24,7 @@ test('the executionProvider declaration is valid and its coordinator route names
     const { declaration } = read;
     assert.equal(declaration.port, 7300);
     assert.equal(declaration.taskReferences.path, '/v1/task-refs');
-    assert.equal(declaration.terminals, undefined, 'terminals are not declared before their own landing (M-8)');
+    assert.equal(declaration.terminals.path, '/v1/terminal-control', 'the robot-terminal channel and discovery (M-8)');
     assert.equal(declaration.coordinatorRoutes.length, 1);
     assert.deepEqual(declaration.coordinatorRoutes[0].callers, ['agent:AchillesIDE/roboTeamAgent']);
     assert.equal(declaration.coordinatorRoutes[0].port, 7000);

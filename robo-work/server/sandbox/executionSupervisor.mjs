@@ -27,6 +27,13 @@
 //                   `modelChannel.directory` into THIS sandbox ONLY (never into ALA or a workload): the endpoint's relay reaches the model
 //                   socket there, and nothing else can.
 //   'process-tree'  spec.role 'orchestration' (ALA) or 'workload' (one provider request). Gated.
+//                   spec.role 'terminal' (M-8 robot terminal; supervisor `mode: 'terminal'` only): the worker-chosen shell of
+//                   `roles.terminal`, started through the same launcher chain as a workload (setpriv, [nsenter], unshare, stage.sh prep,
+//                   bwrap, stage.sh final: M-65) with the PTY SLAVE as stdio 0-2 (spec.slave, a descriptor number the caller holds) and the
+//                   execution network joined. The PTY master never leaves the caller (the terminal path in the worker process); only the
+//                   launcher's keep set reaches the chain, so a master held without close-on-exec is closed by stage.sh prep. HOME and the
+//                   resolved project grant are bound as for a workload; the sandbox root stays bwrap's own per-sandbox tmpfs (writable,
+//                   never the host: the terminal sandbox root ruling of 2026-10-31); no skills view and no channel files.
 //
 // Directories (HOME, grants, session storage) are given as { path, fd }: the real path and the caller's open descriptor of it
 // (grantResolver.mjs). The descriptor only supplies the device and inode; the sandbox's prep stage re-opens the path inside its
@@ -73,12 +80,20 @@ const decimal = (value) => String(value);
 export function createExecutionSupervisor({
     launcher, view, createNetwork = createExecutionNetwork, spawnImpl = spawn, fsImpl = fs, netImpl = net, clock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
     admission, roles, home = null, grants = [], skills = [], workloadPath = WORKLOAD_PATH, onInfrastructureLoss = () => {}, modelChannel = null,
-    limits = {}, supervisorPid = process.pid, pairSocketPathLimit = 100, activityWalk = null, now = Date.now
+    limits = {}, supervisorPid = process.pid, pairSocketPathLimit = 100, activityWalk = null, now = Date.now, mode = 'execution'
 } = {}) {
     if (!launcher || typeof launcher.launch !== 'function') throw new TypeError('A launcher is required');
     if (!view || typeof view.process !== 'function') throw new TypeError('A procView is required');
-    if (!admission || !Array.isArray(admission.inventory) || typeof admission.streamDirectory !== 'string') throw new TypeError('An admission is required');
-    if (!roles?.orchestration || !roles?.endpoint || !roles?.workload) throw new TypeError('roles.orchestration, roles.endpoint and roles.workload are required');
+    if (mode !== 'execution' && mode !== 'terminal') throw new TypeError('mode is execution or terminal');
+    // Terminal mode (M-8): only roles.terminal; no ALA, no endpoint, no workload, no admission inventory.
+    const terminalMode = mode === 'terminal';
+    if (terminalMode) {
+        if (!roles?.terminal || !Array.isArray(roles.terminal.argv) || roles.terminal.argv.length === 0) throw new TypeError('roles.terminal is required in terminal mode');
+        if (roles.orchestration || roles.endpoint || roles.workload) throw new TypeError('terminal mode takes roles.terminal only');
+    } else {
+        if (!admission || !Array.isArray(admission.inventory) || typeof admission.streamDirectory !== 'string') throw new TypeError('An admission is required');
+        if (!roles?.orchestration || !roles?.endpoint || !roles?.workload) throw new TypeError('roles.orchestration, roles.endpoint and roles.workload are required');
+    }
     const stopGraceMs = limits.stopGraceMs ?? 2000;
     // M-35: the walk is shared by every execution of the worker (pass the same one to each supervisor); the meter is this execution's.
     const meter = createActivityMeter({ walk: activityWalk ?? createWorkloadActivityWalk({ view, now }), now });
@@ -353,6 +368,27 @@ export function createExecutionSupervisor({
         }
     }
 
+    // M-8: the robot terminal's shell, with the PTY slave as stdio 0-2. Every project grant the terminal path resolved is bound with its
+    // own access (read-write for a write grant); the cwd is HOME or the project grant root.
+    async function createTerminal({ resourceId, marker, spec }) {
+        requireRuntime();
+        if (!home || !Number.isInteger(home.fd) || typeof home.path !== 'string') throw sandboxError('setup_failed', 'no HOME directory');
+        if (!network) throw sandboxError('setup_failed', 'the execution network does not exist yet');
+        if (!Number.isInteger(spec?.slave) || spec.slave < 0) throw sandboxError('invalid_request', 'pty slave');
+        if (typeof spec.cwd !== 'string' || !(spec.cwd === '/home/robot' || grants.some((grant) => spec.cwd === grant.path))) throw sandboxError('invalid_request', 'cwd');
+        const etc = ensureEtcFiles();
+        const sandbox = await launcher.launch({
+            role: 'terminal', marker, runtimeDir: runtime.path, netMode: 'join', netns: network.nsPath, netnsInode: network.nsInode(),
+            roBinds: roles.terminal.roBinds, symlinks: roles.terminal.symlinks,
+            roFiles: [{ source: etc.resolvJoin, dest: '/etc/resolv.conf' }, { source: etc.hosts, dest: '/etc/hosts' }],
+            env: { ...(roles.terminal.env ?? {}) }, cwd: spec.cwd, argv: [...roles.terminal.argv],
+            home: { path: home.path, fd: home.fd },
+            grants: grants.map((grant) => ({ name: grant.name, path: grant.hostPath, fd: grant.fd, mode: grant.access === 'write' ? 'rw' : 'ro', exclusions: [] })),
+            channelsDir: rt('channels'), tmpDir: rt('tmp'), stdio: [spec.slave, spec.slave, spec.slave], scanLimits: roles.terminal.scanLimits
+        });
+        return asCreation(resourceId, sandbox, { tree: true });
+    }
+
     async function create(request) {
         if (ended) throw sandboxError('setup_failed', 'the supervisor has ended');
         const { kind } = request;
@@ -363,11 +399,15 @@ export function createExecutionSupervisor({
         // Each sandbox's staging mounts live in its own private mount namespace, recorded as stageMntNs in its process-tree
         // identity. A separate 'mount' blocker therefore holds nothing of its own: it records "no namespace" and is absent.
         if (kind === 'mount') return { identity: { mntNs: '0', mountId: 0, mountpoint: `${runtime?.path ?? '/'}/stage` }, gate: null, handle: null };
-        if (kind === 'endpoint') return createEndpoint(request);
+        if (kind === 'endpoint' && !terminalMode) return createEndpoint(request);
         if (kind === 'process-tree') {
             const role = request.spec?.role;
-            if (role === 'orchestration') return createOrchestration(request);
-            if (role === 'workload') return createWorkload(request);
+            if (terminalMode) {
+                if (role === 'terminal') return createTerminal(request);
+            } else {
+                if (role === 'orchestration') return createOrchestration(request);
+                if (role === 'workload') return createWorkload(request);
+            }
         }
         throw sandboxError('invalid_request', `unsupported resource ${String(kind)}`);
     }
@@ -439,6 +479,7 @@ export function createExecutionSupervisor({
     // ---- endpoint seam -----------------------------------------------------------------------------------------------
 
     function providerSandbox(ledger) {
+        if (terminalMode) throw new TypeError('a terminal supervisor has no provider endpoint');
         return {
             async inventory() { return admission.inventory.map((entry) => ({ ...entry })); },
             // The shared temporary directory of the execution, bound at /tmp in every workload; the path is the workload's.

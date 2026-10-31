@@ -19,6 +19,8 @@ export const STATUS = Object.freeze({
     forbidden: 403,
     // The worker refuses a phase's Environment selection at admission (existing-agent environments are not available yet).
     environment_unavailable: 400,
+    // M-54: configure or delete while robot terminals are open; the body carries `terminals` (the count).
+    terminals_open: 409,
 });
 
 // A plain, RoboTeam-authored sentence for a worker code the user can act on. It is fixed text for the code, never a worker reason.
@@ -83,6 +85,8 @@ export function mapHopOutcome(outcome) {
         const body = { error: workerCode(json, status) };
         if (PLAIN_MESSAGES[body.error]) body.message = PLAIN_MESSAGES[body.error];
         if (Number.isSafeInteger(json?.snapshotSequence)) body.snapshotSequence = json.snapshotSequence;
+        // M-54: the number of open robot terminals (a count, never an id) travels with terminals_open.
+        if (body.error === 'terminals_open' && Number.isSafeInteger(json?.terminals) && json.terminals >= 0) body.terminals = json.terminals;
         return { status, body };
     }
     // hop.mjs classifies every other status as unknown; this is a defensive default.

@@ -195,9 +195,10 @@ function gatedRows(robotId) {
         ['GET', `/webchat-logs/${UUID_A}/${UUID_B}`, undefined, 200],
         ['GET', `/api/webchat/logs/${UUID_A}/${UUID_B}`, undefined, 404],
         ['POST', `/api/robots/${ABSENT}/terminal`, undefined, 404],
-        ['GET', '/api/terminal-profiles', undefined, 403, 200, 403],
-        ['POST', '/api/terminal-profiles/resolve', { version: 1, id: ABSENT }, 403, 200, 403],
-        ['POST', `/api/terminal-profiles/${ABSENT}/prepare`, {}, 403, 404, 403],
+        // M-54: the terminal-profile routes are removed (robot terminals are worker executions).
+        ['GET', '/api/terminal-profiles', undefined, 404],
+        ['POST', '/api/terminal-profiles/resolve', { version: 1, id: ABSENT }, 404],
+        ['POST', `/api/terminal-profiles/${ABSENT}/prepare`, {}, 404],
         ['POST', '/api/robots', { name: 'Refused Robot' }, 403, null, 403],
         ['GET', `/api/robots/${ABSENT}/models`, undefined, 403, 404, 403],
         ['GET', `/api/robots/${ABSENT}/coding-agents`, undefined, 403, 404, 403],

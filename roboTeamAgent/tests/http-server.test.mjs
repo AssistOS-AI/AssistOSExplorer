@@ -49,7 +49,7 @@ async function startFixture(options = {}) {
     };
 }
 
-test('the former robot terminal route is gone; terminal profiles need a signed administrator', async () => {
+test('the former robot terminal route and the terminal-profile routes are gone (M-54: robot terminals are worker executions)', async () => {
     const fixture = await startFixture();
     try {
         const robot = await fixture.robotStore.create({ name: 'terminal-robot' });
@@ -58,10 +58,14 @@ test('the former robot terminal route is gone; terminal profiles need a signed a
         for (const headers of [{ 'x-ploinky-auth-info': authHeader('admin', ['admin']) }, { 'x-ploinky-auth-info': authHeader('user') }, { 'x-roboteam-internal-token': 'test-token' }]) {
             assert.equal((await fetch(url, { method: 'POST', headers })).status, 404);
         }
-        const prepare = `${fixture.baseUrl}/api/terminal-profiles/${robot.id}/prepare`;
-        assert.equal((await fetch(prepare, { method: 'POST' })).status, 401);
-        assert.equal((await fetch(prepare, { method: 'POST', headers: { 'x-ploinky-auth-info': authHeader('user') } })).status, 403);
-        assert.equal((await fetch(prepare, { method: 'POST', headers: { 'x-roboteam-internal-token': 'test-token' } })).status, 403);
+        for (const target of [`/api/terminal-profiles/${robot.id}/prepare`, '/api/terminal-profiles/resolve', '/api/terminal-profiles']) {
+            const profile = `${fixture.baseUrl}${target}`;
+            const method = target === '/api/terminal-profiles' ? 'GET' : 'POST';
+            assert.equal((await fetch(profile, { method })).status, 401, target);
+            for (const headers of [{ 'x-ploinky-auth-info': authHeader('admin', ['admin']) }, { 'x-ploinky-auth-info': authHeader('user') }]) {
+                assert.equal((await fetch(profile, { method, headers })).status, 404, target);
+            }
+        }
         assert.equal(fixture.runtimeManager.status(robot.id).state, 'stopped');
     } finally { await fixture.close(); }
 });

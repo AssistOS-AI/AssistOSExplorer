@@ -24,7 +24,7 @@ export const MAX_TARGETS = 256;
 export const MAX_INVENTORY_BYTES = 64 * 1024;
 const LABEL_MAX_BYTES = 128;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
-const SELECTION = /^[A-Za-z0-9_.:-]{1,128}$/;
+const SELECTION_MAX_BYTES = 1024;
 
 // The refusal of an inventory that would exceed a bound. providerHttp maps it to 503 with the
 // body `{error: 'target_inventory_too_large'}` and nothing else.
@@ -61,14 +61,22 @@ function isRelativePath(value) {
         && !value.split('/').includes('..') && !CONTROL.test(value);
 }
 
-// The request body is exactly `{project: null | {selection, relativePath}}`, checked for
-// syntax only: the project scopes nothing in this subset.
+// The project selection (plan-review B-2, delta note 4): the browser's `dir` as the canonical workspace-relative path the Router's
+// discovery checks validated: 1-1024 UTF-8 bytes, no leading `/`, no backslash, no empty, `.` or `..` segment, no control character.
+// Syntax only: the grant root is decided at launch by the anchored resolver (executionGrants.mjs), never here.
+export function isProjectSelection(value) {
+    return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= SELECTION_MAX_BYTES && !value.startsWith('/')
+        && !value.includes('\\') && !CONTROL.test(value) && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+// The request body is exactly `{project: null | {selection, relativePath}}`, checked for syntax only: discovery scopes nothing.
+// `relativePath` is '' (the selection itself, the only form a launch accepts in version 1) or a relative path.
 export function validateTargetsBody(body) {
     exactObject(body, ['project']);
     if (body.project === null) return body;
     exactObject(body.project, ['selection', 'relativePath']);
-    if (typeof body.project.selection !== 'string' || !SELECTION.test(body.project.selection)) fail('invalid_request');
-    if (!isRelativePath(body.project.relativePath)) fail('invalid_request');
+    if (!isProjectSelection(body.project.selection)) fail('invalid_request');
+    if (body.project.relativePath !== '' && !isRelativePath(body.project.relativePath)) fail('invalid_request');
     return body;
 }
 

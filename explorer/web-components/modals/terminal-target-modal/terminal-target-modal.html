@@ -9,24 +9,19 @@
     <div class="modal-body terminal-target-body">
         <p class="terminal-target-status" id="terminalTargetStatus" role="status" aria-live="polite"></p>
         <div class="terminal-target-warning" id="terminalTargetWarning" role="alert" hidden></div>
-        <div class="terminal-target-robot">
-            <label class="terminal-target-field-label" for="terminalTargetRobot">Robot</label>
-            <select id="terminalTargetRobot" class="terminal-target-select" required aria-describedby="terminalTargetRobotNote terminalTargetDisclosure" disabled>
-                <option value="" disabled selected>Choose a robot</option>
-            </select>
-            <p class="terminal-target-robot-note" id="terminalTargetRobotNote" role="status" aria-live="polite"></p>
-            <div class="terminal-target-notice" id="terminalTargetDisclosure" hidden></div>
-        </div>
         <p class="terminal-target-notice" id="terminalTargetNotice" hidden>
             An agent terminal uses that container's normal user, tools, environment, permissions, and credential context.
             The access badge applies only to this selected folder.
         </p>
+        <p class="terminal-target-notice" id="terminalTargetRobotNotice" hidden>
+            A robot terminal runs in that robot's own sandbox, with its HOME, only the selected folder and its network rules.
+        </p>
+        <ul class="terminal-target-providers" id="terminalTargetProviders" aria-label="Unavailable terminal providers" hidden></ul>
         <ul class="terminal-target-list" id="terminalTargetList" aria-label="Available terminal targets" aria-busy="true"></ul>
         <div class="modal-actions">
             <button type="button" class="gray-button" data-local-action="closeModal" autofocus>Cancel</button>
             <button type="button" class="general-button secondary" id="terminalTargetRetry" data-local-action="retryDiscovery" hidden>Retry</button>
             <button type="button" class="general-button secondary" id="terminalTargetRefresh" data-local-action="refreshTargets" hidden disabled>Refresh</button>
-            <button type="button" class="general-button" id="terminalTargetOpen" data-local-action="openTerminal" disabled>Open</button>
         </div>
     </div>
 </div>

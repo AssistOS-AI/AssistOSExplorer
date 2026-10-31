@@ -55,6 +55,7 @@ const REASONS = Object.freeze({
     worker_robot_not_provisioned: 'it is not set up on the worker',
     owner_evidence_unavailable: 'the request carried no grant for it',
     robot_busy: 'it has running or unsettled work',
+    terminals_open: 'robot terminals are open on it; close them first',
     revision_conflict: 'it changed while being updated',
     worker_coordinator_unavailable: 'the worker could not be reached',
     worker_unreachable: 'the worker could not be reached',

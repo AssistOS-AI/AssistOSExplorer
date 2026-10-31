@@ -34,6 +34,8 @@ export { WorkerStateError, createVerifiedContext, createVerifiedCoordinatorConte
 export { runtimeUnavailable } from './runtimeUnavailable.mjs';
 
 const PROVIDER_REFERENCE_VERSION = REFERENCE_VERSION;
+// Robot terminals (schema 9): the namespace and scope of their internal reference rows; never an origin namespace of a coordinator row.
+const TERMINAL_SCOPE = 'provider:terminals';
 // The recorded admission state of an execution (design A13): lookup returns it, never live state.
 const EXECUTION_ADMISSION_STATE = 'queued';
 // The recorded admission state of an obligation (S3b A13 pin; S6 Part D).
@@ -198,6 +200,24 @@ class WorkerState {
         return db.prepare("SELECT 1 AS found FROM admission WHERE robot_id = ? AND state IN ('queued', 'running', 'stopping') LIMIT 1").get(robotId) !== undefined;
     }
 
+    // Robot terminals (M-8) that are not settled yet: queued, running or stopping. `robotId` null counts the whole worker.
+    #openTerminals(db, robotId) {
+        return robotId === null
+            ? db.prepare(`SELECT COUNT(*) AS count FROM admission WHERE kind = '${TERMINAL_KIND}' AND state IN ('queued', 'running', 'stopping')`).get().count
+            : db.prepare(`SELECT COUNT(*) AS count FROM admission WHERE kind = '${TERMINAL_KIND}' AND robot_id = ? AND state IN ('queued', 'running', 'stopping')`).get(robotId).count;
+    }
+
+    // M-54: configure and delete never stop terminals implicitly. They refuse with `terminals_open` and the count, so RoboTeam can name
+    // it ("N terminals open") and offer its Close terminals action.
+    #refuseOpenTerminals(db, robotId) {
+        const open = this.#openTerminals(db, robotId);
+        if (open > 0) {
+            const error = new WorkerStateError('terminals_open');
+            error.terminals = open;
+            throw error;
+        }
+    }
+
     #openPreparation(db, context, generation, { operationId, robotId, kind, baseRevision, candidate }) {
         const resourceId = randomId();
         const now = this.#now();
@@ -291,6 +311,7 @@ class WorkerState {
             const robot = this.#ownedRobot(db, context, robotId);
             if (generation.recovery_pending) fail('recovery_pending');
             this.#refuseQuarantinedRobot(db, robotId);
+            this.#refuseOpenTerminals(db, robotId);
             this.#gateKinds(db, 'configure');
             if (robot.lifecycle !== 'ready' && robot.lifecycle !== 'failed') fail('robot_busy');
             if (this.#hasPreparation(db, robotId)) fail('robot_busy');
@@ -333,6 +354,8 @@ class WorkerState {
             }
             if (robot.lifecycle === 'deleting') fail('robot_busy');
             if (robot.revision !== expectedRevision) fail('revision_conflict');
+            // M-54: open terminals are named before the generic busy refusal (hasActiveWork counts them too).
+            this.#refuseOpenTerminals(db, robotId);
             // M-29: busy while any execution, pending create or configure, retained resource or quarantined blocker exists.
             if (robot.lifecycle === 'provisioning' || this.#hasPreparation(db, robotId) || this.#hasActiveWork(db, robotId)
                 || hasRetainedForRobot(db, robotId) || quarantinedForRobot(db, robotId).length > 0) {
@@ -1421,6 +1444,56 @@ class WorkerState {
 
     // Trusted-adapter reads and writes for the execution engine (RoboWork r10 wiring). None takes a context: like
     // transitionAttempt they are called only by the in-process engine, never from the network.
+
+    // Robot terminals (M-8, schema 9; plan-review B-1, delta notes 1-3). Trusted in-process call of the worker's terminal path only:
+    // the network never reaches it (a coordinator admit with kind `terminal` is invalid_request). It runs after the launch evidence was
+    // verified and its token ID consumed. One transaction records a `queued` admission of kind and logical kind `terminal` (a fresh
+    // logical ID each time), its internal reference row of kind `terminal` (no origin row, never listed or revealed to a coordinator)
+    // and the queued state event; the terminal path then publishes its resources and moves it to `running` with transitionAttempt.
+    // It ends through the unchanged end path (beginAttemptEnd, blocker settlement, generation recovery).
+    //   robotId      a workspace robot that is ready now (attested in this generation, not preparing, nothing quarantined)
+    //   ownerId      `user:<id>` of the verified direct administrator who launched it (recorded, never used for visibility)
+    //   maxPerRobot, maxTotal   the terminal caps, counted over queued, running and stopping terminals in this same transaction,
+    //                so two parallel launches for the last slot admit exactly one (the other is capacity_exceeded)
+    // Refusals: not_found (unknown, foreign or deleted robot), recovery_pending, runtime_unavailable (not admission-ready or not ready),
+    // resource_quarantined, robot_busy (provisioning, preparing or deleting), capacity_exceeded (a cap). Terminal admissions never
+    // count against `limits.admissions` (#checkCapacity excludes them).
+    admitTerminal(request) {
+        exactObject(request, ['robotId', 'ownerId', 'maxPerRobot', 'maxTotal']);
+        const robotId = validateInternalId(request.robotId);
+        if (typeof request.ownerId !== 'string' || !/^user:[^\s]{1,160}$/u.test(request.ownerId)) fail('invalid_request');
+        for (const key of ['maxPerRobot', 'maxTotal']) if (!Number.isSafeInteger(request[key]) || request[key] < 1 || request[key] > 1024) fail('invalid_request');
+        return this.#mutate('admitTerminal', (db, generation) => {
+            if (generation.recovery_pending) fail('recovery_pending');
+            const robot = db.prepare('SELECT * FROM robot WHERE id = ?').get(robotId);
+            if (!robot || robot.owner_id !== `workspace:${this.#workspaceId}` || robot.lifecycle === 'deleted') fail('not_found');
+            if (robot.lifecycle === 'deleting' || robot.lifecycle === 'provisioning' || this.#hasPreparation(db, robotId)) fail('robot_busy');
+            this.#refuseQuarantinedRobot(db, robotId);
+            if (this.#adapter(() => this.#runtime.admissionReady({ generationId: generation.id, robotId })) !== true) fail('runtime_unavailable');
+            if (!this.#isReady(db, robot, generation, false)) fail('runtime_unavailable');
+            if (this.#openTerminals(db, robotId) >= request.maxPerRobot || this.#openTerminals(db, null) >= request.maxTotal) fail('capacity_exceeded');
+            const executionId = randomId();
+            const attemptId = randomId();
+            const logicalId = randomId();
+            const referenceId = randomId();
+            const now = this.#now();
+            db.prepare(`INSERT INTO admission (execution_id, attempt_id, logical_id, logical_kind, generation_id, robot_id, config_revision, configuration, kind, specification, scope, owner_id, operation_id, state, result, created_at, updated_at)
+                VALUES (?, ?, ?, '${TERMINAL_KIND}', ?, ?, ?, ?, '${TERMINAL_KIND}', ?, ?, ?, ?, 'queued', NULL, ?, ?)`)
+                .run(executionId, attemptId, logicalId, generation.id, robotId, robot.revision, robot.configuration, canonicalJson({ version: 1 }),
+                    TERMINAL_SCOPE, request.ownerId, randomId(), now, now);
+            db.prepare(`INSERT INTO reference (id, version, provider, namespace, origin_key, origin_id, kind, logical_id, attempt_id, execution_id, obligation_id, scope, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, '${TERMINAL_KIND}', ?, ?, ?, NULL, ?, ?)`)
+                .run(referenceId, PROVIDER_REFERENCE_VERSION, this.#provider, TERMINAL_SCOPE, request.ownerId, randomId(), logicalId, attemptId, executionId, TERMINAL_SCOPE, now);
+            appendStateEvent(db, referenceId, { state: 'queued' }, now);
+            return { executionId, attemptId, robotId, configRevision: robot.revision };
+        });
+    }
+
+    // The number of open (queued, running or stopping) robot terminals of one robot, or of the whole worker when `robotId` is absent.
+    countOpenTerminals({ robotId } = {}) {
+        if (robotId !== undefined) validateInternalId(robotId);
+        return this.#state.read((db) => this.#openTerminals(db, robotId ?? null));
+    }
 
     // Admissions of the current generation that are still `queued`, oldest first, with what the engine needs to start
     // them. The specification and configuration are returned parsed.

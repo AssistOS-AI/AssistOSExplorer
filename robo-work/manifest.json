@@ -26,6 +26,9 @@
     "taskReferences": {
       "path": "/v1/task-refs"
     },
+    "terminals": {
+      "path": "/v1/terminal-control"
+    },
     "coordinatorRoutes": [
       {
         "path": "/base-agent-additional-server/robo-work/7000/v1/coordinator/*",
@@ -55,6 +58,7 @@
     "default": {
       "env": [
         "ROBO_WORK_MAX_CONCURRENT",
+        "ROBO_WORK_MAX_TERMINALS",
         "ROBO_WORK_INACTIVITY_TIMEOUT_MS",
         "ROBO_WORK_MAX_ATTEMPT_MS",
         "ROBO_WORK_APPROVAL_TIMEOUT_MS"

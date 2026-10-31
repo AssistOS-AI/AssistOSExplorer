@@ -72,6 +72,14 @@ function userError(code, status, text) {
 
 const sameConfiguration = (left, right) => canonical(left) === canonical(right);
 
+// M-54: the worker refuses configure and delete while robot terminals are open, with their count. The message names the count and the
+// Close terminals action; nothing is stopped implicitly.
+function terminalsOpenError(robot, error) {
+    const count = Number.isSafeInteger(error.terminals) ? error.terminals : null;
+    const what = count === null ? 'Robot terminals are' : `${count} terminal${count === 1 ? ' is' : 's are'}`;
+    return userError('terminals_open', 409, `${what} open on robot "${robot.name}". Close the terminals (Close terminals) and try again.`);
+}
+
 // `client` is a worker client (worker-client.mjs); `robotStore.withRobot(id, (robot, save) => ...)`
 // persists the worker robot ID. `sleep` and the timeouts are test injections.
 export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = READY_TIMEOUT_MS, sleep = delay, now = Date.now } = {}) {
@@ -112,10 +120,15 @@ export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = RE
 
     async function configure(robot, workerRobotId, view, auth) {
         const configuration = desiredConfiguration(robot);
-        await lifecycle(() => client.configure({
-            operationId: lifecycleOperationId('configure', robot.id, workerRobotId, view.revision, configurationDigest(configuration)),
-            robotId: workerRobotId, expectedRevision: view.revision, configuration,
-        }, auth));
+        try {
+            await lifecycle(() => client.configure({
+                operationId: lifecycleOperationId('configure', robot.id, workerRobotId, view.revision, configurationDigest(configuration)),
+                robotId: workerRobotId, expectedRevision: view.revision, configuration,
+            }, auth));
+        } catch (error) {
+            if (error instanceof WorkerError && error.code === 'terminals_open') throw terminalsOpenError(robot, error);
+            throw error;
+        }
     }
 
     // What a phase, or a non-administrator, sees when the robot is not current: only an administrator can set it up or update it.
@@ -224,6 +237,7 @@ export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = RE
                 if (error instanceof WorkerError && error.code === 'robot_busy') {
                     throw userError('robot_busy', 409, 'the robot has running or unsettled work; stop it first.');
                 }
+                if (error instanceof WorkerError && error.code === 'terminals_open') throw terminalsOpenError(robot, error);
                 // The robot changed between the read and the delete: read it again and delete that revision, once.
                 if (error instanceof WorkerError && error.code === 'revision_conflict' && attempt === 0) continue;
                 throw error;
@@ -232,5 +246,30 @@ export function createRobotProvisioner({ client, robotStore, readyTimeoutMs = RE
         throw new WorkerError('revision_conflict', 409);
     }
 
-    return Object.freeze({ ensureReady, inspect, provision, deleteRobot, desiredConfiguration });
+    // F-3 (M-8): the worker robot ID a robot terminal targets, for an administrator only, after the same ensure as any administrator
+    // use (provision when missing, configure when stale, then wait ready). A robot that cannot be made ready refuses with the ensure's
+    // plain message; RoboTeam's own robot ID is never the target (the worker mints its own, robot.worker.robotId).
+    // `label` is the label the worker's terminal inventory shows for that robot (terminalTargets.mjs labelFor: the worker robot's name
+    // when it is 1-128 UTF-8 bytes without control characters, else its ID); it is shown only. The card binds a WebTTY row by its
+    // `targetId` (this worker robot ID) and its `provider` (the worker's route key) together, never by label.
+    async function terminalTarget(robot, auth = {}) {
+        if (!auth.grant) throw userError('owner_evidence_unavailable', 403, 'Opening a robot terminal needs an administrator\'s own request.');
+        const ready = await ensureReady(robot, auth);
+        const view = await client.getRobot(ready.robotId, auth);
+        const name = typeof view?.name === 'string' ? view.name : '';
+        const bytes = Buffer.byteLength(name, 'utf8');
+        const label = bytes >= 1 && bytes <= 128 && !/[\u0000-\u001f\u007f-\u009f]/u.test(name) ? name : ready.robotId;
+        return { targetId: ready.robotId, label };
+    }
+
+    // M-54 Close terminals: every open robot terminal of the robot ends through the worker's normal end path. Administrator grant only.
+    async function closeTerminals(robot, auth = {}) {
+        const workerRobotId = robot.worker?.robotId || null;
+        if (!workerRobotId) return { closed: 0, unverified: 0 };
+        if (!auth.grant) throw userError('owner_evidence_unavailable', 403, 'Closing robot terminals needs an administrator\'s own request.');
+        const result = await client.closeTerminals({ robotId: workerRobotId }, auth);
+        return { closed: Number.isSafeInteger(result?.closed) ? result.closed : 0, unverified: Number.isSafeInteger(result?.unverified) ? result.unverified : 0 };
+    }
+
+    return Object.freeze({ ensureReady, inspect, provision, deleteRobot, desiredConfiguration, terminalTarget, closeTerminals });
 }

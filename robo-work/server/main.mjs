@@ -23,6 +23,10 @@ import { runSandboxPreflight } from './runtime/preflight.mjs';
 import { createProductionRuntime } from './runtime/productionRuntime.mjs';
 import { recoverWorkerGeneration } from './runtime/recovery.mjs';
 import { createRobotStore } from './runtime/robotStore.mjs';
+import { createPtyHost, DEFAULT_NODE_PTY_DIR } from './terminal/ptyHost.mjs';
+import { UNAVAILABLE_AUTH, loadTerminalAuth } from './terminal/terminalAuth.mjs';
+import { DEFAULT_TERMINAL_LIMITS, createTerminalExecutions } from './terminal/terminalExecutions.mjs';
+import { createTerminalServer } from './terminal/terminalServer.mjs';
 
 // The robo-work worker bootstrap (plan section 11, 12): opens the worker state in the agent's own store, runs generation
 // recovery, builds the verifier, the coordinator, task-reference and terminal-target adapters with their HTTP handlers,
@@ -32,8 +36,9 @@ import { createRobotStore } from './runtime/robotStore.mjs';
 //                                            (manifest executionProvider.coordinatorRoutes), bound on all interfaces because
 //                                            the published port must reach it
 //   provider port (ROBO_WORK_PROVIDER_PORT, default 7300, loopback)
-//                                            `/v1/task-refs/...` (declared taskReferences.path) and `/v1/terminal-control/targets`
-//                                            (not declared yet: terminals come in their own landing, decision M-8)
+//                                            `/v1/task-refs/...` (declared taskReferences.path), `POST /v1/terminal-control/targets`
+//                                            (declared terminals.path) and the robot-terminal WebSocket upgrade at exactly
+//                                            `/v1/terminal-control` (M-8, terminal/terminalServer.mjs)
 //
 // Environment read (all optional unless marked):
 //   PLOINKY_AGENT_SECRET (required)   the agent's 64-hex request secret: the key the Router signs every hop token with
@@ -46,11 +51,18 @@ import { createRobotStore } from './runtime/robotStore.mjs';
 //   ROBO_WORK_COORDINATORS            comma list of coordinator principals, default `agent:<repo>/roboTeamAgent`
 //   PORT, ROBO_WORK_COORDINATOR_HOST, ROBO_WORK_PROVIDER_PORT, ROBO_WORK_PROVIDER_HOST
 //   ROBO_WORK_ALA_ROOT                the AdvancedLanguageAgent checkout, default /Agent/linked/AdvancedLanguageAgent
-//   ROBO_WORK_MAX_CONCURRENT          concurrent executions, default 4
+//   ROBO_WORK_MAX_CONCURRENT          concurrent executions, default 4 (robot terminals are not counted)
+//   ROBO_WORK_MAX_TERMINALS           open robot terminals of the whole worker, an integer from 1 to 128, default 16 (M-8); each robot
+//                                     has at most 4. Terminals have their own cap, outside ROBO_WORK_MAX_CONCURRENT and the AI admissions
+//   ROBO_WORK_NODE_PTY_DIR            the node-pty package the robot terminals open their PTY pair with, default
+//                                     /usr/local/lib/ploinky/webtty/node_modules/node-pty (the image's own; never installed). Missing or
+//                                     unloadable: every terminal launch is refused `sandbox_unavailable`
 //   ROBO_WORK_PLOINKY_AGENT_DIR       the Ploinky Agent library directory, default /Agent: its lib/runtimeSources.mjs reads the active
 //                                     runtime sources from the Router (decision M-63) for every launch with a writable grant and on the
 //                                     60 s recheck while a writable attempt runs; it signs with the worker's own Ploinky identity
-//                                     (PLOINKY_AGENT_PRIVATE_SECRET, PLOINKY_AGENT_INSTANCE_ID, the enable generation, the Router descriptor)
+//                                     (PLOINKY_AGENT_PRIVATE_SECRET, PLOINKY_AGENT_INSTANCE_ID, the enable generation, the Router descriptor);
+//                                     its lib/routerServiceToken.mjs verifies the robot-terminal channel's Router-service tokens (M-8): when
+//                                     it cannot be loaded every terminal upgrade is refused 503
 //   PLOINKY_AGENT_API_KEY, PLOINKY_ROUTER_DESCRIPTOR_FILE, PLOINKY_AGENTLIB_DIR
 //                                     the worker's own Soul Gateway identity for the model channel (M-26): an OpenCode robot whose model is
 //                                     `soul-gateway/<id>` is served through a per-execution channel (runtime/modelChannel.mjs). Read only here, by
@@ -107,6 +119,14 @@ function boundedMs(env, name, fallback) {
     return value;
 }
 
+function boundedCount(env, name, fallback, max) {
+    const text = String(env[name] ?? '').trim();
+    if (!text) return fallback;
+    const value = Number(text);
+    if (!/^[0-9]+$/u.test(text) || !Number.isSafeInteger(value) || value < 1 || value > max) throw new Error(`${name} must be an integer from 1 to ${max}`);
+    return value;
+}
+
 export function readConfig(env = process.env) {
     const secretHex = required(env, 'PLOINKY_AGENT_SECRET');
     if (!/^[0-9a-f]{64}$/iu.test(secretHex)) throw new Error('PLOINKY_AGENT_SECRET must be 64 hexadecimal characters');
@@ -127,6 +147,9 @@ export function readConfig(env = process.env) {
         providerPort: integerPort(env.ROBO_WORK_PROVIDER_PORT, 7300), providerHost: String(env.ROBO_WORK_PROVIDER_HOST || '127.0.0.1').trim(),
         alaRoot: String(env.ROBO_WORK_ALA_ROOT || '/Agent/linked/AdvancedLanguageAgent').trim(),
         maxConcurrent: integerPort(env.ROBO_WORK_MAX_CONCURRENT, 4),
+        maxTerminals: boundedCount(env, 'ROBO_WORK_MAX_TERMINALS', DEFAULT_TERMINAL_LIMITS.maxTotal, 128),
+        nodePtyDir: String(env.ROBO_WORK_NODE_PTY_DIR || DEFAULT_NODE_PTY_DIR).trim(),
+        ploinkyAgentDir: String(env.ROBO_WORK_PLOINKY_AGENT_DIR || '/Agent').trim() || '/Agent',
         inactivityTimeoutMs: boundedMs(env, 'ROBO_WORK_INACTIVITY_TIMEOUT_MS', 20 * 60 * 1000),
         maxAttemptMs: boundedMs(env, 'ROBO_WORK_MAX_ATTEMPT_MS', 4 * 60 * 60 * 1000),
         approvalTimeoutMs: boundedMs(env, 'ROBO_WORK_APPROVAL_TIMEOUT_MS', 15 * 60 * 1000)
@@ -171,6 +194,8 @@ const jsonLog = (event, fields = {}) => {
 // Starts the worker. `overrides` are test seams: preflight, recover (async (store) => void), factory, listen ports,
 // limits, log, now. A production start passes none.
 export async function startWorker({ env = process.env, overrides = {} } = {}) {
+    // The robot-terminal upgrade token must be issued after this worker generation started (defence in depth; plan section 10.1).
+    const generationStartMs = Date.now();
     const config = { ...readConfig(env), ...(overrides.config ?? {}) };
     const log = overrides.log ?? jsonLog;
     const limits = overrides.limits ?? DEFAULT_LIMITS;
@@ -223,8 +248,11 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     const httpLimits = { requestBytes: limits.requestBytes };
     // The request line is logged with a refusal (no query, no header) so that an unexpected caller can be identified from the path.
     const onRefusal = ({ route, code, reason, method, path: requestPath }) => log('refusal', { route, code, reason, method, path: requestPath });
+    // M-54 Close terminals reaches the terminal server, which is built after the factory below.
+    let terminalServer = null;
+    const terminals = { closeRobot: (robotId) => (terminalServer ? terminalServer.closeRobot(robotId) : Promise.resolve({ closed: 0, unverified: 0 })) };
     const coordinatorHandler = createCoordinatorHttpHandler({
-        adapter: createCoordinatorAdapter({ store, workspaceId: config.workspaceId, verifier }), limits: httpLimits, onRefusal
+        adapter: createCoordinatorAdapter({ store, workspaceId: config.workspaceId, verifier, terminals }), limits: httpLimits, onRefusal
     });
     const taskReferenceHandler = createTaskReferenceHttpHandler({
         adapter: createTaskReferenceAdapter({ store, workspaceId: config.workspaceId, verifier, basePath: TASK_REFERENCES_PATH }),
@@ -257,8 +285,19 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
         ? createDispatcher({ store, workspaceId: config.workspaceId, workspaceRoot: config.workspaceRoot, factory, options: { maxConcurrent: config.maxConcurrent, inactivityTimeoutMs: config.inactivityTimeoutMs, maxAttemptMs: config.maxAttemptMs, approvalTimeoutMs: config.approvalTimeoutMs }, log })
         : null;
 
+    // M-8 robot terminals: their own path (terminal/terminalExecutions.mjs) and caps; the dispatcher never sees them.
+    const terminalAuth = overrides.terminalAuth
+        ?? await loadTerminalAuth({ agentDir: config.ploinkyAgentDir, secret: config.secret, audience: config.audience, path: TERMINALS_PATH, generationStartMs });
+    if (terminalAuth === null) log('terminal_auth_unavailable', {});
+    const terminalExecutions = createTerminalExecutions({
+        store, verifier, workspaceId: config.workspaceId, path: TERMINALS_PATH, factory, ptyHost: overrides.ptyHost ?? createPtyHost({ moduleDir: config.nodePtyDir }),
+        limits: { maxPerRobot: DEFAULT_TERMINAL_LIMITS.maxPerRobot, maxTotal: config.maxTerminals }, log
+    });
+    terminalServer = createTerminalServer({ path: TERMINALS_PATH, auth: terminalAuth ?? UNAVAILABLE_AUTH, executions: terminalExecutions, limits: overrides.terminalLimits ?? {}, log });
+
     const coordinatorServer = http.createServer(coordinatorHandler);
     const providerServer = http.createServer(providerHandler);
+    providerServer.on('upgrade', (req, socket, head) => terminalServer.handleUpgrade(req, socket, head));
     for (const server of [coordinatorServer, providerServer]) {
         server.requestTimeout = 30000;
         server.headersTimeout = 10000;
@@ -272,10 +311,12 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
 
     let closing = null;
     return Object.freeze({
-        coordinatorPort, providerPort, store, config, recovered, preflight, dispatcher, lifecycle,
-        // Graceful shutdown: stop accepting, interrupt running attempts through the end path, close the store.
+        coordinatorPort, providerPort, store, config, recovered, preflight, dispatcher, lifecycle, terminals: terminalServer,
+        // Graceful shutdown: end every robot terminal (cause generation-end, through the end path), stop accepting, interrupt running
+        // attempts through the end path, close the store.
         close() {
             closing ??= (async () => {
+                await terminalServer.close().catch(() => {});
                 await Promise.allSettled([closeServer(coordinatorServer), closeServer(providerServer)]);
                 lifecycle.stop();
                 await dispatcher?.close();

@@ -295,15 +295,18 @@ test('route and body: a query, a non-POST method and malformed bodies are invali
     refuse({ method: 'PUT' });
     for (const body of [{}, { project: null, extra: 1 }, { project: 'home' }, { project: {} }, { project: { selection: 'home' } },
         { project: { selection: '', relativePath: 'a' } }, { project: { selection: 'home', relativePath: '/abs' } },
-        { project: { selection: 'home', relativePath: 'a/../b' } }, { project: { selection: 'home', relativePath: '' } },
-        { project: { selection: 'home', relativePath: 'a', other: 1 } }, { project: { selection: 'a b', relativePath: 'a' } },
-        { project: { selection: 'home', relativePath: 'a\u0007b' } }]) {
+        { project: { selection: 'home', relativePath: 'a/../b' } }, { project: { selection: '/etc', relativePath: '' } },
+        { project: { selection: 'home', relativePath: 'a', other: 1 } }, { project: { selection: 'a/../b', relativePath: '' } },
+        { project: { selection: 'home', relativePath: 'a\u0007b' } }, { project: { selection: 'a//b', relativePath: '' } },
+        { project: { selection: '.', relativePath: '' } }]) {
         refuse({ body });
     }
     refuse({ rawBody: Buffer.from('not json') });
     refuse({ rawBody: Buffer.alloc(0) });
-    assert.equal(count(dir, 'token_replay'), 16, 'each request refused after verification burned its token');
-    for (const body of [{ project: null }, { project: { selection: 'home', relativePath: 'projects/demo' } }]) {
+    assert.equal(count(dir, 'token_replay'), 18, 'each request refused after verification burned its token');
+    // Delta note 4 / B-2: the selection is a workspace-relative folder (any segment text but `.`, `..` and empty) and `relativePath` may be ''.
+    for (const body of [{ project: null }, { project: { selection: 'home', relativePath: 'projects/demo' } }, { project: { selection: 'home', relativePath: '' } },
+        { project: { selection: 'projects/my app', relativePath: '' } }]) {
         assert.equal(adapter.targets(targetsRequest(secret, { body })).version, 1);
     }
 });

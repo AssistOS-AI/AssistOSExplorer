@@ -15,8 +15,6 @@ import { projectRobotView } from './robot-projection.mjs';
 import { importEmailRobots } from './robot-import.mjs';
 import { createCodingAgentStatus } from './coding-agent-status.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
-import { listTerminalProfiles, resolveTerminalProfile, robotTerminalDirectory, terminalProfileAccess } from './robot-terminal.mjs';
-import { prepareRobotShell } from './robot-shell.mjs';
 import { robotCodingAgents } from './coding-agents.mjs';
 import { findProjectRecord, projectForSessionRecord } from './project-storage.mjs';
 import { matchConversationSkillsPath, readConversationSkills, setConversationSkill } from './conversation-skills-api.mjs';
@@ -743,66 +741,6 @@ async function handleRobotProxies({ req, res, pathname, actor, proxyPool, robotS
     return true;
 }
 
-// Terminal profiles let the Explorer and the Ploinky router pick a robot for a
-// WebTTY shell. All three routes are decided on the access that the family
-// gate verified for this very request; the compatibility actor and the
-// internal token never grant anything here. Bodies were read, size-limited and
-// signature-checked by the gate and are only parsed here.
-const TERMINAL_PROFILES_PATH = /^\/api\/terminal-profiles(?:\/|$)/;
-const TERMINAL_PROFILE_PREPARE = new RegExp(`^/api/terminal-profiles/(${ROBOT_ID})/prepare$`);
-
-function emptyJsonBody(raw) {
-    if (!raw.length) return true;
-    const parsed = JSON.parse(raw.toString('utf8'));
-    return Boolean(parsed) && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
-}
-
-// Interim until the worker's terminals (decision M-72): the old robot Terminal runs in RoboTeam's old robot home.
-export const ROBOT_TERMINALS_UNAVAILABLE_MESSAGE = 'Robot terminals arrive with the worker update';
-
-async function handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager, workerOn = false }) {
-    if (!TERMINAL_PROFILES_PATH.test(pathname)) return false;
-    const decision = terminalProfileAccess(access);
-    if (!decision.ok) { sendError(res, decision.status, decision.error); return true; }
-    if (workerOn && req.method === 'POST') {
-        sendJson(res, 409, { ok: false, error: ROBOT_TERMINALS_UNAVAILABLE_MESSAGE, code: 'robot_terminals_unavailable_with_worker' });
-        return true;
-    }
-    const workspaceRoot = runtimeManager.workspaceRoot;
-    if (pathname === '/api/terminal-profiles' && req.method === 'GET') {
-        sendJson(res, 200, { ok: true, profiles: await listTerminalProfiles(robotStore) });
-        return true;
-    }
-    if (pathname === '/api/terminal-profiles/resolve' && req.method === 'POST') {
-        let body;
-        try { body = JSON.parse((await readRawBody(req)).toString('utf8')); } catch { body = null; }
-        const keys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : [];
-        if (keys.join() !== 'id,version' || body.version !== 1 || typeof body.id !== 'string') {
-            sendError(res, 400, 'a version 1 profile id is required');
-            return true;
-        }
-        sendJson(res, 200, await resolveTerminalProfile(robotStore, body.id, workspaceRoot));
-        return true;
-    }
-    const prepareId = pathname.match(TERMINAL_PROFILE_PREPARE)?.[1];
-    if (prepareId && req.method === 'POST') {
-        if (!emptyJsonBody(await readRawBody(req))) { sendError(res, 400, 'prepare takes an empty JSON object'); return true; }
-        const robot = await robotStore.get(prepareId);
-        if (!robot) { sendError(res, 404, 'robot not found'); return true; }
-        const root = await robotTerminalDirectory(robotStore, prepareId, workspaceRoot);
-        const codingAgents = robotCodingAgents(robot);
-        const tools = await runtimeManager.toolCache.prepareShellTools();
-        await prepareRobotShell(path.join(robotStore.robotPath(prepareId), 'home'), {
-            codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
-        });
-        await runtimeManager.prepareOpenCode?.(prepareId, { prepare: codingAgents.includes('opencode') });
-        sendJson(res, 200, { ok: true, id: robot.id, label: robot.name, root });
-        return true;
-    }
-    sendError(res, 404, 'not found');
-    return true;
-}
-
 export function createRoboTeamServer(options) {
     const robotStore = options.robotStore;
     const runtimeManager = options.runtimeManager;
@@ -826,11 +764,20 @@ export function createRoboTeamServer(options) {
     // Robot provisioning on the worker for an administrator's request (the only caller that holds the
     // administrator grant the worker's lifecycle calls require).
     const workerProvisioner = workerHop ? createRobotProvisioner({ client: createWorkerClient({ hop: workerHop }), robotStore }) : null;
-    const workerProvisioning = workerProvisioner ? { ensureRobot: async (robotId, auth) => {
+    // The worker's Ploinky route key (the provider name WebTTY shows on its robot terminal rows), from the coordinator base
+    // `/base-agent-additional-server/<routeKey>/<port>`; `robo-work` when it cannot be read.
+    const workerRouteKey = /^\/base-agent-additional-server\/([A-Za-z0-9_-]+)\/[0-9]+$/u.exec(String(process.env[COORDINATOR_BASE_ENV] || '').trim())?.[1] || 'robo-work';
+    const robotFor = async (robotId) => {
         const robot = await robotStore.get(robotId);
         if (!robot) throw Object.assign(new Error('robot not found'), { name: 'WorkerError', code: 'not_found', status: 404 });
-        return workerProvisioner.ensureReady(robot, auth);
-    } } : null;
+        return robot;
+    };
+    const workerProvisioning = workerProvisioner ? {
+        ensureRobot: async (robotId, auth) => workerProvisioner.ensureReady(await robotFor(robotId), auth),
+        // M-8 robot terminals (F-3) and M-54 Close terminals: administrator routes under /api/worker/robots/.
+        terminalTarget: async (robotId, auth) => ({ ...(await workerProvisioner.terminalTarget(await robotFor(robotId), auth)), provider: workerRouteKey }),
+        closeTerminals: async (robotId, auth) => workerProvisioner.closeTerminals(await robotFor(robotId), auth),
+    } : null;
     // With the worker configured, robot create/update and flow start use the grant their route mints.
     const workerEnabled = Boolean(workerHop) && (options.workerMode ?? String(process.env[COORDINATOR_BASE_ENV] || '').trim() !== '');
     const worker = {
@@ -911,7 +858,6 @@ export function createRoboTeamServer(options) {
                 return await handleLiveSessions({ req, res, pathname, viewer: { principal: live.principal, canAdmin: live.canAdmin },
                     registry: liveSessions, publicDir, publicBasePath, streamLifetimeMs: liveStreamLifetimeMs, worker });
             }
-            if (await handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager, workerOn: worker.enabled || runtimeManager.workerMode === true })) return;
             const actor = requestActor(req, internalToken);
             if (!actor) return sendError(res, 401, 'authenticated Ploinky user is required');
 

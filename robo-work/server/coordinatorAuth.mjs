@@ -26,6 +26,9 @@ export const TASK_REFERENCE_ORIGIN_METHOD = 'ORIGIN';
 export const TASK_REFERENCE_ORIGIN_PATH = '/origin';
 // Terminal-target inventory (interface note 2.3 (9); plan §10.1; S6 Part E).
 export const TERMINAL_TARGETS_TOOL = '__provider_terminal_targets__';
+// Robot-terminal launch evidence (M-8; Ploinky providerTerminalClient mints it through mintLaunchEvidence).
+export const TERMINAL_LAUNCH_TOOL = '__provider_terminal_launch__';
+export const TERMINAL_LAUNCH_METHOD = 'LAUNCH';
 export const OWNER_SCOPE = 'execution:owner';
 export const MAX_TOKEN_LIFETIME_SECONDS = 30;
 export const CLOCK_SKEW_SECONDS = 30;
@@ -417,6 +420,14 @@ export function verifyProviderTerminalTargetsRequest(config, request) {
     const token = invocationTokenFrom(request.authInfo);
     const payload = verifyJwsCore(token, config);
     verifyRouterRequestSurface(payload, { tool: TERMINAL_TARGETS_TOOL, method: surface.method, path: surface.path, rch: surface.rch });
+    const userKey = directAdministratorKey(payload);
+    return brand({ kind: 'terminal-targets', userKey, method: surface.method, path: surface.path, query: surface.query, bodyHash: surface.bodyHash }, payload);
+}
+
+// The verified direct administrator of a terminal Router Request (discovery and launch): a direct non-guest user actor with the role
+// `admin` (roles trimmed and lowercased), `sub` equal to `user:<id>`, no `usr` or `delegation` claim and no `caller` other than that user.
+// Agent actors, guests and delegated evidence are refused. Returns the user key `user:<id>`.
+function directAdministratorKey(payload) {
     const actor = payload.actor;
     if (!isPlainObject(actor) || actor.kind !== 'user' || typeof actor.id !== 'string') refuse('forbidden', 'actor');
     if (payload.usr !== undefined || payload.delegation !== undefined) refuse('forbidden', 'delegated');
@@ -431,7 +442,21 @@ export function verifyProviderTerminalTargetsRequest(config, request) {
     }
     if (payload.sub !== userKey) refuse('forbidden', 'subject');
     if (!isAdministrator(roles)) refuse('forbidden', 'administrator');
-    return brand({ kind: 'terminal-targets', userKey, method: surface.method, path: surface.path, query: surface.query, bodyHash: surface.bodyHash }, payload);
+    return userKey;
+}
+
+// Robot-terminal launch evidence (M-8 SPEC, plan-review F-7): the `launchEvidence` JWS of a `launch` frame. The Router mints it as a
+// Router Request (`typ: router-request`, `iss: ploinky-router`, `aud` = this provider) for the creating browser request's revalidated
+// administrator lease, with tool `__provider_terminal_launch__`, method `LAUNCH`, `path` = the declared `terminals.path` and `rch` =
+// computeRch({operationId, targetId, project, cols, rows}) of the exact launch fields (`expectedRch`, recomputed here by the caller).
+// The actor is checked as for discovery (directAdministratorKey). Returns branded facts; the jti is NOT consumed here: the terminal path
+// consumes it durably (S1 token_replay) before anything is admitted, so a replay is refused across a restart.
+export function verifyProviderTerminalLaunch(config, token, { path, expectedRch }) {
+    if (typeof path !== 'string' || !path.startsWith('/') || typeof expectedRch !== 'string' || expectedRch.length === 0) refuse('unavailable', 'configuration');
+    const payload = verifyJwsCore(token, config);
+    verifyRouterRequestSurface(payload, { tool: TERMINAL_LAUNCH_TOOL, method: TERMINAL_LAUNCH_METHOD, path, rch: expectedRch });
+    const userKey = directAdministratorKey(payload);
+    return brand({ kind: 'terminal-launch', userKey, path }, payload);
 }
 
 // ---- Verified context construction ----------------------------------------------

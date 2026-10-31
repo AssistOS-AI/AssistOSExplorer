@@ -1,6 +1,6 @@
 import { api, endpoint, routeKey } from './roboflow-api.js';
 import { openSkillsDialog, codingAgentLabel, openCodingAgentsDialog } from './skills-dialog.js';
-import { openRobotTerminal } from './terminal.js';
+import { closeRobotTerminals, openRobotTerminal } from './terminal.js';
 import { initDashboardTabs } from './dashboard-tabs.js';
 import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
 import { initPageNavigation, restoreNavigationFocus } from './page-navigation.js';
@@ -207,6 +207,8 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
     for (const robot of robots) {
         const card = robotTemplate.content.firstElementChild.cloneNode(true);
         prepareOpenMenu(card, robot);
+        // Robot terminals (M-8, M-51 Q1): administrators only; for anyone else the action is not shown. The worker refuses everyone
+        // else anyway, and an unready robot gets a plain message instead of a terminal.
         const terminalButton = card.querySelector('.open-terminal');
         terminalButton.hidden = !canAdmin;
         terminalButton.addEventListener('click', async () => {
@@ -214,6 +216,21 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
             try { await openRobotTerminal(robot, api); }
             catch (error) { showError(error); }
             finally { terminalButton.disabled = false; }
+        });
+        // M-54: configure and delete refuse while terminals are open; Close terminals ends them through the normal shutdown path.
+        const closeTerminalsButton = card.querySelector('.close-terminals');
+        closeTerminalsButton.hidden = !canAdmin;
+        closeTerminalsButton.addEventListener('click', async () => {
+            if (!confirm(`Close every open terminal of ${robot.name}? Programs running in them end.`)) return;
+            closeTerminalsButton.disabled = true;
+            try {
+                const { closed, unverified } = await closeRobotTerminals(robot, api);
+                formMessage.textContent = unverified > 0
+                    ? `${closed} terminal${closed === 1 ? '' : 's'} closed; ${unverified} could not be confirmed closed, so ${robot.name} is not ready until an administrator checks it.`
+                    : `${closed} terminal${closed === 1 ? '' : 's'} of ${robot.name} closed.`;
+                formMessage.className = unverified > 0 ? 'message error' : 'message';
+            } catch (error) { showError(error); }
+            finally { closeTerminalsButton.disabled = false; }
         });
         card.querySelector('.open-chat').addEventListener('click', () => {
             const params = new URLSearchParams({ agent: routeKey, robot: robot.name, 'workspace-dir': 'achilles-cli', 'forward-envelope': '1' });
