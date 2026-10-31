@@ -1720,6 +1720,19 @@ class WorkerState {
         });
     }
 
+    // Every blocker row of one attempt whatever its release state (reserved, committed, released, quarantined, released by operator).
+    // The recovery walker attributes namespace holders with these: an endpoint or process tree that the end path already quarantined and
+    // settled is no longer listed as unsettled, yet its live members still hold the execution's namespaces.
+    listResourcesForAttempt(request) {
+        exactObject(request, ['attemptId']);
+        const attemptId = validateInternalId(request.attemptId);
+        return this.#state.read((db) => {
+            const active = db.prepare("SELECT id FROM generation WHERE state = 'active'").get();
+            return db.prepare('SELECT * FROM resource_blocker WHERE attempt_id = ? ORDER BY created_at, resource_id').all(attemptId)
+                .map((row) => ({ ...publicBlocker(row), current: row.generation_id === active.id }));
+        });
+    }
+
     listUnsettledResources() {
         return this.#state.read((db) => {
             const active = db.prepare("SELECT id FROM generation WHERE state = 'active'").get();

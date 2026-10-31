@@ -476,15 +476,20 @@ export function createExecutionSupervisor({
 
 // recoveryWalk.createWalker's `sandboxRecord`: the anchor's own S1 record (any release state) for a blocker whose locator
 // names it. `getState` returns the current WorkerState handle (it changes when recovery reopens the store).
-// The record also carries `siblings`: the execution's other unsettled blockers (their markers and recorded process identities), which is what the
+// The record also carries `siblings`: the execution's other blockers in ANY release state (their markers and recorded process identities), which is what the
 // walker needs to attribute a holder of a recorded namespace inode to the execution. Absent when the store cannot list them.
 export const sandboxRecordFor = (getState) => (blocker) => {
     const state = getState();
     const record = state.getResource({ resourceId: blocker.locator.keeper });
     let siblings;
     try {
-        if (typeof state.listUnsettledResources === 'function' && record?.attemptId !== undefined) {
-            siblings = state.listUnsettledResources().filter((entry) => entry.attemptId === record.attemptId && entry.resourceId !== record.resourceId);
+        if (record?.attemptId !== undefined) {
+            // Every row of the attempt in any release state: a tree or endpoint that the end path quarantined (or released) before a crash is
+            // not "unsettled" any more, but its live members still hold the execution's namespaces. Extra rows only add holders (a dead
+            // pid + start time matches nothing, an unproven pid namespace adds nothing), so this fails closed.
+            const listed = typeof state.listResourcesForAttempt === 'function' ? state.listResourcesForAttempt({ attemptId: record.attemptId })
+                : typeof state.listUnsettledResources === 'function' ? state.listUnsettledResources() : undefined;
+            if (listed !== undefined) siblings = listed.filter((entry) => entry.attemptId === record.attemptId && entry.resourceId !== record.resourceId);
         }
     } catch { siblings = undefined; }
     return siblings === undefined ? record : { ...record, siblings };

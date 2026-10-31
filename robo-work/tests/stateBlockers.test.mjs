@@ -832,3 +832,26 @@ test('F6: a settlement of a real blocker after publication leaves the published 
     assert.equal(view(store, context, fixture.admitted).result.cleanup, 'released');
     store.close();
 });
+
+test('M-49: listResourcesForAttempt returns every row of one attempt in any release state, and nothing of another attempt', (t) => {
+    const dir = makeTempDir(t);
+    const store = openStore(dir);
+    const context = syntheticContext();
+    const one = running(store, context);
+    const other = running(store, context);
+    const generationId = store.generationId;
+    const kinds = ['workdir', 'mount', 'workdir'];
+    const ids = kinds.map((kind) => reserveFor(store, one, { kind, locator: locatorFor(kind) }).resourceId);
+    const foreign = reserveFor(store, other).resourceId;
+    store.commitResource({ resourceId: ids[0], identity: { id: 1 } });
+    store.settleResource({ resourceId: ids[1], generationId, outcome: 'released' });
+    store.commitResource({ resourceId: ids[2], identity: { id: 2 } });
+    store.settleResource({ resourceId: ids[2], generationId, outcome: 'quarantined' });
+    const rows = store.listResourcesForAttempt({ attemptId: one.admitted.attemptId });
+    assert.deepEqual(rows.map((row) => row.resourceId).sort(), [...ids].sort());
+    assert.deepEqual(rows.map((row) => row.state).sort(), ['committed', 'quarantined', 'released']);
+    assert.ok(!rows.some((row) => row.resourceId === foreign));
+    assert.deepEqual(store.listUnsettledResources().filter((row) => row.attemptId === one.admitted.attemptId).map((row) => row.resourceId), [ids[0]], 'the unsettled listing alone would have lost two of them');
+    assert.deepEqual(store.listResourcesForAttempt({ attemptId: newId() }), []);
+    expectCode(assert, () => store.listResourcesForAttempt({}), 'invalid_request');
+});

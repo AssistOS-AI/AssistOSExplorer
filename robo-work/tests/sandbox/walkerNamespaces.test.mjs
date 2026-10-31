@@ -287,6 +287,8 @@ function productionOrder({ members }) {
         getResource: ({ resourceId }) => rows.find((row) => row.resourceId === resourceId),
         // the real listUnsettledResources: only reserved/committed
         listUnsettledResources: () => rows.filter((row) => row.state === 'committed' || row.state === 'reserved'),
+        // every row of the attempt, whatever its release state
+        listResourcesForAttempt: ({ attemptId }) => rows.filter((row) => row.attemptId === attemptId).map((row) => ({ ...row })),
         beginGenerationRecovery: () => ({ generationId: 'G2', priorGenerationId: 'G1', unsettledBlockers: rows.filter((row) => row.state === 'committed').map((row) => ({ ...row })) }),
         settleResource: ({ resourceId, outcome }) => { rows.find((row) => row.resourceId === resourceId).state = outcome; },
         completeGenerationRecovery: () => ({ recovered: true })
@@ -297,7 +299,9 @@ function productionOrder({ members }) {
 test('M-48: recoverGeneration in production order: a quarantined process tree whose members hold the recorded netns keeps the netns quarantined', async () => {
     const { recoverGeneration } = await import('../../server/execution/recoveryWalk.mjs');
     const { sandboxRecordFor } = await import('../../server/sandbox/executionSupervisor.mjs');
-    const { store, seenSiblings, NS } = productionOrder({});
+    const { store: full, seenSiblings, NS } = productionOrder({});
+    // the snapshot path alone: a store that can list only the unsettled rows (the by-attempt read is covered by M-49)
+    const { listResourcesForAttempt, ...store } = full;
     // the tree's init (71) and a member (72) live in the tree's own pid namespace and the recorded netns; nothing can kill them. The endpoint is gone.
     const processes = [
         worker(1), worker(21, { ppid: 1 }),
@@ -343,4 +347,55 @@ test('M-48: runtime/recovery recoverWorkerGeneration passes the same pre-settle 
     const walker = createWalker({ view, clock: clock(), releaseDeadlineMs: 50, pollMs: 10, sandboxRecord: sandboxRecordFor(() => store) });
     const result = await recoverWorkerGeneration({ state: store, walker });
     assert.equal(result.outcomes.find((entry) => entry.resourceId === 'N').outcome, 'quarantined');
+});
+
+// ---- M-49: the end path already quarantined (or released) the tree and the endpoint and settled them, then the supervisor crashed while it was
+// walking the netns. Recovery's snapshot (unsettled blockers) no longer lists them; the store read by attempt does.
+test('M-49: a tree quarantined by the END PATH before the crash still attributes its live members: the netns stays quarantined', async () => {
+    const { recoverGeneration } = await import('../../server/execution/recoveryWalk.mjs');
+    const { sandboxRecordFor } = await import('../../server/sandbox/executionSupervisor.mjs');
+    const { rows, store, NS } = productionOrder({});
+    for (const row of rows) if (row.kind === 'process-tree' || row.kind === 'endpoint') row.state = 'quarantined'; // settled before the crash
+    const processes = [
+        worker(1), worker(21, { ppid: 1 }),
+        proc(71, { ppid: 1, pidNs: '4026540002', mntNs: '4026540003', netNs: NS, cmdline: ['sleep'] }),
+        proc(72, { ppid: 71, pidNs: '4026540002', mntNs: '4026540003', netNs: NS, cmdline: ['sleep'] })
+    ];
+    const view = { listProcesses: () => processes, listMounts: () => [], exists: () => false, remove: () => true, kill: () => false, unmount: () => false, selfNamespaces: () => OWN, isPinned: () => false };
+    const walker = createWalker({ view, clock: clock(), releaseDeadlineMs: 50, pollMs: 10, sandboxRecord: sandboxRecordFor(() => store) });
+    assert.deepEqual(store.beginGenerationRecovery().unsettledBlockers.map((row) => row.resourceId), ['K', 'N'], 'the recovery snapshot lacks the quarantined rows');
+    const result = await recoverGeneration({ state: store, walker });
+    assert.equal(result.outcomes.find((entry) => entry.resourceId === 'N').outcome, 'quarantined');
+    // a store that can only list the unsettled rows has the old gap, which is why the by-attempt read exists
+    const { listResourcesForAttempt, ...legacy } = store;
+    rows.find((row) => row.resourceId === 'N').state = 'committed';
+    const gap = createWalker({ view, clock: clock(), releaseDeadlineMs: 50, pollMs: 10, sandboxRecord: sandboxRecordFor(() => legacy) });
+    assert.equal(gap.prove(rows.find((row) => row.resourceId === 'N'), true).absent, true, 'documents the gap of the unsettled-only listing');
+});
+
+test('M-49: rows of a tree and endpoint that were RELEASED (truly gone) do not block the netns release; a live look-alike outside them is not attributed', async () => {
+    const { recoverGeneration } = await import('../../server/execution/recoveryWalk.mjs');
+    const { sandboxRecordFor } = await import('../../server/sandbox/executionSupervisor.mjs');
+    const { rows, store, NS } = productionOrder({});
+    for (const row of rows) if (row.kind === 'process-tree' || row.kind === 'endpoint') row.state = 'released';
+    // nothing of the tree lives; an unrelated process reuses the pids' numbers with other start times and sits in the supervisor's own pid namespace
+    const processes = [
+        worker(1), worker(21, { ppid: 1 }),
+        proc(71, { ppid: 1, startTime: '99999', pidNs: OWN.pidNs, mntNs: OWN.mntNs, netNs: NS, cmdline: ['other'] })
+    ];
+    const view = { listProcesses: () => processes, listMounts: () => [], exists: () => false, remove: () => true, kill: () => false, unmount: () => false, selfNamespaces: () => OWN, isPinned: () => false };
+    const walker = createWalker({ view, clock: clock(), releaseDeadlineMs: 50, pollMs: 10, sandboxRecord: sandboxRecordFor(() => store) });
+    const result = await recoverGeneration({ state: store, walker });
+    assert.equal(result.outcomes.find((entry) => entry.resourceId === 'N').outcome, 'released');
+});
+
+test('M-49: sandboxRecordFor prefers the by-attempt read (every release state) and falls back to the unsettled listing', async () => {
+    const { sandboxRecordFor } = await import('../../server/sandbox/executionSupervisor.mjs');
+    const keeper = { resourceId: 'K', attemptId: 'A1', kind: 'keeper', locator: { marker: 'K' }, identity: { pid: 5, startTime: '5' } };
+    const all = [keeper, { resourceId: 'T', attemptId: 'A1', kind: 'process-tree', state: 'quarantined' }, { resourceId: 'U', attemptId: 'A1', kind: 'endpoint', state: 'released' }];
+    const asked = [];
+    const state = { getResource: () => keeper, listResourcesForAttempt: (request) => { asked.push(request); return all; }, listUnsettledResources: () => { throw new Error('not used'); } };
+    assert.deepEqual(sandboxRecordFor(() => state)({ locator: { keeper: 'K' } }).siblings.map((entry) => entry.resourceId), ['T', 'U']);
+    assert.deepEqual(asked, [{ attemptId: 'A1' }]);
+    assert.equal('siblings' in sandboxRecordFor(() => ({ ...state, listResourcesForAttempt: () => { throw new Error('closed'); } }))({ locator: { keeper: 'K' } }), false, 'unreadable: unattributed, fail-closed');
 });

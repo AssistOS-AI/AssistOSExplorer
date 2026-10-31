@@ -73,6 +73,10 @@ const MAX_CONCURRENT = 8;
 // being buffered; it is NOT held across the upstream wait, which the cap above bounds), and a token bucket of 10 requests refilled at 5 per
 // second. A request over either limit gets 429 `rate_limited` and its upload is not read (see rateLimited).
 export const ADMISSION = Object.freeze({ maxBodies: 2, burst: 10, refillPerSecond: 5 });
+// Worst-case memory of one worker for request bodies (M-48): per execution, at most 2 bodies being read (maxBodies, <= 2 MiB each) PLUS up to 8
+// parsed payloads (MAX_CONCURRENT, each <= 2 MiB, rewritten body <= MAX_UPSTREAM_BODY) held during the upstream wait, i.e. at most
+// (2 + 8) x 2 MiB = 20 MiB per execution, times ROBO_WORK_MAX_CONCURRENT executions (default 4: 80 MiB; plus the buffered upstream
+// answers, bounded separately by the transport).
 const MAX_CONNECTIONS = 16;
 // After a refusal the unread upload is discarded (never buffered, never parsed) and the connection is kept OPEN until the announced upload (at
 // least REFUSAL_DRAIN_BYTES, at most MAX_BODY) has been discarded, or REFUSAL_DRAIN_MS has passed; only then is the socket destroyed. Two
