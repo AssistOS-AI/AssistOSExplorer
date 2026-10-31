@@ -88,7 +88,7 @@ function modelRefusal(model, backend) {
     return error;
 }
 
-// The refusal of a working folder one of whose components became a symlink after it was chosen (decision M-58).
+// The refusal of a working folder one of whose components became a symbolic link after it was chosen (decision M-58).
 function cwdSymlinkedRefusal() {
     const error = new WorkerError('cwd_symlinked', 400);
     error.message = 'cwd_symlinked: a folder in this conversation\'s working folder path was replaced by a link. Pick the working folder again.';
@@ -301,10 +301,10 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 throw new Error('This conversation uses another robot. Open it with that robot, or create a new session.');
             }
             // The stored cwd is sent as written (lexically normalized), never resolved: a session that can write the project
-            // could swap one of its components for a symlink to another project, and a resolved path would reach the worker
+            // could swap one of its components for a symbolic link to another project, and a resolved path would reach the worker
             // already free of links. Unresolved, the worker's anchored walk refuses it (`symlink_in_path`), decision M-58.
             // A stored cwd is always saved as a real path, so a difference from its resolution means a component was swapped
-            // for a symlink since: refused here, before the session binding (which would store the resolved path for the next
+            // for a symbolic link since: refused here, before the session binding (which would store the resolved path for the next
             // turn) and before admission.
             const cwd = path.resolve(session.engine?.cwd || session.cwd || workingDir);
             const realCwd = await fs.realpath(cwd);

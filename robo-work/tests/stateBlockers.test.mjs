@@ -622,7 +622,7 @@ test('R2-1: a store written with an older layout is refused at open, not later',
     const old = makeTempDir(t);
     openStore(old).close();
     let db = rawDb(old);
-    assert.equal(db.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get().value, '9');
+    assert.equal(db.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get().value, '10');
     db.exec('DROP INDEX resource_blocker_locator');
     db.exec('DROP TRIGGER resource_blocker_guard');
     db.exec('ALTER TABLE resource_blocker DROP COLUMN locator_base');

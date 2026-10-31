@@ -23,11 +23,18 @@ test('the source declaration is exactly the Explorer contract under the RoboTeam
     assert.deepEqual(config, DECLARATION);
     // The base is the RoboTeam service's public route and its Live Sessions API.
     const manifest = JSON.parse(await fs.readFile(path.join(AGENT_ROOT, 'manifest.json'), 'utf8'));
-    // The narrower worker-coordinator route precedes it and is the only one that mints a grant.
+    // The declared grant-bearing operation routes precede the broad service route, which mints nothing.
     assert.deepEqual(manifest.routerAccess.httpRoutes.map(({ path: route, access }) => ({ path: route, access })), [
         { path: '/base-agent-additional-server/roboTeamAgent/3001/api/worker/*', access: 'authenticated' },
+        { path: '/base-agent-additional-server/roboTeamAgent/3001/api/robots/*', access: 'authenticated' },
+        { path: '/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/flows', access: 'authenticated' },
+        { path: '/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/schedules/*', access: 'authenticated' },
+        { path: '/base-agent-additional-server/roboTeamAgent/3001/api/control', access: 'authenticated' },
+        { path: '/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/human-input/answer', access: 'authenticated' },
+        { path: '/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/control', access: 'authenticated' },
+        { path: '/base-agent-additional-server/roboTeamAgent/3001/api/live-sessions/*', access: 'authenticated' },
         { path: '/base-agent-additional-server/roboTeamAgent/3001/*', access: 'authenticated' }]);
-    assert.equal(Object.hasOwn(manifest.routerAccess.httpRoutes[1], 'delegations'), false);
+    assert.equal(Object.hasOwn(manifest.routerAccess.httpRoutes.at(-1), 'delegations'), false);
     assert.equal(config.liveSessions.base, `${PUBLIC_BASE_PATH}api/live-sessions`);
     assert.equal(config.liveSessions.base, SOURCE_BASE, 'the conformance tests replay this exact base');
 });

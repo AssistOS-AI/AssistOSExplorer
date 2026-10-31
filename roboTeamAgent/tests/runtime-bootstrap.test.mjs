@@ -213,7 +213,7 @@ test('manifest selects runtime-only GUI images and the persistent tool cache', a
     // coordinator selector base; proxy secrets live in proxyAgent.
     assert.deepEqual(manifest.profiles.default.env, [
         'ROBOTEAM_CODEX_VERSION', 'ROBOTEAM_OPENCODE_VERSION', 'ROBOTEAM_PI_VERSION', 'ROBOTEAM_CLAUDE_VERSION',
-        'ROBOTEAM_WORKER_COORDINATOR_BASE',
+        { name: 'ROBOTEAM_WORKER_COORDINATOR_BASE', value: '/base-agent-additional-server/robo-work/7000' },
     ]);
 
     assert.equal(constants.DESKTOP_IMAGE, 'docker.io/assistos/roboteam-desktop:runtime');

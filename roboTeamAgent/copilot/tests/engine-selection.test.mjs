@@ -91,6 +91,6 @@ test('the runtime entry points use the seam: createCliRuntime builds the engine 
     assert.match(index, /createExecutionEngine\(\{/u);
     assert.doesNotMatch(index, /resolveAlaInstallation|createAlaEngine/u, 'no local ALA installation or engine in createCliRuntime');
     const listing = await read('../src/mcp/list-slash-commands.mjs');
-    assert.match(listing, /worker \? \{ listModels/u, 'the slash-command catalog builds no local engine in worker mode');
+    assert.match(listing, /createExecutionEngine\(\{\s*workerOptions/u, 'the slash-command catalog uses the worker execution seam for model utilities');
     assert.doesNotMatch(listing, /createAlaEngine|resolveAlaInstallation/u);
 });
