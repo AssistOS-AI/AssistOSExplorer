@@ -6,10 +6,131 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { captureOpacityDiagnostic, createObservationLog, heldRoleArgv, measureFixture, readIdentityObservation, validateHeld } from './live/ptyLeakMeasurement.mjs';
+import { captureOpacityDiagnostic, createObservationLog, heldRoleArgv, measureFixture, proveExitTeardown, provePriorCleanSample, readIdentityObservation, validateHeld } from './live/ptyLeakMeasurement.mjs';
 import { createSampler, nodePtyPreload, validateWatchFinish } from './live/ptyleak.mjs';
 
 const identity = (pid, startTime = '1') => ({ pid, startTime, state: 'S', threads: 1 });
+
+function teardownFixture() {
+    const state = { exiting: false, siblingExiting: true, noMm: true, badMemory: false, deniedMemory: false,
+        master: false, changingTasks: false, changingIdentity: false, failStat: false, partialFd: false };
+    let taskReads = 0;
+    let siblingStats = 0;
+    const io = {
+        readFileSync(file) {
+            if (state.failStat) throw Object.assign(new Error('private detail'), { code: 'EACCES' });
+            const pid = Number(/(?:\/task)?\/(\d+)\/stat$/u.exec(file)?.[1]);
+            const fields = Array(50).fill('0');
+            fields[0] = state.exiting && pid === 20 ? 'Z' : 'R';
+            fields[6] = state.exiting && (pid === 20 || state.siblingExiting) ? '4' : '0';
+            fields[17] = '2'; fields[19] = pid === 21 && state.changingIdentity && ++siblingStats > 1 ? '2' : '1';
+            if (!state.exiting || !state.noMm) for (const index of [20, 21, 23, 24, 25]) fields[index] = '4096';
+            if (state.deniedMemory) { fields[23] = '1'; fields[24] = '1'; }
+            if (state.badMemory) fields[20] = 'redacted';
+            return `${pid} (private command) ${fields.join(' ')}\n`;
+        },
+        opendirSync(file) {
+            let names;
+            if (file.endsWith('/task')) names = state.changingTasks && ++taskReads > 1 ? ['20'] : ['20', '21'];
+            else names = ['0', ...(state.master && file.includes('/task/21/') ? ['40'] : [])];
+            let offset = 0;
+            return { readSync: () => offset < names.length ? { name: names[offset++] } : null, closeSync() {} };
+        },
+        readlinkSync(file) {
+            if (state.partialFd) throw Object.assign(new Error('private detail'), { code: 'ENOENT' });
+            return file.endsWith('/40') ? '/dev/pts/ptmx' : '/dev/null';
+        },
+        statSync: () => ({ dev: 1n, ino: 2n }),
+    };
+    const options = { io, now: () => 1n, masters: [{ dev: '1', ino: '2' }] };
+    const current = () => ({ ...identity(20), state: state.exiting ? 'Z' : 'R', threads: 2 });
+    let table = [];
+    const sampler = createSampler({ supervisorPid: 10, masters: options.masters, readers: {
+        listPids: () => [10, 20], ppidOf: () => 10, cmdlineOf: () => ['node', 'sandboxPrep.mjs'],
+        pidNsOf: () => { try { return fs.readlinkSync('/proc/self/ns/pid'); } catch { return null; } },
+        identity: (pid) => pid === 20 ? current() : identity(pid), fdsOf: () => table, fdError: () => 'EACCES',
+        provePriorCleanSample: (expected) => provePriorCleanSample(expected, options),
+        proveExitTeardown: (expected) => proveExitTeardown(expected, options), captureOpacityDiagnostic: () => ({}),
+    } });
+    return { state, io, options, current, sampler, opaque() { state.exiting = true; table = null; } };
+}
+
+test('exit teardown accepts an all-exiting mm-free group only after its complete clean sample', () => {
+    const fixture = teardownFixture();
+    fixture.sampler.sample();
+    assert.equal(fixture.sampler.seen.prep.size, 1);
+    fixture.opaque();
+    fixture.sampler.sample();
+    assert.equal(fixture.sampler.lastUnreadable.size, 0);
+    assert.equal(fixture.sampler.exitTeardowns.size, 1);
+    const receipt = fixture.sampler.exitTeardowns.get('20:1');
+    assert.equal(receipt.priorClean.proof.ok, true);
+    assert.ok(receipt.priorClean.proof.tids.every((thread) => thread.fds.complete));
+    assert.equal(receipt.proof.beforeFdRead.ok, true);
+    assert.ok(receipt.proof.tids.every((thread) => thread.before.exiting && thread.before.noMm && thread.after.exiting && thread.after.noMm));
+    assert.equal(fixture.sampler.seen.prep.size, 1, 'accepted teardown adds no clean FD coverage');
+    assert.equal(fixture.sampler.unreadable.prep, 1, 'raw unreadability remains explicit');
+    assert.doesNotMatch(JSON.stringify(receipt), /private command|\/dev\//u);
+});
+
+test('exit teardown without any earlier complete clean sample remains a failure', () => {
+    const fixture = teardownFixture();
+    fixture.opaque(); fixture.sampler.sample();
+    assert.equal(fixture.sampler.lastUnreadable.size, 1);
+    assert.equal(fixture.sampler.exitTeardowns.size, 0);
+    assert.equal(fixture.sampler.seen.prep.size, 0);
+});
+
+test('exit teardown rejects the zombie-leader and live exec sibling counterexample', () => {
+    const fixture = teardownFixture();
+    fixture.sampler.sample(); fixture.opaque(); fixture.state.siblingExiting = false;
+    fixture.sampler.sample();
+    assert.equal(fixture.sampler.lastUnreadable.size, 1);
+    assert.equal(fixture.sampler.exitTeardowns.size, 0);
+    fixture.state.siblingExiting = true;
+    fixture.sampler.sample();
+    assert.equal(fixture.sampler.lastUnreadable.size, 1, 'later exit cannot clear the failed exec observation');
+});
+
+test('exit teardown rejects malformed, redacted, changing or incomplete thread proofs and exhausted bounds', () => {
+    for (const change of [{ noMm: false }, { badMemory: true }, { deniedMemory: true }, { changingTasks: true }, { changingIdentity: true }, { failStat: true }]) {
+        const fixture = teardownFixture(); Object.assign(fixture.state, { exiting: true }, change);
+        assert.equal(proveExitTeardown(fixture.current(), fixture.options).ok, false, JSON.stringify(change));
+    }
+    for (const limits of [{ tids: 1 }, { reads: 2 }, { elapsedNs: 0 }]) {
+        const fixture = teardownFixture(); fixture.state.exiting = true;
+        assert.equal(proveExitTeardown(fixture.current(), { ...fixture.options, limits }).ok, false);
+    }
+});
+
+test('prior clean eligibility rejects partial FD reads and a master in an unshared sibling table', () => {
+    for (const change of [{ partialFd: true }, { master: true }]) {
+        const fixture = teardownFixture(); Object.assign(fixture.state, change);
+        const proof = provePriorCleanSample(fixture.current(), fixture.options);
+        assert.equal(proof.ok, false);
+        fixture.sampler.sample(); fixture.opaque(); fixture.sampler.sample();
+        assert.equal(fixture.sampler.lastUnreadable.size, 1);
+        assert.equal(fixture.sampler.exitTeardowns.size, 0);
+    }
+});
+
+test('exit teardown keeps preexisting leak evidence and cannot borrow clean history from a reused PID', () => {
+    const fixture = teardownFixture(); fixture.state.master = true;
+    const leak = provePriorCleanSample(fixture.current(), fixture.options);
+    assert.equal(leak.ok, false);
+    assert.deepEqual(leak.leaks, [{ tid: 21, fd: 40, unknownIdentity: false }]);
+    fixture.sampler.sample();
+    assert.equal(fixture.sampler.violations.length, 1);
+    fixture.state.master = false; fixture.sampler.sample(); fixture.opaque(); fixture.sampler.sample();
+    assert.equal(fixture.sampler.exitTeardowns.size, 1);
+    assert.equal(fixture.sampler.violations.length, 1, 'accepted exit never removes an earlier inherited master');
+    const log = createObservationLog();
+    const clean = { ok: true, key: '20:1' };
+    log.record({ before: identity(20), after: identity(20), kind: 'workload', table: [], cleanFdSample: clean });
+    log.record({ before: identity(20, '2'), after: identity(20, '2'), kind: 'workload', table: null, errno: 'EACCES', exitTeardown: { ok: true, key: '20:2' } });
+    assert.equal(log.failures.size, 1);
+    assert.equal(log.exitTeardowns.size, 0);
+});
 
 test('opacity access context retains only ownership, credentials and user namespace evidence within existing budgets', () => {
     let operations = 0;

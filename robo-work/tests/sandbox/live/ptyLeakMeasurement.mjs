@@ -45,6 +45,101 @@ export function readIdentityObservation(pid, procRoot = '/proc', io = fs) {
     }
 }
 
+// Prior clean eligibility reads every thread's table; teardown itself supplies no descriptor coverage. A denied ptrace check
+// can redact a present mm's code addresses to 1/1: only the complete zero bundle proves the missing-mm teardown condition.
+function proveThreadGroup(expected, { procRoot = '/proc', io = fs, now = () => process.hrtime.bigint(), limits = {}, masters = [] } = {}, mode) {
+    const caps = { tids: 64, fds: 256, reads: mode === 'clean' ? 8192 : 512, elapsedNs: 50000000, ...limits };
+    const started = now();
+    const proof = { ok: false, key: expected ? processKey(expected) : null, tids: [], reads: 0, limits: caps, leaks: [] };
+    const fail = (reason) => { proof.reason = reason; return proof; };
+    const operation = (run) => {
+        if (proof.reads >= caps.reads || now() - started >= BigInt(caps.elapsedNs)) throw new Error('proof-budget');
+        proof.reads += 1;
+        return run();
+    };
+    const stat = (relative, pid) => {
+        const raw = operation(() => io.readFileSync(`${procRoot}/${relative}/stat`, 'utf8'));
+        const close = raw.lastIndexOf(')');
+        const fields = raw.slice(close + 2).trim().split(/\s+/u);
+        if (raw.length > 8192 || !raw.startsWith(`${pid} (`) || close < 0 || !/^[A-Za-z]$/u.test(fields[0] ?? '')
+            || [6, 17, 19, 20, 21, 23, 24, 25].some((index) => !/^\d+$/u.test(fields[index] ?? ''))
+            || !Number.isSafeInteger(Number(fields[17])) || Number(fields[17]) < 1) throw new Error('invalid-stat');
+        return { identity: { pid, startTime: fields[19], state: fields[0], threads: Number(fields[17]) },
+            exiting: (BigInt(fields[6]) & 4n) !== 0n,
+            noMm: [20, 21, 23, 24, 25].every((index) => fields[index] === '0') };
+    };
+    const entries = (relative, cap) => {
+        const directory = operation(() => io.opendirSync(`${procRoot}/${relative}`, { bufferSize: 1 }));
+        const ids = [];
+        try {
+            for (;;) {
+                const entry = operation(() => directory.readSync());
+                if (entry === null) break;
+                if (!/^\d+$/u.test(entry.name) || !Number.isSafeInteger(Number(entry.name))) throw new Error('invalid-entry');
+                if (ids.length >= cap) throw new Error('entry-budget');
+                ids.push(Number(entry.name));
+            }
+        } finally { directory.closeSync(); }
+        if (new Set(ids).size !== ids.length) throw new Error('duplicate-entry');
+        return ids.sort((left, right) => left - right);
+    };
+    const descriptors = (relative, tid) => {
+        const names = entries(`${relative}/fd`, caps.fds);
+        for (const fd of names) {
+            const file = `${procRoot}/${relative}/fd/${fd}`;
+            const target = operation(() => io.readlinkSync(file));
+            if (/(^|\/)ptmx$/u.test(target)) {
+                let node;
+                try { node = operation(() => io.statSync(file, { bigint: true })); }
+                catch (error) { proof.leaks.push({ tid, fd, unknownIdentity: true }); throw error; }
+                if (typeof node.dev !== 'bigint' || typeof node.ino !== 'bigint' || node.dev < 0n || node.ino < 0n) {
+                    proof.leaks.push({ tid, fd, unknownIdentity: true });
+                    throw new Error('invalid-master-identity');
+                }
+                if (masters.some((master) => master.dev === String(node.dev) && master.ino === String(node.ino))) {
+                    proof.leaks.push({ tid, fd, unknownIdentity: false });
+                }
+            }
+        }
+        if (names.join(',') !== entries(`${relative}/fd`, caps.fds).join(',')) throw new Error('descriptor-set-changed');
+        return { complete: true, entries: names.length };
+    };
+    try {
+        if (!expected || !Number.isSafeInteger(expected.pid) || expected.pid < 2 || !/^\d+$/u.test(expected.startTime ?? '')) return fail('invalid-identity');
+        proof.before = stat(String(expected.pid), expected.pid);
+        if (processKey(proof.before.identity) !== proof.key) return fail('group-identity-changed');
+        if (mode === 'exit' && (!proof.before.exiting || !proof.before.noMm)) return fail('leader-not-in-mm-free-exit');
+        if (mode === 'clean' && ['Z', 'X', 'x'].includes(proof.before.identity.state)) return fail('leader-not-live-for-prior-sample');
+        const first = entries(`${expected.pid}/task`, caps.tids);
+        if (!first.includes(expected.pid) || first.some((tid) => tid < 1) || first.length !== proof.before.identity.threads) return fail('incomplete-thread-group');
+        for (const tid of first) {
+            const relative = `${expected.pid}/task/${tid}`;
+            const before = stat(relative, tid);
+            const fds = mode === 'clean' ? descriptors(relative, tid) : undefined;
+            const after = stat(relative, tid);
+            proof.tids.push({ tid, before, after, ...(fds ? { fds } : {}) });
+            if (processKey(before.identity) !== processKey(after.identity) || before.identity.threads !== first.length || after.identity.threads !== first.length) return fail('thread-identity-changed');
+            if (mode === 'exit' && (!before.exiting || !after.exiting || !before.noMm || !after.noMm)) return fail('thread-not-in-mm-free-exit');
+        }
+        const last = entries(`${expected.pid}/task`, caps.tids);
+        proof.after = stat(String(expected.pid), expected.pid);
+        if (first.join(',') !== last.join(',') || processKey(proof.after.identity) !== proof.key
+            || proof.after.identity.threads !== first.length) return fail('group-identity-changed');
+        if (mode === 'exit' && (!proof.before.exiting || !proof.after.exiting || !proof.before.noMm || !proof.after.noMm)) return fail('leader-not-in-mm-free-exit');
+        if (mode === 'clean' && (['Z', 'X', 'x'].includes(proof.before.identity.state) || ['Z', 'X', 'x'].includes(proof.after.identity.state))) return fail('leader-not-live-for-prior-sample');
+        if (proof.leaks.length > 0) return fail('inherited-or-unknown-master');
+        proof.ok = true;
+        return proof;
+    } catch (error) {
+        const internal = ['proof-budget', 'invalid-stat', 'invalid-entry', 'entry-budget', 'duplicate-entry', 'descriptor-set-changed', 'invalid-master-identity'];
+        return fail(/^[A-Z][A-Z0-9_]{1,31}$/u.test(error.code ?? '') ? error.code
+            : internal.includes(error.message) ? error.message : 'proof-unreadable');
+    }
+}
+
+export const proveExitTeardown = (expected, options) => proveThreadGroup(expected, options, 'exit');
+export const provePriorCleanSample = (expected, options) => proveThreadGroup(expected, options, 'clean');
+
 // Evidence only: never use readable threads to clear the leader's failed observation. The deadline is cooperative;
 // synchronous proc operations can overrun it. Entry/read limits bound work even when the clock has not advanced.
 export function captureOpacityDiagnostic({ pid, sampleTime, before, after, scanIdentity, failure, ancestry = [],
@@ -182,9 +277,11 @@ export function captureOpacityDiagnostic({ pid, sampleTime, before, after, scanI
 export function createObservationLog() {
     const failures = new Map();
     const readable = new Map();
+    const priorClean = new Map();
+    const exitTeardowns = new Map();
     return {
-        failures, readable,
-        record({ before, after, kind, table, errno = null }) {
+        failures, readable, priorClean, exitTeardowns,
+        record({ before, after, kind, table, errno = null, cleanFdSample = null, exitTeardown = null }) {
             if (table === null && ['ENOENT', 'ESRCH'].includes(errno) && after === null) return false;
             const key = before ? processKey(before) : `unknown:${after?.pid ?? 'pid'}`;
             if (!before || (after && processKey(after) !== key)) {
@@ -193,10 +290,17 @@ export function createObservationLog() {
             }
             if (table === null) {
                 if (['ENOENT', 'ESRCH'].includes(errno) && after === null) return false;
+                if (after && processKey(after) === key && priorClean.has(key) && !failures.has(key)
+                    && exitTeardown?.ok === true && exitTeardown.key === key) {
+                    exitTeardowns.set(key, { ...before, kind, errno, priorClean: priorClean.get(key), proof: exitTeardown });
+                    return false; // accepted teardown supplies no new descriptor coverage
+                }
                 failures.set(key, { ...before, kind, reason: 'fd table unreadable', errno });
                 return false;
             }
             readable.set(key, { ...before, kind });
+            if (cleanFdSample?.ok === true && cleanFdSample.key === key && after && processKey(after) === key && !['Z', 'X', 'x'].includes(before.state)
+                && !['Z', 'X', 'x'].includes(after.state) && !priorClean.has(key)) priorClean.set(key, { before, after, kind, proof: cleanFdSample });
             return true; // a later readable sample cannot erase a failed observation
         },
     };

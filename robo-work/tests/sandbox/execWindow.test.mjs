@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createObservationLog, processKey, readIdentity } from './live/ptyLeakMeasurement.mjs';
+import { createObservationLog, processKey, proveExitTeardown, provePriorCleanSample, readIdentity } from './live/ptyLeakMeasurement.mjs';
 
 const python = process.env.ROBO_WORK_TEST_PYTHON ?? 'python3';
 const linuxOnly = { skip: process.platform !== 'linux' && 'requires Linux procfs', timeout: 15000 };
@@ -114,6 +114,9 @@ async function runFixture(mode, { opacityTimeoutMs = 3000 } = {}) {
         const flags = /^flags:\s+(\d+)$/mu.exec(fs.readFileSync(`/proc/${child.pid}/fdinfo/40`, 'utf8'))?.[1];
         assert.ok(flags, 'read fd40 flags before main-thread exit');
         assert.notEqual(BigInt(`0o${flags}`) & 0o2000000n, 0n, 'the inherited master must be close-on-exec');
+        const priorClean = provePriorCleanSample(initial, { masters: [inherited] });
+        assert.equal(priorClean.ok, false, 'the real inherited master cannot establish clean history');
+        assert.ok(priorClean.leaks.some((entry) => entry.fd === 40));
         child.stdin.write('Z');
         const before = await until(() => {
             const identity = readIdentity(child.pid);
@@ -131,7 +134,9 @@ async function runFixture(mode, { opacityTimeoutMs = 3000 } = {}) {
         assert.deepEqual(descriptor(`/proc/${child.pid}/task/${sibling.pid}/fd/40`), inherited,
             'the live sibling must still hold the original master during leader opacity');
         const observations = createObservationLog();
-        assert.equal(observations.record({ before, after, kind: 'workload', table: null, errno: table.errno }), false);
+        const exitTeardown = proveExitTeardown(before);
+        assert.equal(exitTeardown.ok, false, 'a live sibling with an mm must reject the teardown exception');
+        assert.equal(observations.record({ before, after, kind: 'workload', table: null, errno: table.errno, exitTeardown }), false);
         const key = processKey(before);
         assert.equal(observations.failures.get(key)?.errno, 'EACCES');
         const releasedAt = performance.now();
@@ -169,7 +174,7 @@ async function runFixture(mode, { opacityTimeoutMs = 3000 } = {}) {
         assert.equal(observations.failures.size, 1, 'later readability or death cannot erase opacity');
         assert.equal(observations.failures.get(key)?.errno, 'EACCES');
         result = { python: prerequisite.version, libc: prerequisite.libc, key, inherited, flags, opaque: before,
-            sibling, final, finalAfterReleaseMs: performance.now() - releasedAt, retainedFailures: observations.failures.size };
+            sibling, exitTeardownReason: exitTeardown.reason, final, finalAfterReleaseMs: performance.now() - releasedAt, retainedFailures: observations.failures.size };
     } finally {
         try {
             child?.stdin?.destroy();

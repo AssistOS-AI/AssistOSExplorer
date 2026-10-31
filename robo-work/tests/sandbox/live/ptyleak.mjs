@@ -32,7 +32,10 @@
 //       tools BEFORE stage.sh (setpriv, nsenter, unshare, and stage.sh before it has closed) may hold it: counted as the accepted
 //       window, never a failure. A PTY master (link /dev/ptmx or /dev/pts/ptmx) whose identity cannot be read is a suspect
 //       violation. Any unreadable live observation or changed identity during measurement stays failed, even if a later read
-//       succeeds or the process dies. ENOENT/ESRCH with no remaining process is counted (`vanished`), never as clean coverage.
+//       succeeds or the process dies. The sole exception requires an earlier complete clean fd sample for this exact identity,
+//       plus an unchanged complete thread group whose every member has PF_EXITING and a validated missing-mm stat bundle.
+//       That proof is reported separately and supplies no fd coverage. ENOENT/ESRCH with no remaining process is counted
+//       (`vanished`), never as clean coverage.
 //   L2  the descriptor snapshot each held role's probe program took at its start holds nothing >= 3 outside the role
 //       allowlist (orchestration 0-3, endpoint 0-4, workload 0-2) except Node's own (eventpoll, eventfd, io_uring, /dev/null, a pipe
 //       open twice), and no PTY master at all.
@@ -49,7 +52,7 @@ import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
-import { captureOpacityDiagnostic, createObservationLog, measureFixture, processKey, readIdentity, readIdentityObservation, validateHeld } from './ptyLeakMeasurement.mjs';
+import { captureOpacityDiagnostic, createObservationLog, measureFixture, processKey, proveExitTeardown, provePriorCleanSample, readIdentity, readIdentityObservation, validateHeld } from './ptyLeakMeasurement.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const argv = process.argv.slice(2);
@@ -119,6 +122,10 @@ export function createSampler({ supervisorPid, masters, readers = {} }) {
     const vanished = Object.fromEntries(Object.keys(seen).map((kind) => [kind, 0]));
     const observations = createObservationLog();
     const lastUnreadable = observations.failures;
+    const exitTeardowns = observations.exitTeardowns;
+    const priorCleanProof = readers.provePriorCleanSample ?? provePriorCleanSample;
+    const exitProof = readers.proveExitTeardown ?? proveExitTeardown;
+    const priorCleanFailures = new Map();
     const opacityDiagnostics = new Map();
     const diagnosticLimit = 20;
     const diagnosticNow = readers.diagnosticNow ?? (() => process.hrtime.bigint());
@@ -199,6 +206,12 @@ export function createSampler({ supervisorPid, masters, readers = {} }) {
             // Extra diagnostic-only stat and timestamp; verdict inputs below remain the original scan identity and after.
             const immediateBefore = identity(pid);
             const sampleTime = diagnosticNow();
+            const beforeKey = before ? processKey(before) : null;
+            let exitBefore = null;
+            if (kind !== 'window' && beforeKey && observations.priorClean.has(beforeKey) && !lastUnreadable.has(beforeKey)) {
+                try { exitBefore = exitProof(before); }
+                catch { exitBefore = { ok: false, key: beforeKey, reason: 'exit-proof-reader-failed' }; }
+            }
             const table = readFds(pid);
             const after = identity(pid);
             if (kind === 'window') {
@@ -208,30 +221,51 @@ export function createSampler({ supervisorPid, masters, readers = {} }) {
             if (table === null) {
                 if (['ENOENT', 'ESRCH'].includes(fdError(pid)) && after === null) vanished[kind] += 1;
                 else unreadable[kind] += 1;
-                observations.record({ before, after, kind, table, errno: fdError(pid) });
+                let exitTeardown = null;
+                const key = before ? processKey(before) : null;
+                if (key && after && processKey(after) === key && observations.priorClean.has(key) && !lastUnreadable.has(key)
+                    && exitBefore?.ok === true && exitBefore.key === key) {
+                    try { exitTeardown = exitProof(before); }
+                    catch { exitTeardown = { ok: false, key, reason: 'exit-proof-reader-failed' }; }
+                    if (exitTeardown?.ok === true) exitTeardown = { ...exitTeardown, beforeFdRead: exitBefore };
+                }
+                observations.record({ before, after, kind, table, errno: fdError(pid), exitTeardown });
                 retainDiagnostic({ pid, before, after, immediateBefore, sampleTime, info,
                     failure: readers.fdFailure?.(pid) ?? (lastFdFailure?.pid === pid ? lastFdFailure.failure : null)
                         ?? { errno: fdError(pid), incomplete: true, reason: 'failure-location-unavailable' } });
+                if (lastUnreadable.has(key) && opacityDiagnostics.has(key) && !Object.hasOwn(opacityDiagnostics.get(key), 'exitTeardown')) {
+                    Object.assign(opacityDiagnostics.get(key), { exitTeardown: exitTeardown ?? exitBefore,
+                        priorCleanFailure: priorCleanFailures.get(key) ?? null });
+                }
                 continue;
             }
-            if (!observations.record({ before, after, kind, table })) {
+            const held = table.filter((entry) => entry.dev !== null && keys.has(identityKey(entry)));
+            const suspect = table.filter((entry) => entry.dev === null && isMaster(entry));
+            const key = before ? processKey(before) : null;
+            let cleanFdSample = null;
+            if (key && after && processKey(after) === key && held.length + suspect.length === 0
+                && !observations.priorClean.has(key) && !lastUnreadable.has(key)) {
+                try { cleanFdSample = priorCleanProof(before, { masters }); }
+                catch { cleanFdSample = { ok: false, key, reason: 'prior-clean-proof-reader-failed' }; }
+                if (cleanFdSample?.ok !== true) priorCleanFailures.set(key, { reason: cleanFdSample?.reason ?? 'prior-clean-proof-invalid' });
+                for (const leak of cleanFdSample?.leaks ?? []) violations.push({ pid, kind, tid: leak.tid,
+                    fds: leak.unknownIdentity ? [] : [leak.fd], suspectFds: leak.unknownIdentity ? [{ fd: leak.fd }] : [], source: 'prior-clean-thread-sample' });
+            }
+            if (!observations.record({ before, after, kind, table, cleanFdSample })) {
                 retainDiagnostic({ pid, before, after, immediateBefore, sampleTime, info,
                     failure: { reason: 'process identity unreadable or changed' } });
                 continue;
             }
-            const key = processKey(before);
             seen[kind].add(key);
             members.set(key, { ...before, kind, marker: markerOf(pid, info) });
-            const held = table.filter((entry) => entry.dev !== null && keys.has(identityKey(entry)));
             // a PTY master whose identity could not be read (stat failed) cannot be cleared: it is a suspect violation
-            const suspect = table.filter((entry) => entry.dev === null && isMaster(entry));
             if (held.length + suspect.length > 0) {
                 violations.push({ pid, kind, comm: (readText(`/proc/${pid}/comm`) ?? '').trim().slice(0, 24), fds: held.map((entry) => entry.fd),
                     suspectFds: suspect.map((entry) => ({ fd: entry.fd, target: entry.target })) });
             }
         }
     }
-    return { sample, seen, violations, window, unreadable, vanished, lastUnreadable, opacityDiagnostics, diagnosticLimit, members, get samples() { return samples; } };
+    return { sample, seen, violations, window, unreadable, vanished, lastUnreadable, exitTeardowns, opacityDiagnostics, diagnosticLimit, members, get samples() { return samples; } };
 }
 
 export function validateWatchFinish(sampler, monitors, readers = {}) {
@@ -420,13 +454,16 @@ function report(sampler) {
     evidence.counts.acceptedWindowHolders = sampler.window.size;
     evidence.counts.unreadable = sampler.unreadable;
     evidence.counts.vanished = sampler.vanished;
+    evidence.counts.acceptedExitTeardownIdentities = sampler.exitTeardowns.size;
     check('L1 no prep, bwrap or sandbox process of B holds A\'s PTY master (nor a PTY master of unknown identity)', sampler.violations.length === 0, { violations: sampler.violations.slice(0, 20) });
     const blind = [...sampler.lastUnreadable.entries()];
-    check('L1 no unreadable or changed-identity observation during measurement', blind.length === 0, {
+    check('L1 no unaccepted unreadable or changed-identity observation during measurement', blind.length === 0, {
         unreadable: blind.slice(0, 20).map(([key, entry]) => ({ ...entry, diagnostic: sampler.opacityDiagnostics.get(key)
             ?? { incomplete: true, reason: 'diagnostic-identity-limit-or-unavailable' } })),
         count: blind.length, diagnosticLimit: sampler.diagnosticLimit, diagnosticsRetained: sampler.opacityDiagnostics.size,
         omittedFailures: Math.max(0, blind.length - 20),
+        acceptedExitTeardowns: [...sampler.exitTeardowns.values()].slice(0, 20),
+        omittedExitTeardowns: Math.max(0, sampler.exitTeardowns.size - 20),
     });
     for (const kind of ['prep', 'bwrap', 'orchestration', 'endpoint', 'workload']) {
         if (evidence.mode === 'watch' && sampler.seen[kind].size === 0) { evidence.pending.push(`${kind}: no process sampled during the watch`); continue; }
