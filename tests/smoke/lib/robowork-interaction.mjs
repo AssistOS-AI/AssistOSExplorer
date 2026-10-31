@@ -58,12 +58,19 @@ export function singleTaskWorkflow({ name, prompt, allowsHumanInput = false, ski
   };
 }
 
-// Sends one WebChat turn to a robot, targeting a project directory under the workspace, and waits for the answer.
-export async function chatTurn(page, { robot, project, prompt, timeoutMs = 5 * 60_000, check = null }) {
-  const params = new URLSearchParams({ agent: smokeConfig.webchatAgent, robot, 'forward-envelope': '1', 'workspace-dir': project });
-  await page.goto(`/webchat?${params}`, { waitUntil: 'load' });
+export function chatTurnUrl({ robot, project, agent = smokeConfig.webchatAgent }) {
+  const params = new URLSearchParams({ agent, robot, 'forward-envelope': '1' });
+  // Absent project input means robot HOME. Keep every nonempty value intact for the Router's own path validation.
+  if (project !== undefined && project !== null && project !== '') params.set('workspace-dir', project);
+  return `/webchat?${params}`;
+}
+
+// Sends one WebChat turn to a robot and waits for the answer. beforeSend can configure the actual selected conversation without navigating it away.
+export async function chatTurn(page, { robot, project, prompt, timeoutMs = 5 * 60_000, check = null, beforeSend = null }) {
+  await page.goto(chatTurnUrl({ robot, project }), { waitUntil: 'load' });
   await expect(page.locator('#cmd')).toBeVisible();
   await page.waitForTimeout(4000);
+  if (beforeSend) await beforeSend(page);
   const before = await page.locator(BOT).count();
   await setComposer(page, prompt);
   await page.locator('#send').click();

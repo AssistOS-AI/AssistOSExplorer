@@ -6,11 +6,12 @@ import path from 'node:path';
 import { test, expect } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { signIn } from '../lib/auth.mjs';
-import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
+import { ROBOTEAM_BASE_PATH, roboTeamApi, conversationFromSkillsURL, openConversationSkills, conversationSkillsState, setConversationSkill, refreshConversationSkills } from '../lib/conversation-skills.mjs';
 import { discoverContainers, readLedger, removeRunDirectory } from '../lib/robowork-e2e.mjs';
 import { apiOk, makeStallGuard, toolOutputs } from '../lib/robowork-scenarios.mjs';
 import { chatTurn, stopChatTurn, applySelectedModel, postQuietly } from '../lib/robowork-interaction.mjs';
 import { projectManifest, runtimeIdentity, requireRoboWorkGateFlags } from '../lib/robowork-terminal.mjs';
+import { scopedSkillTurn, assertAdmittedMarker, throwScenarioFailures } from '../lib/robowork-skills-fixture.mjs';
 
 // H / S3-S4, fresh deployment only:
 // SMOKE_ROBOWORK_SKILLS=1 node scripts/run-robowork-e2e.mjs specs/12-robowork-skills.spec.mjs
@@ -41,11 +42,16 @@ test.describe('RoboWork admitted skills', () => {
             fs.writeFileSync(path.join(project, 'README.md'), 'Disposable skill immutability fixture. Do not edit.\n');
             fs.writeFileSync(path.join(project, 'nested/.agents/skills/existing/SKILL.md'), 'Existing project skill; leave unchanged.\n');
             fs.writeFileSync(path.join(project, '.claude/settings.json'), '{}\n');
-            const before = projectManifest(project);
+            // The fixture authors no root runtime state. Only the real root directory may subsequently be created by DS006 runtime code.
+            assert.equal(fs.existsSync(path.join(project, '.roboteam')), false);
+            const before = projectManifest(project, { ignoreRootRuntime: true });
             save('project-before.json', before);
             save('environment.json', runtimeIdentity(discoverContainers({ workspaceRoot })));
             let robot;
             let ended = false;
+            let primaryError = null;
+            let sessionId;
+            let turnStartedMs;
             try {
                 await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH);
                 robot = (await apiOk(roboTeamApi, page, { method: 'POST', path: 'api/robots', body: { name: run, codingAgents: ['opencode'] } }, [201])).robot;
@@ -57,37 +63,65 @@ test.describe('RoboWork admitted skills', () => {
                     + 'Return the exact marker contents. Do not write or modify any files.';
                 assert.ok(!prompt.includes(nonce));
                 const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: startMs, scope: () => ({ cwd: withProject ? project : undefined, robotName: run }) });
-                const answer = await chatTurn(page, { robot: run, project: withProject ? path.basename(project) : '', prompt, check: withProject ? guard : null });
+                const answer = await chatTurn(page, {
+                    robot: run, project: withProject ? path.basename(project) : '', prompt, check: withProject ? guard : null,
+                    beforeSend: async (chatPage) => {
+                        const settings = await openConversationSkills(chatPage);
+                        let selectionError = null;
+                        try {
+                            const context = conversationFromSkillsURL(await chatPage.locator('#sessionSettingsLink').getAttribute('href'), smokeConfig.baseURL, { robotId: robot.id });
+                            sessionId = context.sessionId;
+                            const initial = await conversationSkillsState(settings);
+                            expect(initial.robotId).toBe(robot.id);
+                            expect(initial.sessionId).toBe(sessionId);
+                            const markers = initial.items.filter((entry) => entry.name === skillName);
+                            expect(markers, 'The registered marker skill is available for this exact fresh conversation').toHaveLength(1);
+                            if (!markers[0].enabled) await setConversationSkill(settings, markers[0].identity, true);
+                            const selected = await refreshConversationSkills(settings);
+                            expect(selected.robotId).toBe(robot.id);
+                            expect(selected.sessionId).toBe(sessionId);
+                            expect(selected.items.filter((entry) => entry.identity === markers[0].identity && entry.name === skillName && entry.enabled)).toHaveLength(1);
+                            save('conversation-selection.json', { initial, selected });
+                        } catch (error) { selectionError = error; }
+                        const selectionCleanupErrors = [];
+                        try { await settings.close(); } catch (error) { selectionCleanupErrors.push(error); }
+                        throwScenarioFailures(selectionError, selectionCleanupErrors);
+                        const current = conversationFromSkillsURL(await chatPage.locator('#sessionSettingsLink').getAttribute('href'), smokeConfig.baseURL, { robotId: robot.id });
+                        expect(current.sessionId, 'Sending stays in the conversation whose skill policy was selected').toBe(sessionId);
+                        turnStartedMs = Date.now();
+                    },
+                });
                 const ledger = readLedger({ workspaceRoot, scratchDir: evidenceDir, robotName: run });
-                const executions = ledger.executions.filter((row) => row.created_at >= startMs);
                 save('ledger.json', ledger);
                 save('answer.txt', answer);
-                expect(executions.length, 'The new robot admitted exactly one task').toBe(1);
-                expect(executions[0].state).toBe('completed');
+                const execution = scopedSkillTurn(ledger, { sinceMs: turnStartedMs, cwd: withProject ? project : '', sessionId });
                 ended = true;
-                if (withProject) expect(executions[0].specification.cwd).toBe(project);
-                else expect(executions[0].specification.cwd || '').toBe('');
+                assertAdmittedMarker(execution, { name: skillName, path: fs.realpathSync(path.join(repository, skillName)) });
                 expect(answer, 'Only marker.txt supplied this nonce').toContain(nonce);
-                const outputs = toolOutputs(executions[0]);
+                const outputs = toolOutputs(execution);
                 save('tool-outputs.json', outputs);
                 expect(outputs.map(({ text }) => text).join(''), 'Raw ALA tool outputs identify the skill view read immediately followed by its marker contents').toContain(`READ_PATH=/run/robo-work/skills/nonce-marker\n${nonce}`);
-            } finally {
-                await stopChatTurn(page);
-                const after = projectManifest(project);
+            } catch (error) { primaryError = error; }
+            const cleanupErrors = [];
+            const cleanup = async (action) => { try { await action(); } catch (error) { cleanupErrors.push(error); } };
+            await cleanup(() => stopChatTurn(page));
+            await cleanup(() => {
+                const after = projectManifest(project, { ignoreRootRuntime: true });
                 save('project-after.json', after);
-                // Persist both manifests even when the model failed, then make a mutation fail the run.
-                expect(after).toEqual(before);
-                await page.goto(ROBOTEAM_BASE_PATH, { waitUntil: 'load' });
-                if (robot && ended) {
-                    const removed = await postQuietly(page, ROBOTEAM_BASE_PATH, 'api/control', { robotName: robot.name, operation: 'robot-delete' });
-                    save('robot-cleanup.json', removed);
-                    expect(removed.status).toBe(200);
-                }
-                // Retain a still-active robot's sources on failure; its read grants may still name these paths.
-                if (!robot || ended) {
-                    for (const directory of [repository, project]) removeRunDirectory({ workspaceRoot, name: path.basename(directory), prefixes: ['e2e-h-'] });
-                }
-            }
+                expect(after, 'Every authored file and skill tree is unchanged; only exact root runtime state is reserved').toEqual(before);
+            });
+            if (robot && ended) await cleanup(async () => {
+                // postQuietly works from the current WebChat page; avoid reopening the admin list and starting unrelated status utilities.
+                const removed = await postQuietly(page, ROBOTEAM_BASE_PATH, 'api/control', { robotId: robot.id, operation: 'robot-delete' });
+                save('robot-cleanup.json', removed);
+                expect(removed.status).toBe(200);
+            });
+            // Retain a still-active robot's sources on failure; its read grants may still name these paths.
+            if (!robot || ended) await cleanup(() => {
+                for (const directory of [repository, project]) removeRunDirectory({ workspaceRoot, name: path.basename(directory), prefixes: ['e2e-h-'] });
+            });
+            await cleanup(() => save('cleanup-errors.json', cleanupErrors.map((error) => ({ name: error.name, message: error.message }))));
+            throwScenarioFailures(primaryError, cleanupErrors);
         });
     }
 });

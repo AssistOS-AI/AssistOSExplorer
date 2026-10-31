@@ -43,13 +43,16 @@ export function assertCodingAgentDiscovery(transcript) {
 
 // Full file hashes and directory/symlink identities, including absent or newly created .agents/.claude trees.
 // Never follows a fixture symlink into another project or a managed checkout.
-export function projectManifest(root) {
+export function projectManifest(root, { ignoreRootRuntime = false } = {}) {
     const rows = [];
     function walk(directory, prefix = '') {
         for (const name of fs.readdirSync(directory).sort()) {
             const relative = path.posix.join(prefix, name);
             const file = path.join(directory, name);
             const stat = fs.lstatSync(file);
+            // DS006: only this exact root directory is reserved for outer runtime conversation/history/session data.
+            // Files, symlinks, nested .roboteam directories and lookalikes remain authored-tree evidence.
+            if (ignoreRootRuntime && prefix === '' && name === '.roboteam' && stat.isDirectory()) continue;
             if (stat.isSymbolicLink()) rows.push({ path: relative, link: fs.readlinkSync(file) });
             else if (stat.isDirectory()) { rows.push({ path: `${relative}/` }); walk(file, relative); }
             else if (stat.isFile()) rows.push({ path: relative, sha256: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') });

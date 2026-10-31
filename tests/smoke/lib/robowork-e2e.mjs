@@ -118,7 +118,7 @@ export function readLedger({ workspaceRoot, scratchDir, robotName }) {
       const reference = all('select id from reference where execution_id = ?', row.execution_id)[0] ?? null;
       return {
         ...rest,
-        specification: { cwd: spec.cwd, folders: spec.folders, ignore: spec.ignore, permissions: spec.permissions, sessionId: spec.sessionId, turnId: spec.turnId, promptChars: spec.prompt?.length },
+        specification: { cwd: spec.cwd, folders: spec.folders, ignore: spec.ignore, permissions: spec.permissions, sessionId: spec.sessionId, turnId: spec.turnId, skills: spec.skills, skillsDigest: spec.skillsDigest, promptChars: spec.prompt?.length },
         events: reference ? all('select sequence, at, type, data from reference_event where reference_id = ? order by sequence', reference.id) : [],
         blockers: all('select resource_id, kind, process_bearing, locator, identity, release_state, retained, created_at, committed_at, settled_at from resource_blocker where execution_id = ? order by created_at', row.execution_id),
       };
