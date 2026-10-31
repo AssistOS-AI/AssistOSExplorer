@@ -11,8 +11,9 @@ import { discoverContainers, readLedger, removeRunDirectory } from '../lib/robow
 import { apiOk, makeStallGuard, toolOutputs, markerOf, workerProcesses } from '../lib/robowork-scenarios.mjs';
 import { chatTurn, stopChatTurn, applySelectedModel, postQuietly } from '../lib/robowork-interaction.mjs';
 import { projectManifest, runtimeIdentity, requireRoboWorkGateFlags } from '../lib/robowork-terminal.mjs';
-import { scopedSkillTurn, assertAdmittedMarker, throwScenarioFailures, freshSkillConversation, assertNoProjectGrant, deleteOwnSkillRobotAfterChat } from '../lib/robowork-skills-fixture.mjs';
+import { scopedSkillTurn, assertAdmittedMarker, throwScenarioFailures, assertNoProjectGrant, deleteOwnSkillRobotAfterChat } from '../lib/robowork-skills-fixture.mjs';
 import { observeWebchatCleanup } from '../lib/webchat-cleanup.mjs';
+import { observeHSessionSelection } from '../lib/robowork-h-session-observer.mjs';
 
 // H / S3-S4, fresh deployment only:
 // SMOKE_ROBOWORK_SKILLS=1 node scripts/run-robowork-e2e.mjs specs/12-robowork-skills.spec.mjs
@@ -54,6 +55,8 @@ test.describe('RoboWork admitted skills', () => {
             let sessionId;
             let turnStartedMs;
             let webchatCleanup;
+            let sessionObserver;
+            let observedConversation;
             try {
                 const initialRobots = page.waitForResponse((response) => response.request().method() === 'GET'
                     && new URL(response.url()).origin === new URL(smokeConfig.baseURL).origin
@@ -70,37 +73,41 @@ test.describe('RoboWork admitted skills', () => {
                     + 'This is an execution request. Call the bash tool now with the exact command above. Do not acknowledge readiness or ask for a task. After the tool returns, return its exact output. Do not write or modify any files.';
                 assert.ok(!prompt.includes(nonce));
                 const guard = makeStallGuard({ workspaceRoot, scratchDir: evidenceDir, sinceMs: startMs, scope: () => ({ cwd: withProject ? project : undefined, robotName: run }) });
+                sessionObserver = await observeHSessionSelection(page, { baseURL: smokeConfig.baseURL, agent: smokeConfig.webchatAgent, robot: run, directory: withProject ? path.basename(project) : '.' });
                 webchatCleanup = observeWebchatCleanup(page, withProject ? path.basename(project) : '.');
                 const answer = await chatTurn(page, {
                     // The outer CLI requires a metadata directory even when the worker receives no project grant.
                     robot: run, project: withProject ? path.basename(project) : '.', prompt, check: withProject ? guard : null,
                     beforeSend: async (chatPage) => {
                         await expect(chatPage.locator('#sessionsBtn')).toBeEnabled();
+                        const listMark = sessionObserver.checkpoint();
                         await chatPage.locator('#sessionsBtn').click();
                         await expect(chatPage.locator('#sessionList .wa-session-list-new')).toBeVisible();
-                        await expect.poll(async () => {
-                            try {
-                                conversationFromSkillsURL(await chatPage.locator('#sessionSettingsLink').getAttribute('href'), smokeConfig.baseURL, { robotId: robot.id });
-                                return true;
-                            } catch { return false; }
+                        let baseline;
+                        await expect.poll(() => {
+                            baseline = sessionObserver.listAfter(listMark);
+                            return baseline !== null;
                         }).toBe(true);
-                        const previousLink = await chatPage.locator('#sessionSettingsLink').getAttribute('href');
-                        conversationFromSkillsURL(previousLink, smokeConfig.baseURL, { robotId: robot.id });
+                        const newMark = sessionObserver.checkpoint();
                         await chatPage.locator('#sessionList .wa-session-list-new').click();
+                        await expect.poll(() => {
+                            observedConversation = sessionObserver.selectedAfter(newMark, baseline);
+                            return observedConversation !== null;
+                        }).toBe(true);
                         await expect.poll(async () => {
                             try {
-                                freshSkillConversation({ previousLink, selectedLink: await chatPage.locator('#sessionSettingsLink').getAttribute('href'), origin: smokeConfig.baseURL, robotId: robot.id });
-                                return true;
+                                const ui = conversationFromSkillsURL(await chatPage.locator('#sessionSettingsLink').getAttribute('href'), smokeConfig.baseURL, { robotId: robot.id });
+                                return ui.sessionId === observedConversation.sessionId;
                             } catch { return false; }
                         }).toBe(true);
-                        const fresh = freshSkillConversation({ previousLink, selectedLink: await chatPage.locator('#sessionSettingsLink').getAttribute('href'), origin: smokeConfig.baseURL, robotId: robot.id });
-                        save('fresh-conversation.json', fresh);
+                        sessionObserver.assertSelected(observedConversation);
+                        save('fresh-conversation.json', observedConversation);
                         const settings = await openConversationSkills(chatPage);
                         let selectionError = null;
                         try {
                             const context = conversationFromSkillsURL(await chatPage.locator('#sessionSettingsLink').getAttribute('href'), smokeConfig.baseURL, { robotId: robot.id });
                             sessionId = context.sessionId;
-                            expect(sessionId).toBe(fresh.sessionId);
+                            expect(sessionId).toBe(observedConversation.sessionId);
                             const initial = await conversationSkillsState(settings);
                             expect(initial.robotId).toBe(robot.id);
                             expect(initial.sessionId).toBe(sessionId);
@@ -118,9 +125,11 @@ test.describe('RoboWork admitted skills', () => {
                         throwScenarioFailures(selectionError, selectionCleanupErrors);
                         const current = conversationFromSkillsURL(await chatPage.locator('#sessionSettingsLink').getAttribute('href'), smokeConfig.baseURL, { robotId: robot.id });
                         expect(current.sessionId, 'Sending stays in the conversation whose skill policy was selected').toBe(sessionId);
+                        sessionObserver.assertSelected(observedConversation);
                         turnStartedMs = Date.now();
                     },
                 });
+                sessionObserver.assertSelected(observedConversation);
                 const ledger = readLedger({ workspaceRoot, scratchDir: evidenceDir, robotName: run });
                 save('ledger.json', ledger);
                 save('answer.txt', answer);
@@ -173,6 +182,9 @@ test.describe('RoboWork admitted skills', () => {
                 for (const directory of [repository, project]) removeRunDirectory({ workspaceRoot, name: path.basename(directory), prefixes: ['e2e-h-'] });
             });
             await cleanup(() => webchatCleanup?.dispose());
+            await cleanup(() => save('conversation-stream.json', sessionObserver?.evidence() || null));
+            await cleanup(() => sessionObserver?.assertNoFailure());
+            await cleanup(() => sessionObserver?.dispose());
             await cleanup(() => save('cleanup-errors.json', cleanupErrors.map((error) => ({ name: error.name, message: error.message }))));
             throwScenarioFailures(primaryError, cleanupErrors);
         });
