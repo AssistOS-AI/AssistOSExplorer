@@ -80,7 +80,7 @@ test('provider liveness: a tiny turn gets an answer', async ({ page }, testInfo)
         const cwd = path.join(workspaceRoot, project);
         const previousExecutionIds = readLedgerSince({ workspaceRoot, scratchDir: evidenceDir, sinceMs: startedMs, cwd }).executions.map((row) => row.execution_id);
         const turnStartedMs = Date.now();
-        const answer = await chatTurn(page, { robot: robotName, project, prompt: 'Reply with the single word OK.', timeoutMs: TURN_TIMEOUT_MS, check: guard });
+        const answer = await chatTurn(page, { robot: robotName, robotId: e2e.id, project, prompt: 'Reply with the single word OK.', timeoutMs: TURN_TIMEOUT_MS, check: guard });
         const observedAtMs = Date.now();
         const ledger = readLedgerSince({ workspaceRoot, scratchDir: evidenceDir, sinceMs: turnStartedMs, cwd });
         save(`candidate-${tried.length}-ledger.json`, ledger);

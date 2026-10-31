@@ -9,7 +9,7 @@ import { setComposer } from '../lib/webchat.mjs';
 import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi } from '../lib/conversation-skills.mjs';
 import { ProviderStall, makeStallGuard } from '../lib/robowork-scenarios.mjs';
-import { stopChatTurn, applySelectedModel } from '../lib/robowork-interaction.mjs';
+import { stopChatTurn, applySelectedModel, prepareWorkerChatTurn } from '../lib/robowork-interaction.mjs';
 import {
   discoverContainers, nestedLogsMerged, startPoller, stopPoller, readPoll, bwrapMarkerProcesses, readLedger, collectEnvironment,
   createProjectFixture, sentinelHits,
@@ -30,7 +30,6 @@ import {
 // same execution, worker and RoboTeam log lines. Step 4 checks the answer: the README marker is present and no sentinel appears
 // in the answer, the events, or the logs. Evidence is collected in `finally`, so a failed run still leaves everything for diagnosis.
 const enabled = process.env.SMOKE_ROBOWORK === '1';
-const BOT = '#chatList > .wa-message.in:not(.wa-typing):not(.wa-task-item) .wa-message-bubble';
 const robotName = process.env.SMOKE_ROBOWORK_ROBOT || 'e2e-bot';
 const projectName = process.env.SMOKE_ROBOWORK_PROJECT || 'e2e-proj';
 const TURN_TIMEOUT_MS = 5 * 60_000;
@@ -94,17 +93,15 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
       await page.goto(`/webchat?${params}`, { waitUntil: 'load' });
       await expect(page.locator('#cmd')).toBeVisible();
       await page.waitForTimeout(4000);
-      const before = await page.locator(BOT).count();
+      const completion = await prepareWorkerChatTurn(page, { robot: robotName, robotId: robot.id, project: projectName, workspaceRoot, scratchDir: evidenceDir });
       outcome.sentAt = new Date().toISOString();
       await setComposer(page, PROMPT);
       await page.locator('#send').click();
       const deadline = Date.now() + TURN_TIMEOUT_MS;
-      let texts = [];
       for (;;) {
         await page.waitForTimeout(2000);
-        texts = await page.locator(BOT).allTextContents();
-        const busy = await page.locator('#cancelBtn').isVisible().catch(() => false);
-        if (!busy && texts.length > before) break;
+        const current = await completion.poll();
+        if (current !== null) { answer = current; break; }
         await guard();
         if (Date.now() > deadline) {
           // Only a stall shown by this scenario's own execution in the ledger is rerun-needed; a plain timeout is a failure.
@@ -113,7 +110,6 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
           throw new Error(`The turn did not finish within ${TURN_TIMEOUT_MS / 1000} s (no provider-stall evidence in the ledger).`);
         }
       }
-      answer = texts.slice(before).join('\n---\n');
       save('webchat-answer.txt', answer);
       save('webchat-full.txt', await page.locator('#chatList').innerText());
       await page.screenshot({ path: path.join(evidenceDir, 'webchat.png'), fullPage: true });
@@ -224,7 +220,8 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
     const attempts = [];
     await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH);
     const listed = await roboTeamApi(page, { path: 'api/robots' });
-    assert.ok(listed.payload.robots.some((entry) => entry.name === robotName), `robot ${robotName} exists (run the first test, or create it)`);
+    const robot = listed.payload.robots.find((entry) => entry.name === robotName);
+    assert.ok(robot, `robot ${robotName} exists (run the first test, or create it)`);
 
     // One attempt = one turn. The mask assertions are identical in every attempt. A repeat is allowed only when the execution completed, no
     // protected host file changed, no sentinel leaked and a deterministic output is missing (the model skipped or declined a command); a failed
@@ -240,16 +237,15 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
       await page.goto(`/webchat?${params}`, { waitUntil: 'load' });
       await expect(page.locator('#cmd')).toBeVisible();
       await page.waitForTimeout(4000);
-      const before = await page.locator(BOT).count();
+      const completion = await prepareWorkerChatTurn(page, { robot: robotName, robotId: robot.id, project: projectName, workspaceRoot, scratchDir: dir });
       await setComposer(page, prompt);
       await page.locator('#send').click();
       const deadline = Date.now() + TURN_TIMEOUT_MS;
-      let texts = [];
+      let answer = '';
       for (;;) {
         await page.waitForTimeout(2000);
-        texts = await page.locator(BOT).allTextContents();
-        const busy = await page.locator('#cancelBtn').isVisible().catch(() => false);
-        if (!busy && texts.length > before) break;
+        const current = await completion.poll();
+        if (current !== null) { answer = current; break; }
         await guard();
         if (Date.now() > deadline) {
           // Only a stall shown by this scenario's own execution in the ledger is rerun-needed; a plain timeout is a failure.
@@ -258,7 +254,6 @@ test.describe('RoboTeam AI task through the robo-work worker', () => {
           throw new Error(`The turn did not finish within ${TURN_TIMEOUT_MS / 1000} s (no provider-stall evidence in the ledger).`);
         }
       }
-      const answer = texts.slice(before).join('\n---\n');
       saveAttempt('webchat-answer.txt', answer);
       const logsWorker = nestedLogsMerged(containers, containers.worker, startedAt);
       saveAttempt('worker.log', logsWorker);

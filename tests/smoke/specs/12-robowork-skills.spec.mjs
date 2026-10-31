@@ -77,7 +77,7 @@ test.describe('RoboWork admitted skills', () => {
                 webchatCleanup = observeWebchatCleanup(page, withProject ? path.basename(project) : '.');
                 const answer = await chatTurn(page, {
                     // The outer CLI requires a metadata directory even when the worker receives no project grant.
-                    robot: run, project: withProject ? path.basename(project) : '.', prompt, check: withProject ? guard : null,
+                    robot: run, robotId: robot.id, project: withProject ? path.basename(project) : '.', prompt, check: withProject ? guard : null,
                     beforeSend: async (chatPage) => {
                         await expect(chatPage.locator('#sessionsBtn')).toBeEnabled();
                         const listMark = sessionObserver.checkpoint();

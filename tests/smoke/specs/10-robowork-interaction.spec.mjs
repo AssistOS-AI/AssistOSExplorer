@@ -302,7 +302,7 @@ test.describe('RoboWork interaction scenarios', () => {
     try {
       startPoller(ctx.containers);
       chatPage = await page.context().newPage();
-      turn = chatTurn(chatPage, { robot: busy.name, project, prompt: 'This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: `sleep 70`   Then reply DONE.', timeoutMs: 8 * 60_000, check: guard });
+      turn = chatTurn(chatPage, { robot: busy.name, robotId: busy.id, project, prompt: 'This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: `sleep 70`   Then reply DONE.', timeoutMs: 8 * 60_000, check: guard });
       turn.catch(() => {});
       await waitFor('the sleep 70 command in the worker', async () => workerProcesses(ctx.containers, 'sleep 70').length > 0, { timeoutMs: 4 * 60_000, intervalMs: 1000, check: guard });
       const refused = await deleteRobotQuietly(page, busy.name);

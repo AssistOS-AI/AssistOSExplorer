@@ -181,9 +181,13 @@ test('chatTurn awaits beforeSend before composer/send, and a failed selection ho
     const source = fs.readFileSync(new URL('./robowork-interaction.mjs', import.meta.url), 'utf8');
     const body = source.slice(source.indexOf('export async function chatTurn('), source.indexOf('// Stops a WebChat generation')).replace('export async function', 'async function');
     const order = [];
-    const chat = new Function('expect', 'chatTurnUrl', 'setComposer', 'BOT', `${body}; return chatTurn;`)(
+    const chat = new Function('expect', 'chatTurnUrl', 'setComposer', 'prepareWorkerChatTurn', `${body}; return chatTurn;`)(
         () => ({ toBeVisible: async () => order.push('visible') }), chatTurnUrl,
-        async () => order.push('composer'), 'BOT',
+        async () => order.push('composer'), async (_page, options) => {
+            assert.equal(options.robotId, 'known-robot-id');
+            order.push('worker baseline');
+            return { poll: async () => 'answer' };
+        },
     );
     const page = {
         goto: async () => order.push('goto'), waitForTimeout: async () => {},
@@ -192,9 +196,9 @@ test('chatTurn awaits beforeSend before composer/send, and a failed selection ho
                 click: async () => order.push(selector === '#send' ? 'send' : selector) };
         },
     };
-    const answer = await chat(page, { robot: 'bot', project: '', prompt: 'test', beforeSend: async () => { await Promise.resolve(); order.push('selected'); } });
+    const answer = await chat(page, { robot: 'bot', robotId: 'known-robot-id', project: '', prompt: 'test', beforeSend: async () => { await Promise.resolve(); order.push('selected'); } });
     assert.equal(answer, 'answer');
-    assert.deepEqual(order, ['goto', 'visible', 'selected', 'composer', 'send']);
+    assert.deepEqual(order, ['goto', 'visible', 'selected', 'worker baseline', 'composer', 'send']);
     order.length = 0;
     const failure = new Error('Conversation selection failed');
     await assert.rejects(chat(page, { robot: 'bot', prompt: 'test', beforeSend: async () => { throw failure; } }), (error) => error === failure);

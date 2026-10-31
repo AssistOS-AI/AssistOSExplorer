@@ -5,6 +5,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { expect } from './fixtures.mjs';
 import { smokeConfig } from './config.mjs';
 import { setComposer, cancelWebchatGenerationIfActive } from './webchat.mjs';
+import { readLedger } from './robowork-e2e.mjs';
+import { pinWorkerChatBaseline, selectWorkerChatExecution, matchWorkerChatAnswer } from './robowork-worker-chat-completion.mjs';
 
 // Helpers of specs/10-robowork-interaction.spec.mjs (human input, explicit task failure, robot delete). Read-only against the worker.
 
@@ -65,21 +67,49 @@ export function chatTurnUrl({ robot, project, agent = smokeConfig.webchatAgent }
   return `/webchat?${params}`;
 }
 
+export async function prepareWorkerChatTurn(page, { robot, robotId, project, workspaceRoot = smokeConfig.workspaceRoot, scratchDir = smokeConfig.artifactRoot }) {
+  const metadataCwd = path.resolve(workspaceRoot, project || '.');
+  if (metadataCwd !== workspaceRoot && !metadataCwd.startsWith(`${workspaceRoot}${path.sep}`)) throw new Error('Chat metadata must stay in the selected workspace');
+  const previousDomIds = await page.locator('#chatList > .wa-message[data-message-id]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-message-id')));
+  const startedMs = Date.now();
+  const baseline = pinWorkerChatBaseline(readLedger({ workspaceRoot, scratchDir, robotName: robot }), {
+    robotName: robot, robotId, metadataCwd, workerCwd: metadataCwd === workspaceRoot ? '' : metadataCwd, previousDomIds, startedMs,
+  });
+  let binding = null;
+  return {
+    async poll() {
+      const ledger = readLedger({ workspaceRoot, scratchDir, robotName: robot });
+      const execution = selectWorkerChatExecution(ledger, baseline, binding);
+      if (!execution) return null;
+      const file = path.join(metadataCwd, '.roboteam/sessions', execution.specification.sessionId, 'config.json');
+      const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      let metadata;
+      try { metadata = JSON.parse(fs.readFileSync(fd, 'utf8')); } finally { fs.closeSync(fd); }
+      const bubbles = await page.locator(BOT).evaluateAll((nodes) => nodes.map((bubble) => ({
+        messageId: bubble.parentElement?.getAttribute('data-message-id') || null, text: bubble.getAttribute('data-full-text'),
+      })));
+      const busy = await page.locator('#cancelBtn').isVisible();
+      const matched = matchWorkerChatAnswer({ baseline, execution, metadata, bubbles, busy, binding });
+      binding = matched.binding;
+      return matched.answer;
+    },
+  };
+}
+
 // Sends one WebChat turn to a robot and waits for the answer. beforeSend can configure the actual selected conversation without navigating it away.
-export async function chatTurn(page, { robot, project, prompt, timeoutMs = 5 * 60_000, check = null, beforeSend = null }) {
+export async function chatTurn(page, { robot, robotId, project, prompt, timeoutMs = 5 * 60_000, check = null, beforeSend = null }) {
   await page.goto(chatTurnUrl({ robot, project }), { waitUntil: 'load' });
   await expect(page.locator('#cmd')).toBeVisible();
   await page.waitForTimeout(4000);
   if (beforeSend) await beforeSend(page);
-  const before = await page.locator(BOT).count();
+  const completion = await prepareWorkerChatTurn(page, { robot, robotId, project });
   await setComposer(page, prompt);
   await page.locator('#send').click();
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     await page.waitForTimeout(2000);
-    const texts = await page.locator(BOT).allTextContents();
-    const busy = await page.locator('#cancelBtn').isVisible().catch(() => false);
-    if (!busy && texts.length > before) return texts.slice(before).join('\n---\n');
+    const answer = await completion.poll();
+    if (answer !== null) return answer;
     if (check) await check();
     if (Date.now() > deadline) throw new Error(`The turn did not finish within ${timeoutMs / 1000} s.`);
   }
