@@ -11,6 +11,61 @@ import { createSampler, nodePtyPreload, validateWatchFinish } from './live/ptyle
 
 const identity = (pid, startTime = '1') => ({ pid, startTime, state: 'S', threads: 1 });
 
+test('opacity access context retains only ownership, credentials and user namespace evidence within existing budgets', () => {
+    let operations = 0;
+    const io = {
+        readFileSync: (file) => {
+            operations += 1;
+            if (file.endsWith('_map')) return '         0       1000          1\n';
+            return file === '/proc/self/status'
+                ? 'Name:\tprivate command\nCapEff:\t00000000802415fb\nNoNewPrivs:\t0\nPrivate:\tcredential\n'
+                : 'Uid:\t1000\t1001\t1002\t1003\nNoNewPrivs:\t1\nPrivate:\tcredential\n';
+        },
+        readlinkSync: (file) => { operations += 1; return file === '/proc/self/ns/user' ? 'user:[4026533179]' : 'user:[4026533180]'; },
+        statSync: () => { operations += 1; return { uid: 1000, gid: 1001, mode: 0o40500 }; },
+        opendirSync: () => { operations += 1; return { readSync: () => { operations += 1; return null; }, closeSync() {} }; },
+    };
+    const options = { pid: 20, sampleTime: 1n, before: identity(20), after: identity(20), scanIdentity: identity(20),
+        failure: { syscall: 'readdir', relativePath: '20/fd', errno: 'EACCES' }, io, now: () => 1n };
+    const context = captureOpacityDiagnostic(options).accessContext;
+    assert.equal(context.probe.uid, process.getuid());
+    assert.equal(context.probe.euid, process.geteuid());
+    assert.deepEqual(context.probe.status, { ok: true, CapEff: '00000000802415fb', NoNewPrivs: 0 });
+    assert.deepEqual(context.target.status, { ok: true, Uid: [1000, 1001, 1002, 1003], NoNewPrivs: 1 });
+    assert.deepEqual(context.target.processDirectory, { ok: true, uid: 1000, gid: 1001, mode: '0500' });
+    assert.deepEqual(context.target.fdDirectory, context.target.processDirectory);
+    assert.deepEqual(context.probe.userNamespace, { ok: true, inode: '4026533179' });
+    assert.deepEqual(context.target.userNamespace, { ok: true, inode: '4026533180' });
+    assert.equal(context.sameUserNamespace, false);
+    assert.deepEqual(context.probe.uidMap, { ok: true, complete: true, ranges: [[0, 1000, 1]] });
+    assert.deepEqual(context.target.gidMap, context.probe.uidMap);
+    assert.doesNotMatch(JSON.stringify(context), /private command|credential|Private/u);
+    operations = 0;
+    const bounded = captureOpacityDiagnostic({ ...options, limits: { reads: 2 } });
+    assert.equal(operations, 2);
+    assert.equal(bounded.reads, 2);
+    assert.equal(bounded.incomplete, true);
+    assert.ok(bounded.truncated.includes('read-limit'));
+    assert.deepEqual(bounded.accessContext.target.fdDirectory, { ok: false, syscall: 'stat', relativePath: '20/fd', incomplete: true });
+    const denied = captureOpacityDiagnostic({ ...options, io: { ...io,
+        statSync: () => { throw Object.assign(new Error('private detail'), { code: 'EACCES' }); },
+        readlinkSync: () => '/private/credential',
+        readFileSync: () => 'Uid:\t0\t0\t0\t0\nNoNewPrivs:\t2\nCapEff:\tinvalid\n',
+    } });
+    assert.equal(denied.incomplete, true);
+    assert.deepEqual(denied.accessContext.target.fdDirectory, { ok: false, syscall: 'stat', relativePath: '20/fd', errno: 'EACCES' });
+    assert.equal(denied.accessContext.sameUserNamespace, null);
+    assert.equal(denied.accessContext.target.status.reason, 'invalid-status');
+    assert.equal(denied.accessContext.probe.userNamespace.reason, 'invalid-user-namespace');
+    assert.doesNotMatch(JSON.stringify(denied), /private detail|credential|\/private\//u);
+    const manyRanges = captureOpacityDiagnostic({ ...options, io: { ...io,
+        readFileSync: (file) => file.endsWith('_map') ? '0 1000 1\n'.repeat(9) : io.readFileSync(file),
+    } });
+    assert.equal(manyRanges.accessContext.target.uidMap.ranges.length, 8);
+    assert.equal(manyRanges.accessContext.target.uidMap.complete, false);
+    assert.ok(manyRanges.truncated.includes('id-map-line-limit'));
+});
+
 test('first opacity diagnostics retain bounded thread identity and fd outcomes without private paths or file contents', (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-opacity-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));

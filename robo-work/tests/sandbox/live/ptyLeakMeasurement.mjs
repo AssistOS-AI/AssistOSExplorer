@@ -78,21 +78,47 @@ export function captureOpacityDiagnostic({ pid, sampleTime, before, after, scanI
         return { ok: true, identity: { pid: tid, startTime: fields[19], state: fields[0], threads: Number(fields[17]) },
             flags, ioWorkerComm: /^iou-wrk-[0-9]+$/u.test(comm) };
     };
-    const status = (relativePath) => {
+    const status = (relativePath, names = ['FDSize', 'Tgid', 'Uid']) => {
         const read = operation('readFile', relativePath, (file) => io.readFileSync(file, 'utf8'));
         if (!read.ok) return read;
         const values = {};
-        for (const name of ['FDSize', 'Tgid', 'Uid']) {
+        for (const name of names) {
             const matches = read.value.split('\n').filter((line) => line.startsWith(`${name}:`));
             const tokens = matches[0]?.slice(name.length + 1).trim().split(/\s+/u) ?? [];
+            const validToken = (value) => name === 'CapEff' ? /^[0-9a-f]{16}$/iu.test(value)
+                : name === 'NoNewPrivs' ? /^[01]$/u.test(value) : /^\d+$/u.test(value) && Number.isSafeInteger(Number(value));
             if (read.value.length > 8192 || matches.length !== 1 || tokens.length !== (name === 'Uid' ? 4 : 1)
-                || tokens.some((value) => !/^\d+$/u.test(value) || !Number.isSafeInteger(Number(value)))) {
+                || tokens.some((value) => !validToken(value))) {
                 result.incomplete = true;
                 return { ok: false, relativePath, reason: 'invalid-status' };
             }
-            values[name] = name === 'Uid' ? tokens.map(Number) : Number(tokens[0]);
+            values[name] = name === 'Uid' ? tokens.map(Number) : name === 'CapEff' ? tokens[0].toLowerCase() : Number(tokens[0]);
         }
         return { ok: true, ...values };
+    };
+    const ownership = (relativePath) => {
+        const read = operation('stat', relativePath, (file) => io.statSync(file));
+        return read.ok ? { ok: true, uid: read.value.uid, gid: read.value.gid, mode: (read.value.mode & 0o7777).toString(8).padStart(4, '0') } : read;
+    };
+    const userNamespace = (relativePath) => {
+        const read = operation('readlink', relativePath, (file) => io.readlinkSync(file));
+        if (!read.ok) return read;
+        const match = /^user:\[([0-9]+)\]$/u.exec(read.value);
+        if (!match) { result.incomplete = true; return { ok: false, relativePath, reason: 'invalid-user-namespace' }; }
+        return { ok: true, inode: match[1] };
+    };
+    const idMap = (relativePath) => {
+        const read = operation('readFile', relativePath, (file) => io.readFileSync(file, 'utf8'));
+        if (!read.ok) return read;
+        const lines = read.value.trim().split('\n');
+        const ranges = lines.slice(0, 8).map((line) => line.trim().split(/\s+/u));
+        if (read.value.length > 8192 || ranges.some((range) => range.length !== 3
+            || range.some((value) => !/^\d+$/u.test(value) || !Number.isSafeInteger(Number(value))))) {
+            result.incomplete = true;
+            return { ok: false, relativePath, reason: 'invalid-id-map' };
+        }
+        if (lines.length > 8) truncate('id-map-line-limit');
+        return { ok: true, complete: lines.length <= 8, ranges: ranges.map((range) => range.map(Number)) };
     };
     const entries = (relativePath, cap, label) => {
         const opened = operation('opendir', relativePath, (file) => io.opendirSync(file, { bufferSize: 1 }));
@@ -110,6 +136,18 @@ export function captureOpacityDiagnostic({ pid, sampleTime, before, after, scanI
         } finally { opened.value.closeSync(); }
         return { outcome: { ok: true, complete, entries: names.length }, names };
     };
+    // Only permission-relevant status fields and proc node metadata are retained; never expose raw status or link targets.
+    result.accessContext = {
+        probe: { uid: process.getuid?.() ?? null, euid: process.geteuid?.() ?? null,
+            status: status('self/status', ['CapEff', 'NoNewPrivs']), userNamespace: userNamespace('self/ns/user'),
+            uidMap: idMap('self/uid_map'), gidMap: idMap('self/gid_map') },
+        target: { processDirectory: ownership(String(pid)), fdDirectory: ownership(`${pid}/fd`),
+            status: status(`${pid}/status`, ['Uid', 'NoNewPrivs']), userNamespace: userNamespace(`${pid}/ns/user`),
+            uidMap: idMap(`${pid}/uid_map`), gidMap: idMap(`${pid}/gid_map`) },
+    };
+    const { probe, target } = result.accessContext;
+    result.accessContext.sameUserNamespace = probe.userNamespace.ok && target.userNamespace.ok
+        ? probe.userNamespace.inode === target.userNamespace.inode : null;
     const tasks = entries(`${pid}/task`, caps.tids, 'tid-limit');
     result.taskRead = tasks.outcome;
     if (tasks.names.length === 0) { result.incomplete = true; result.threadIdentityOutcome = 'no-thread-identities'; }
