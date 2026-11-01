@@ -286,6 +286,7 @@ export class GuiManager {
     async ensureReady(input, { signal } = {}) {
         await this.ensure(input);
         const session = this.sessions.get(input.robotId);
+        if (!session) throw new Error('GUI preparation was stopped');
         await waitForPreparation(session.preparing, signal);
         if (session.state !== 'running') throw session.error || new Error('GUI preparation failed');
         return this._result(session);

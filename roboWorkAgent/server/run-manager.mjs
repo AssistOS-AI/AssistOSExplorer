@@ -224,7 +224,7 @@ export class RunManager {
                 for (const input of run.inputQueue) await this.writeInput(run, input);
                 run.inputQueue = []; run.inputReady = true;
                 run.inputBytes = 0;
-                meta.state = 'running'; await this.persist(run);
+                if (!run.finishing && !signal.aborted) { meta.state = 'running'; await this.persist(run); }
             } else this.signal(run, 'SIGTERM');
             return { runId: input.runId, state: meta.state, alreadyRunning: false };
         } catch (error) {
