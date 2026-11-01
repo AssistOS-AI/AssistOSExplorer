@@ -82,7 +82,7 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
 
 export async function buildTerminalLaunch(descriptor, paths, { environment = new EnvironmentManager() } = {}) {
     if (descriptor.environment) {
-        const entry = await environment.require(descriptor.environment);
+        const entry = await environment.require(descriptor.environment, { retry: true });
         const launch = await environment.buildLaunch({ environment: entry.ref, runId: 'terminal-' + randomUUID(), robotId: descriptor.id,
             home: paths.home(descriptor.id), workspaceRoot: paths.workspaceRoot, cwd: descriptor.cwd || paths.workspaceRoot,
             toolCache: { source: descriptor.cacheRoot, target: descriptor.cacheRoot },

@@ -29,7 +29,7 @@ export class AgentEnvironments {
     async require(ref) {
         if (!isEnvironmentRef(ref)) throw Object.assign(new Error('Invalid agent environment'), { code: 'ENVIRONMENT_INVALID', statusCode: 400 });
         const entry = (await this.list()).find(item => item.ref === ref);
-        if (!entry || !entry.available) throw Object.assign(new Error(`Agent environment unavailable: ${entry?.reason || 'not enabled in global mode'}`),
+        if (!entry || !entry.available && entry.reason !== 'image cannot be pulled') throw Object.assign(new Error(`Agent environment unavailable: ${entry?.reason || 'not enabled in global mode'}`),
             { code: 'ENVIRONMENT_UNAVAILABLE', statusCode: 409 });
         return entry;
     }
