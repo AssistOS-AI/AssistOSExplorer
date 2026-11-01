@@ -137,6 +137,52 @@ test('ENOENT, loader failure, signalled or successful unshare cannot become a us
     ]) assert.ok(confinementProblems({ ...confined(), ...delta }, control()).length > 0);
 });
 
+test('executed unshare ENOSPC namespace refusal is valid, while loader or redirection ENOSPC is not', () => {
+    const observed = { ...confined(), unshareError: 'unshare: unshare failed: No space left on device' };
+    assert.deepEqual(confinementProblems(observed, control()), [], 'run 3 executed util-linux and true before the kernel refused unshare');
+    for (const invalid of [
+        { unshareVersionStatus: '127' }, { trueStatus: '127' }, { unshareStatus: '0' }, { unshareStatus: '126' }, { unshareStatus: '127' },
+        { unshareError: 'sh: cannot create /tmp/unshare-error: No space left on device' },
+        { unshareError: 'unshare: error while loading shared libraries: No space left on device' },
+        { unshareError: 'unshare: failed to execute /usr/bin/true: No space left on device' },
+    ]) assert.ok(confinementProblems({ ...observed, ...invalid }, control()).length > 0);
+});
+
+function descriptorObservation(t, { missing = false } = {}) {
+    const root = temp(t);
+    const descriptors = path.join(root, 'fd');
+    if (!missing) {
+        fs.mkdirSync(descriptors);
+        for (const number of ['0', '1', '2', '3']) fs.symlinkSync('/dev/null', path.join(descriptors, number));
+    }
+    const transientObserver = path.join(root, 'readlink');
+    // Reproduce the recorded race: enumeration returned fd 3, then its owner closed it before readlink ran.
+    fs.writeFileSync(transientObserver, '#!/bin/sh\n/bin/rm -f "$FIXTURE_FD_DIR/3"\nexec /usr/bin/readlink "$@"\n', { mode: 0o700 });
+    const start = WORKLOAD_PROBE.indexOf('\nsection fdLinks;');
+    const end = WORKLOAD_PROBE.indexOf('\nsection usrMount;', start);
+    assert.ok(start >= 0 && end > start);
+    const hostLs = ['/usr/bin/ls', '/bin/ls'].find((file) => fs.existsSync(file));
+    assert.ok(hostLs, 'the offline shell regression requires the host ls utility');
+    const literalSection = WORKLOAD_PROBE.slice(start, end).replaceAll('/proc/$$/fd', descriptors)
+        .replaceAll('/usr/bin/readlink', transientObserver).replaceAll('/usr/bin/ls', hostLs);
+    const program = 'section() { printf "@@%s\\n" "$1"; }\n' + literalSection + '\nsection done; printf "yes\\n"';
+    return spawnSync('/bin/sh', ['-c', program], { env: { PATH: '/usr/bin:/bin', FIXTURE_FD_DIR: descriptors }, encoding: 'utf8' });
+}
+
+test('the literal FD observation survives a transient self-enumeration descriptor without terminating the probe', (t) => {
+    const result = descriptorObservation(t);
+    assert.equal(result.status, 0, result.stderr);
+    const facts = parseWorkloadOutput(result.stdout);
+    assert.equal(facts.done, 'yes');
+    assert.ok(facts.fdLinks.length > 0);
+});
+
+test('the literal FD observation still fails on an unreadable or missing descriptor directory', (t) => {
+    const result = descriptorObservation(t, { missing: true });
+    assert.equal(result.status, 71);
+    assert.notEqual(parseWorkloadOutput(result.stdout).done, 'yes');
+});
+
 test('private PID namespace alone is insufficient: a living same-identity sentinel must be invisible across the probe', () => {
     assert.ok(confinementProblems({ ...confined(), sentinelVisible: '1' }, control()).includes('worker_sentinel_visible_or_scan_incomplete'));
     assert.ok(confinementProblems({ ...confined(), procScanStatus: '1' }, control()).includes('worker_sentinel_visible_or_scan_incomplete'));

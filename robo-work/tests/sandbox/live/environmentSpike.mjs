@@ -160,8 +160,9 @@ export function confinementProblems(facts, control) {
     if (status.NoNewPrivs !== '1') problems.push('NoNewPrivs');
     if (status.Seccomp !== '2') problems.push('Seccomp');
     if (facts.unshareVersionStatus !== '0' || !/^unshare from util-linux /u.test(facts.unshareVersion ?? '') || facts.trueStatus !== '0') problems.push('unshare_prerequisite');
+    // --disable-userns/--assert-userns-disabled can make the executed syscall refuse with EPERM or ENOSPC.
     if (!/^[1-9][0-9]*$/u.test(facts.unshareStatus ?? '') || ['126', '127'].includes(facts.unshareStatus)
-        || !/^unshare: unshare failed: Operation not permitted$/u.test(facts.unshareError ?? '')) problems.push('userns_refusal_not_proven');
+        || !/^unshare: unshare failed: (?:Operation not permitted|No space left on device)$/u.test(facts.unshareError ?? '')) problems.push('userns_refusal_not_proven');
     if (!/^pid:\[[0-9]+\]$/u.test(facts.pidNamespace ?? '') || facts.pidNamespace === control.workerPidNamespace
         || facts.pidNamespace !== `pid:[${control.workloadPidNamespace}]`) problems.push('private_pid_namespace');
     if (facts.sentinelVisible !== '0' || facts.procScanStatus !== '0') problems.push('worker_sentinel_visible_or_scan_incomplete');
@@ -203,7 +204,7 @@ section skillsNames; /usr/bin/ls -1 /run/robo-work/skills
 section skillBytes; /usr/bin/wc -c </run/robo-work/skills/alpha/SKILL.md
 section maskedSkillBytes; /usr/bin/wc -c </run/robo-work/skills/alpha/.env
 section maskedProjectBytes; /usr/bin/wc -c </projects/p/.env
-section fdLinks; for f in /proc/$$/fd/*; do /usr/bin/readlink "$f" || exit 71; done
+section fdLinks; /usr/bin/ls -l /proc/$$/fd || exit 71
 section usrMount; /usr/bin/grep ' /usr ' /proc/$$/mountinfo
 section done; printf 'yes\n'
 `;
