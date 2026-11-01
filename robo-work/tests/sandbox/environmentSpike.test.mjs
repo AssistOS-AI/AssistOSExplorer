@@ -8,7 +8,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { confinementProblems, createPodmanProbe, imageView, parseOptions, parseWorkloadOutput, recoverJournaledNetworks, taskProcesses, verifyManifest, WORKLOAD_PROBE } from './live/environmentSpike.mjs';
+import { confinementProblems, createPodmanProbe, imageView, parseOptions, parseWorkloadOutput, recoverJournaledNetworks, SOURCE, taskProcesses, verifyManifest, WORKLOAD_PROBE } from './live/environmentSpike.mjs';
+import { buildBwrapArgs } from '../../server/sandbox/bwrapArgs.mjs';
 import { createExecutionNetwork, namesFor } from '../../server/sandbox/executionNetwork.mjs';
 import { createExecutionSupervisor } from '../../server/sandbox/executionSupervisor.mjs';
 
@@ -22,6 +23,22 @@ const temp = (t) => {
     t.after(() => fs.rmSync(root, { recursive: true }));
     return root;
 };
+
+test('the harness worker source bind builds a real endpoint request before any sandbox resource is created', () => {
+    const buffer = buildBwrapArgs({
+        role: 'endpoint', marker: 'a'.repeat(32), netMode: 'join',
+        seccompFd: 5, blockFd: 6, infoFd: 7, jsonStatusFd: 8,
+        cwd: '/', argv: ['/usr/local/bin/node', '-e', 'setInterval(() => {}, 1000000)'], env: {},
+        roBinds: [{ source: '/usr', dest: '/usr' }, { source: SOURCE, dest: '/opt/robo-work' }],
+        symlinks: [{ target: 'usr/bin', dest: '/bin' }, { target: 'usr/sbin', dest: '/sbin' },
+            { target: 'usr/lib', dest: '/lib' }, { target: 'usr/lib64', dest: '/lib64' }],
+    });
+    const args = buffer.toString().split('\0');
+    const codeMount = args.indexOf('/opt/robo-work');
+    assert.ok(codeMount > 1);
+    assert.equal(args[codeMount - 2], '--ro-bind');
+    assert.equal(args[codeMount - 1], SOURCE);
+});
 
 test('CLI requires an exact public digest and rejects ambiguous, unsafe or incomplete arguments before execution', () => {
     assert.equal(parseOptions(validArgs).image, image);

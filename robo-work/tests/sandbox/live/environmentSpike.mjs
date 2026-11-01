@@ -14,8 +14,8 @@ import { createExecutionNetwork, defaultRun as runNetworkCommand } from '../../.
 import { createSandboxLauncher, TOOL_PATH } from '../../../server/sandbox/sandboxLauncher.mjs';
 import { readProcMasks } from '../../../server/sandbox/procMasks.mjs';
 
-const SOURCE = fileURLToPath(new URL('../../../', import.meta.url));
-const REPOSITORY = path.dirname(SOURCE.replace(/\/$/u, ''));
+export const SOURCE = path.resolve(fileURLToPath(new URL('../../../', import.meta.url)));
+const REPOSITORY = path.dirname(SOURCE);
 const SHA = /^[a-f0-9]{64}$/u;
 const ID = /^sha256:[a-f0-9]{64}$/u;
 const IMAGE = /^(?:docker\.io|quay\.io|ghcr\.io)\/[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9_.-]+)?@sha256:[a-f0-9]{64}$/u;
