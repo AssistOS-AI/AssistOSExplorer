@@ -854,6 +854,7 @@ export class RuntimeManager {
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
             if (task.request.workflowRunId) args.push('--workflow-execution');
+            if (task.request.environment) args.push('--environment', task.request.environment);
             if (task.request.noProject === true) args.push('--no-project');
             // Catalog capture belongs to the wrapper's actual execution boundary after queue/cache wait.
             if (this.skillsets) {

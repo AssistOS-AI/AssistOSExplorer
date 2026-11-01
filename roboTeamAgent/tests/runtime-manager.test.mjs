@@ -1294,7 +1294,7 @@ test('each continuation is a new attempt: own id, phase only when RoboFlow resum
     const flow = `flow_${'e'.repeat(24)}`;
     const instance = `inv_${'f'.repeat(24)}`;
     manager.startTask(robot, 'simple', { cwd: '/workspace', task: 'phase', runtimeTaskId: phaseId, alaSessionId: '44444444-1234-4123-8123-123456789abc',
-        workflowRunId: flow, workflowInstanceId: instance, ownerPrincipal: 'user:alice' });
+        workflowRunId: flow, workflowInstanceId: instance, ownerPrincipal: 'user:alice', environment: 'fixtures/nodeenv', allowsHumanInput: true });
     assert.throws(() => manager.startTask(robot, 'simple', { cwd: '/workspace', task: 'again', runtimeTaskId: phaseId }), /already in use/);
     manager.tasks.get(phaseId).state = 'paused';
     // A continuation through the robot control API: a new id, a robot-task row.
@@ -1310,6 +1310,10 @@ test('each continuation is a new attempt: own id, phase only when RoboFlow resum
     // RoboFlow's own continuation names its phase explicitly.
     manager.tasks.get(viaControl.taskId).state = 'paused';
     const viaRoboFlow = await manager.resumeTask(robot, viaControl.taskId, 'go', { runtimeTaskId: '55555555-1234-4123-8123-123456789abc', workflowInstanceId: instance });
+    assert.equal(manager.tasks.get(viaRoboFlow.taskId).request.environment, 'fixtures/nodeenv');
+    assert.equal(manager.tasks.get(viaRoboFlow.taskId).request.allowsHumanInput, true);
+    assert.equal(manager.tasks.get(viaRoboFlow.taskId).request.resumeSession, true);
+    assert.equal(manager.tasks.get(viaRoboFlow.taskId).alaSessionId, manager.tasks.get(phaseId).alaSessionId);
     const flowEvent = events.find((event) => event.kind === 'admitted' && event.taskId === viaRoboFlow.taskId);
     assert.deepEqual([flowEvent.workflowRunId, flowEvent.workflowInstanceId, flowEvent.ownerPrincipal], [flow, instance, 'user:alice']);
 });

@@ -4,6 +4,135 @@ const warningText = 'No robot has these matching skillsets, add or edit a robot 
 const node = (tag, text, className) => { const element = document.createElement(tag); if (text) element.textContent = text; if (className) element.className = className; return element; };
 const button = (text, action) => { const element = node('button', text, 'button'); element.type = 'button'; element.onclick = action; return element; };
 
+// A select drawn by the page that always opens its list below the field: a native select opens upward
+// near the bottom of the viewport. choices: [{ value, label, disabled, title }]. The element exposes
+// value, disabled and onchange like a select.
+export function createEnvironmentPicker(choices, value, ownerDocument = document) {
+    const root = ownerDocument.createElement('div');
+    root.className = 'environment-picker';
+    const trigger = ownerDocument.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'environment-picker-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-label', 'Environment');
+    trigger.setAttribute('aria-expanded', 'false');
+    const label = ownerDocument.createElement('span');
+    label.className = 'environment-picker-label';
+    const caret = ownerDocument.createElement('span');
+    caret.className = 'environment-picker-caret';
+    caret.textContent = '▾';
+    trigger.append(label, caret);
+    const list = ownerDocument.createElement('ul');
+    list.className = 'environment-picker-options';
+    list.setAttribute('role', 'listbox');
+    list.hidden = true;
+    root.append(trigger, list);
+    let current = value;
+    let active = -1;
+    const items = choices.map((choice, index) => {
+        const item = ownerDocument.createElement('li');
+        item.className = 'environment-picker-option';
+        item.setAttribute('role', 'option');
+        item.textContent = choice.label;
+        if (choice.title) item.title = choice.title;
+        if (choice.disabled) item.setAttribute('aria-disabled', 'true');
+        item.onmousedown = event => event.preventDefault();
+        // Inside a <label>, a click on an option would also activate the trigger and reopen the list.
+        item.onclick = event => { event.preventDefault(); event.stopPropagation(); if (!choice.disabled) choose(index); };
+        list.append(item);
+        return item;
+    });
+    const render = () => {
+        const selected = choices.find(choice => choice.value === current) || choices[0];
+        label.textContent = selected?.label || '';
+        trigger.title = selected?.title || '';
+        items.forEach((item, index) => {
+            item.setAttribute('aria-selected', String(choices[index].value === current));
+            item.classList.toggle('active', index === active);
+        });
+    };
+    const place = () => {
+        // Fixed below the trigger, so no scrolling container clips it.
+        const rect = trigger.getBoundingClientRect();
+        list.style.top = `${rect.bottom + 4}px`;
+        list.style.left = `${rect.left}px`;
+        list.style.minWidth = `${rect.width}px`;
+        list.style.maxHeight = `${Math.max(120, ownerDocument.defaultView.innerHeight - rect.bottom - 16)}px`;
+    };
+    const onOutside = event => { if (!root.contains(event.target)) close(); };
+    const open = () => {
+        if (trigger.disabled || !list.hidden) return;
+        active = Math.max(0, choices.findIndex(choice => choice.value === current));
+        list.hidden = false;
+        trigger.setAttribute('aria-expanded', 'true');
+        place(); render();
+        ownerDocument.addEventListener('mousedown', onOutside, true);
+        ownerDocument.defaultView.addEventListener('resize', close);
+        ownerDocument.addEventListener('scroll', close, true);
+    };
+    function close() {
+        if (list.hidden) return;
+        list.hidden = true;
+        trigger.setAttribute('aria-expanded', 'false');
+        ownerDocument.removeEventListener('mousedown', onOutside, true);
+        ownerDocument.defaultView.removeEventListener('resize', close);
+        ownerDocument.removeEventListener('scroll', close, true);
+    }
+    function choose(index) {
+        close();
+        if (choices[index].value === current) return;
+        current = choices[index].value;
+        render();
+        root.onchange?.();
+        trigger.focus();
+    }
+    const move = step => {
+        for (let next = active + step; next >= 0 && next < choices.length; next += step) {
+            if (!choices[next].disabled) { active = next; render(); items[next].scrollIntoView({ block: 'nearest' }); return; }
+        }
+    };
+    trigger.onclick = () => (list.hidden ? open() : close());
+    trigger.onkeydown = event => {
+        if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
+            event.preventDefault();
+            if (list.hidden) open(); else move(event.key === 'ArrowDown' ? 1 : -1);
+        } else if (['Enter', ' '].includes(event.key) && !list.hidden) {
+            event.preventDefault();
+            if (active >= 0 && !choices[active].disabled) choose(active);
+        } else if (event.key === 'Escape' && !list.hidden) { event.preventDefault(); close(); }
+        else if (event.key === 'Tab') close();
+    };
+    Object.defineProperty(root, 'value', { get: () => current, set: next => { current = next; render(); } });
+    Object.defineProperty(root, 'disabled', { get: () => trigger.disabled, set: next => { trigger.disabled = Boolean(next); if (next) close(); } });
+    root.close = close;
+    render();
+    return root;
+}
+
+export function recommendedEnvironmentSkills(environment, catalog) {
+    const repository = environment?.split('/')[0];
+    return repository ? catalog.filter(entry => entry.repositoryKind === 'mixed' && entry.repositoryName === repository) : [];
+}
+
+export function addEnvironmentSkills(task, recommended) {
+    task.skillsets = [...new Set([...(task.skillsets || []), ...recommended.map(entry => entry.id)])];
+}
+
+export function environmentPickerChoices(environments, selected) {
+    const choices = [{ value: '', label: 'Worker (default)',
+        title: 'The selected agent image supplies system files and tools for this terminal phase. The worker supplies confinement and coding agents.' }];
+    for (const entry of environments) {
+        choices.push({ value: entry.ref, label: entry.available ? entry.ref : `${entry.ref} (${entry.reason})`,
+            disabled: !entry.available, title: [entry.about, entry.reason].filter(Boolean).join('\n') || entry.ref });
+    }
+    if (selected && !environments.some(entry => entry.ref === selected)) {
+        choices.push({ value: selected, label: `${selected} (missing)`, disabled: true,
+            title: 'The saved environment is no longer listed as an enabled global container agent.' });
+    }
+    return choices;
+}
+
+
 const taskIcons = {
     browser: { label: 'Browser', path: 'M3 4h18v16H3z M3 8h18 M6 6h.01 M9 6h.01' },
     terminal: { label: 'Terminal', path: 'M3 4h18v16H3z M7 9l3 3-3 3 M13 15h4' },
@@ -74,7 +203,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const fileLocation = document.querySelector('#flowLocation');
     const folderPicker = saveAsButton && initScheduleFolderPicker({ api, input: fileLocation, prefix: 'flow', relative: true,
         returnFocus: saveAsButton, onSelect: location => save(location) });
-    let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, version = 0, coverageRequest = 0, nameBeforeEditing = '';
+    let graph, catalog = [], environments = [], environmentListingError = '', closeEnvironmentPicker = () => {}, canAdmin = false, selected = null, selectedEdgeId = null, version = 0, coverageRequest = 0, nameBeforeEditing = '';
     let warningTaskIds = new Set();
     let draggedTaskId = null;
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
@@ -82,6 +211,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
     const changed = () => { version++; };
     function showError(error) { message.textContent = error.message; }
     function showTaskEditor(show) {
+        if (!show) closeEnvironmentPicker();
         taskPage.hidden = !show;
         workflowContent.classList.toggle('has-task-details', show);
     }
@@ -402,6 +532,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         if (!graph.tasks.length) taskList.append(node('li', 'No tasks yet. Use + to add one.', 'task-list-empty'));
     }
     function renderTaskEditor() {
+        closeEnvironmentPicker();
         closeSkillDialog();
         taskPanel.replaceChildren();
         const task = graph.tasks.find(item => item.id === selected);
@@ -427,13 +558,64 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         const mode = node('select');
         for (const value of task.supportedExecutionTypes ? ['terminal / desktop / browser'] : ['terminal', 'desktop', 'browser']) mode.add(new Option(value, value));
         mode.value = task.executionType || 'terminal / desktop / browser';
+        const environmentChoices = environmentPickerChoices(environments, task.environment);
+        const environment = createEnvironmentPicker(environmentChoices, task.environment || '');
+        closeEnvironmentPicker = environment.close;
+        const environmentField = fieldBlock('Environment', environment);
+        const syncEnvironment = () => {
+            environmentField.hidden = Boolean(task.supportedExecutionTypes) || task.executionType !== 'terminal';
+            environment.disabled = readonly() || environmentField.hidden;
+        };
+        // Skills of the mixed repository the chosen agent comes from are recommended for this environment;
+        // any other skill can still be selected, without a guarantee that it works in that agent.
+        const recommendation = node('div', null, 'skillset-recommendation-row');
+        const renderRecommendation = () => {
+            recommendation.replaceChildren();
+            const recommended = recommendedEnvironmentSkills(task.environment, catalog);
+            if (task.executionType !== 'terminal' || !recommended.length) { recommendation.hidden = true; return; }
+            recommendation.hidden = false;
+            if (!Array.isArray(task.skillsets)) task.skillsets = [];
+            const missing = recommended.filter(entry => !task.skillsets.includes(entry.id));
+            const names = recommended.map(entry => entry.name);
+            const shown = names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ');
+            const pill = node('button', null, 'skillset-recommendation');
+            pill.type = 'button';
+            pill.title = names.join('\n');
+            if (missing.length) {
+                pill.append(node('span', '+', 'skillset-trigger-icon'), node('span', `Recommended skills for this environment: ${shown}`));
+                pill.onclick = () => {
+                    addEnvironmentSkills(task, recommended);
+                    changed(); void checkCoverage(); renderTaskEditor();
+                };
+            } else {
+                pill.disabled = true;
+                pill.classList.add('added');
+                pill.append(node('span', `✓ All recommended skills added: ${shown}`));
+            }
+            pill.disabled ||= readonly();
+            recommendation.append(pill);
+        };
+        environment.onchange = () => {
+            if (environment.value) task.environment = environment.value; else delete task.environment;
+            changed();
+            renderRecommendation();
+        };
+        // Changing execution type explicitly removes a terminal-only Environment selection.
+        const keepTerminalEnvironment = () => {
+            if (task.executionType !== 'terminal' && task.environment) delete task.environment;
+            environment.value = task.environment || '';
+            syncEnvironment();
+            renderRecommendation();
+        };
         mode.onchange = () => {
             task.executionType = mode.value; changed();
             renderList();
             renderBoard();
+            keepTerminalEnvironment();
         };
         const basics = node('div', null, 'task-editor-row');
         basics.append(field('Name', name), field('Execution type', mode));
+        basics.append(environmentField);
         const isEntry = graph.entryTaskId === task.id;
         const checkbox = (text, checked) => {
             const input = node('input'); input.type = 'checkbox'; input.checked = checked;
@@ -468,7 +650,8 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         humanInput.label.title = 'Pause for a business decision missing from the prompt and context.';
         const options = node('div', null, 'task-options');
         options.append(entry.label, creator.label, humanInput.label);
-        card.append(basics, options, field('Prompt', prompt));
+        card.append(basics, recommendation, options, field('Prompt', prompt));
+        if (environmentListingError && task.executionType === 'terminal') card.append(node('p', environmentListingError, 'hint'));
         if (task.creator) {
             const skill = node('details');
             skill.append(node('summary', 'workflow-creator · Required · View only'));
@@ -496,6 +679,8 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         deleteTask.classList.add('task-delete');
         card.append(fieldBlock('Skills', skillsetPicker(task.skillsets)), deleteTask);
         for (const control of card.querySelectorAll('input,textarea,select,button')) control.disabled = readonly();
+        syncEnvironment();
+        renderRecommendation();
         taskPanel.append(card);
     }
     function addTask() {
@@ -546,6 +731,14 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         }
         showTaskEditor(false); render();
         try { const result = await api('api/roboflow/skillsets'); catalog = result.skillsets; render(); if (result.diagnostics.length) message.textContent = result.diagnostics.map(item => item.message).join('\n'); } catch (error) { showError(error); }
+        try {
+            environments = (await api('api/roboflow/environments')).environments || [];
+            environmentListingError = '';
+        } catch {
+            environments = [];
+            environmentListingError = 'Environment listing is unavailable. Saved selections are preserved.';
+        }
+        renderTaskEditor();
     }
     document.querySelector('#workflowCancelButton').onclick = () => onClose();
     nameControl.addEventListener('focusin', () => { nameBeforeEditing = graph.name; });

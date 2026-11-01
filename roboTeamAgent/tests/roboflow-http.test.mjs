@@ -9,7 +9,7 @@ import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
 import { authHeader, routerFetch as fetch } from './helpers/router-signed.mjs';
 const graph = { id: 'example', name: 'Example', description: 'Run the objective once', entryTaskId: 'one', tasks: [{ id: 'one', name: 'One', prompt: 'Execute objective', skillsets: [], executionType: 'terminal' }], edges: [] };
 const headers = role => ({ 'content-type': 'application/json', 'x-ploinky-auth-info': authHeader('actor', [role]) });
-async function fixture(t) {
+async function fixture(t, serverOptions = {}) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-http-')));
     const robotStore = new RobotStore({ dataDir: path.join(root, 'data') }); await robotStore.initialize(); await robotStore.ensureDefaultRobot();
     const started = [];
@@ -19,13 +19,43 @@ async function fixture(t) {
         resumeTask(robot, taskId, prompt, options = {}) { return { taskId: options.runtimeTaskId, state: 'queued' }; }, activePort: () => null };
     const roboflow = new RoboFlowService({ robotStore, runtimeManager, skillsets: { repositoriesClient: { listRepositories: async () => [{ name: 'DocumentationSkills', source: root, origin: 'local' }] }, start: async (robot, input, enqueue) => enqueue(robot) }, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }) });
     await roboflow.initialize();
-    const server = createRoboTeamServer({ robotStore, runtimeManager, roboflow, internalToken: 'test-token', publicBasePath: '/rt/' });
+    const server = createRoboTeamServer({ robotStore, runtimeManager, roboflow, internalToken: 'test-token', publicBasePath: '/rt/', ...serverOptions });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     t.after(async () => { await new Promise(resolve => server.close(resolve)); await roboflow.close(); await fs.rm(root, { recursive: true, force: true }); });
     const base = `http://127.0.0.1:${server.address().port}`;
     const request = (url, role = 'admin', body, method = body ? 'POST' : 'GET') => fetch(base + url, { method, headers: headers(role), ...(body ? { body: JSON.stringify(body) } : {}) });
     return { request, roboflow, started, base, root };
 }
+
+test('Environment listing requires verified Explorer access and reads only the worker coordinator', async (t) => {
+    const calls = [];
+    const environments = [{ ref: 'fixtures/nodeenv', name: 'nodeenv', repo: 'fixtures', about: 'Node image', available: true, reason: null }];
+    const f = await fixture(t, { workerMode: true, workerCoordinator: { hop: { call: async (...args) => {
+        calls.push(args);
+        return { outcome: 'response', status: 200, json: { environments } };
+    } } } });
+    const route = '/api/roboflow/environments';
+    assert.equal((await fetch(f.base + route)).status, 401);
+    assert.equal((await fetch(f.base + route, { headers: { 'x-ploinky-auth-info': JSON.stringify({ user: { id: 'forged', roles: ['admin'] } }) } })).status, 401);
+    assert.equal(calls.length, 0);
+    const response = await f.request(route, 'user');
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, environments });
+    assert.deepEqual(calls, [['environments/list', {}, {}]]);
+});
+
+test('Environment listing reports worker unavailability without a local agent fallback', async (t) => {
+    const absent = await fixture(t);
+    const first = await absent.request('/api/roboflow/environments');
+    assert.equal(first.status, 503);
+    assert.deepEqual(await first.json(), { ok: false, error: 'runtime_unavailable', message: 'Environment listing is unavailable.' });
+    const failed = await fixture(t, { workerMode: true, workerCoordinator: { hop: { call: async () => ({
+        outcome: 'response', status: 503, json: { error: 'runtime_unavailable', reason: 'internal detail' },
+    }) } } });
+    const second = await failed.request('/api/roboflow/environments');
+    assert.equal(second.status, 503);
+    assert.deepEqual(await second.json(), { ok: false, error: 'runtime_unavailable', message: 'Environment listing is unavailable.' });
+});
 test('schedule folder HTTP picker is administrator-only, read-only on browse and creates confined folders', async t => {
     const f = await fixture(t), route = '/api/roboflow/schedule-folders';
     assert.equal((await fetch(f.base + route)).status, 401);

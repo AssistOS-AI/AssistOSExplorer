@@ -1,12 +1,11 @@
-// A worker admission that carries an Environment selection is refused with 400 `environment_unavailable` (existing-agent
-// environments are not available yet). RoboTeam maps it as a plain 400 with a fixed message for the user.
+// An unavailable Environment is a plain 400 with a fixed message for the user.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { STATUS, PLAIN_MESSAGES, mapHopOutcome, refusal } from '../server/worker-coordinator/errors.mjs';
 import { createWorkerClient } from '../server/worker-coordinator/worker-client.mjs';
 import { runtimeManagerInternals } from '../server/runtime-manager.mjs';
 
-const MESSAGE = 'Existing-agent environments are not available.';
+const MESSAGE = 'The selected environment is not available.';
 const ORIGIN = 'a'.repeat(32);
 
 test('environment_unavailable is a plain 400 with its message, and other 400 codes carry no message', () => {

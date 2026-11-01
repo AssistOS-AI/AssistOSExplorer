@@ -65,6 +65,17 @@ test('graph validation accepts cycles and rejects broken identity or legacy robo
     assert.throws(() => normalizeWorkflow({ ...graph(), members: [] }), /obsolete/);
 });
 
+test('terminal phases pass their Environment reference to task admission and ordinary phases omit it', async (t) => {
+    const f = await fixture(t);
+    await f.service.createWorkflow({ ...graph(), tasks: [task('a', { environment: 'fixtures/nodeenv' }), task('b')], edges: [edge('a', 'b')] });
+    await f.service.startFlow({ workflowTypeId: 'example', folder: f.root, objective: 'Work' });
+    assert.equal(f.started[0].type, 'simple');
+    assert.equal(f.started[0].request.environment, 'fixtures/nodeenv');
+    await f.finish(0);
+    assert.equal(f.started.length, 2);
+    assert.equal(Object.hasOwn(f.started[1].request, 'environment'), false);
+});
+
 test('branch parser tolerates aliases and formats but only authorizes outgoing edges', () => {
     for (const source of ['#nextEdgeId\na-b', '# nextNodePrompt\nOK\n# Edge\na-b', '# NEXTEDGE\r\n```\r\na-b\r\n```', '{"nextEdge":"a-b"}', '```json\n{"Edge":"a-b"}\n```']) assert.equal(parseRoute(source, graph(), 'a').nextEdgeId, 'a-b');
     for (const source of ['Done', '#Edge\nb-a', '{"Edge":"a-b","nextEdge":"a-c"}', '#Edge\nunknown']) assert.throws(() => parseRoute(source, graph(), 'a'));

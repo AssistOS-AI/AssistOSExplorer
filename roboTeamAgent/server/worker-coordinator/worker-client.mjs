@@ -138,6 +138,7 @@ export function createWorkerClient({ hop } = {}) {
             return call(`references/${referenceId}/control`, withBinding(body, auth), auth);
         },
         models: (robotId, agent, auth) => call('robots/models', { robotId, agent }, auth),
+        environments: () => call('environments/list', {}),
         agentStatus: (robotId, auth) => call('robots/agent-status', { robotId }, auth),
         getRobot: (robotId, auth) => call('robots/get', { robotId }, auth),
         getOperation: (operationId, auth) => call('operations/get', { operationId }, auth),

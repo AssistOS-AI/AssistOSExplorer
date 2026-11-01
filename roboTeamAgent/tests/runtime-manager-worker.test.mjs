@@ -63,10 +63,12 @@ test('the request grant of a started task goes to its child over stdin only and 
     const grant = `h.${Buffer.from(JSON.stringify({ sub: 'user:alice' })).toString('base64url')}.SECRETSIGNATURE`;
     const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, workerMode: true, toolCache, execFileImpl: async () => ({ stdout: '[]', stderr: '' }) });
     t.after(() => manager.stopAll());
-    const accepted = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', ownerPrincipal: 'user:alice', ownerGrant: grant });
+    const accepted = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', ownerPrincipal: 'user:alice', ownerGrant: grant,
+        environment: 'fixtures/nodeenv' });
     assert.equal(JSON.stringify(manager.taskStatus(robot.id, accepted.taskId)).includes('SECRETSIGNATURE'), false, 'not in the task status');
     while (!['completed', 'failed'].includes(manager.taskStatus(robot.id, accepted.taskId).state)) await new Promise((resolve) => setTimeout(resolve, 5));
     const [child] = spawned;
+    assert.equal(child.args[child.args.indexOf('--environment') + 1], 'fixtures/nodeenv');
     assert.equal(JSON.parse(child.read().split('\n')[0]).ownerGrant, grant, 'delivered over stdin');
     assert.equal(JSON.stringify(child.args).includes('SECRETSIGNATURE'), false, 'not in argv');
     assert.equal(JSON.stringify(child.env).includes('SECRETSIGNATURE'), false, 'not in the environment');

@@ -61,6 +61,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
             sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session']), skillSelection,
             execution: { workflowExecution: options['--workflow-execution'] === true, humanInput: options['--human-input'] === true, captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
                 model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access',
+                ...(options['--environment'] ? { environment: options['--environment'] } : {}),
                 ...(options['--worker-origin']
                     ? { worker: { ...(options['--worker-binding'] ? { bindingId: options['--worker-binding'] } : {}), originRequestId: options['--worker-origin'] } } : {}),
                 // A task that selected no project runs at the workspace root with no project grant (decision M-20); every other task

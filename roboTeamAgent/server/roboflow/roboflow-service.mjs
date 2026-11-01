@@ -421,6 +421,7 @@ export class RoboFlowService {
             const skillSets = required.filter(item => item.kind === 'skillset').map(item => item.selector);
             const skills = required.filter(item => item.kind === 'skill').map(item => item.selector);
             const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, workflowRunId: id,
+                ...(mode === 'terminal' && node.environment ? { environment: node.environment } : {}),
                 workflowInstanceId: instance.id, ownerPrincipal: ownerPrincipalOf(flow.ownerPrincipal), skillSets, skills,
                 requiredWorkflowSkillsets: node.skillsets, workflowCreator: node.creator === true, allowsHumanInput: node.allowsHumanInput === true,
                 systemPrompt: [node.creator ? creatorPrompt(flow.graph, node.id, await this.subflows.catalog()) : outgoing.length > 1 ? routingPrompt(flow.graph, node.id) : '',

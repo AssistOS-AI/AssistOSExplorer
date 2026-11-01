@@ -21,7 +21,7 @@ const configuration = { backend: 'codex', settings: { codingAgents: ['codex'] } 
 
 // Exercise the actual runtime -> worker engine -> client path. Only the private Router
 // libraries and worker HTTP responses are stand-ins; no native agent or model is started.
-async function fixture(t, { nativeStarted = true } = {}) {
+async function fixture(t, { nativeStarted = true, environment } = {}) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'worker-runtime-resume-')));
     const workingDir = path.join(root, 'project');
     await fs.mkdir(workingDir);
@@ -95,6 +95,7 @@ async function fixture(t, { nativeStarted = true } = {}) {
     return { admissions, launchErrors, setTerminal: value => { terminal = value; }, async open(options = {}) {
         const runtime = await createCliRuntime({ workingDir, ...options, execution: {
             permissions: 'full-access', worker: { bindingId: BINDING, originRequestId: ORIGIN },
+            ...(environment ? { environment, workflowExecution: true, humanInput: true } : {}),
         } }, { reattachExistingTasks: false });
         runtimes.push(runtime);
         return runtime;
@@ -102,7 +103,7 @@ async function fixture(t, { nativeStarted = true } = {}) {
 }
 
 test('explicit resume after failure before native start fails through the existing ALA contract', { timeout: 10000 }, async (t) => {
-    const f = await fixture(t, { nativeStarted: false });
+    const f = await fixture(t, { nativeStarted: false, environment: 'fixtures/nodeenv' });
     const first = await f.open();
     const sessionId = first.initialSession.sessionId;
     f.setTerminal('failed');
@@ -113,11 +114,12 @@ test('explicit resume after failure before native start fails through the existi
     await assert.rejects(resumed.engine.executeTurn({ sessionId, prompt: 'Continue.' }), /ala_exit_5/);
     assert.deepEqual(f.launchErrors, ['ALA session cannot be resumed: it has no native continuation.']);
     assert.equal(f.admissions[1].specification.resume, true);
+    assert.equal(f.admissions[1].specification.environment, 'fixtures/nodeenv');
 });
 
 for (const prompt of ['Continue.', 'Please finish the remaining checks.']) {
     test(`a paused workflow task resumes its native session through createCliRuntime: ${prompt}`, { timeout: 10000 }, async (t) => {
-        const f = await fixture(t);
+        const f = await fixture(t, { environment: 'fixtures/nodeenv' });
         const first = await f.open();
         const sessionId = first.initialSession.sessionId;
         await assert.rejects(first.engine.executeTurn({ sessionId, prompt: 'Start the task' }), { name: 'AbortError' });
@@ -129,6 +131,10 @@ for (const prompt of ['Continue.', 'Please finish the remaining checks.']) {
         await resumed.engine.executeTurn({ sessionId, prompt });
         const [initial, continuation] = f.admissions;
         assert.equal(continuation.specification.resume, true, 'explicit task continuation reaches the worker even without a completed assistant');
+        assert.equal(initial.specification.environment, 'fixtures/nodeenv');
+        assert.equal(continuation.specification.environment, initial.specification.environment);
+        assert.equal(continuation.specification.humanInput, true);
+        assert.equal(continuation.specification.workflowExecution, true);
         assert.equal(continuation.specification.sessionId, initial.specification.sessionId);
         assert.notEqual(continuation.specification.turnId, initial.specification.turnId);
         assert.equal(continuation.bindingId, BINDING);

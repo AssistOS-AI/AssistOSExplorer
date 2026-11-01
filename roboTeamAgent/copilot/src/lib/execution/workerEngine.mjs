@@ -416,9 +416,10 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             const skillsList = admittedSkills.map(({ name, path: skillPath, required }) => ({ name, path: skillPath, ...(required ? { required: true } : {}) }));
             const ignore = projectCwd ? [path.resolve(projectCwd, ACHILLES_PRIVATE_DIRECTORY_NAME)] : [];
             // The channel skills' prompts name their folder in the skills view and their worker-hosted channel directory.
+            const channelNode = execution.environment ? '/rw-opt/node/bin/node' : 'node';
             const channelPrompt = admittedSkills.filter((skill) => skill.channel !== undefined).map((skill) => (skill.channel === 'task-failure'
-                ? `\n\nRead ${SKILLS_ROOT}/${skill.name}/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan. Its channel here is ${CHANNELS_ROOT}/task-failure: run the script from the skill directory (${SKILLS_ROOT}/${skill.name}) as \`node scripts/run.mjs --directory ${CHANNELS_ROOT}/task-failure --input '<json>'\`.`
-                : `\n\nRead ${SKILLS_ROOT}/${skill.name}/SKILL.md. Use this required skill to ask the user for a business decision. Its channel here is ${CHANNELS_ROOT}/human-input: run the script from the skill directory (${SKILLS_ROOT}/${skill.name}) as \`node scripts/run.mjs --directory ${CHANNELS_ROOT}/human-input --input '<json>'\`.`)).join('');
+                ? `\n\nRead ${SKILLS_ROOT}/${skill.name}/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan. Its channel here is ${CHANNELS_ROOT}/task-failure: run the script from the skill directory (${SKILLS_ROOT}/${skill.name}) as \`${channelNode} scripts/run.mjs --directory ${CHANNELS_ROOT}/task-failure --input '<json>'\`.`
+                : `\n\nRead ${SKILLS_ROOT}/${skill.name}/SKILL.md. Use this required skill to ask the user for a business decision. Its channel here is ${CHANNELS_ROOT}/human-input: run the script from the skill directory (${SKILLS_ROOT}/${skill.name}) as \`${channelNode} scripts/run.mjs --directory ${CHANNELS_ROOT}/human-input --input '<json>'\`.`)).join('');
             for (const [skillName, channel, wanted] of [['report-task-blocked', 'task-failure', execution.workflowExecution === true], ['require-human-input', 'human-input', execution.humanInput === true]]) {
                 if (wanted && !admittedSkills.some((skill) => skill.name === skillName)) {
                     await emit({ type: 'diagnostic', message: `The ${skillName} skill is not available through the worker (its folder is not in the shared workspace); the ${channel} channel has no skill this turn.` });
@@ -440,6 +441,7 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
                 ...(execution.mcpServers ? { mcpServers: execution.mcpServers } : {}),
                 ...(execution.workflowExecution ? { workflowExecution: true } : {}),
                 ...(execution.humanInput === true ? { humanInput: true } : {}),
+                ...(execution.environment ? { environment: execution.environment } : {}),
                 ...(authority.mode === 'grant' && !authority.direct && owner?.coordinator && authority.principal?.startsWith('user:')
                     && skillsList.some((skill) => skill.name === 'list-workflows' && skill.required === true) ? { workflowCatalog: true } : {}),
             };

@@ -6,6 +6,7 @@ export const RUN_WORKFLOWS_ID = 'run-workflows';
 export const isCoordinator = task => task?.kind === 'run-workflows';
 export const hasCreators = graph => graph.tasks.some(task => task.creator === true);
 const identifier = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/;
+const AGENT_ENVIRONMENT_PATTERN = /^[A-Za-z0-9._-]{1,128}\/[A-Za-z0-9._-]{1,128}$/u;
 export function textField(value, name, max, required = false) {
     if (typeof value !== 'string' && value !== undefined) throw invalid(`${name} must be text`);
     const text = (value || '').trim();
@@ -41,6 +42,10 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         if (task.kind !== undefined && task.kind !== 'run-workflows') throw invalid('invalid task kind');
         if (task.allowsHumanInput !== undefined && typeof task.allowsHumanInput !== 'boolean') throw invalid('allowsHumanInput must be boolean');
         if (task.creator !== undefined && typeof task.creator !== 'boolean') throw invalid('creator must be boolean');
+        if (task.environment !== undefined && task.environment !== '') {
+            if (typeof task.environment !== 'string' || !AGENT_ENVIRONMENT_PATTERN.test(task.environment)) throw invalid('agent environment must be repo/agent');
+            if (builtin || isCoordinator(task) || task.executionType !== 'terminal') throw invalid('only terminal tasks can select an agent environment');
+        }
         if (isCoordinator(task)) {
             if (task.allowsHumanInput || builtin || task.id !== RUN_WORKFLOWS_ID || task.creator || task.robotId || task.robotName || task.executionType || task.prompt || task.skillsets?.length) throw invalid('Run workflows is a managed node without a robot, prompt or skills');
             return { id: RUN_WORKFLOWS_ID, name: 'Run workflows', kind: 'run-workflows', skillsets: [] };
@@ -52,7 +57,8 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         if (!Array.isArray(task.skillsets) || task.skillsets.length > 100 || task.skillsets.some(s => typeof s !== 'string' || !s || s.length > 512)) throw invalid('invalid task skillsets');
         return { id: task.id, name: textField(task.name, 'task name', 120),
             ...(task.creator ? { creator: true } : {}), ...(task.allowsHumanInput ? { allowsHumanInput: true } : {}), prompt: textField(task.prompt, 'task prompt', 16000), skillsets: [...new Set(task.skillsets)],
-            ...(builtin ? { supportedExecutionTypes: [...EXECUTION_TYPES] } : { executionType: task.executionType }) };
+            ...(builtin ? { supportedExecutionTypes: [...EXECUTION_TYPES] } : { executionType: task.executionType }),
+            ...(task.environment ? { environment: task.environment } : {}) };
     });
     const creators = tasks.filter(task => task.creator);
     if (creators.length && !ids.has(RUN_WORKFLOWS_ID)) {

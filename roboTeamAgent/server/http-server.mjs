@@ -492,6 +492,18 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     if (pathname === '/api/roboflow/skillsets' && req.method === 'GET') {
         sendJson(res, 200, { ok: true, ...await roboflow.catalog() }); return true;
     }
+    if (pathname === '/api/roboflow/environments' && req.method === 'GET') {
+        try {
+            if (!worker.enabled) {
+                sendJson(res, 503, { ok: false, error: 'runtime_unavailable', message: 'Environment listing is unavailable.' });
+                return true;
+            }
+            sendJson(res, 200, { ok: true, ...await worker.environments() });
+        } catch (error) {
+            sendJson(res, error.status || 503, { ok: false, error: error.code || 'runtime_unavailable', message: 'Environment listing is unavailable.' });
+        }
+        return true;
+    }
     if (pathname === '/api/roboflow/validate' && req.method === 'POST') {
         if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
         sendJson(res, 200, { ok: true, ...await roboflow.validateDraft(await readJsonBody(req)) }); return true;
@@ -783,6 +795,7 @@ export function createRoboTeamServer(options) {
     const workerEnabled = Boolean(workerHop) && (options.workerMode ?? String(process.env[COORDINATOR_BASE_ENV] || '').trim() !== '');
     const worker = {
         enabled: workerEnabled,
+        environments: () => utilityClient.environments(),
         grant: (req) => workerGrantFor(req, req[ACCESS]),
         // Deletes the robot on the worker first (decision M-29), with this request's own grant. Returns null when the worker is not
         // configured; throws `{statusCode, message}` for a refusal, which keeps RoboTeam's own record.

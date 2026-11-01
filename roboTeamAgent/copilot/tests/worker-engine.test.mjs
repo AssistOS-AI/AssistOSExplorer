@@ -694,6 +694,23 @@ async function channelSkills(root) {
         { name: 'require-human-input', skillDir: path.join(base, 'require-human-input'), enabled: true }];
 }
 
+test('Environment phases carry only the reference and channel prompts use the injected Node', async (t) => {
+    let skills;
+    const h = await harness(t, { atRoot: true, execution: { environment: 'fixtures/nodeenv', workflowExecution: true, humanInput: true,
+        worker: { bindingId: `flow_${'ab'.repeat(12)}`, originRequestId: ORIGIN } }, skills: () => skills });
+    skills = await channelSkills(await fs.realpath(h.workingDir));
+    await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Run the phase' });
+    const spec = h.client.calls.admit[0].body.specification;
+    assert.equal(spec.environment, 'fixtures/nodeenv');
+    assert.equal(spec.resume, undefined);
+    assert.equal(Object.hasOwn(spec, 'image'), false);
+    assert.equal(Object.hasOwn(spec, 'digest'), false);
+    for (const channel of ['task-failure', 'human-input']) {
+        assert.ok(spec.prompt.includes(`/rw-opt/node/bin/node scripts/run.mjs --directory /run/robo-work/channels/${channel}`));
+    }
+    assert.equal(h.admitted.length, 0, 'a phase uses its flow binding, never interactive admission');
+});
+
 test('worker copilot framing places admitted channel context before the unchanged request; ordinary workers retain prompt order', async (t) => {
     const prompt = '  Inspect π.\nReturn the exact requested result.\n';
     const channelPrompt = "\n\nRead /run/robo-work/skills/report-task-blocked/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan. Its channel here is /run/robo-work/channels/task-failure: run the script from the skill directory (/run/robo-work/skills/report-task-blocked) as `node scripts/run.mjs --directory /run/robo-work/channels/task-failure --input '<json>'`."

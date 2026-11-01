@@ -17,7 +17,7 @@ export const STATUS = Object.freeze({
     worker_reply_unknown: 503,
     worker_auth_failed: 502,
     forbidden: 403,
-    // The worker refuses a phase's Environment selection at admission (existing-agent environments are not available yet).
+    // The selected image cannot be used by the worker for this attempt.
     environment_unavailable: 400,
     // M-54: configure or delete while robot terminals are open; the body carries `terminals` (the count).
     terminals_open: 409,
@@ -25,7 +25,7 @@ export const STATUS = Object.freeze({
 
 // A plain, RoboTeam-authored sentence for a worker code the user can act on. It is fixed text for the code, never a worker reason.
 export const PLAIN_MESSAGES = Object.freeze({
-    environment_unavailable: 'Existing-agent environments are not available.',
+    environment_unavailable: 'The selected environment is not available.',
 });
 
 export class WorkerCoordinatorError extends Error {
