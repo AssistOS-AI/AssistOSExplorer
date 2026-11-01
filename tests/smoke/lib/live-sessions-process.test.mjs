@@ -14,6 +14,7 @@ const cwd = '/workspace/selected';
 const bytes = Buffer.from('public native fixture');
 const native = { realpath: '/public/native', sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
 const alaBytes = Buffer.from('public canonical ALA entrypoint fixture');
+const serviceBytes = Buffer.from('public canonical RoboWork service fixture');
 const alaBinding = { root: '/public', command: '/public/bin/ala.mjs', hashes: { 'bin/ala.mjs': crypto.createHash('sha256').update(alaBytes).digest('hex') } };
 const turnArgs = ['node', alaBinding.command, '--cwd', cwd, '--session-id', 'session', '--turn-id', 'turn', '--control-stdin'];
 const selectionFor = (kind = 'copilot', sessionId = 'session', turnId = 'turn') => ({ kind, sessionId, turnId, codeRoot: '/code',
@@ -40,7 +41,7 @@ function snapshotFixture() {
         const count = (calls.get(file) || 0) + 1;
         calls.set(file, count);
         fixture.hook?.(file, count);
-        const match = file.match(/^\/proc\/([1-9][0-9]*)\/(stat|cmdline|ns\/pid|exe|root\/public\/(?:native|bin\/ala\.mjs))$/);
+        const match = file.match(/^\/proc\/([1-9][0-9]*)\/(stat|status|cmdline|ns\/pid|exe|root\/public\/(?:native|bin\/ala\.mjs)|root\/code\/server\/main\.mjs)$/);
         assert.ok(match, 'observer must access only metadata and the selected public executable');
         const row = rows.get(Number(match[1]));
         if (!row) throw Object.assign(new Error('fixture process absent'), { code: 'ENOENT' });
@@ -49,6 +50,8 @@ function snapshotFixture() {
         if (kind === 'exe') return row.executable;
         if (kind === 'root/public/native') return fixture.fileBytes;
         if (kind === 'root/public/bin/ala.mjs') return fixture.alaBytes;
+        if (kind === 'root/code/server/main.mjs') return serviceBytes;
+        if (kind === 'status') return Buffer.from(`NSpid:\t${(row.namespacePids || [row.pid, row.localPid || row.pid]).join('\t')}\n`);
         if (kind === 'cmdline') return row.rawCmdline ?? Buffer.from(row.args.join('\0') + '\0');
         const fields = [row.state, String(row.ppid), ...Array(17).fill('0'), row.startToken];
         return row.rawStat ?? Buffer.from(`${row.pid} (fixture process) ${fields.join(' ')}\n`);
@@ -84,6 +87,41 @@ function snapshotFixture() {
     fixture.observe = (rootPid = 10, selectedCwd = cwd) => collectNativeProcessSnapshot(rootPid, native, selectedCwd, fixture.io, selectionFor());
     return fixture;
 }
+
+test('resident proof binds narrowed ALA through its exact RoboWork service and run identity', async () => {
+    const fixture = snapshotFixture();
+    fixture.rows.get(40).ppid = 10;
+    fixture.rows.get(40).args = ['node', '/code/server/main.mjs'];
+    fixture.add(41, 40, ['pasta'], { executable: '/usr/bin/pasta' });
+    Object.assign(fixture.rows.get(20), { ppid: 41, pidNamespace: 'pid:[150]', localPid: 1 });
+    const record = { runId: 'resident-run', kind: 'copilot', cwd, sessionId: 'session', turnId: 'turn', pid: 1, servicePid: 40, pidStamp: '120' };
+    const selection = { ...selectionFor(), residentRecords: [record], serviceSha256: crypto.createHash('sha256').update(serviceBytes).digest('hex') };
+    const first = await collectNativeProcessSnapshot(10, native, cwd, fixture.io, selection);
+    assertNativeProcessIdentity(first, native, { initPid: 10, cwd, ...selection });
+    assert.equal(first.runId, 'resident-run'); assert.equal(first.producer.script, '/code/server/main.mjs');
+    assert.deepEqual(first.producerAncestry.map(row => row.pid), [41, 40]);
+    assert.deepEqual(first.ancestry.map(row => row.pid), [22, 21]);
+    const censusSelection = { ...selection, kind: 'census' };
+    const census = await collectNativeProcessSnapshot(10, native, cwd, fixture.io, censusSelection);
+    assertNativeProcessCensus(census, { cwd, ...censusSelection }); assert.equal(census[0].runId, record.runId);
+    const wrapperLaunch = structuredClone(selection);
+    wrapperLaunch.residentRecords[0].pid = 41; wrapperLaunch.residentRecords[0].pidStamp = '141';
+    fixture.rows.get(20).namespacePids = [20, 19, 1];
+    const wrapped = await collectNativeProcessSnapshot(10, native, cwd, fixture.io, wrapperLaunch);
+    assertNativeProcessIdentity(wrapped, native, { initPid: 10, cwd, ...wrapperLaunch });
+    assert.equal(wrapped.launch.pid, 41, 'The exact spawned pasta/unshare ancestor may own the persisted PID.');
+    delete fixture.rows.get(20).namespacePids;
+    for (const mutate of [
+        value => { value.residentRecords[0].pid = 2; }, value => { value.residentRecords[0].pidStamp = 'stale'; },
+        value => { value.residentRecords[0].servicePid = 41; }, value => { value.residentRecords[0].turnId = 'foreign'; },
+        value => { value.serviceSha256 = 'f'.repeat(64); },
+    ]) {
+        const wrong = structuredClone(selection); mutate(wrong);
+        await assert.rejects(collectNativeProcessSnapshot(10, native, cwd, fixture.io, wrong));
+    }
+    fixture.rows.get(20).ppid = 1;
+    await assert.rejects(collectNativeProcessSnapshot(10, native, cwd, fixture.io, censusSelection), /missing its exact ALA/u);
+});
 
 test('same namespace selects a non-init-descendant ALA and preserves the entire native ancestry', async () => {
     const fixture = snapshotFixture();

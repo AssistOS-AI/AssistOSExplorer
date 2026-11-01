@@ -1,8 +1,48 @@
-import { readLiveSkillsCodeHashes } from './copilot-live-skills-runtime.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { readLiveSkillsCodeHashes, createLiveSkillsRuntimeReader } from './copilot-live-skills-runtime.mjs';
+import { requireAgentEvidence, inspectNestedContainer } from './webtty-runtime-evidence.mjs';
 
 export const ROBO_WORK_CONTRACT_FILES = Object.freeze([
     'server/main.mjs', 'server/caller.mjs', 'server/run-manager.mjs', 'server/launch.mjs', 'server/run-channels.mjs',
 ]);
+
+export function processRuntimeFence(inspected) {
+    if (!inspected?.State?.Running || !Number.isSafeInteger(inspected.State.Pid) || inspected.State.Pid <= 1) {
+        throw new Error('Exact process runtime is not running.');
+    }
+    return structuredClone({ id: inspected.Id, pid: inspected.State.Pid, startedAt: inspected.State.StartedAt,
+        image: inspected.Image, mounts: inspected.Mounts, labels: inspected.Config?.Labels });
+}
+
+export async function createResidentProcessBinding({ release, evidence, runtime }, {
+    env = process.env, createGuard = createLiveSkillsRuntimeReader, inspect = inspectNestedContainer,
+} = {}) {
+    const assert = (await import('node:assert/strict')).default;
+    const owner = requireAgentEvidence(evidence, 'roboWorkAgent');
+    assert.notEqual(owner.containerId, runtime.containerId);
+    const guard = await createGuard({ env, baseURL: release.applicationBaseURL, agentName: 'roboWorkAgent',
+        verifierPath: env.SMOKE_COPILOT_RELEASE_VERIFIER
+            || fileURLToPath(new URL('../../../../ploinky/tests/release/verifyExplorerReleaseBundle.mjs', import.meta.url)) });
+    const checked = await guard.finish(); assert.equal(checked.runtime.containerId, owner.containerId);
+    const repository = fs.realpathSync(release.repositories.explorer.repositoryPath);
+    assert.ok(!repository.includes(`${path.sep}.ploinky${path.sep}repos${path.sep}`));
+    const hashes = (agent, files) => Object.fromEntries(files.map(file => [file,
+        createHash('sha256').update(fs.readFileSync(path.join(repository, agent, file))).digest('hex')]));
+    const result = { runtime: checked.runtime, owner, repository, contractFiles: [...ROBO_WORK_CONTRACT_FILES],
+        codeHashes: hashes('roboWorkAgent', ROBO_WORK_CONTRACT_FILES),
+        controllerHashes: hashes('roboTeamAgent', ['server/robot-cli.mjs', 'server/robot-task.mjs']),
+        controller: processRuntimeFence(inspect(evidence.outerContainerId, runtime.containerId)),
+        execution: processRuntimeFence(inspect(evidence.outerContainerId, owner.containerId)) };
+    assert.equal(result.controller.id, runtime.containerId); assert.equal(result.execution.id, owner.containerId);
+    const freeze = value => {
+        if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
+        return value;
+    };
+    return freeze(result);
+}
 
 // Executed only in the exact source/mount/generation-verified RoboWork runtime.
 // Project metadata may select an ID but never supplies the authoritative record.
@@ -70,10 +110,14 @@ export async function readResidentRunRecords(options, { fsApi, codeRoot = '/code
         assert.match(record.launchId || '', /^[a-f0-9-]{36}$/u);
         assert.ok(record.tag.ownerPrincipal === null || record.tag.ownerPrincipal === undefined
             || /^user:.{1,200}$/u.test(record.tag.ownerPrincipal));
+        assert.ok(record.tag.producer && Object.keys(record.tag.producer).sort().join(',') === 'pid,startStamp'
+            && Number.isSafeInteger(record.tag.producer.pid) && record.tag.producer.pid > 0
+            && /^[1-9][0-9]{0,19}$/u.test(record.tag.producer.startStamp), 'Missing trusted controller producer incarnation.');
         records.push({ runId: record.runId, robotId: record.robotId, cwd: record.cwd, state: record.state,
             kind: record.tag.kind, sessionId: record.ala.sessionId, turnId: record.ala.turnId,
             ownerPrincipal: record.tag.ownerPrincipal || null, pid: record.pid, servicePid: record.servicePid,
-            pidStamp: record.pidStamp, launchId: record.launchId });
+            pidStamp: record.pidStamp, launchId: record.launchId,
+            producer: { pid: record.tag.producer.pid, startStamp: record.tag.producer.startStamp } });
     }
     for (const { name, stat } of directories) {
         assert.equal(fs.realpathSync(name), name);

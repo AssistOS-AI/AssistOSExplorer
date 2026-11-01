@@ -12,6 +12,7 @@ import { setComposer, waitForWebchatIdle } from '../lib/webchat.mjs';
 import { conversationFromSkillsURL } from '../lib/conversation-skills.mjs';
 import { createLiveSessionFinalizer } from '../lib/live-sessions-diagnostics.mjs';
 import { createOrchestrationReader, assertObserverWindow, terminateOwnedFlow, assertOwnedSettlement } from '../lib/live-sessions-orchestration.mjs';
+import { createResidentProcessBinding } from '../lib/robowork-run-evidence.mjs';
 import { resolvePloinkyExecutable } from '../lib/ploinky-executable.mjs';
 import { collectWebttyRuntimeEvidence, requireAgentEvidence, collectExactAgentState } from '../lib/webtty-runtime-evidence.mjs';
 import { findSecretLeaks } from '../lib/security.mjs';
@@ -28,6 +29,7 @@ const nativeTimeout = 120_000;
 function processSelection(fixture, kind = 'census', sessionId, turnId) {
     return { kind, codeRoot: '/code', workflowCodeRoot: path.posix.join(fixture.release.repositories.explorer.repositoryPath, 'roboTeamAgent'),
         alaBinding: fixture.capture.alaBinding,
+        residentBinding: fixture.residentBinding,
         ...(sessionId ? { sessionId, turnId } : {}) };
 }
 
@@ -71,8 +73,10 @@ async function configuredNative(admin, release, runtime, { initial = true } = {}
     expect(response.status()).toBe(200);
     const config = await response.json();
     expect(config.ok).toBe(true);
-    const native = validateNativeEvidence(record, { release, runtime, workspaceRoot: smokeConfig.workspaceRoot, config, initial });
-    await verifyNativeExecutable(runtimeEvidence(release), runtime, native);
+    const evidence = runtimeEvidence(release);
+    const executionRuntime = requireAgentEvidence(evidence, 'roboWorkAgent');
+    const native = validateNativeEvidence(record, { release, runtime, executionRuntime, workspaceRoot: smokeConfig.workspaceRoot, config, initial });
+    await verifyNativeExecutable(evidence, executionRuntime, native);
     return { ...native, robotId: record.robotId };
 }
 
@@ -144,6 +148,7 @@ async function withFixture(browser, testInfo, operation) {
         fixture.cwd = path.join(smokeConfig.workspaceRoot, directoryName);
         fixture.ownerPrincipal = `user:${principals[1].canonicalId}`;
         fixture.capture = await createOrchestrationReader(fixture);
+        fixture.residentBinding = await createResidentProcessBinding(fixture);
         await attachEvidence(testInfo, 'native-prerequisite.json', { native, runtime, sourceGraph: release.repositories,
             outerContainerId: release.liveBox.box.containerId, imageDigest: release.imageDigest });
         await operation(fixture);
@@ -534,6 +539,7 @@ test.describe('Deployed RoboTeam Live Sessions', () => {
             expect(replacement.enableGeneration).not.toBe(oldRuntime.enableGeneration);
             Object.assign(fixture, { evidence: replacementEvidence, runtime: replacement });
             fixture.capture = await createOrchestrationReader(fixture);
+            fixture.residentBinding = await createResidentProcessBinding(fixture);
             await fixture.reopen();
             expect(await configuredNative(fixture.admin, fixture.release, replacement, { initial: false })).toEqual(fixture.native);
             const health = await fixture.admin.request.get(`${ROBOTEAM_BASE}/status`);

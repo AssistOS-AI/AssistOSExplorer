@@ -263,12 +263,13 @@ Set `SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE` to an absolute external JSON file coll
 | `workspaceRoot`, `outerContainerId`, `imageDigest` | Exact selected workspace and inspected immutable Box identity |
 | `repositories` | Complete verified source graph, identical to the canonical runner's `SMOKE_COPILOT_RELEASE_EVIDENCE.repositories` |
 | `initialRoboTeam` | Initial `containerId`, `containerName`, `instanceId`, and `enableGeneration` from exact runtime inspection |
+| `initialRoboWork` | Initial execution-owner `containerId`, `containerName`, `instanceId`, and `enableGeneration`; must remain unchanged across a RoboTeam restart |
 | `native.backend`, `native.model`, `native.effort` | Selected backend and configured model/effort; use JSON null for unconfigured values |
 | `native.version`, `native.cliVersion` | Canonical cache version and actual bounded `--version` output from that executable |
 | `native.executablePath`, `native.realpath`, `native.sha256` | Absolute selected executable, resolved file, and SHA-256 digest |
 | `native.cacheRoot`, `native.generation` | Absolute tool-cache root and 64-hex generation |
 
-The suite rechecks the real executable hash, resolved path, cache descriptor and generation stamp in the exact RoboTeam container before execution. After targeted restart it requires the same native executable identity in the replacement container. The initial runtime binding applies only before replacement.
+The suite rechecks the real executable hash, resolved path, cache descriptor and generation stamp in the exact RoboWork container before execution. After a targeted RoboTeam restart it requires the same native executable identity in the unchanged RoboWork container. The initial RoboTeam binding applies only before controller replacement. Producer and native process proofs run in their respective exact containers and link through service-owned resident-run metadata; project files are selectors only.
 
 Set `SMOKE_ALA_COMMAND` to the exact selected deployed ALA `bin/ala.mjs`, under the admitted workspace. The orchestration reader binds its exported transcript implementation and command to the verified source hashes and uses the existing release/runtime mount guards.
 

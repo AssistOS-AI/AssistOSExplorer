@@ -15,7 +15,8 @@ function fixture(t) {
     fs.mkdirSync(path.join(code, 'server'), { recursive: true }); fs.mkdirSync(runs, { recursive: true, mode: 0o700 }); fs.chmodSync(data, 0o700);
     const source = 'export const canonical = true;\n'; fs.writeFileSync(path.join(code, 'server/main.mjs'), source);
     const record = { runId: randomUUID(), robotId: 'robot-a', cwd: path.join(root, 'project'), state: 'running',
-        tag: { kind: 'copilot', sessionId: 'session-one', turnId: 'turn-one', ownerPrincipal: 'user:owner', privateExtra: 'SYNTHETIC_PRIVATE_VALUE' },
+        tag: { kind: 'copilot', sessionId: 'session-one', turnId: 'turn-one', ownerPrincipal: 'user:owner',
+            producer: { pid: 31, startStamp: '67890' }, privateExtra: 'SYNTHETIC_PRIVATE_VALUE' },
         ala: { sessionId: 'session-one', turnId: 'turn-one' }, pid: 21, servicePid: 8, pidStamp: '12345', launchId: randomUUID() };
     const directory = path.join(runs, record.runId); fs.mkdirSync(directory, { mode: 0o700 });
     const file = path.join(directory, 'meta.json');
@@ -52,6 +53,8 @@ test('resident metadata requires exact identity, session, turn, owner and live p
         value => { value.runId = randomUUID(); }, value => { value.tag.sessionId = 'foreign'; },
         value => { value.tag.turnId = 'foreign'; }, value => { value.tag.kind = 'invented'; },
         value => { value.tag.ownerPrincipal = 'agent:foreign'; }, value => { value.pidStamp = ''; },
+        value => { delete value.tag.producer; }, value => { value.tag.producer.pid = 0; },
+        value => { value.tag.producer.startStamp = ''; }, value => { value.tag.producer.invented = 'authority'; },
         value => { value.pid = 0; }, value => { value.servicePid = null; }, value => { value.state = 'invented'; },
     ]) {
         const changed = structuredClone(f.record); mutate(changed); f.write(changed);
