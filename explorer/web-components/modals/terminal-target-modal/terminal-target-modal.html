@@ -14,6 +14,8 @@
             <select id="terminalTargetRobot" class="terminal-target-select" required aria-describedby="terminalTargetRobotNote terminalTargetDisclosure" disabled>
                 <option value="" disabled selected>Choose a robot</option>
             </select>
+            <label class="terminal-target-field-label" for="terminalTargetEnvironment" id="terminalTargetEnvironmentLabel" hidden>Environment</label>
+            <select id="terminalTargetEnvironment" class="terminal-target-select" hidden disabled aria-labelledby="terminalTargetEnvironmentLabel"></select>
             <p class="terminal-target-robot-note" id="terminalTargetRobotNote" role="status" aria-live="polite"></p>
             <div class="terminal-target-notice" id="terminalTargetDisclosure" hidden></div>
         </div>
