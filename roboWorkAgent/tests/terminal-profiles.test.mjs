@@ -75,6 +75,39 @@ test('prepare confines home writes, records only protected metadata and deduplic
     await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub), { code: 'PROFILE_REFUSED' });
 });
 
+test('descriptor accepts only an exact owned stub identity through a canonical Router mount alias', async t => {
+    const f = await fixture(t);
+    await f.api.prepare(PROFILE);
+    const alias = path.join(f.root, 'router-home');
+    await fs.mkdir(alias);
+    const selectedStat = await fs.lstat(f.stub);
+    const originalLstat = fs.lstat.bind(fs);
+    let aliasedStat = selectedStat;
+    t.mock.method(fs, 'lstat', async (...args) => args[0] === alias ? aliasedStat : originalLstat(...args));
+    // A bind mount preserves dev/ino while realpath retains its own canonical path.
+    assert.notEqual(await fs.realpath(alias), f.stub);
+    const loaded = await readTerminalDescriptor(f.paths, PROFILE, alias, alias);
+    assert.equal(loaded.descriptor.cwd, null);
+    const root = await readTerminalDescriptor(f.paths, PROFILE, alias, f.paths.workspaceRoot);
+    assert.equal(root.descriptor.cwd, f.paths.workspaceRoot);
+    const project = path.join(f.paths.workspaceRoot, 'project');
+    await fs.mkdir(project);
+    const clicked = await readTerminalDescriptor(f.paths, PROFILE, alias, project);
+    assert.equal(clicked.descriptor.cwd, project);
+    for (const mismatch of [{ dev: selectedStat.dev + 1 }, { ino: selectedStat.ino + 1 }, { uid: selectedStat.uid + 1 },
+        { isDirectory: () => false }, { isSymbolicLink: () => true }]) {
+        aliasedStat = Object.assign(Object.create(selectedStat), mismatch);
+        await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, alias, alias));
+    }
+    aliasedStat = selectedStat;
+    const link = path.join(f.root, 'linked-home');
+    await fs.symlink(f.stub, link);
+    await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, link, link));
+    const otherDirectory = path.join(f.root, 'other-home');
+    await fs.mkdir(otherDirectory);
+    await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, otherDirectory, otherDirectory));
+});
+
 test('default terminal preparation never builds static Bubblewrap while selected Environments still require it', async t => {
     const f = await fixture(t);
     let staticCalls = 0;

@@ -33,12 +33,16 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
     } finally { await handle.close(); }
     const stub = path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal', id);
     const stat = await terminalDirectory(stub, { empty: true });
+    if (!selectedHome) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
+    // The Router may reach the stub through a container bind alias. Its canonical
+    // path differs, but the service-owned empty directory must be the same inode.
+    const selectedStat = await terminalDirectory(selectedHome, { empty: true });
     if (descriptor.profile !== profile || descriptor.id !== id || descriptor.dataDir !== paths.dataDir
         || descriptor.workspaceRoot !== paths.workspaceRoot || descriptor.stub?.path !== stub
         || descriptor.stub.dev !== stat.dev || descriptor.stub.ino !== stat.ino
-        || !selectedHome || await fs.realpath(selectedHome) !== stub) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
+        || selectedStat.dev !== stat.dev || selectedStat.ino !== stat.ino) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
     const directory = await fs.realpath(cwd);
-    descriptor.cwd = directory === stub ? null : await publicDirectory(paths, directory);
+    descriptor.cwd = directory === stub || directory === selectedHome ? null : await publicDirectory(paths, directory);
     return { descriptor, paths };
 }
 
