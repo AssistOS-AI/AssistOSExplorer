@@ -14,11 +14,12 @@ export function liveSkillsHash(value) {
 }
 
 // Self-contained for the serialized read-only observer and owned cleanup operation.
-export async function inspectSessionSkillLinks({ workspace, sessionId, execution }, { fsApi, allowMissing = false } = {}) {
+export async function inspectSessionSkillLinks({ workspace, sessionId, execution }, { fsApi, allowMissing = false, sourceMapping = 'aliases' } = {}) {
     const assert = (await import('node:assert/strict')).default;
     const fs = fsApi || await import('node:fs');
     const path = await import('node:path');
     const { createHash } = await import('node:crypto');
+    assert.ok(['aliases', 'canonical'].includes(sourceMapping), 'Unknown source mapping.');
     const same = (a, b) => ['dev', 'ino', 'mode', 'size', 'mtimeMs', 'ctimeMs'].every(key => a[key] === b[key]);
     const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}/`);
     const canonicalDirectory = directory => {
@@ -55,7 +56,7 @@ export async function inspectSessionSkillLinks({ workspace, sessionId, execution
         if (entry.executionOnly) continue;
         let target = sources.get(source);
         if (!target) {
-            target = [projectSkills, `${workspace}/.claude/skills`, `${workspace}/.roboteam`].some(root => inside(root, source))
+            target = sourceMapping === 'aliases' || [projectSkills, `${workspace}/.claude/skills`, `${workspace}/.roboteam`].some(root => inside(root, source))
                 ? `/workspace/roboteam-skill-${sources.size}` : source;
             sources.set(source, target);
             mounts.push({ source, target, expose: true });
@@ -117,6 +118,86 @@ export function createLiveSkillsFixture(workspaceRoot) {
         ownedPaths: [workspace, repositoryRoot], control: make('control'), probe: make('probe'), added: make('added') };
 }
 
+// Serialized into the generated helper. The alias branch records only directory/file identities,
+// never home contents or the private RoboWork path. Canonical execution remains an offline control.
+export async function observeLiveSkillReceiptSource({ canonicalSource, resolvedSource, invokedPath, homeTarget }, { fsApi, env = process.env } = {}) {
+    const assert = (await import('node:assert/strict')).default;
+    const fs = fsApi || await import('node:fs');
+    const path = await import('node:path');
+    const { createHash } = await import('node:crypto');
+    assert.equal(fs.realpathSync(canonicalSource), canonicalSource, 'Canonical skill source changed.');
+    assert.equal(fs.realpathSync(invokedPath), resolvedSource, 'Installed helper link changed.');
+    if (resolvedSource === canonicalSource) return null;
+    const alias = path.dirname(resolvedSource);
+    assert.match(alias, /^\/workspace\/roboteam-skill-(?:0|[1-9][0-9]*)$/);
+    assert.equal(path.basename(resolvedSource), 'receipt.mjs');
+    assert.equal(fs.realpathSync(resolvedSource), resolvedSource);
+    const identity = stat => Object.fromEntries(['dev', 'ino', 'uid', 'gid', 'mode'].map(key => [key, String(stat[key])]));
+    const same = (a, b) => ['dev', 'ino', 'uid', 'gid', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'].every(key => a[key] === b[key]);
+    const opened = [];
+    try {
+        for (const filename of [canonicalSource, resolvedSource]) {
+            const before = fs.lstatSync(filename, { bigint: true });
+            assert.ok(before.isFile() && before.nlink === 1n && before.size <= 4n * 1024n * 1024n);
+            const fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+            opened.push({ filename, before, fd });
+            assert.ok(same(before, fs.fstatSync(fd, { bigint: true })), 'Helper source changed while opening.');
+            assert.equal(fs.realpathSync(`/proc/self/fd/${fd}`), filename);
+        }
+        assert.ok(same(opened[0].before, opened[1].before), 'Alias helper is not the canonical source file object.');
+        const bytes = opened.map(({ fd }) => fs.readFileSync(fd));
+        assert.deepEqual(bytes[0], bytes[1], 'Alias helper bytes differ from canonical source.');
+        const mountInfo = fs.readFileSync('/proc/self/mountinfo', 'utf8');
+        assert.ok(mountInfo.length < 8 * 1024 * 1024);
+        const mounts = mountInfo.trim().split('\n').map(line => {
+            const fields = line.split(' '), separator = fields.indexOf('-');
+            assert.ok(separator >= 6);
+            return { target: fields[4].replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8))), options: fields[5].split(',') };
+        });
+        const effective = filename => {
+            const matches = mounts.filter(mount => filename === mount.target || filename.startsWith(`${mount.target === '/' ? '' : mount.target}/`))
+                .sort((a, b) => b.target.length - a.target.length);
+            assert.ok(matches.length && (matches.length === 1 || matches[0].target.length !== matches[1].target.length), 'Ambiguous native mount.');
+            assert.ok(matches[0].options.includes('ro'), 'Helper source must be effectively read-only.');
+            return matches[0].target;
+        };
+        assert.equal(effective(resolvedSource), alias, 'Unexpected shadow of the native source alias.');
+        effective(canonicalSource);
+        assert.match(homeTarget || '', /^\/home\/[a-z0-9][a-z0-9-]{2,63}$/);
+        assert.equal(env.HOME, homeTarget, 'Native helper has a different home.');
+        assert.equal(env.USER, path.basename(homeTarget));
+        assert.equal(fs.realpathSync(homeTarget), homeTarget);
+        const home = fs.lstatSync(homeTarget, { bigint: true });
+        assert.ok(home.isDirectory());
+        for (const entry of opened) {
+            assert.ok(same(entry.before, fs.fstatSync(entry.fd, { bigint: true })) && same(entry.before, fs.lstatSync(entry.filename, { bigint: true })),
+                'Helper source changed during capture.');
+            assert.equal(fs.realpathSync(`/proc/self/fd/${entry.fd}`), entry.filename);
+            assert.equal(fs.realpathSync(entry.filename), entry.filename, 'Helper source pathname changed during capture.');
+        }
+        assert.deepEqual(identity(fs.lstatSync(homeTarget, { bigint: true })), identity(home), 'Native home changed during capture.');
+        assert.equal(fs.realpathSync(homeTarget), homeTarget);
+        return { version: 1, alias, canonicalSource, sourceIdentity: identity(opened[0].before), runtimeIdentity: identity(opened[1].before),
+            helperSha256: createHash('sha256').update(bytes[0]).digest('hex'), readOnly: true, home: { target: homeTarget, identity: identity(home) } };
+    } finally { for (const { fd } of opened.reverse()) fs.closeSync(fd); }
+}
+
+export function validateLiveSkillReceiptSource({ receipt, link, canonicalSource, canonicalIdentity, helperSha256, homeBinding }) {
+    const proof = receipt.sourceBinding;
+    assert.equal(proof?.version, 1, 'Live execution needs native source alias evidence.');
+    assert.match(link.target, /^\/workspace\/roboteam-skill-(?:0|[1-9][0-9]*)$/);
+    assert.equal(receipt.resolvedSource, `${link.target}/receipt.mjs`);
+    assert.equal(proof.alias, link.target);
+    assert.equal(proof.canonicalSource, canonicalSource);
+    assert.deepEqual(proof.runtimeIdentity, proof.sourceIdentity, 'Native alias belongs to a different source object.');
+    assert.deepEqual(proof.sourceIdentity, canonicalIdentity, 'Native helper differs from the captured canonical source object.');
+    for (const field of ['dev', 'ino', 'uid', 'gid', 'mode']) assert.match(proof.sourceIdentity?.[field] || '', /^\d+$/);
+    assert.equal(proof.helperSha256, helperSha256);
+    assert.equal(proof.readOnly, true);
+    assert.equal(proof.home.target, homeBinding.homeTarget);
+    assert.deepEqual(proof.home.identity, homeBinding.identity, 'Native home differs from the exact owned RoboWork home object.');
+}
+
 export function liveSkillSources(fixture, skill, workspaceRoot) {
     assert.match(fixture.runId, UUID);
     assert.equal(fixture.folder, `copilot-live-skills-${fixture.runId}`);
@@ -131,7 +212,24 @@ export function liveSkillSources(fixture, skill, workspaceRoot) {
     const descriptor = `---\nname: ${skill.name}\ndescription: Run the explicit live skills conversation check and produce its fresh receipt.\n---\n\nUse this skill only when named in the current request. The request supplies a phase UUID. Run the receipt.mjs helper through its installed live link at ${fixture.workspace}/.agents/skills/${skill.name}/receipt.mjs with Node.js, passing that UUID as its sole argument. Run the helper exactly once. Use the helper from the currently selected skill catalog. Never write or edit receipts yourself. Report the helper's output and this descriptor value verbatim: ${skill.descriptorMarker}\n`;
     // The public challenge is separate from values available only in current descriptor/helper bytes.
     // Node resolves import.meta.url through the live link; argv[1] records the invoked link.
-    const helper = `import { createHash } from 'node:crypto';\nimport { readFileSync, writeFileSync, realpathSync } from 'node:fs';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\nconst phase = process.argv[2];\nif (!${UUID}.test(phase || '') || process.argv.length !== 3) throw new Error('Pass one phase UUID');\nconst marker = ${JSON.stringify(skill.helperMarker)};\nconst cwd = realpathSync(process.cwd());\nif (cwd !== ${JSON.stringify(fixture.workspace)}) throw new Error('Unexpected execution folder');\nconst invokedPath = path.resolve(process.argv[1]);\nconst resolvedSource = fileURLToPath(import.meta.url);\nif (invokedPath !== path.join(cwd, '.agents', 'skills', ${JSON.stringify(skill.name)}, 'receipt.mjs') || realpathSync(invokedPath) !== resolvedSource || resolvedSource !== ${JSON.stringify(path.posix.join(fixture.repositoryRoot, 'skills', skill.name, 'receipt.mjs'))}) throw new Error('Unexpected live skill source');\nconst receipt = { version: 2, runId: ${JSON.stringify(fixture.runId)}, phase, skill: ${JSON.stringify(skill.name)}, marker, invokedPath, resolvedSource, cwd, helperSha256: createHash('sha256').update(readFileSync(resolvedSource)).digest('hex'), createdAt: new Date().toISOString(), pid: process.pid };\nwriteFileSync(path.join(cwd, '.receipts', phase + '-' + receipt.skill + '.json'), JSON.stringify(receipt) + '\\n', { flag: 'wx', mode: 0o600 });\nconsole.log(marker);\n`;
+    const helper = `import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync, realpathSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const phase = process.argv[2];
+if (!${UUID}.test(phase || '') || process.argv.length !== 3) throw new Error('Pass one phase UUID');
+const marker = ${JSON.stringify(skill.helperMarker)};
+const cwd = realpathSync(process.cwd());
+if (cwd !== ${JSON.stringify(fixture.workspace)}) throw new Error('Unexpected execution folder');
+const invokedPath = path.resolve(process.argv[1]);
+const resolvedSource = fileURLToPath(import.meta.url);
+if (invokedPath !== path.join(cwd, '.agents', 'skills', ${JSON.stringify(skill.name)}, 'receipt.mjs') || realpathSync(invokedPath) !== resolvedSource) throw new Error('Unexpected live skill source');
+const observeSource = ${observeLiveSkillReceiptSource.toString()};
+const sourceBinding = await observeSource({ canonicalSource: ${JSON.stringify(path.posix.join(fixture.repositoryRoot, 'skills', skill.name, 'receipt.mjs'))}, resolvedSource, invokedPath, homeTarget: process.env.HOME });
+const receipt = { version: 2, runId: ${JSON.stringify(fixture.runId)}, phase, skill: ${JSON.stringify(skill.name)}, marker, invokedPath, resolvedSource, cwd, helperSha256: createHash('sha256').update(readFileSync(resolvedSource)).digest('hex'), createdAt: new Date().toISOString(), pid: process.pid, ...(sourceBinding ? { sourceBinding } : {}) };
+writeFileSync(path.join(cwd, '.receipts', phase + '-' + receipt.skill + '.json'), JSON.stringify(receipt) + '\\n', { flag: 'wx', mode: 0o600 });
+console.log(marker);
+`;
     return { descriptor, helper, descriptorSha256: liveSkillsHash(descriptor), helperSha256: liveSkillsHash(helper) };
 }
 
@@ -194,7 +292,7 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
     assert.match(snapshot.robot.repository.generation, UUID);
     assert.equal(session.engine.robotId, fixture.robotId);
     assert.equal(session.engine.cwd, workspace);
-    assert.equal(session.engine.home, `${snapshot.robotRoot}/home`);
+    assert.equal(session.engine.home, `/home/${fixture.robotId}`);
     const native = snapshot.native;
     assert.equal(native?.id, sessionId);
     assert.equal(native.home, session.engine.home);
@@ -246,6 +344,11 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
     assert.equal(inventory.cwd, workspace);
     assert.equal(session.skillPolicyRef, sessionId);
     assert.equal(snapshot.catalog.revision, execution.revision, 'A different link record was supplied as execution evidence.');
+    assert.ok(['aliases', 'canonical'].includes(snapshot.sourceMapping), 'The source observer must declare its mapping.');
+    const aliases = snapshot.sourceMapping === 'aliases';
+    const orderedSources = [...new Set(snapshot.catalog.links.map(link => link.source))];
+    assert.deepEqual(execution.mounts, orderedSources.map((source, index) => ({ source,
+        target: aliases ? `/workspace/roboteam-skill-${index}` : source, expose: true })), 'Execution mounts differ from their source mapping.');
     assert.equal(liveSkillsHash(snapshot.catalog.links), execution.revision, 'Revision must identify managed installed links.');
     assert.deepEqual(snapshot.catalog.entries, execution.entries);
     assert.equal(new Set(execution.entries.map(entry => entry.name)).size, execution.entries.length);
@@ -260,12 +363,13 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
         const link = snapshot.catalog.links.filter(link => link.name === skill.name);
         assert.equal(link.length, 1, 'Selected source lacks a managed installed link.');
         assert.equal(link[0].source, entries[0].sourcePath);
-        assert.equal(link[0].target, entries[0].sourcePath);
+        assert.equal(link[0].target, aliases ? `/workspace/roboteam-skill-${orderedSources.indexOf(entries[0].sourcePath)}` : entries[0].sourcePath);
         assert.equal(snapshot.liveLinks[skill.name].destination, `${skillsDirectory}/${skill.name}`);
         assert.equal(snapshot.liveLinks[skill.name].linkTarget, link[0].target);
         assert.equal(snapshot.liveLinks[skill.name].resolvedSource, entries[0].sourcePath);
         const source = liveSkillSources(fixture, skill, workspaceRoot);
-        assert.deepEqual(snapshot.capturedFiles[skill.name], { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 },
+        assert.deepEqual({ descriptorSha256: snapshot.capturedFiles[skill.name].descriptorSha256, helperSha256: snapshot.capturedFiles[skill.name].helperSha256 },
+            { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 },
             `Captured files for ${skill.name} are stale or came from a different source.`);
     }
     for (const skill of absent) {
@@ -289,7 +393,15 @@ export function validateLiveSkillsTurn({ snapshot, inventory, baselineIds, prior
         assert.equal(receipt.skill, skill.name);
         assert.equal(receipt.marker, skill.helperMarker);
         assert.equal(receipt.invokedPath, `${workspace}/.agents/skills/${skill.name}/receipt.mjs`, 'The receipt came from a copied helper outside its installed live link.');
-        assert.equal(receipt.resolvedSource, `${fixture.repositoryRoot}/skills/${skill.name}/receipt.mjs`);
+        if (aliases) {
+            const link = snapshot.catalog.links.find(link => link.name === skill.name);
+            assert.equal(snapshot.homeBinding?.robotId, fixture.robotId);
+            assert.equal(snapshot.homeBinding.robotName, fixture.robotName);
+            assert.equal(snapshot.homeBinding.homeTarget, `/home/${fixture.robotId}`);
+            validateLiveSkillReceiptSource({ receipt, link, canonicalSource: `${fixture.repositoryRoot}/skills/${skill.name}/receipt.mjs`,
+                canonicalIdentity: snapshot.capturedFiles[skill.name].sourceIdentity,
+                helperSha256: liveSkillSources(fixture, skill, workspaceRoot).helperSha256, homeBinding: snapshot.homeBinding });
+        } else assert.equal(receipt.resolvedSource, `${fixture.repositoryRoot}/skills/${skill.name}/receipt.mjs`);
         assert.equal(receipt.cwd, workspace);
         assert.equal(receipt.helperSha256, liveSkillSources(fixture, skill, workspaceRoot).helperSha256);
         assert.ok(Number.isSafeInteger(receipt.pid) && receipt.pid > 0);
