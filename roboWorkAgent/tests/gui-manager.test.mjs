@@ -9,11 +9,16 @@ import { GuiManager, buildRobotRunArgs, proxySessionHttp } from '../server/gui-m
 const shellTools = { path: '/data/tool-cache/shell-generation', binPath: '/data/tool-cache/shell-generation/bin', agents: { codex: { path: '/data/tool-cache/codex-generation' } } };
 const base = { robot: { id: 'robot-a', name: 'Robot' }, mode: 'browser', dataDir: '/data', workspaceRoot: '/workspace', images: { browser: 'browser', desktop: 'desktop' }, toolsPath: '/data/tool-cache/browser', shellTools };
 
-for (const cwd of ['/home/robot-a', '/workspace', '/workspace/project']) {
-    test(`GUI launch limits home and retains hidden paths at ${cwd}`, () => {
-        const { args } = buildRobotRunArgs({ ...base, cwd, maskEnv: true });
+for (const mode of ['browser', 'desktop']) for (const cwd of ['/home/robot-a', '/workspace', '/workspace/project']) {
+    test(`${mode} launch limits home and retains bounded read-only hidden paths at ${cwd}`, () => {
+        const { args } = buildRobotRunArgs({ ...base, mode, cwd, maskEnv: true });
         for (const grant of ['/data/robots/robot-a/home:/config', '/data/robots/robot-a/home:/home/robot-a', '/data/robots/robot-a/run/soul:/workspace/roboteam-soul']) assert.ok(args.includes(grant));
-        for (const mask of ['/workspace/.data:rw', '/workspace/.ploinky:rw', '/dev/null:/workspace/.env:ro']) assert.ok(args.includes(mask));
+        for (const hidden of ['.data', '.ploinky']) {
+            const masks = args.filter((value, index) => args[index - 1] === '--tmpfs' && value.startsWith(`/workspace/${hidden}:`));
+            assert.deepEqual(masks, [`/workspace/${hidden}:ro,size=64k,mode=0555,nosuid,nodev,noexec`]);
+            assert.ok(args.indexOf(masks[0]) > args.lastIndexOf(`${cwd}:${cwd}:rw`));
+        }
+        assert.ok(args.includes('/dev/null:/workspace/.env:ro'));
         assert.ok(args.includes('HOME=/home/robot-a'));
         assert.ok(args.includes('ROBOTEAM_SHELL_HOME=/home/robot-a'));
         assert.ok(args.includes('USER=robot-a'));

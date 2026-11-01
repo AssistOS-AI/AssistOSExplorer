@@ -127,7 +127,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             ...(path.resolve(workspaceRoot) === path.resolve(cwd)
                 ? ['-v', `${cwd}:${cwd}:rw`]
                 : ['-v', `${workspaceRoot}:${workspaceRoot}:ro`, ...(cwd === homeTarget ? [] : ['-v', `${cwd}:${cwd}:rw`])]),
-            '--tmpfs', `${workspaceRoot}/.data:rw`, '--tmpfs', `${workspaceRoot}/.ploinky:rw`,
+            '--tmpfs', `${workspaceRoot}/.data:ro,size=64k,mode=0555,nosuid,nodev,noexec`, '--tmpfs', `${workspaceRoot}/.ploinky:ro,size=64k,mode=0555,nosuid,nodev,noexec`,
             ...(maskEnv ? ['-v', `/dev/null:${workspaceRoot}/.env:ro`] : []),
             '-w', cwd,
             '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
