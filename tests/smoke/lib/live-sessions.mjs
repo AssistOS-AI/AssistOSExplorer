@@ -29,7 +29,8 @@ const execute = promisify(execFile);
 const REFUSAL = /\[input error\]|\[error\]|unauthenticated|authentication (?:failed|required)|not logged in|please (?:log|sign) in|invalid.api.key|insufficient.quota|quota.exceeded|rate.limit|tier.exhausted|all models.*exhausted|provider.*(?:error|failure)|billing|credit balance|backend.*unavailable|Agent process exited repeatedly|bwrap:/i;
 
 export function requiresCopilotSourceVerification(specs) {
-    return specs.length === 0 || specs.some(spec => ['specs/05-copilot-folder-launch.spec.mjs', 'specs/07-live-sessions.spec.mjs']
+    return specs.length === 0 || specs.some(spec => ['specs/05-copilot-folder-launch.spec.mjs', 'specs/07-live-sessions.spec.mjs',
+        'specs/08-robowork-restart.spec.mjs']
         .includes(String(spec).replaceAll('\\', '/')));
 }
 
@@ -262,8 +263,16 @@ export async function detachWatchIfShown(page) {
 }
 
 export async function restartRoboTeam({ executable, workspaceRoot, timeoutMs = 300_000 }) {
+    return restartResidentAgent('roboTeamAgent', { executable, workspaceRoot, timeoutMs });
+}
+
+export async function restartRoboWork({ executable, workspaceRoot, timeoutMs = 300_000 }) {
+    return restartResidentAgent('roboWorkAgent', { executable, workspaceRoot, timeoutMs });
+}
+
+async function restartResidentAgent(agent, { executable, workspaceRoot, timeoutMs }) {
     assert.ok(path.isAbsolute(executable) && path.isAbsolute(workspaceRoot), 'Restart requires exact absolute fixture paths.');
-    const result = await execute(executable, ['restart', 'roboTeamAgent'], {
+    const result = await execute(executable, ['restart', agent], {
         cwd: workspaceRoot, env: { ...process.env, PLOINKY_CWD: workspaceRoot }, timeout: timeoutMs,
         killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024,
     });

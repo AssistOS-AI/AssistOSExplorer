@@ -60,7 +60,17 @@ function accountInputs(env, secondary = false) {
 }
 
 export function validateAcceptanceProfile(args, env = process.env, options = {}) {
-    const selection = selectAcceptanceCases(args, options);
+    const roboworkRestart = enabled(env.SMOKE_ROBOWORK_RESTART);
+    const restartSpec = 'specs/08-robowork-restart.spec.mjs';
+    if (roboworkRestart && (args.filter(value => value.includes('.spec.mjs')).length !== 1 || !args.includes(restartSpec))) {
+        throw new Error('RoboWork RA7 requires its own explicit one-test profile.');
+    }
+    const selection = selectAcceptanceCases(args, roboworkRestart ? { ...options, ledger: { identities: [{
+        identity: '08-robowork-restart.spec.mjs::RoboWork restart pauses live flows, clears native census and resumes execution',
+        title: 'RoboWork restart pauses live flows, clears native census and resumes execution',
+        selection: { spec: restartSpec }, cohort: 'robowork-acceptance-ra7',
+        requiredFlags: { SMOKE_ROBOWORK_RESTART: '1' }, privateInputNamesOrCategories: [],
+    }] } } : options);
     for (const name of ['--config', '-c', '--output', '--reporter', '--update-snapshots', '-u', '--update-source-method']) {
         if (args.some(value => value.split('=')[0] === name)) {
             throw new Error(`Explorer smoke gates forbid Playwright output override '${name}'; all artifacts must remain under SMOKE_ARTIFACT_DIR.`);
@@ -69,6 +79,7 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
     const listing = args.includes('--list');
     const box = (!listing && selection.specs.length === 0) || enabled(env.SMOKE_ACCEPTANCE)
         || env.SMOKE_DEPLOYMENT_MODE === 'box' || Boolean(env.SMOKE_PLOINKY_BOX_CONTAINER)
+        || roboworkRestart
         || selection.cases.some(entry => ['fresh-webtty', 'fresh-live-sessions', 'official-release', 'supporting-61'].includes(entry.cohort));
     const separateScreen = enabled(env.SMOKE_WEBMEET_SCREEN) && !enabled(env.SMOKE_ACCEPTANCE)
         && selection.specs.length === 1 && selection.specs[0] === 'specs/30-webmeet-room-chat.spec.mjs';
@@ -95,13 +106,14 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
         }
     }
     const liveSessions = selection.cases.some(entry => entry.cohort === 'fresh-live-sessions');
+    const residentEvidence = liveSessions || roboworkRestart;
     if (liveSessions && selection.cases.filter(entry => entry.cohort === 'fresh-live-sessions').length !== 2) {
         throw new Error('Fresh Live Sessions acceptance requires both complete feature identities; a pruned cohort cannot pass.');
     }
     if (liveSessions && !listing && (selection.specs.length !== 1 || selection.cases.length !== 2)) {
         throw new Error('Fresh Live Sessions acceptance requires its own separate two-test cohort.');
     }
-    const dualAccounts = selection.cases.some(entry => entry.title === 'two Explorer accounts can join one room and exchange chat'
+    const dualAccounts = roboworkRestart || selection.cases.some(entry => entry.title === 'two Explorer accounts can join one room and exchange chat'
         || entry.cohort === 'fresh-webtty' || entry.cohort === 'fresh-live-sessions' || entry.cohort === 'supporting-61');
     const guestOnly = selection.cases.length > 0 && selection.cases.every(entry => entry.cohort === 'supporting-15');
     const accounts = { enabled: acceptance && !guestOnly, secondary: dualAccounts, primaryAdmin: true,
@@ -111,11 +123,11 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
         for (const entry of selection.cases) {
             for (const name of entry.privateInputNamesOrCategories.filter(value => /^SMOKE_/.test(value))) required(env, name);
         }
-        if (liveSessions || selection.cases.some(entry => entry.selection.spec === 'specs/50-onlyoffice-dpu.spec.mjs')) {
+        if (residentEvidence || selection.cases.some(entry => entry.selection.spec === 'specs/50-onlyoffice-dpu.spec.mjs')) {
             required(env, 'SMOKE_PLOINKY_BIN');
             if (!path.isAbsolute(env.SMOKE_PLOINKY_BIN)) throw new Error('SMOKE_PLOINKY_BIN must be absolute.');
         }
-        if (liveSessions) {
+        if (residentEvidence) {
             const foreign = foreignAccount(env);
             const emails = [env.SMOKE_LOGIN_EMAIL, env.SMOKE_SECONDARY_LOGIN_EMAIL, foreign.loginEmail]
                 .map(value => String(value || '').trim().toLowerCase());
@@ -143,7 +155,8 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
     }
     const separateQa = enabled(env.SMOKE_QA_ACCEPTANCE);
     return Object.freeze({ ...selection, box, listing, acceptance, accounts, ledgerCoverage: !separateScreen && !separateQa,
-        coverage: separateQa ? 'separate-qa-profile-no-local-box-acceptance'
+        coverage: roboworkRestart ? 'planned-robowork-ra7'
+            : separateQa ? 'separate-qa-profile-no-local-box-acceptance'
             : separateScreen ? 'separate-screen-profile-no-ledger-acceptance' : 'selected-ledger-identities',
         imageAgePolicy: 'common-explicit-pins; common-image-age-disabled; generation<=30m; additional-profile-age-checks-retained',
     });

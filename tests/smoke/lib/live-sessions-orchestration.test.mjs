@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { projectOrchestrationRecords, assertObserverWindow, assertOwnedSettlement, terminateOwnedFlow,
+import { projectOrchestrationRecords, assertObserverWindow, assertOwnedSettlement, terminateOwnedFlow, pauseOwnedFlow, resumeOwnedFlow,
     snapshotWalFiles, assertWalFileFences, assertIdleWalReadmarkDelta, buildOrchestrationDiagnosticsBundle,
     buildOrchestrationProgram, decodeOrchestrationProcessResult, createOrchestrationReader,
     inspectOuterOrchestrationBinding } from './live-sessions-orchestration.mjs';
@@ -227,6 +227,42 @@ test('cleanup terminates only exact correlated flow through authenticated mutati
     assert.equal(states.get('flow_unrelated'), 'running');
     await assert.rejects(terminateOwnedFlow(page, snapshot, { cwd, ownerPrincipal: 'user:foreign' }));
     assert.equal(calls.length, 1);
+});
+
+test('restart pause and resume use authenticated exact owned flow and refuse another owner', async () => {
+    const snapshot = projectOrchestrationRecords(fixture(), options), calls = [];
+    const page = { url: () => 'http://fixture.test/', request: {
+        get: async () => ({ status: () => 200, json: async () => ({ browserMutation: { routeKey: 'roboTeamAgent', origin: 'http://fixture.test', csrfToken: 'proof' } }) }),
+        post: async (url, args) => { calls.push({ url, args }); return { status: () => 200 }; },
+    } };
+    for (const [action, operation] of [['pause', pauseOwnedFlow], ['resume', resumeOwnedFlow]]) {
+        await assert.rejects(operation(page, snapshot, { cwd, ownerPrincipal: 'user:foreign' }));
+        await operation(page, snapshot, { cwd, ownerPrincipal });
+        assert.equal(calls.at(-1).url, `/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/flows/${snapshot.flow.id}/${action}`);
+        assert.equal(calls.at(-1).args.headers['x-ploinky-browser-csrf-token'], 'proof');
+    }
+    assert.equal(calls.length, 2);
+});
+
+test('RA7 resume requires the exact interrupted execution and one new linked turn while standard projection stays strict', () => {
+    const records = fixture();
+    records.executions[0].state = 'paused';
+    const next = structuredClone(records.executions[0]);
+    next.taskId = 'runtime-resumed'; next.state = 'running';
+    records.flows[0].instances[0].runtimeTaskId = next.taskId;
+    for (const execution of [records.executions[0], next]) execution.turns.push({ turnId: 'resume-turn', status: 'running', followUpDigests: [] });
+    records.sessions[1].turns.push({ turnId: 'resume-turn', assistantMessageId: 'resumed-assistant', status: 'running' });
+    records.executions.push(next);
+    const selected = { ...options, resumedExecution: { sessionId: 'worker', previousTaskId: 'runtime', previousTurnId: 'execute', currentTurnId: 'resume-turn' } };
+    assert.equal(projectOrchestrationRecords(records, selected).execution.taskId, next.taskId);
+    assert.throws(() => projectOrchestrationRecords(records, options), /worker identity/u);
+    for (const mutate of [
+        value => { value.resumedExecution.previousTaskId = next.taskId; },
+        value => { value.resumedExecution.currentTurnId = 'foreign-turn'; },
+        value => { value.resumedExecution.sessionId = 'foreign-session'; },
+    ]) { const value = structuredClone(selected); mutate(value); assert.throws(() => projectOrchestrationRecords(records, value)); }
+    const foreign = structuredClone(records); foreign.executions[0].ownerPrincipal = 'user:foreign';
+    assert.throws(() => projectOrchestrationRecords(foreign, selected));
 });
 
 test('WAL sidecar guards reject missing, symlink, replacement, type and shared-memory size changes', () => {

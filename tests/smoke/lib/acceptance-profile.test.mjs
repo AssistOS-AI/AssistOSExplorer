@@ -80,6 +80,26 @@ test('ledger retains all 44 historical identities, 24 required cases and two Liv
     }
 });
 
+test('planned RA7 is an explicit separate profile with strict live evidence and unchanged standard identities', () => {
+    const args = ['--project=chromium', '--workers=1', '--retries=0', 'specs/08-robowork-restart.spec.mjs'];
+    const env = { ...liveEnv, SMOKE_ROBOWORK_RESTART: '1' };
+    const profile = validateAcceptanceProfile(args, env);
+    assert.equal(profile.cases.length, 1);
+    assert.equal(profile.coverage, 'planned-robowork-ra7');
+    assert.equal(profile.accounts.secondary, true);
+    assert.equal(profile.box, true);
+    assertLedgerResults(profile.cases, profile.cases.map(record), { terminal: true });
+    assert.throws(() => validateAcceptanceProfile(args, liveEnv), /zero required/u);
+    assert.throws(() => validateAcceptanceProfile([...args, 'specs/07-live-sessions.spec.mjs'], env), /own explicit/u);
+    for (const key of ['SMOKE_PLOINKY_BIN', 'SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE', 'SMOKE_SECONDARY_ACCOUNT_PASSWORD',
+        'SMOKE_LIVE_SESSIONS_FOREIGN_ACCOUNT_PASSWORD', 'SMOKE_RELEASE_MANIFEST']) {
+        const missing = { ...env }; delete missing[key];
+        assert.throws(() => validateAcceptanceProfile(args, missing));
+    }
+    assert.equal(acceptanceLedger.identities.length, 46);
+    assert.equal(validateAcceptanceProfile(liveArgs, liveEnv).cases.length, 2);
+});
+
 test('missing image pins, profile flags and private sign-in inputs fail before collectors', () => {
     for (const name of ['SMOKE_EXPECT_BOX_IMAGE_ID', 'SMOKE_EXPECT_BOX_IMAGE_REF', 'SMOKE_PLOINKY_BOX_CONTAINER', 'SMOKE_RELEASE_MANIFEST', 'SMOKE_BOX_BASE_URL', 'SMOKE_WORKSPACE_ROOT', 'SMOKE_ACCOUNT_PASSWORD', 'SMOKE_SECONDARY_LOGIN_EMAIL', 'SMOKE_WEBTTY_WATCHER_USERNAME', 'SMOKE_WEBTTY_CORE']) {
         const env = { ...baseEnv }; delete env[name];

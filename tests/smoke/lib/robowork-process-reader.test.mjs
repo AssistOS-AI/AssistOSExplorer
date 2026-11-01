@@ -38,7 +38,10 @@ function fixture() {
             assert.equal(args[4], work, 'Private metadata may be read only inside the execution owner.');
             context.metadataReads += 1; value = { codeHashes, records: [context.record] };
         } else if (args.some(arg => arg.includes('collectControllerProducer'))) value = context.producer;
-        else value = context.identity;
+        else if (context.census) {
+            const { ala, launch, runId } = context.identity;
+            value = [{ kind: 'ala-turn', ...ala, producerKind: context.record.kind === 'task' ? 'workflow' : 'copilot', launch, runId }];
+        } else value = context.identity;
         context.beforeReturn?.(value, args);
         return { stdout: JSON.stringify(value) };
     };
@@ -122,4 +125,13 @@ test('continuity rejects a JSON prior proof, wrong attachment/current generation
         const request = { retainedProofs: [initial] }; mutate(f, initial, request);
         await assert.rejects(f.read(request));
     }
+});
+
+test('retained native authority also fences the post-restart census ALA and launch ancestor', async () => {
+    const f = fixture(); f.task(); const initial = await f.read(); f.replace(); f.census = true;
+    const rows = await f.read({ kind: 'census', retainedProofs: [initial] });
+    assert.equal(rows.length, 1); assert.equal(rows[0].runId, initial.runId);
+    assert.equal(rows[0].pid, initial.ala.pid); assert.deepEqual(rows[0].launch, initial.launch);
+    f.identity.ala.pid += 1;
+    await assert.rejects(f.read({ kind: 'census', retainedProofs: [initial] }), /ALA process changed/u);
 });

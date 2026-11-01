@@ -8,6 +8,7 @@ import { GOOGLE_SIGN_IN_SCRIPT_URL } from './auth-navigation-diagnostics.mjs';
 import { createDiagnosticLedger } from './diagnostic-ledger.mjs';
 import { findTraceCredentialResidue, redactTraceText } from './redacted-trace.mjs';
 import { createRedactor, findSecretLeaks } from './security.mjs';
+import { observeFreeCopilotRoutes } from './copilot-free-model.mjs';
 
 const diagnosticControllers = new WeakMap();
 
@@ -396,10 +397,12 @@ export function attachPageDiagnostics(page, testInfo, label = 'page') {
 }
 
 export const test = base.extend({
-  context: async ({ context }, use) => {
+  context: async ({ context }, use, testInfo) => {
     await installRtcProbe(context);
     await context.grantPermissions(['camera', 'microphone'], { origin: smokeConfig.baseURL }).catch(() => null);
-    await use(context);
+    const finishRoutes = process.env.SMOKE_ROBOWORK_MODEL_SETUP === '1' ? await observeFreeCopilotRoutes(context, testInfo) : null;
+    try { await use(context); }
+    finally { await finishRoutes?.(); }
   },
 
   page: async ({ page }, use, testInfo) => {
