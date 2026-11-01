@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ProxyAgentClient } from '../server/proxy-pool/proxy-client.mjs';
+import { ProxyAgentClient } from '../../roboWorkAgent/server/proxy-pool/proxy-client.mjs';
 
 function clientAnswering(answer) {
     const calls = [], logs = [];

@@ -83,7 +83,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         if (!robotId) throw new Error('A RoboTeam robot is required for execution.');
         const native = await roboWork.call('robot_config', { robotId });
         const home = native.homeTarget;
-        const resumeBackend = session.remoteRun ? session.engine?.backend : validateNativeSession(session, home, cwd);
+        const resumeBackend = session.remoteRun || execution.attach ? session.engine?.backend : validateNativeSession(session, home, cwd);
         const stored = settings.readAchillesSettings?.(cwd) || {};
         const permissionMode = execution.permissions || settings.getPermissionMode?.(cwd) || stored.permissionMode || 'full-access';
         if (!['ask-for-approval', 'full-access'].includes(permissionMode)) throw new Error('Invalid native permission mode.');
@@ -218,7 +218,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                     && run.tag?.sessionId === sessionId && run.tag?.turnId === savedRun.turnId);
                 if (!trusted) throw new Error('The saved run is not owned by this conversation.');
                 turnId = savedRun.turnId;
-                turn = { turnId, userMessageId: savedRun.userMessageId, assistantMessageId: savedRun.assistantMessageId };
+                turn = { turnId, userMessageId: savedRun.userMessageId, assistantMessageId: savedRun.assistantMessageId, session: config.session };
             } else turn = await sessionStore.beginTurn({ sessionId, turnId, text: sanitize(context.rawText || prompt),
                 attachments: sanitize(context.attachments || []), references: sanitize(context.references || []) });
             phase('turn.begun');
@@ -288,8 +288,9 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             await sessionStore.updateSession(sessionId, session => { session.remoteRun = remoteRun; });
             await emit({ type: 'run-started', runId: remoteRun.runId });
             const runTag = { kind: env.ROBOTEAM_TASK_TAG ? 'task' : 'copilot', sessionId, turnId,
+                userMessageId: turn.userMessageId, assistantMessageId: turn.assistantMessageId,
                 ...(env.ROBOTEAM_TASK_TAG ? JSON.parse(env.ROBOTEAM_TASK_TAG) : {}),
-                ...(context.liveOwner?.principal ? { ownerPrincipal: context.liveOwner.principal } : {}) };
+                ...(context.ownerPrincipal ? { ownerPrincipal: context.ownerPrincipal } : {}) };
             child = await spawnRoboWorkRun({ client: roboWork, attach: Boolean(savedRun), input: {
                 runId: remoteRun.runId, robotId: config.robotId, cwd,
                 ala: { sessionId, turnId, permissions: permissionMode, ca: backend, resume: config.resume,
@@ -358,6 +359,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, outputText,
                 { durationMs: Math.max(0, Math.round(performance.now() - responseStarted)), thinkingUrl });
             await sessionStore.updateSession(sessionId, session => { delete session.remoteRun; });
+            await roboWork.call('run_release', { runId: remoteRun.runId }).catch(() => {});
             phase('completeTurn.done');
             liveResult = { status: 'finished', code: 0 };
             return { outputText: finalText, session: completed, turnId, userMessageId: turn.userMessageId,
@@ -374,7 +376,11 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                     { status: cancelled ? 'interrupted' : 'failed', durationMs: Math.max(0, Math.round(performance.now() - responseStarted)) });
                 error.turnId = turnId;
                 error.assistantMessageId = turn.assistantMessageId;
-                await sessionStore.updateSession(sessionId, session => { delete session.remoteRun; });
+                if (child && child.exitCode !== null) {
+                    const runId = child?.remote?.runId;
+                    await sessionStore.updateSession(sessionId, session => { delete session.remoteRun; });
+                    if (runId) await roboWork.call('run_release', { runId }).catch(() => {});
+                }
             }
             throw error;
         } finally {
@@ -516,6 +522,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         if (controller.signal.aborted) throw controller.signal.reason || interrupted();
         if (protocolError) throw protocolError;
         if (outcome.code === 130) throw interrupted();
+        if (outcome.signal === 'SERVICE_RESTART') throw interrupted();
         if (outcome.code !== 0) throw Object.assign(new Error(`ALA execution failed (${outcome.code ?? outcome.signal}).${diagnostics.trim() ? `\n${diagnostics.trim()}` : ''}`), { exitCode: outcome.code });
         if (!selected || finalText === null || !stdout.trim() || stdout.trimEnd() !== finalText.trimEnd()) {
             throw new Error('ALA completed without a valid matching native final result.');

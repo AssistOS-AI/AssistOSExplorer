@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
-import { ProxySettings } from '../server/proxy-pool/proxy-settings.mjs';
+import { ProxySettings } from '../../roboWorkAgent/server/proxy-pool/proxy-settings.mjs';
 
 async function startFixture(t, proxyPool) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-robot-proxies-'));
@@ -13,11 +13,15 @@ async function startFixture(t, proxyPool) {
     await fs.mkdir(workspaceRoot);
     const previousWorkspaceRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = workspaceRoot;
-    const robotStore = new RobotStore({ dataDir: path.join(root, 'private') });
+    const robotStore = new RobotStore({ dataDir: path.join(root, 'private'), roboWork: { call: async () => ({}) } });
     await robotStore.initialize();
     const runs = new Map();
     const proxySettings = new ProxySettings({ file: path.join(root, 'private', 'proxy-pool', 'settings.json') });
-    const runtimeManager = { workspaceRoot, proxySettings, status: (id) => runs.get(id) || { state: 'stopped' }, activePort: () => null, hasUnfinishedTasks: () => false };
+    const runtimeManager = { workspaceRoot, proxySettings, roboWork: { call: async (tool, input) => {
+        if (tool === 'proxy_assignments') return { ...await proxyPool.assignments(), useProxy: await proxySettings.useProxy() };
+        if (tool === 'proxy_release') return { released: await proxyPool.release(input.robotId) };
+        throw new Error('Unexpected tool ' + tool);
+    } }, status: (id) => runs.get(id) || { state: 'stopped' }, activePort: () => null, hasUnfinishedTasks: () => false };
     const server = createRoboTeamServer({ robotStore, runtimeManager, proxyPool, internalToken: 'test-token', publicBasePath: '/rt/', mcpPort: 65534 });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     t.after(async () => {

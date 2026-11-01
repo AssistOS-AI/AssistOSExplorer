@@ -49,20 +49,22 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         if (!task) throw new Error('The task prompt was not received.');
         runtime = await createCliRuntime({ workingDir: options['--cwd'], skillRoots: [],
             sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session'] || options['--attach-run']), skillSelection,
-            execution: { workflowExecution: options['--workflow-execution'] === true, captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
+            execution: { workflowExecution: options['--workflow-execution'] === true, captureTurnLogs: false, attach: Boolean(options['--attach-run']), backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
                 model: options['--model'], effort: options['--effort'], mcpServers: options['--MCPServers'], permissions: 'full-access',
                 ...(options['--environment'] ? { environment: options['--environment'] } : {}),
                 ...(options['--gui'] ? { gui: { mode: options['--gui'], cwd: options['--cwd'] } } : {}),
                 ...(task.systemPrompt ? { systemPrompt: task.systemPrompt } : {}) } }, { reattachExistingTasks: false });
-        if (options['--attach-run'] && runtime.initialSession.remoteRun?.runId !== options['--attach-run']) throw new Error('The saved run does not match RoboWork');
+        const attach = process.env.ROBOTEAM_ATTACH_RUN ? JSON.parse(process.env.ROBOTEAM_ATTACH_RUN) : runtime.initialSession.remoteRun;
+        if (options['--attach-run'] && attach?.runId !== options['--attach-run']) throw new Error('The saved run does not match RoboWork');
         const result = await runtime.engine.executeTurn({ sessionId: runtime.initialSession.sessionId, prompt: task.prompt,
             signal: controller.signal, context: { workingDir: options['--cwd'], rawText: task.prompt },
+            ...(options['--attach-run'] ? { attach } : {}),
             onControl: (send) => { control = send; },
             onEvent: (event) => { process.stderr.write('@@ALA_EVENT@@' + JSON.stringify(event) + '\n'); } });
         process.stdout.write(result.outputText);
     } catch (error) {
         console.error(error.message);
-        process.exitCode = controller.signal.aborted ? 130 : 1;
+        process.exitCode = controller.signal.aborted || error.exitCode === 130 ? 130 : 1;
     } finally {
         input?.close();
         process.stdin.pause();
