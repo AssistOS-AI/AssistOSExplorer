@@ -647,8 +647,12 @@ function defaultRunSync(command, args) {
 // and nft-table (it cannot see them), so this wrapper asks `ip` and `nft`. `remove('netns', { netns: id })` deletes the
 // whole execution network by the names that derive from the locator id (firewall, veth, netns), which is the one hook
 // recoveryWalk needs for a network left behind by a crashed supervisor.
-export function createRecoveryView(view, { runSync = defaultRunSync, exists = (file) => fs.existsSync(file), podman = null } = {}) {
+export function createRecoveryView(view, { runSync = defaultRunSync, exists = (file) => fs.existsSync(file), podman = null, provesPriorCgroupAbsent = null } = {}) {
     const rootfs = podman ? createRootfsRecovery({ podman }) : null;
+    const priorCgroupAbsent = (locator) => {
+        try { return typeof provesPriorCgroupAbsent === 'function' && provesPriorCgroupAbsent(locator) === true; }
+        catch { return false; }
+    };
     const linkPresent = (name) => {
         const result = runSync('ip', ['-o', 'link', 'show']);
         if (result.status !== 0) return true;
@@ -664,6 +668,7 @@ export function createRecoveryView(view, { runSync = defaultRunSync, exists = (f
         ...view,
         cgroupSubtree: view.cgroupSubtree,
         exists(kind, locator) {
+            if (kind === 'cgroup' && priorCgroupAbsent(locator)) return false;
             if (kind === 'env-rootfs') return rootfs ? rootfs.exists(locator) : true;
             if (kind === 'veth') return linkPresent(locator.host) || linkPresent(locator.peer);
             if (kind === 'nft-table') return tablePresent(locator.table);
@@ -675,6 +680,7 @@ export function createRecoveryView(view, { runSync = defaultRunSync, exists = (f
             return view.exists(kind, locator);
         },
         remove(kind, locator) {
+            if (kind === 'cgroup' && priorCgroupAbsent(locator)) return true;
             if (kind === 'env-rootfs') return rootfs ? rootfs.remove(locator) : false;
             if (kind === 'veth') { runSync('ip', ['link', 'del', locator.host]); return !linkPresent(locator.host); }
             if (kind === 'nft-table') { runSync('nft', ['delete', 'table', 'inet', locator.table]); return !tablePresent(locator.table); }

@@ -19,6 +19,7 @@ Internal worker-state library for the RoboWork execution provider. It is a bound
 | `server/runtime/environmentImages.mjs` | Signed image discovery, digest-bound first-use acquisition, attempt pins, ABI verdict cache and image GC |
 | `server/sandbox/environmentRootfs.mjs` | Per-workload created container, mounted disk upper, anchored image preparation and exact-name recovery |
 | `server/sandbox/environmentCgroup.mjs` | Delegated cgroup v2 limits and init attachment before the workload gate |
+| `server/execution/cgroupRecoveryProof.mjs` | Runtime-authenticated prior-context proof, restricted to exact retired cgroup children |
 | `server/sandbox/podmanRunner.mjs` | Fixed Podman argv, anonymous authentication and command lifetime ownership |
 | `server/terminal/` | Robot terminals (M-8): `terminalServer.mjs` (the WebSocket endpoint, ownership session, leases, replay, ends), `terminalProtocol.mjs` (the frame schema, a copy of Ploinky's), `wsCodec.mjs` (bounded RFC 6455 server codec), `terminalAuth.mjs` (Router-service tokens through Ploinky's Agent library), `terminalExecutions.mjs` (admit, launch, end, caps), `ptyHost.mjs` (node-pty `open()`, master kept in the worker) |
 | `server/stateObligations.mjs` | S6 source-only subset: obligation and outbox tables, row helpers and the observation-state mapping (Part D) |
@@ -58,6 +59,10 @@ Image entries bind read-write below bwrap's own read-only root. Reserved runtime
 The image shell, loader and libraries remain writable within a workload. A robot can alter how later tool invocations in that workload start. The fresh upper bounds those changes to that workload; capabilities, seccomp, user-namespace refusal, private procfs, masks, descriptor allowlists and execution networking retain their ordinary workload controls.
 
 `containerSecurity.cgroupSubtree: true` requests Ploinky's scoped delegation, together with `nestedPodman: true`. The worker uses an explicit `ROBO_WORK_CGROUP_SUBTREE` when present, otherwise `PLOINKY_CGROUP_SUBTREE`. An invalid explicit value never falls back. Missing delegation refuses Environment work with `limits_unavailable`, while ordinary work remains available. The same effective path reaches both factory layouts and recovery's procView. Each child is `x-<locatorId>` and receives memory, swap, OOM-group, CPU and PID limits before its init is attached and the ledger opens the gate.
+
+A provider launched with the generic runtime delegation authenticates its replacement receipt before opening worker state or beginning generation recovery. It loads only `/run/ploinky-cgroup/cgroupRecoveryReceipt.mjs`; Ploinky owns signature, fixed read-only delivery, recipient and kernel-context validation. Missing or invalid required proof refuses startup, including when the receipt-file variable is absent. The workspace binding uses the full SHA-256 of canonical `PLOINKY_WORKSPACE_ROOT`, independently of the worker workspace override. Custom, empty or invalid `ROBO_WORK_CGROUP_SUBTREE` values never bypass receipt authentication or change the fixed provider context it authenticates.
+
+The worker snapshots the receipt's cumulative prior contexts into an immutable recovery predicate. It can prove absence only for `/run/ploinky/cgroup/workloads/x-<32 lowercase hex digits>` with an exact retired workloads device, inode and numeric cgroup-namespace match. It never proves a current child absent and never removes a same-named current physical child. Unmatched and custom contexts retain the ordinary procView/quarantine rules. Receipts confer no authority over processes, mounts, rootfs, network or runtime-directory resources. Standalone workers without the generic runtime delegation keep their existing recovery behavior.
 
 | Setting | Default |
 | --- | --- |

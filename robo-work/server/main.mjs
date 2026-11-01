@@ -12,6 +12,7 @@ import { createTerminalTargetsAdapter } from './terminalTargets.mjs';
 import { openWorkerState } from './workerState.mjs';
 import { createProcView } from './execution/procView.mjs';
 import { createWalker } from './execution/recoveryWalk.mjs';
+import { loadCgroupRecoveryProof } from './execution/cgroupRecoveryProof.mjs';
 import { createSandboxLauncher } from './sandbox/sandboxLauncher.mjs';
 import { createRecoveryView, sandboxRecordFor } from './sandbox/executionSupervisor.mjs';
 import { createRobotUtilities } from './runtime/robotUtilities.mjs';
@@ -211,6 +212,9 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     const config = { ...readConfig(env), ...(overrides.config ?? {}) };
     const log = overrides.log ?? jsonLog;
     const limits = overrides.limits ?? DEFAULT_LIMITS;
+    // Required for every runtime-delegated provider, even when the receipt-file variable is missing or the worker
+    // selected a custom/invalid Environment override. Refuse before opening state or rolling its generation.
+    const provesPriorCgroupAbsent = await loadCgroupRecoveryProof({ env, reader: overrides.cgroupRecoveryReader });
 
     for (const name of ['state', 'runtime']) privateDirectory(path.join(config.dataDir, name));
     privateDirectory(path.join(config.dataDir, 'robots'));
@@ -238,7 +242,7 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     try {
         view = createProcView({ runtimeRoot: path.join(config.dataDir, 'runtime'), cgroupSubtree: config.cgroupSubtree });
         walker = createWalker({
-            view: createRecoveryView(view, { podman }), clock, releaseDeadlineMs: 15000, pollMs: 100, sandboxRecord: sandboxRecordFor(() => store)
+            view: createRecoveryView(view, { podman, provesPriorCgroupAbsent }), clock, releaseDeadlineMs: 15000, pollMs: 100, sandboxRecord: sandboxRecordFor(() => store)
         });
         if (preflight.ok && !overrides.factory) launcher = createSandboxLauncher({ view, procMasks: preflight.masks });
     } catch (error) {
