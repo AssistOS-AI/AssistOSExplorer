@@ -59,16 +59,6 @@ export class RunManager {
                 // An incomplete start is not an attachable run.
             }
         }
-        this.retentionTimer = setInterval(() => { void this.prune().catch(() => {}); }, 60 * 60 * 1000);
-        this.retentionTimer.unref();
-    }
-
-    async prune() {
-        for (const run of this.runs.values()) {
-            if (!live(run.meta.state) && this.now() - Date.parse(run.meta.endedAt || run.meta.startedAt) > RETENTION) {
-                await this.release({ runId: run.meta.runId });
-            }
-        }
     }
 
     async persist(run) {
@@ -316,7 +306,6 @@ export class RunManager {
 
     async close() {
         this.closed = true;
-        clearInterval(this.retentionTimer);
         await Promise.allSettled([...this.starting.values()]);
         const active = [...this.runs.values()].filter(run => live(run.meta.state));
         for (const run of active) this.signal(run, 'SIGTERM');
