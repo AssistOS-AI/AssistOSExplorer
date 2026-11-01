@@ -116,7 +116,13 @@ export class RunManager {
             if (folder.alias) aliases.add(folder.alias);
             if (folder.at !== undefined && (typeof folder.at !== 'string' || !path.isAbsolute(folder.at)
                 || path.normalize(folder.at) !== folder.at || folder.alias !== undefined || folder.at.includes('\0')
-                || ['/data', '/home', '/usr', '/etc', '/proc', '/dev', '/bin', '/sbin', '/lib', '/lib64'].some(root => within(root, folder.at))
+                || ['/data', '/usr', '/etc', '/proc', '/sys', '/dev', '/bin', '/sbin', '/lib', '/lib64']
+                    .some(root => within(root, folder.at) || within(folder.at, root))
+                || (within('/home', folder.at) && !within(this.paths.workspaceRoot, folder.at))
+                || [this.paths.dataDir, this.paths.privateRoot, path.join(this.paths.workspaceRoot, '.data'),
+                    path.join(this.paths.workspaceRoot, '.ploinky'), path.join(this.paths.workspaceRoot, '.env'), path.join(cwd, '.roboteam')]
+                    .some(root => within(root, folder.at) || within(folder.at, root))
+                || folder.at === '/workspace'
                 || aliases.has(folder.at.slice('/workspace/'.length)))) throw fail('FOLDER_REFUSED', 'Invalid folder target');
             folders.push({ ...folder, source });
         }

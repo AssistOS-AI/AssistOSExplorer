@@ -9,6 +9,7 @@ import { invoke } from '../tools/robowork.mjs';
 import { RobotPaths } from '../server/robot-paths.mjs';
 import { RunManager } from '../server/run-manager.mjs';
 import { createRoboWorkServer } from '../server/http-server.mjs';
+import { alaSkillMountArguments } from '../../roboTeamAgent/copilot/src/lib/execution/alaSkillMounts.mjs';
 
 // Load the real compiler bytes with the installed runtime SDK, without changing either checkout.
 const ploinkyRoot = siblingRoot('ploinky');
@@ -133,4 +134,39 @@ test('real parser and tool entry preserve caller, private-folder and callback-co
     await assert.rejects(call('run_start', { ...input, folders: [{ source: paths.dataDir, alias: 'private' }] }), { code: 'FOLDER_REFUSED' });
     await assert.rejects(call('run_start', { ...input, channels: [{ name: 'ploinky-runtime', context: { PLOINKY_AGENT_SECRET: 'forbidden' } }] }), { code: 'INVALID_INPUT' });
     assert.equal(runs.list().length, 0);
+});
+
+test('actual skill overlays in a public workspace under home survive schema and service while protected targets are refused', async t => {
+    const { paths, input, call, runs, launches } = await service(t);
+    const workspace = '/home/skutner/work/roboworkMinimalE2E';
+    const cwd = path.join(workspace, 'project');
+    // Sources stay in the real temporary fixture; only target geometry represents the Linux host.
+    const sourceGrant = paths.grant.bind(paths);
+    paths.workspaceRoot = workspace;
+    paths.privateRoot = path.join(workspace, '.data', '.private');
+    paths.grant = (value, kind) => kind === 'cwd' && value === cwd ? Promise.resolve(cwd) : sourceGrant(value, kind);
+    const source = input.folders[0].source;
+    const skillArgs = alaSkillMountArguments({ workspaceRoot: workspace, cwd, snapshot: { skillsDirectory: source,
+        mounts: [0, 1, 2].map(index => ({ source, target: `/workspace/roboteam-skill-${index}` })) } });
+    const folders = [];
+    for (let index = 0; index < skillArgs.length; index += 5) {
+        assert.equal(skillArgs[index], '--folder'); assert.equal(skillArgs[index + 2], 'at'); assert.equal(skillArgs[index + 4], 'expose');
+        folders.push({ source: skillArgs[index + 1], at: skillArgs[index + 3], expose: true });
+    }
+    assert.equal(folders.length, 5);
+    assert.deepEqual(folders.slice(-2).map(folder => folder.at), [path.join(cwd, '.agents', 'skills'), path.join(cwd, '.claude', 'skills')]);
+    const request = { ...input, cwd, folders, gui: undefined };
+    assert.equal((await call('run_start', request)).state, 'running');
+    assert.deepEqual(runs.get(input.runId).meta.tag, input.tag);
+    for (const folder of folders) assert.ok(launches[0].args.some((value, index) => value === 'at' && launches[0].args[index + 1] === folder.at));
+    const forbidden = ['/', '/home', '/home/skutner', '/home/victim', '/home/aaa', workspace,
+        path.join(workspace, '.data'), path.join(workspace, '.data', '.private', 'victim'),
+        path.join(workspace, '.ploinky'), path.join(workspace, '.env'), path.join(cwd, '.roboteam'),
+        `${workspace}-sibling/project/.agents/skills`, '/data', '/data/robots/victim/home', '/proc/self/fd', '/sys/kernel',
+        '/dev', '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64', '/workspace'];
+    for (const [index, at] of forbidden.entries()) {
+        await assert.rejects(call('run_start', { ...request, runId: `refused-${index}`, folders: [{ source, at, expose: true }] }),
+            { code: 'FOLDER_REFUSED' }, at);
+    }
+    assert.equal(runs.list().length, 1);
 });
