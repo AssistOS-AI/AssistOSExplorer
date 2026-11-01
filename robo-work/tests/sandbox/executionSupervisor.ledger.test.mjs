@@ -16,7 +16,7 @@ import { SUPERVISOR_PID, createFakeView } from './helpers/fakes.mjs';
 
 const clock = () => { let now = 0; return { now: () => now, sleep: async (ms) => { now += ms; } }; };
 
-async function rig(t, { launchHook = null } = {}) {
+async function rig(t, { launchHook = null, environment = null } = {}) {
     const dir = makeTempDir(t);
     const context = syntheticContext();
     const store = openStore(dir);
@@ -34,6 +34,11 @@ async function rig(t, { launchHook = null } = {}) {
     view.kill = ({ pid, startTime }) => { const entry = view.procs.get(pid); if (entry?.startTime === startTime) { view.drop(pid); return true; } return false; };
     view.unmount = () => false;
     const recoveryView = createRecoveryView(view, { runSync: () => ({ status: 0, stdout: '1: lo: <>\n', stderr: '' }), exists: () => false });
+    if (environment) {
+        const exists = recoveryView.exists.bind(recoveryView); const remove = recoveryView.remove.bind(recoveryView);
+        recoveryView.exists = (kind, locator) => kind === 'env-rootfs' ? environment.present() : exists(kind, locator);
+        recoveryView.remove = (kind, locator) => kind === 'env-rootfs' ? environment.remove() : remove(kind, locator);
+    }
 
     const spawns = [];
     const spawnImpl = (file, args) => {
@@ -73,7 +78,9 @@ async function rig(t, { launchHook = null } = {}) {
     const supervisor = createExecutionSupervisor({
         launcher, view, createNetwork: () => network, spawnImpl, clock: clock(), supervisorPid: SUPERVISOR_PID,
         admission: { inventory: [{ name: 'codex' }], streamDirectory: '/stream' },
-        roles: { orchestration: { argv: ['node'], roBinds: [] }, endpoint: { argv: ['node'], roBinds: [] }, workload: { roBinds: [] } },
+        roles: { orchestration: { argv: ['node'], roBinds: [] }, endpoint: { argv: ['node'], roBinds: [] }, workload: { roBinds: [],
+            ...(environment ? { environment: { imageId: `sha256:${'a'.repeat(64)}`, imageEnv: {}, checkRootfs: async () => {} } } : {}) } },
+        ...(environment ? { environmentResources: { rootfs: environment.create } } : {}),
         home: { path: runtimeBase, fd }, grants: [{ name: 'a', path: '/projects/a', hostPath: runtimeBase, access: 'write', fd }], limits: { killWaitMs: 20 }
     });
     const layout = { runtimeDir: `${runtimeBase}/rt`, cgroupSubtree: null };
@@ -113,6 +120,42 @@ test('the real ledger publishes a whole execution through the supervisor: every 
     const tree = world.store.listUnsettledResources().find((entry) => entry.kind === 'process-tree');
     assert.equal(tree.identity.pidNs, '907010', 'the sandbox pid namespace, not the monitor\'s, is what is recorded');
     assert.equal(tree.locator.keeper, keeper.resourceId);
+});
+
+test('end drains a deferred Environment allocation before absence proofs; late results release or quarantine instead of surviving a clean result', async (t) => {
+    for (const { removable, anchorLost } of [
+        { removable: true, anchorLost: false }, { removable: true, anchorLost: true }, { removable: false, anchorLost: false },
+    ]) {
+        let present = false; let complete; let signal;
+        const remove = () => { if (removable) present = false; return !present; };
+        const world = await rig(t, { environment: { present: () => present, remove, create: async (options) => {
+            signal = options.signal;
+            return new Promise((resolve) => { complete = () => {
+                present = true; // Deliberately finish even after abort, as a command already in its kernel operation can.
+                resolve({ identity: { name: options.locator.name, mergedPath: '/fixture/merged', imageId: options.imageId }, entries: [],
+                    async release() { return { absent: remove(), problems: present ? ['env-rootfs'] : [] }; } });
+            }; });
+        } } });
+        await world.ledger.startKeeper(); await world.ledger.publish({ kind: 'runtime-dir' });
+        const request = { home: '/home/robot', cwd: '/home/robot', executable: 'codex', args: [], network: 'none', env: {}, folders: [], exclusions: [] };
+        const starting = world.supervisor.providerSandbox(world.ledger).start({ process: 2, request, streams: {} });
+        const rejected = assert.rejects(starting);
+        while (!complete) await new Promise((resolve) => setImmediate(resolve));
+        if (anchorLost) { world.spawns[0].kill(); await new Promise((resolve) => setImmediate(resolve)); }
+        const ending = world.ledger.endExecution({ classification: 'cancelled' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const beforeCreation = world.store.observeReference(world.context, { referenceId: world.admitted.reference.id }).state;
+        const commandAborted = signal?.aborted === true;
+        complete();
+        await ending; await rejected;
+        const rows = world.store.listResourcesForAttempt({ attemptId: world.admitted.attemptId }).filter((row) => row.kind === 'env-rootfs');
+        assert.equal(beforeCreation, 'stopping', 'an absent-yet-still-allocating object cannot yield a terminal clean result');
+        assert.equal(commandAborted, true, 'the allocation receives cancellation before cleanup waits for it');
+        assert.equal(rows[0].state, removable ? 'released' : 'quarantined');
+        assert.equal(present, !removable, 'unknown presence is preserved and never reported released');
+        const result = world.store.observeReference(world.context, { referenceId: world.admitted.reference.id }).result;
+        assert.equal(result.cleanup, removable ? 'released' : 'quarantined');
+    }
 });
 
 test('the real end path in section 5.5 order releases every blocker, kills the anchor last, and removes the runtime directory', async (t) => {

@@ -34,13 +34,13 @@ export const RELEASE_STEPS = Object.freeze([
     { step: 2, kinds: ['process-tree', 'pty'], action: 'endProcessTrees' },
     { step: 3, kinds: ['endpoint'], action: 'endEndpoint' },
     { step: 4, kinds: ['veth', 'nft-table', 'netns'], action: 'releaseEgress' },
-    { step: 5, kinds: ['mount'], action: 'releaseViews' },
+    { step: 5, kinds: ['mount', 'env-rootfs'], action: 'releaseViews' },
     { step: 6, kinds: ['runtime-dir', 'cgroup', 'keeper'], action: 'removeRuntime' },
     { step: 7, kinds: ['gui-view', 'gui-container'], action: null }
 ]);
 const RETAINABLE = new Set(['gui-view', 'gui-container']);
 // Kinds whose uncommitted reservation can be proven absent only once the sandbox supervisor is proven absent.
-const DEFERRED_KINDS = new Set(['endpoint', 'process-tree', 'netns', 'mount', 'pty']);
+const DEFERRED_KINDS = new Set(['endpoint', 'process-tree', 'netns', 'mount', 'env-rootfs', 'pty']);
 
 export class LedgerError extends Error {
     constructor(code, message) { super(message); this.name = 'LedgerError'; this.code = code; }
@@ -57,6 +57,7 @@ export function createExecutionLedger({
     let sandboxResourceId = null;
     let closed = false;
     const releaseLog = [];
+    const publications = new Set();
 
     const unsettled = () => state.listUnsettledResources().filter((entry) => entry.attemptId === attemptId && entry.executionId === executionId);
     const hook = async (name, info) => { if (typeof faults[name] === 'function') await faults[name](info); };
@@ -77,7 +78,7 @@ export function createExecutionLedger({
     }
 
     // The publication barrier for one resource. Resolves to the committed record and its published handle.
-    async function publish({ kind, extra, spec = null }) {
+    async function publishResource({ kind, extra, spec = null }) {
         if (closed) throw new LedgerError('execution_ending', 'Admission for this execution has closed');
         if (kind !== 'keeper' && !sandboxReleased) throw new LedgerError('keeper_not_committed', 'The sandbox supervisor must be committed and released before anything else is created');
         if (kind === 'keeper' && sandboxReleased) throw new LedgerError('keeper_exists', 'An execution has one sandbox supervisor');
@@ -91,19 +92,18 @@ export function createExecutionLedger({
         });
         if (kind === 'keeper') sandboxResourceId = resourceId;
         const info = { kind, resourceId };
+        let created = null;
         try {
             await hook('afterReserve', info);
+            if (closed) throw new LedgerError('execution_ending', 'Admission for this execution has closed');
             // Create, gated.
-            const created = await sandbox.create({ kind, resourceId, marker: processBearing ? recorded.marker : null, locator: recorded, spec });
+            created = await sandbox.create({ kind, resourceId, marker: processBearing ? recorded.marker : null, locator: recorded, spec });
             await hook('afterCreate', { ...info, identity: created.identity });
+            if (closed) throw new LedgerError('execution_ending', 'Admission for this execution has closed');
             // Commit: the identity is written once, and only then is the gate released.
-            try {
-                state.commitResource({ resourceId, identity: created.identity });
-            } catch (error) {
-                await created.gate?.abort();
-                throw error;
-            }
+            state.commitResource({ resourceId, identity: created.identity });
             await hook('afterCommit', info);
+            if (closed) throw new LedgerError('execution_ending', 'Admission for this execution has closed');
             if (created.gate) {
                 const released = await created.gate.commit();
                 if (released !== true) throw new LedgerError('gate_release_failed', 'The gate could not be released');
@@ -113,11 +113,23 @@ export function createExecutionLedger({
             return { resourceId, kind, locator: recorded, identity: created.identity, handle: created.handle ?? null };
         } catch (error) {
             if (isInjectedCrash(error)) throw error;
+            // Dispose a late result even if its commit was refused or the anchor has already died. In particular, a
+            // sandbox's namespace pins must close before rootfs absence can be proven. Requests still prove nothing.
+            try { await created?.gate?.abort(); } catch { /* verified below */ }
+            try { await created?.handle?.release?.(); } catch { /* verified below */ }
             // A failed creation never leaves a half-published resource: close the gate (end-of-file aborts the helper)
             // and prove or quarantine it now.
             await settleAfterFailure(resourceId);
             throw error;
         }
+    }
+
+    function publish(request) {
+        // Register before reserve/create or an injected async hook can yield to the end path.
+        const publication = Promise.resolve().then(() => publishResource(request));
+        publications.add(publication);
+        publication.then(() => publications.delete(publication), () => publications.delete(publication));
+        return publication;
     }
 
     // `resume: true` continues an end path that was interrupted after step 1 (the attempt is already `stopping`).
@@ -131,6 +143,10 @@ export function createExecutionLedger({
         // Step 1: admission closes and the internal classification is recorded; the reference shows `stopping`.
         closed = true;
         if (!resume) state.beginAttemptEnd(context, { executionId, attemptId, expectedState, outcome: { classification, outputText, data } });
+        // No absence proof is valid while a trusted creator can still produce the recorded object. Abort its command,
+        // then wait for every publication to settle, including late results and rejected commits, before walking rows.
+        try { await sandbox.beginEnd?.(); } catch { /* the walker still decides absence */ }
+        await Promise.allSettled([...publications]);
         const sandboxHealthy = typeof sandbox?.alive === 'function' && sandbox.alive();
         // A healthy sandbox is first asked to abandon every creation that was never committed. That is a request: its
         // answer is not believed. An uncommitted process, namespace or mount is proven absent only after the sandbox supervisor's

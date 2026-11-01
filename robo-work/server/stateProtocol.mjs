@@ -24,7 +24,7 @@ const PUBLIC_MESSAGES = Object.freeze({
     stale_generation: 'The writer generation is stale.',
     capacity_exceeded: 'A configured capacity limit is exhausted.',
     state_corrupt: 'The worker state is unusable.',
-    environment_unavailable: 'Existing-agent environments are not available.',
+    environment_unavailable: 'The selected environment is not available.',
     // M-54: configure and delete refuse while robot terminals are open; the error carries `terminals` (the count), never ids.
     terminals_open: 'Robot terminals are open.'
 });
@@ -253,16 +253,17 @@ export function validateConfiguration(value, limits) {
 }
 
 // RoboTeam may carry a terminal phase's Environment selection (`repo/agent`) in the specification; blank or absent selects
-// the ordinary worker backend. Existing-agent environments are not available in this version (r10 Q1 = A), so a nonempty
-// selection is refused during admission validation: before any state access, persistence or process start. Only the
+// the ordinary worker backend. Admission validates only the bounded selection; the recorded logical kind later enforces
+// flow-only execution before image preparation. Only the
 // admission validators call this (`validateAdmissionRequest`, and the obligation request in workerState.admitObligation).
 // It is deliberately NOT part of `validateSpecification`, which also validates recorded outbox data that must stay
 // applicable.
-export function refuseEnvironmentSelection(specification) {
+export function validateEnvironmentSelection(specification, kind = null) {
     if (!isPlainObject(specification) || !Object.hasOwn(specification, 'environment')) return;
     const { environment } = specification;
     if (typeof environment !== 'string') fail('invalid_request');
-    if (environment.length > 0) fail('environment_unavailable');
+    if (environment.length > 0 && (!/^[A-Za-z0-9._-]{1,128}\/[A-Za-z0-9._-]{1,128}$/u.test(environment)
+        || environment.split('/').some((part) => part === '.' || part === '..') || kind === 'turn')) fail('invalid_request');
 }
 
 export function validateSpecification(value, limits) {
@@ -551,7 +552,7 @@ export function validateAdmissionRequest(request, limits) {
     if (!Number.isSafeInteger(request.configRevision) || request.configRevision < 1) fail('invalid_request');
     if (!ADMISSION_KINDS.includes(request.kind)) fail('invalid_request');
     // Every row (owner, MCP, background) and every kind (task, continuation, turn) reaches this validator before any state access.
-    refuseEnvironmentSelection(request.specification);
+    validateEnvironmentSelection(request.specification, request.kind);
     if (request.kind === 'turn') {
         exactObject(request.logical, ['sessionKey']);
         if (!isSessionKey(request.logical.sessionKey)) fail('invalid_request');

@@ -69,7 +69,7 @@ function refuse(code, reason) {
 // `body` the raw bytes. `store` must be opened with the S1x extension limits.
 // `terminals` (optional): the worker's terminal path, `{ closeRobot(robotId) -> Promise<{ closed, unverified }> }`. Without it the
 // Close terminals route is operation_unavailable.
-export function createCoordinatorAdapter({ store, workspaceId, verifier, terminals = null, utilities = null, workflowCatalog = null }) {
+export function createCoordinatorAdapter({ store, workspaceId, verifier, terminals = null, utilities = null, workflowCatalog = null, environments = null }) {
     for (const method of ['admit', 'lookupOrigin', 'registerBinding', 'readBindingOwner', 'observeReference', 'listReferenceEvents',
         'controlReference', 'consumeTokenIds', 'beginProvision', 'configure', 'beginDelete', 'listRobots', 'getRobot', 'getOperationOutcome',
         'admitObligation', 'acceptObligation', 'rejectObligation', 'listObligations', 'applyOutbox']) {
@@ -409,6 +409,14 @@ export function createCoordinatorAdapter({ store, workspaceId, verifier, termina
 
         listRobots(request) {
             return coordinatorRead(request, `${COORDINATOR_BASE}/robots/list`, [], (context) => ({ robots: store.listRobots(context) }));
+        },
+
+        listEnvironments(request) {
+            return coordinatorRead(request, `${COORDINATOR_BASE}/environments/list`, [], async () => {
+                if (!environments) fail('runtime_unavailable');
+                try { return { environments: await environments.list() }; }
+                catch { fail('runtime_unavailable'); }
+            });
         },
 
         getRobot(request) {

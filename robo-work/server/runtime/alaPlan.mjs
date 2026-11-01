@@ -64,6 +64,7 @@ export const PERMISSIONS = Object.freeze(['full-access', 'ask-for-approval']);
 // request, so `ask-for-approval` is refused for it (approval_unsupported); RoboTeam already forces full-access there (robot-task.mjs).
 export function planAlaExecution({ specification, workspaceRoot, logicalKind = null }) {
     if (specification?.version !== 2) throw new PlanError('unsupported_specification');
+    if (specification.environment && logicalKind !== 'flow') throw new PlanError('environment_requires_flow');
     if (!PERMISSIONS.includes(specification.permissions)) throw new PlanError('approval_unsupported');
     if (specification.permissions === 'ask-for-approval' && logicalKind === 'flow') throw new PlanError('approval_unsupported');
     if (typeof workspaceRoot !== 'string' || !path.posix.isAbsolute(workspaceRoot) || workspaceRoot === '/') throw new PlanError('workspace_unavailable');
@@ -160,6 +161,7 @@ export function planAlaExecution({ specification, workspaceRoot, logicalKind = n
     if (specification.mcpServers !== undefined) argv.push('--MCPServers', specification.mcpServers);
 
     return Object.freeze({
+        environment: specification.environment || null,
         grants: Object.freeze(grants.map((grant) => Object.freeze({ ...grant }))),
         skills: Object.freeze(skills),
         cwd: cwd === null ? VIRTUAL_HOME : cwd.path,

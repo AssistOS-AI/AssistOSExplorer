@@ -214,6 +214,23 @@ test('gate abort kills the monitor BEFORE the block fd closes (end-of-file on --
     } finally { world.done(); }
 });
 
+test('onIdentity with autoCommit false leaves the ledger publication barrier closed after init attachment', async () => {
+    const world = rig();
+    try {
+        let attached = false;
+        const sandbox = await world.launcher.launch(workloadSpec(world, { autoCommit: false, onIdentity: async (identity) => {
+            assert.equal(world.spawned[0].block.read(), null);
+            assert.equal(identity.init.pid, world.spawned[0].child.pid + 1);
+            attached = true;
+        } }));
+        assert.equal(attached, true);
+        assert.equal(world.spawned[0].block.read(), null, 'attachment did not open the gate before ledger commit');
+        assert.equal(await sandbox.gate.commit(), true);
+        assert.equal(world.spawned[0].block.read().toString(), '1');
+        await sandbox.gate.abort(); await sandbox.release();
+    } finally { world.done(); }
+});
+
 test('onIdentity: the hook sees the identity before the gate byte; a failing hook aborts', async () => {
     const world = rig();
     try {

@@ -238,6 +238,7 @@ export function createCoordinatorHttpHandler({ adapter, limits, onRefusal, strea
         [`${COORDINATOR_BASE}/robots/configure`, 'configure'],
         [`${COORDINATOR_BASE}/robots/delete`, 'delete'],
         [`${COORDINATOR_BASE}/robots/list`, 'listRobots'],
+        [`${COORDINATOR_BASE}/environments/list`, 'listEnvironments'],
         [`${COORDINATOR_BASE}/robots/get`, 'getRobot'],
         [`${COORDINATOR_BASE}/robots/models`, 'models'],
         [`${COORDINATOR_BASE}/robots/agent-status`, 'agentStatus'],

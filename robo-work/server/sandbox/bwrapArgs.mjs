@@ -54,13 +54,14 @@
 import { isValidComponentName } from '../views/protectedNames.mjs';
 import { isMarker } from './marker.mjs';
 import { procMaskArgs } from './procMasks.mjs';
+import { IMAGE_RESERVED_NAMES } from './environmentRootfs.mjs';
 
 export const BWRAP_PATH = '/usr/bin/bwrap';
 export const ROLES = Object.freeze(['orchestration', 'endpoint', 'workload', 'terminal']);
 // A destination must equal one of these or be below it. /projects/<name> is produced only from `grants`.
 export const FIXED_DESTINATIONS = Object.freeze([
     '/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc/ssl', '/etc/ca-certificates', '/etc/alternatives',
-    '/opt/robo-work', '/opt/robo-work-tools', '/run/robo-work', '/home/robot', '/session', '/config', '/stream', '/rw-stage'
+    '/opt/robo-work', '/opt/robo-work-tools', '/run/robo-work', '/home/robot', '/session', '/config', '/stream', '/rw-stage', '/rw-opt'
 ]);
 
 export const STAGE_BIND_NAME = /^[a-z][a-z0-9-]{0,31}$/;
@@ -174,11 +175,30 @@ export function buildBwrapArgs(spec) {
     }
     args.push(...procMaskArgs(procMasks));
 
+    if (spec.imageRoot !== undefined) {
+        if (spec.role !== 'workload' || !spec.imageRoot || !Array.isArray(spec.imageRoot.entries) || spec.imageRoot.entries.length > 256) throw invalid('imageRoot is workload only');
+        const root = checkSource(spec.imageRoot.path, spec);
+        if (root === '/') throw invalid('imageRoot must be a private root');
+        const seen = new Set();
+        for (const entry of spec.imageRoot.entries) {
+            const name = entry?.name;
+            if (typeof name !== 'string' || !name || name === '.' || name === '..' || /[\/\0\n\r]/u.test(name)
+                || IMAGE_RESERVED_NAMES.includes(name) || seen.has(name)) throw invalid('Invalid image entry');
+            seen.add(name);
+            if (entry.kind === 'symlink') {
+                if (typeof entry.target !== 'string' || /[\0\n\r]/u.test(entry.target)) throw invalid('Invalid image symlink');
+                args.push('--symlink', entry.target, `/${name}`);
+            } else if (entry.kind === 'directory' || entry.kind === 'file') args.push('--bind', `${root}/${name}`, `/${name}`);
+            else throw invalid('Invalid image entry kind');
+        }
+    }
+
     for (const bind of spec.roBinds || []) {
         args.push('--ro-bind', checkSource(bind.source, spec), checkDestination(bind.dest));
     }
     for (const link of spec.symlinks || []) {
         if (typeof link.target !== 'string' || link.target.includes('\0')) throw invalid('Invalid symlink');
+        if (typeof link.dest === 'string' && isUnder(link.dest, '/rw-opt')) throw invalid('/rw-opt accepts read-only injections only');
         args.push('--symlink', link.target, checkDestination(link.dest));
     }
     const roFiles = spec.roFiles || [];
@@ -190,6 +210,7 @@ export function buildBwrapArgs(spec) {
     // Directories of the execution's own runtime directory (stream, channels, tmp): plain path binds.
     for (const bind of spec.binds || []) {
         if (!['ro', 'rw'].includes(bind.mode)) throw invalid('Invalid bind');
+        if (typeof bind.dest === 'string' && isUnder(bind.dest, '/rw-opt')) throw invalid('/rw-opt accepts read-only injections only');
         args.push(bind.mode === 'ro' ? '--ro-bind' : '--bind', checkSource(bind.source, spec), checkDestination(bind.dest));
     }
     // Anchored directories (session storage, config, HOME): prep bound them at <stagingDir>/binds/<name> after verifying
@@ -197,6 +218,7 @@ export function buildBwrapArgs(spec) {
     // namespace, and a descriptor opened before `unshare --mount` refers to one (observed: EINVAL "wrong fs type").
     for (const bind of spec.stageBinds || []) {
         if (!STAGE_BIND_NAME.test(bind.name) || !['ro', 'rw'].includes(bind.mode)) throw invalid('Invalid stage bind');
+        if (typeof bind.dest === 'string' && isUnder(bind.dest, '/rw-opt')) throw invalid('/rw-opt accepts read-only injections only');
         cleanPath(spec.stagingDir, 'stagingDir');
         args.push(bind.mode === 'ro' ? '--ro-bind' : '--bind', `${spec.stagingDir}/binds/${bind.name}`, checkDestination(bind.dest));
     }

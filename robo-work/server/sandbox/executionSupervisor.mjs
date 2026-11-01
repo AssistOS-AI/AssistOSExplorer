@@ -52,6 +52,8 @@ import { createExecutionNetwork, namesFor, renderHosts, renderResolvConf } from 
 import { mapVirtualExclusions } from './exclusions.mjs';
 import { createActivityMeter, createWorkloadActivityWalk } from './workloadActivity.mjs';
 import { SandboxError, sandboxError } from './sandboxErrors.mjs';
+import { createEnvironmentRootfs, createRootfsRecovery } from './environmentRootfs.mjs';
+import { createEnvironmentCgroup } from './environmentCgroup.mjs';
 
 const ANCHOR_KINDS = new Set(['keeper', 'supervisor', 'sandbox']);
 const STREAM_BASENAME = /^[a-z0-9]{8,64}$/u;
@@ -80,7 +82,8 @@ const decimal = (value) => String(value);
 export function createExecutionSupervisor({
     launcher, view, createNetwork = createExecutionNetwork, spawnImpl = spawn, fsImpl = fs, netImpl = net, clock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
     admission, roles, home = null, grants = [], skills = [], workloadPath = WORKLOAD_PATH, onInfrastructureLoss = () => {}, modelChannel = null,
-    limits = {}, supervisorPid = process.pid, pairSocketPathLimit = 100, activityWalk = null, now = Date.now, mode = 'execution'
+    limits = {}, supervisorPid = process.pid, pairSocketPathLimit = 100, activityWalk = null, now = Date.now, mode = 'execution',
+    environmentResources = {}, cgroupSubtree = null
 } = {}) {
     if (!launcher || typeof launcher.launch !== 'function') throw new TypeError('A launcher is required');
     if (!view || typeof view.process !== 'function') throw new TypeError('A procView is required');
@@ -104,6 +107,7 @@ export function createExecutionSupervisor({
     let anchor = null;
     let lost = false;
     let ended = false;
+    let ending = false;
     let exitHandler = () => {};
     let pair = null; // { client, accepted } until both spawns took their copy
     const uncommitted = new Map(); // resourceId -> abort()
@@ -113,6 +117,10 @@ export function createExecutionSupervisor({
     let endpointSandbox = null;
     let etcWritten = null; // null | 'bare' (no network yet) | 'network'
     let orchestration = null;
+    const rootfsResources = new Set();
+    const rootfsAllocations = new Map();
+    const cgroupResources = new Set();
+    let firstEnvironment = null;
 
     const rt = (name) => `${runtime.path}/${name}`;
     const requireRuntime = () => { if (!runtime) throw sandboxError('setup_failed', 'the runtime directory does not exist yet'); };
@@ -356,10 +364,12 @@ export function createExecutionSupervisor({
             const sandbox = await launcher.launch({
                 role: 'workload', marker, runtimeDir: runtime.path, netMode, ...(netMode === 'join' ? { netns: network.nsPath, netnsInode: network.nsInode() } : {}),
                 roBinds: roles.workload.roBinds, symlinks: roles.workload.symlinks,
+                ...(spec.rootfs ? { imageRoot: { path: spec.rootfs.identity.mergedPath, entries: spec.rootfs.entries } } : {}),
+                ...(spec.cgroup ? { onIdentity: (identity) => spec.cgroup.attach(identity.init.pid), autoCommit: false } : {}),
                 roFiles: [{ source: netMode === 'join' ? etc.resolvJoin : etc.resolvNone, dest: '/etc/resolv.conf' }, { source: etc.hosts, dest: '/etc/hosts' }],
                 // OPENCODE_CONFIG is provider-owned (the validator refuses it from ALA): it comes after request.env and only for an execution
                 // admitted for the model channel (M-26). The file holds no secret.
-                env: { HOME: request.home, PATH: workloadPath, TMPDIR: '/tmp', ...request.env, ...(modelChannel ? { OPENCODE_CONFIG: modelChannel.configPath } : {}) },
+                env: { ...(roles.workload.environment?.imageEnv ?? {}), HOME: request.home, PATH: roles.workload.environment?.imageEnv.PATH ?? workloadPath, TMPDIR: '/tmp', ...request.env, ...(modelChannel ? { OPENCODE_CONFIG: modelChannel.configPath } : {}) },
                 cwd: request.cwd, argv: [request.executable, ...request.args], home: { path: home.path, fd: home.fd }, grants: [...chosenGrants, ...skillEntries()],
                 channelsDir: rt('channels'), tmpDir: rt('tmp'), stdio, scanLimits: roles.workload.scanLimits
             });
@@ -391,11 +401,34 @@ export function createExecutionSupervisor({
     }
 
     async function create(request) {
-        if (ended) throw sandboxError('setup_failed', 'the supervisor has ended');
+        if (ended || ending) throw sandboxError('setup_failed', 'the supervisor has ended');
         const { kind } = request;
         if (ANCHOR_KINDS.has(kind)) return createAnchor(request);
         if (kind === 'runtime-dir') return createRuntimeDir(request);
         if (kind === 'netns') return createNetns(request);
+        if (kind === 'env-rootfs' && roles.workload?.environment) {
+            const controller = new AbortController();
+            const allocation = { controller, promise: null };
+            rootfsAllocations.set(request.resourceId, allocation);
+            allocation.promise = Promise.resolve().then(() => {
+                if (ending || ended) throw sandboxError('setup_failed', 'the supervisor has ended');
+                return (environmentResources.rootfs ?? createEnvironmentRootfs)({
+                    podman: environmentResources.podman, imageId: roles.workload.environment.imageId, locator: request.locator,
+                    workspaceId: environmentResources.workspaceId, executionId: environmentResources.executionId, log: environmentResources.log,
+                    signal: controller.signal,
+                });
+            }).then((rootfs) => {
+                rootfsResources.add(rootfs);
+                return { identity: rootfs.identity, gate: null, handle: rootfs };
+            });
+            try { return await allocation.promise; }
+            finally { rootfsAllocations.delete(request.resourceId); }
+        }
+        if (kind === 'cgroup' && roles.workload?.environment) {
+            const group = (environmentResources.cgroup ?? createEnvironmentCgroup)({ path: request.locator.path, subtree: cgroupSubtree, limits: environmentResources.limits });
+            cgroupResources.add(group);
+            return { identity: group.identity, gate: null, handle: group };
+        }
         if (kind === 'veth' || kind === 'nft-table') return { identity: { ...request.locator }, gate: null, handle: null };
         // Each sandbox's staging mounts live in its own private mount namespace, recorded as stageMntNs in its process-tree
         // identity. A separate 'mount' blocker therefore holds nothing of its own: it records "no namespace" and is absent.
@@ -416,8 +449,17 @@ export function createExecutionSupervisor({
     // ---- end path ----------------------------------------------------------------------------------------------------
 
     // A request only: the ledger proves absence itself.
+    async function beginEnd() {
+        ending = true;
+        const pending = [...rootfsAllocations.values()];
+        for (const allocation of pending) allocation.controller.abort();
+        await Promise.allSettled(pending.map((allocation) => allocation.promise));
+    }
+
     async function abortUncommitted(resourceIds) {
         for (const id of resourceIds ?? []) {
+            const allocation = rootfsAllocations.get(id);
+            if (allocation) { allocation.controller.abort(); await allocation.promise.catch(() => {}); }
             const abort = uncommitted.get(id);
             uncommitted.delete(id);
             if (abort) { try { await abort(); } catch { /* proven by the walk */ } }
@@ -430,6 +472,7 @@ export function createExecutionSupervisor({
     }
 
     async function endProcessTrees() {
+        await beginEnd();
         for (const [id, abort] of [...uncommitted]) { uncommitted.delete(id); try { await abort(); } catch { /* proven by the walk */ } }
         const results = await Promise.allSettled([...trees].map(endTree));
         workloads.clear();
@@ -456,12 +499,17 @@ export function createExecutionSupervisor({
         const results = await Promise.allSettled([...trees, ...(endpointSandbox ? [endpointSandbox] : [])].map((sandbox) => sandbox.release()));
         const failed = results.find((result) => result.status === 'rejected' || result.value?.absent !== true || result.value?.stageRemoved === false);
         if (failed) throw failed.status === 'rejected' ? failed.reason : sandboxError('setup_failed', `a sandbox view could not be released: ${(failed.value.problems ?? []).join(',') || 'staging directory remains'}`);
+        for (const rootfs of rootfsResources) {
+            const verdict = await rootfs.release();
+            if (!verdict.absent) throw sandboxError('setup_failed', 'environment rootfs remains');
+        }
     }
 
     // The last step of the end path (step 6). Like the keeper before it, the anchor ends with this step: the ledger proves the
     // runtime directory and then the anchor absent, so the anchor must be gone when this returns.
     async function removeRuntime() {
         try {
+            for (const group of cgroupResources) await group.release();
             if (runtime) {
                 if (view.remove?.('runtime-dir', runtime.locator) !== true) throw sandboxError('setup_failed', 'the runtime directory could not be removed');
                 runtime = null;
@@ -473,11 +521,20 @@ export function createExecutionSupervisor({
 
     async function exit() {
         ended = true;
+        await beginEnd();
         closePair();
         if (anchor) { await anchor.kill(); anchor = null; }
     }
 
     // ---- endpoint seam -----------------------------------------------------------------------------------------------
+
+    async function prepareEnvironment(ledger) {
+        if (!roles.workload?.environment) return;
+        const rootfs = (await ledger.publish({ kind: 'env-rootfs' })).handle;
+        await roles.workload.environment.checkRootfs(rootfs.identity.mergedPath);
+        const cgroup = (await ledger.publish({ kind: 'cgroup' })).handle;
+        firstEnvironment = { rootfs, cgroup };
+    }
 
     function providerSandbox(ledger) {
         if (terminalMode) throw new TypeError('a terminal supervisor has no provider endpoint');
@@ -492,7 +549,17 @@ export function createExecutionSupervisor({
             },
             // Resolves only after the gate commit succeeded: the workload has executed.
             async start({ process: number, request, streams }) {
-                const published = await ledger.publish({ kind: 'process-tree', spec: { role: 'workload', process: number, request, streams } });
+                let rootfs = null;
+                let cgroup = null;
+                if (roles.workload.environment) {
+                    if (firstEnvironment) { ({ rootfs, cgroup } = firstEnvironment); firstEnvironment = null; }
+                    else {
+                        rootfs = (await ledger.publish({ kind: 'env-rootfs' })).handle;
+                        await roles.workload.environment.checkRootfs(rootfs.identity.mergedPath);
+                        cgroup = (await ledger.publish({ kind: 'cgroup' })).handle;
+                    }
+                }
+                const published = await ledger.publish({ kind: 'process-tree', spec: { role: 'workload', process: number, request, streams, rootfs, cgroup } });
                 const sandbox = published.handle;
                 workloads.set(number, sandbox);
                 sandbox.onExit(() => {
@@ -500,9 +567,13 @@ export function createExecutionSupervisor({
                     // A finished workload is ended on its observed exit: absence is proven, the staging directory removed and the
                     // namespace pins closed, so that repeated workloads in one execution do not accumulate descriptors and
                     // namespaces. If absence cannot be proven the pins stay and the end path deals with it.
-                    sandbox.release().then((verdict) => {
-                        if (verdict.absent === true && verdict.stageRemoved !== false) { trees.delete(sandbox); workloads.delete(number); finished.add(number); }
-                    }, () => {});
+                    sandbox.release().then(async (verdict) => {
+                        if (verdict.absent === true && verdict.stageRemoved !== false) {
+                            if (rootfs) { const released = await rootfs.release(); if (!released.absent) return; rootfsResources.delete(rootfs); }
+                            if (cgroup) { await cgroup.release(); cgroupResources.delete(cgroup); }
+                            trees.delete(sandbox); workloads.delete(number); finished.add(number);
+                        }
+                    }, () => {}).catch(() => {});
                 });
             },
             async stop({ process: number, graceMs }) {
@@ -517,9 +588,9 @@ export function createExecutionSupervisor({
     }
 
     return {
-        create, alive: () => !lost && !ended && anchor !== null && anchor.isAlive(), abortUncommitted,
+        create, alive: () => !lost && !ended && anchor !== null && anchor.isAlive(), abortUncommitted, beginEnd,
         endProcessTrees, endEndpoint, releaseEgress, releaseViews, removeRuntime, exit,
-        providerSandbox,
+        providerSandbox, prepareEnvironment,
         // M-35, once per watchdog tick: did this execution's workloads show activity? A new member, or CPU growth of the persisting
         // members of at least 2 % of one CPU since the previous tick (workloadActivity.mjs). Read-only; false when no workload runs.
         workloadActivity() {
@@ -576,7 +647,8 @@ function defaultRunSync(command, args) {
 // and nft-table (it cannot see them), so this wrapper asks `ip` and `nft`. `remove('netns', { netns: id })` deletes the
 // whole execution network by the names that derive from the locator id (firewall, veth, netns), which is the one hook
 // recoveryWalk needs for a network left behind by a crashed supervisor.
-export function createRecoveryView(view, { runSync = defaultRunSync, exists = (file) => fs.existsSync(file) } = {}) {
+export function createRecoveryView(view, { runSync = defaultRunSync, exists = (file) => fs.existsSync(file), podman = null } = {}) {
+    const rootfs = podman ? createRootfsRecovery({ podman }) : null;
     const linkPresent = (name) => {
         const result = runSync('ip', ['-o', 'link', 'show']);
         if (result.status !== 0) return true;
@@ -592,6 +664,7 @@ export function createRecoveryView(view, { runSync = defaultRunSync, exists = (f
         ...view,
         cgroupSubtree: view.cgroupSubtree,
         exists(kind, locator) {
+            if (kind === 'env-rootfs') return rootfs ? rootfs.exists(locator) : true;
             if (kind === 'veth') return linkPresent(locator.host) || linkPresent(locator.peer);
             if (kind === 'nft-table') return tablePresent(locator.table);
             // An execution network is present while any of its parts is: the netns file, either veth end, or the nft table.
@@ -602,6 +675,7 @@ export function createRecoveryView(view, { runSync = defaultRunSync, exists = (f
             return view.exists(kind, locator);
         },
         remove(kind, locator) {
+            if (kind === 'env-rootfs') return rootfs ? rootfs.remove(locator) : false;
             if (kind === 'veth') { runSync('ip', ['link', 'del', locator.host]); return !linkPresent(locator.host); }
             if (kind === 'nft-table') { runSync('nft', ['delete', 'table', 'inet', locator.table]); return !tablePresent(locator.table); }
             if (kind === 'netns') {

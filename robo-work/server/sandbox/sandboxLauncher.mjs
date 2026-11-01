@@ -31,7 +31,8 @@
 //   stdio        [s0, s1, s2]  each a descriptor number, a socket, 'pipe' or 'ignore' (a terminal's PTY slave goes here)
 //   roleFds      { 3: socket|fd, 4: 'pipe'|socket|fd }  endpoint pair socket at 3 and frame channel at 4; orchestration at 3
 //   home { path, fd }, grants [{ name, path, fd, mode, exclusions? }]  (exclusions: grant-relative paths masked like protected names), channelsDir, tmpDir     workload and terminal (same path/fd rule)
-//   onIdentity   optional async (identity) => void: commit hook; when given, the gate byte is written after it returns
+//   onIdentity   optional async (identity) => void: commit hook; normally opens the gate after it returns. With autoCommit:false,
+//                attaches the Environment init to its cgroup while leaving the gate closed for the ledger's identity commit.
 //   timeouts     prepTimeoutMs (default 120000), gateTimeoutMs (10000), verifyTimeoutMs (5000)
 //
 // Descriptor layout (every descriptor handed through the chain sits at a slot of the spawn's stdio array). No directory
@@ -165,7 +166,7 @@ export function createSandboxLauncher({
                 role: spec.role, marker: spec.marker, netMode,
                 seccompFd: layout.seccomp, blockFd: layout.block, infoFd: layout.info, jsonStatusFd: layout.status,
                 roBinds: workloadLike ? [...(spec.roBinds ?? []), { source: stageScript, dest: SANDBOX_STAGE_SCRIPT }] : spec.roBinds,
-                symlinks: spec.symlinks, binds: spec.binds, roFiles: spec.roFiles,
+                symlinks: spec.symlinks, binds: spec.binds, roFiles: spec.roFiles, imageRoot: spec.imageRoot,
                 stageBinds: workloadLike ? undefined : (spec.anchored ?? []).map((bind) => ({ name: bind.name, dest: bind.dest, mode: bind.mode })),
                 env, cwd: spec.cwd, argv: spec.argv, procMasks,
                 stagingDir: stageDir ?? undefined, channelsDir: spec.channelsDir, stageScript: SANDBOX_STAGE_SCRIPT,
@@ -482,7 +483,7 @@ export function createSandboxLauncher({
         };
         if (typeof spec.onIdentity === 'function') {
             try { await spec.onIdentity(identity); } catch (error) { await gate.abort(); await release(); throw error; }
-            if (!(await gate.commit())) { await release(); throw sandboxError('commit_timeout'); }
+            if (spec.autoCommit !== false && !(await gate.commit())) { await release(); throw sandboxError('commit_timeout'); }
         }
         return sandbox;
     }

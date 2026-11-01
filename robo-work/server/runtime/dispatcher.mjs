@@ -103,13 +103,17 @@ export function createDispatcher({
         // M-33: the time bounds of a task attempt. Activity is an ALA control-stream record, ALA output, a request from ALA to the provider
         // (including a workload start, stop and exit) and any input delivered to the attempt (prompt, message). They run from here, while the
         // attempt is starting or running, and stop with its end or at a human-input question.
+        const preparation = new AbortController();
+        let preparationEnd = null;
+        const abortPreparation = (outcome) => { preparationEnd ??= outcome; preparation.abort(); };
         const watchdog = createAttemptWatchdog({
             inactivityMs: settings.inactivityTimeoutMs, maxMs: settings.maxAttemptMs, timers, now: settings.now ?? Date.now,
             onTimeout: (reason, { runningMs }) => {
                 log('attempt_timeout', { executionId: item.executionId, attemptId: item.attemptId, reason, runningMs });
+                abortPreparation({ classification: 'failed', data: { reason } });
                 (async () => {
-                    // An attempt still being published is ended once that is over, as at a shutdown.
-                    if (starting !== null) await starting.catch(() => {});
+                    // Before open returns, wait for its owner; an opened execution can abort and drain startup now.
+                    if (starting !== null && execution === null) await starting.catch(() => {});
                     if (finishing !== null) return;
                     // M-43 (a): an inactive attempt tells the user the last error the model channel saw (status and a sanitized message of
                     // at most 300 characters), so a quota or provider failure is visible instead of a bare timeout.
@@ -301,9 +305,10 @@ export function createDispatcher({
             })();
             return finishing;
         };
-        // A shutdown that arrives while the execution is still being published waits for that, so the execution it ends exists.
+        // Wait only for open to provide an owner; its end path safely aborts/drains any in-flight startup publication.
         shutdownRef.shutdown = async () => {
-            if (starting !== null) await starting.catch(() => {});
+            abortPreparation({ classification: 'interrupted', data: { reason: 'worker_shutdown' } });
+            if (starting !== null && execution === null) await starting.catch(() => {});
             return finish({ classification: 'interrupted', outputText: partialText(), data: { reason: 'worker_shutdown' } });
         };
         // M-67 Q2: the execution withdrew the attempt's writable grant (an active runtime source now overlaps it). The M-33 stop path, as at a
@@ -401,11 +406,31 @@ export function createDispatcher({
                     catalogReads = workflowCatalog.registerAttempt({ executionId: item.executionId, attemptId: item.attemptId });
                     channels.workflowCatalog = catalogReads;
                 }
-                execution = await factory.open({ item, plan, context, channels, activity: () => watchdog.touch() });
+                if (plan.environment) {
+                    // Stop remains observable while a first-use pull is in flight. Other controls stay pending for ALA.
+                    controlTimer = timers.setInterval(() => {
+                        try {
+                            const stop = store.takePendingControls({ executionId: item.executionId, attemptId: item.attemptId }).find((entry) => entry.op === 'stop');
+                            if (stop) {
+                                store.ackControl({ executionId: item.executionId, attemptId: item.attemptId, actorKey: stop.actorKey, operationId: stop.operationId });
+                                const outcome = { classification: 'cancelled', data: { reason: 'stopped' } };
+                                abortPreparation(outcome);
+                                // An opened execution owns its in-flight publications and can abort/drain them now.
+                                // Waiting for start() here would otherwise acknowledge stop while startup still runs.
+                                if (execution !== null) finish(outcome).catch((error) => log('end_failed', { error: describe(error) }));
+                            }
+                        } catch (error) { log('controls_read_failed', { error: describe(error) }); }
+                    }, settings.controlPollMs);
+                    controlTimer.unref?.();
+                }
+                execution = await factory.open({ item, plan, context, channels, activity: () => watchdog.touch(), signal: preparation.signal });
+                if (preparation.signal.aborted) throw new Error('preparation_cancelled');
                 if (typeof execution.revoked?.then === 'function') execution.revoked.then(revoke, () => {});
                 return execution.start();
             })();
             const opened = await starting;
+            if (preparationEnd !== null) { await finish(preparationEnd); return; }
+            if (controlTimer !== null) { timers.clearInterval(controlTimer); controlTimer = null; }
             relay = createEventRelay({
                 record: (events) => store.recordReferenceEvents({ executionId: item.executionId, attemptId: item.attemptId, events }), log
             });
@@ -471,7 +496,7 @@ export function createDispatcher({
             try {
                 const reason = typeof error?.reason === 'string' && /^[a-z0-9_]{1,48}$/u.test(error.reason) ? error.reason : null;
                 const code = error?.name === 'SandboxError' && /^[a-z_]{1,40}$/u.test(String(error.code)) ? error.code : null;
-                await finish({ classification: 'failed', outputText: partialText(), data: { reason: reason ?? (streams === null ? 'start_failed' : 'execution_error'), ...(code ? { detail: code } : {}) } });
+                await finish(preparationEnd ?? { classification: 'failed', outputText: partialText(), data: { reason: reason ?? (streams === null ? 'start_failed' : 'execution_error'), ...(code ? { detail: code } : {}) } });
             } catch (endError) {
                 log('end_failed', { error: describe(endError) });
             }

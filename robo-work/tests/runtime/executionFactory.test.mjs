@@ -19,7 +19,7 @@ const spec = (overrides = {}) => ({
     folders: [{ path: '/ws/skills', access: 'read' }], ...overrides
 });
 
-function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadActivity = undefined, timers = undefined, activityTickMs = undefined, managed = {}, modelUpstream = null, modelChannel = undefined, runtimeSources = { locations: async () => ({ ok: true, locations: [], authorizationGeneration: 'g', counts: {}, outsideWorkspace: 0, localRoots: 0 }) } } = {}) {
+function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadActivity = undefined, timers = undefined, activityTickMs = undefined, managed = {}, modelUpstream = null, modelChannel = undefined, environments = null, cgroupSubtree = null, log = () => {}, runtimeSources = { locations: async () => ({ ok: true, locations: [], authorizationGeneration: 'g', counts: {}, outsideWorkspace: 0, localRoots: 0 }) } } = {}) {
     const calls = [];
     const closedFds = [];
     const closedGrants = [];
@@ -44,6 +44,7 @@ function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadAc
             return {
                 endpointSocket: { fake: 'endpoint' }, controlStreams: streams, providerSandbox: () => ({ fake: 'sandbox' }), runtimeDir: supervisorRuntimeDir,
                 ...(workloadActivity ? { workloadActivity } : {}),
+                ...(options.roles.workload?.environment ? { prepareEnvironment: async () => calls.push(['prepareEnvironment']) } : {}),
                 exit: async () => { calls.push(['supervisor.exit']); }
             };
         },
@@ -72,8 +73,8 @@ function rig({ grantRefusal = null, supervisorRuntimeDir = undefined, workloadAc
     };
     const factory = createExecutionFactory({
         store: {}, robots: { root: '/store', paths: (id) => ({ home: `/store/robots/${id}/home`, sessions: `/store/robots/${id}/sessions`, configDir: `/store/robots/${id}/config` }) },
-        launcher: { fake: 'launcher' }, view: { fake: 'view' }, walker: { fake: 'walker' }, clock: { fake: 'clock' }, workspaceRoot: '/ws', runtimeDir: '/store/runtime',
-        serverDir: '/code/server', alaRoot: '/Agent/linked/AdvancedLanguageAgent', nodePath: '/usr/local/bin/node', deps, runtimeSources,
+        launcher: { fake: 'launcher' }, view: { fake: 'view', cgroupContext: () => cgroupSubtree ? { dev: '1', ino: '2', namespace: '3' } : null }, walker: { fake: 'walker' }, clock: { fake: 'clock' }, workspaceRoot: '/ws', runtimeDir: '/store/runtime',
+        serverDir: '/code/server', alaRoot: '/Agent/linked/AdvancedLanguageAgent', nodePath: '/usr/local/bin/node', deps, runtimeSources, environments, cgroupSubtree, log,
         ...(activityTickMs ? { activityTickMs } : {}), ...(modelUpstream ? { modelUpstream } : {})
     });
     const item = { robotId: 'ROBOT', executionId: 'EXEC', attemptId: 'ATT', referenceId: 'REF', specification: spec() };
@@ -106,7 +107,7 @@ test('publication order, ALA command line, descriptor custody and the end path',
     assert.ok(!supervisorOptions.roles.workload.roBinds.some((bind) => bind.dest.startsWith('/opt/robo-work')), 'the workload sees no robo-work code or ALA');
     assert.deepEqual(supervisorOptions.roles.endpoint.argv, ['/usr/local/bin/node', '--import', '/opt/robo-work/fdTrim.mjs', '/opt/robo-work/execution/providerEndpointMain.mjs']);
     assert.equal(ledgerOptions.referenceId, null, 'the ledger must not read the owner\'s reference back with the adapter context');
-    assert.deepEqual(ledgerOptions.layout, { runtimeDir: '/store/runtime', cgroupSubtree: '/store/runtime/cgroup' });
+    assert.deepEqual(ledgerOptions.layout, { runtimeDir: '/store/runtime', cgroupSubtree: null, cgroupContext: null });
 
     const opened = await execution.start();
     assert.equal(opened, streams);
@@ -124,6 +125,42 @@ test('publication order, ALA command line, descriptor custody and the end path',
     assert.deepEqual(closedGrants.sort(), ['proj', 'skills']);
     assert.deepEqual(closedFds.sort((a, b) => a - b), [20, 21, 22]);
     assert.ok(calls.findIndex(([what]) => what === 'endpointServer.end') < calls.findIndex(([what]) => what === 'endExecution'));
+});
+
+test('Environment factory resolves once before publication and pins until end; orchestration root stays the worker root', async () => {
+    let prepares = 0; let releases = 0; let gcs = 0;
+    const log = () => {};
+    const prepared = { imageId: `sha256:${'a'.repeat(64)}`, imageEnv: { PATH: '/rw-opt/bin:/image/bin' },
+        contract: { tools: { node: '/usr/local/bin/node' }, caBundle: '/opt/robo-work-runtime/ca/ca-bundle.crt' }, release: () => { releases += 1; } };
+    const world = rig({ cgroupSubtree: '/delegated', log, environments: { async prepare({ ref, signal }) {
+        assert.equal(ref, 'fixtures/env'); assert.equal(signal.aborted, false); prepares += 1; return prepared;
+    }, async gc() { gcs += 1; } } });
+    const plan = planAlaExecution({ specification: spec({ environment: 'fixtures/env' }), workspaceRoot: '/ws', logicalKind: 'flow' });
+    const signal = new AbortController().signal;
+    const execution = await world.factory.open({ item: world.item, plan, context: world.context, signal });
+    assert.equal(prepares, 1); assert.equal(releases, 0);
+    const options = world.options();
+    assert.equal(options.supervisorOptions.environmentResources.log, log);
+    assert.equal(options.supervisorOptions.roles.workload.environment, prepared);
+    assert.ok(options.supervisorOptions.roles.orchestration.roBinds.some((bind) => bind.source === '/usr' && bind.dest === '/usr'));
+    assert.ok(options.supervisorOptions.roles.workload.roBinds.every((bind) => bind.dest.startsWith('/rw-opt/')));
+    assert.equal(options.ledgerOptions.layout.cgroupSubtree, '/delegated');
+    assert.deepEqual(options.ledgerOptions.layout.cgroupContext, { dev: '1', ino: '2', namespace: '3' });
+    await execution.start();
+    assert.equal(releases, 0, 'an idle orchestration still holds the attempt pin');
+    assert.ok(world.calls.findIndex(([what]) => what === 'prepareEnvironment') < world.calls.findIndex(([what, kind]) => what === 'publish' && kind === 'endpoint'));
+    await execution.end({ classification: 'completed', outputText: 'done' });
+    await execution.end({ classification: 'completed', outputText: 'done' });
+    assert.equal(releases, 1); assert.equal(gcs, 1);
+});
+
+test('Environment resolution or delegation failure creates no supervisor and opens no robot descriptors', async () => {
+    for (const cgroupSubtree of [null, '/delegated']) {
+        const world = rig({ cgroupSubtree, environments: { async prepare() { throw new Error('unavailable'); }, async gc() {} } });
+        const plan = planAlaExecution({ specification: spec({ environment: 'fixtures/env' }), workspaceRoot: '/ws', logicalKind: 'flow' });
+        await assert.rejects(world.factory.open({ item: world.item, plan, context: world.context }), { reason: 'environment_unavailable' });
+        assert.equal(world.options().supervisorOptions, null); assert.equal(world.calls.length, 0);
+    }
 });
 
 test('a refused grant fails the open with a bounded reason and closes what was opened', async () => {

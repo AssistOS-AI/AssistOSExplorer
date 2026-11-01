@@ -18,6 +18,9 @@ import { createRobotUtilities } from './runtime/robotUtilities.mjs';
 import { createWorkflowCatalogRequests } from './runtime/workflowCatalogRequests.mjs';
 import { createDispatcher } from './runtime/dispatcher.mjs';
 import { createExecutionFactory } from './runtime/executionFactory.mjs';
+import { createEnvironmentImages, defaultAgentImagesFetch } from './runtime/environmentImages.mjs';
+import { createPodmanRunner } from './sandbox/podmanRunner.mjs';
+import { effectiveCgroupSubtree } from './sandbox/environmentCgroup.mjs';
 import { createRuntimeSourceProvider, defaultRuntimeSourcesFetch } from './runtime/executionGrants.mjs';
 import { createSoulGatewayUpstream } from './runtime/modelChannel.mjs';
 import { createLifecycleDriver } from './runtime/lifecycleDriver.mjs';
@@ -152,6 +155,13 @@ export function readConfig(env = process.env) {
         maxTerminals: boundedCount(env, 'ROBO_WORK_MAX_TERMINALS', DEFAULT_TERMINAL_LIMITS.maxTotal, 128),
         nodePtyDir: String(env.ROBO_WORK_NODE_PTY_DIR || DEFAULT_NODE_PTY_DIR).trim(),
         ploinkyAgentDir: String(env.ROBO_WORK_PLOINKY_AGENT_DIR || '/Agent').trim() || '/Agent',
+        cgroupSubtree: effectiveCgroupSubtree(env),
+        environmentLimits: {
+            pullTimeoutMs: Number(env.ROBO_WORK_ENV_PULL_TIMEOUT_MS ?? 900000), imageMaxBytes: Number(env.ROBO_WORK_ENV_IMAGE_MAX_BYTES ?? 8 * 1024 ** 3),
+            memoryBytes: Number(env.ROBO_WORK_ENV_MEMORY_BYTES ?? 4 * 1024 ** 3), cpus: Number(env.ROBO_WORK_ENV_CPUS ?? 2),
+            pids: Number(env.ROBO_WORK_ENV_PIDS ?? 4096), retainDays: Number(env.ROBO_WORK_ENV_IMAGE_RETAIN_DAYS ?? 7),
+            storeMaxBytes: Number(env.ROBO_WORK_ENV_STORE_MAX_BYTES ?? 40 * 1024 ** 3),
+        },
         inactivityTimeoutMs: boundedMs(env, 'ROBO_WORK_INACTIVITY_TIMEOUT_MS', 20 * 60 * 1000),
         maxAttemptMs: boundedMs(env, 'ROBO_WORK_MAX_ATTEMPT_MS', 4 * 60 * 60 * 1000),
         approvalTimeoutMs: boundedMs(env, 'ROBO_WORK_APPROVAL_TIMEOUT_MS', 15 * 60 * 1000)
@@ -206,6 +216,8 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     privateDirectory(path.join(config.dataDir, 'robots'));
     const stateDir = path.join(config.dataDir, 'state');
     const robots = createRobotStore({ root: config.dataDir });
+    const podman = overrides.podman ?? createPodmanRunner({ dataDir: config.dataDir });
+    try { podman.initialize(); } catch { log('environment_runtime_unavailable'); }
 
     // ALA must be present, or the runtime refuses preparation and admission instead of accepting work it cannot run.
     const alaRoot = overrides.alaRoot === undefined ? alaEntryOf(config.alaRoot) : overrides.alaRoot;
@@ -224,9 +236,9 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     let launcher = null;
     let walker = null;
     try {
-        view = createProcView({ runtimeRoot: path.join(config.dataDir, 'runtime') });
+        view = createProcView({ runtimeRoot: path.join(config.dataDir, 'runtime'), cgroupSubtree: config.cgroupSubtree });
         walker = createWalker({
-            view: createRecoveryView(view), clock, releaseDeadlineMs: 15000, pollMs: 100, sandboxRecord: sandboxRecordFor(() => store)
+            view: createRecoveryView(view, { podman }), clock, releaseDeadlineMs: 15000, pollMs: 100, sandboxRecord: sandboxRecordFor(() => store)
         });
         if (preflight.ok && !overrides.factory) launcher = createSandboxLauncher({ view, procMasks: preflight.masks });
     } catch (error) {
@@ -244,6 +256,19 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
         log('recovery_incomplete', { error: error?.code ?? error?.name });
     }
 
+    const environments = overrides.environments ?? createEnvironmentImages({
+        dataDir: config.dataDir, podman, fetchAgentImages: defaultAgentImagesFetch({ env }), selfId: config.audience,
+        coordinators: config.coordinators, limits: config.environmentLimits, clock, log,
+    });
+    // Recovery is the first owner of old objects. GC never precedes it or runs while recovery remains pending.
+    let environmentGcTimer = null;
+    if (recovered) {
+        try { await environments.recoverOrphans?.({ workspaceId: config.workspaceId, resourceForName: (name) => store.findEnvironmentRootfs({ name }) }); }
+        catch { log('environment_orphan_sweep_unavailable'); }
+        environments.gc().catch(() => {});
+        environmentGcTimer = setInterval(() => environments.gc().catch(() => {}), 60 * 60 * 1000);
+        environmentGcTimer.unref?.();
+    }
     const verifier = createVerifierConfig({
         secret: config.secret, audience: config.audience, coordinators: config.coordinators, replayCache: createReplayCache()
     });
@@ -257,7 +282,7 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     const workflowCatalog = createWorkflowCatalogRequests({ store, clock });
     const terminals = { closeRobot: (robotId) => (terminalServer ? terminalServer.closeRobot(robotId) : Promise.resolve({ closed: 0, unverified: 0 })) };
     const coordinatorHandler = createCoordinatorHttpHandler({
-        adapter: createCoordinatorAdapter({ store, workspaceId: config.workspaceId, verifier, terminals, utilities, workflowCatalog }), limits: httpLimits, onRefusal
+        adapter: createCoordinatorAdapter({ store, workspaceId: config.workspaceId, verifier, terminals, utilities, workflowCatalog, environments }), limits: httpLimits, onRefusal
     });
     const taskReferenceHandler = createTaskReferenceHttpHandler({
         adapter: createTaskReferenceAdapter({ store, workspaceId: config.workspaceId, verifier, basePath: TASK_REFERENCES_PATH }),
@@ -279,7 +304,8 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     if (factory === null && launcher && alaRoot) {
         factory = createExecutionFactory({
             store, robots, launcher, view, walker, clock, workspaceRoot: config.workspaceRoot, runtimeDir: path.join(config.dataDir, 'runtime'),
-            serverDir: SERVER_DIRECTORY, alaRoot, log,
+            serverDir: SERVER_DIRECTORY, alaRoot, log, environments, podman, workspaceId: config.workspaceId,
+            cgroupSubtree: config.cgroupSubtree, environmentLimits: config.environmentLimits,
             // M-63: the active runtime sources, fresh for every writable launch (no cache); the worker's own ALA checkout is always one.
             runtimeSources: createRuntimeSourceProvider({ workspaceRoot: config.workspaceRoot, localRoots: [alaRoot], fetch: defaultRuntimeSourcesFetch({ env }) }),
             // M-26: the worker's own Soul Gateway identity (PLOINKY_AGENT_API_KEY, PLOINKY_ROUTER_DESCRIPTOR_FILE, PLOINKY_AGENTLIB_DIR), loaded
@@ -317,18 +343,36 @@ export async function startWorker({ env = process.env, overrides = {} } = {}) {
     log('listening', { coordinatorPort, providerPort, recovered, sandbox: preflight.ok, reason: preflight.reason ?? null });
 
     let closing = null;
+    let operatorGc = null;
+    const signalSource = overrides.signalSource ?? process;
+    const logOperatorGc = (fields) => { try { log('environment_gc_operator', fields); } catch { /* diagnostics cannot break a signal handler */ } };
+    const onOperatorGc = () => {
+        if (closing !== null) return;
+        if (!recovered) { logOperatorGc({ state: 'refused', reason: 'recovery_pending' }); return; }
+        if (operatorGc !== null) { logOperatorGc({ state: 'ignored', reason: 'already_running' }); return; }
+        logOperatorGc({ state: 'started', reason: 'SIGUSR2' });
+        operatorGc = Promise.resolve().then(() => environments.gc()).then(
+            () => logOperatorGc({ state: 'completed', reason: 'SIGUSR2' }),
+            () => logOperatorGc({ state: 'failed', reason: 'gc_failed' })
+        ).finally(() => { operatorGc = null; });
+    };
+    signalSource.on('SIGUSR2', onOperatorGc);
     return Object.freeze({
         coordinatorPort, providerPort, store, config, recovered, preflight, dispatcher, lifecycle, terminals: terminalServer,
         // Graceful shutdown: end every robot terminal (cause generation-end, through the end path), stop accepting, interrupt running
         // attempts through the end path, close the store.
         close() {
             closing ??= (async () => {
+                signalSource.removeListener('SIGUSR2', onOperatorGc);
+                if (environmentGcTimer !== null) clearInterval(environmentGcTimer);
                 await terminalServer.close().catch(() => {});
                 workflowCatalog.close();
                 await Promise.allSettled([closeServer(coordinatorServer), closeServer(providerServer)]);
                 lifecycle.stop();
                 await utilityRunner?.close();
                 await dispatcher?.close();
+                if (operatorGc !== null) await operatorGc;
+                environments.close();
                 store.close();
             })();
             return closing;

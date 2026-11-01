@@ -16,6 +16,10 @@ Internal worker-state library for the RoboWork execution provider. It is a bound
 | `server/stateReplay.mjs` | S1x: durable Router-token replay keys |
 | `server/stateSessions.mjs` | S6 source-only subset: conversation sessions (scope and `sessionKey` to one logical ID, robot and owner) |
 | `server/terminalTargets.mjs` | S6 source-only subset: the terminal-target inventory adapter, projection and bounds (Part E); the project selection grammar |
+| `server/runtime/environmentImages.mjs` | Signed image discovery, digest-bound first-use acquisition, attempt pins, ABI verdict cache and image GC |
+| `server/sandbox/environmentRootfs.mjs` | Per-workload created container, mounted disk upper, anchored image preparation and exact-name recovery |
+| `server/sandbox/environmentCgroup.mjs` | Delegated cgroup v2 limits and init attachment before the workload gate |
+| `server/sandbox/podmanRunner.mjs` | Fixed Podman argv, anonymous authentication and command lifetime ownership |
 | `server/terminal/` | Robot terminals (M-8): `terminalServer.mjs` (the WebSocket endpoint, ownership session, leases, replay, ends), `terminalProtocol.mjs` (the frame schema, a copy of Ploinky's), `wsCodec.mjs` (bounded RFC 6455 server codec), `terminalAuth.mjs` (Router-service tokens through Ploinky's Agent library), `terminalExecutions.mjs` (admit, launch, end, caps), `ptyHost.mjs` (node-pty `open()`, master kept in the worker) |
 | `server/stateObligations.mjs` | S6 source-only subset: obligation and outbox tables, row helpers and the observation-state mapping (Part D) |
 
@@ -41,6 +45,40 @@ Utilities use an internal `utility` admission, the resource ledger and the norma
 
 A normal ALA provider closure may precede the sandbox monitor's exit. Utilities accept that closure only after a zero native exit and complete bounded stream drain, within the existing deadline. Anchor loss and endpoint protocol failures still refuse immediately. Failed utility outcomes and worker logs record fixed stage and error codes plus the numeric exit code, without backend output or raw exception messages. RoboTeam preserves an explicit worker-unavailable HTTP 503 and returns generic error text.
 
+## Workflow environments
+
+A RoboFlow terminal phase can select an enabled global container agent as `repo/agent`. Blank selects the ordinary worker filesystem. The coordinator sends only that ref. The worker reads the selected image through Ploinky's signed private `fetchAgentImages` client, binds its digest once per attempt and pulls anonymously by digest on first use. Startup and listing do not pull. The coordinator-only `POST /v1/coordinator/environments/list {}` returns `{environments:[{ref,name,repo,about,available,reason}]}`. The worker and all configured coordinators are excluded; the selected agent need not be running. Invalid refs and nonempty selections on turns are refused during admission. The dispatcher checks the recorded `logicalKind === 'flow'`; `workflowExecution: true` does not authorize a direct task to use an Environment.
+
+Each workload gets its own Podman container object and on-disk writable upper. Podman creates and mounts it, but never starts it. ALA, the provider endpoint, channels, grant preparation, network policy and process supervision remain in the worker. The first workload's rootfs and cgroup are ledger-recorded before compatibility checks and before any bwrap process starts. That same rootfs is then consumed by the first workload. Later workloads get fresh uppers. Writes outside HOME, grants and the execution `/tmp` disappear between workloads.
+
+The image must match the worker architecture, provide glibc at the worker contract's numeric floor, define the required GLIBCXX and CXXABI versions, and contain executable `/bin/sh` and `/usr/bin/env`. Static checks never execute image code. Musl, distroless, local-only and private-registry images are unavailable in this version. A compatibility verdict is cached by image ID and the fingerprint of `/opt/robo-work-runtime/environment-contract.json`.
+
+Image entries bind read-write below bwrap's own read-only root. Reserved runtime names are excluded. Worker-owned wrappers, Node, coding tools and CA files bind read-only under `/rw-opt`; PATH puts `/rw-opt/bin` before the image PATH. Image environment variables cannot replace provider state, loader settings, Node settings or proxy configuration. Image USER, CMD, ENTRYPOINT and WORKDIR are ignored. Robot commands use image tools; channel skills use the injected absolute Node path. Other Node-based skills still require the image's own Node.
+
+The image shell, loader and libraries remain writable within a workload. A robot can alter how later tool invocations in that workload start. The fresh upper bounds those changes to that workload; capabilities, seccomp, user-namespace refusal, private procfs, masks, descriptor allowlists and execution networking retain their ordinary workload controls.
+
+`containerSecurity.cgroupSubtree: true` requests Ploinky's scoped delegation, together with `nestedPodman: true`. The worker uses an explicit `ROBO_WORK_CGROUP_SUBTREE` when present, otherwise `PLOINKY_CGROUP_SUBTREE`. An invalid explicit value never falls back. Missing delegation refuses Environment work with `limits_unavailable`, while ordinary work remains available. The same effective path reaches both factory layouts and recovery's procView. Each child is `x-<locatorId>` and receives memory, swap, OOM-group, CPU and PID limits before its init is attached and the ledger opens the gate.
+
+| Setting | Default |
+| --- | --- |
+| `ROBO_WORK_ENV_PULL_TIMEOUT_MS` | 900000 |
+| `ROBO_WORK_ENV_IMAGE_MAX_BYTES` | 8589934592 |
+| `ROBO_WORK_ENV_MEMORY_BYTES` | 4294967296 |
+| `ROBO_WORK_ENV_CPUS` | 2 |
+| `ROBO_WORK_ENV_PIDS` | 4096 |
+| `ROBO_WORK_ENV_IMAGE_RETAIN_DAYS` | 7 |
+| `ROBO_WORK_ENV_STORE_MAX_BYTES` | 42949672960 |
+
+The store is `<dataDir>/podman/storage` on disk. `/run/robo-work-podman` is a private 64 MiB tmpfs reused when already mounted; a different filesystem there is refused. The runner supplies an empty private auth file and a clean environment, with no worker credentials or proxy variables. Pulls share one command per digest, report activity every 30 seconds and stay owned until command exit. Cancellation removes only that waiter's interest; the last waiter aborts the command. A fixed lifetime pipe kills the owned Podman process group if the worker dies. Detached storage helpers remain subject to rootfs recovery and mount proof.
+
+`prepare()` returns an internal attempt handle with image identity, filtered environment, the worker contract, `checkRootfs(root)` and idempotent `release()`. The factory holds its image pin until the attempt end path finishes, including periods when orchestration is idle. GC runs after startup recovery, at attempt end and hourly. It removes exact image IDs only, after checking a complete bounded all-state container list and attempt pins. An eligible image is no longer selectable, superseded, unused for seven days, or an unused LRU eviction needed for the store cap. Unknown container inventory and incomplete recovery preserve resources. The startup sweep removes exact workspace-labelled orphan names and preserves known quarantines and other workspaces.
+
+For operator acceptance tests such as immediate GC after disabling an Environment, send `SIGUSR2` to the identified worker main PID. This invokes the current manager's GC with the same attempt pins, container checks and exact-ID removal policy. It adds no HTTP or coordinator operation. The worker logs bounded `environment_gc_operator` start, completion or failure events, coalesces overlapping signals and refuses the trigger while recovery is pending. Completion records that the invocation ended; image absence is checked separately. Shutdown removes this worker's signal handler. Workload PID namespaces cannot address the worker PID.
+
+Image preparation skips top-level FIFOs, sockets and device entries. Each skipped entry emits `environment_image_entry_skipped` through the worker logger with its kind, ordinal count and an escaped name capped at 128 characters. The existing 256-entry root bound also caps skip-event count. These entries are neither bound nor executed.
+
+Focused checks are `node --test --test-reporter=tap robo-work/tests/environment/*.test.mjs`. These are unit and fixture checks; deployed image, confinement, resource exhaustion and crash-recovery acceptance still require the Linux apparatus.
+
 ## Storage
 
 `openWorkerState({dataDir, workspaceId, provider, limits, now, create, runtime, faults})` uses built-in `node:sqlite` (Node 24 or newer, no npm dependency). The store is `<dataDir>/execution-store/worker-state.sqlite`. First creation requires `create: true`; a missing store without it is `not_found`. Symbolic links and non-directory or non-regular state components are refused with `state_corrupt`, as are corrupt files and workspace, provider or schema-version mismatches. A corrupt or empty file is never replaced or initialized without `create`. The database uses foreign keys, WAL, `busy_timeout=5000`, `synchronous=FULL` and synchronous `BEGIN IMMEDIATE` transactions. These checks assume supervisor-exclusive storage and are not a confined-filesystem boundary.
@@ -60,6 +98,8 @@ An adapter provides synchronous `canPrepare()`, `attestRobot(info)` and `admissi
 Provision, configure and delete record an intent, an immutable receipt, a separately queried completion and (provision, configure) a preparation blocker. Retries return the recorded receipt, including after reopen. Admission commits receipt, origin binding, public reference and admission (with its recorded logical kind, and for a first turn its session) in one transaction. `lookupOrigin` matches the verified namespace, key and scope, and unknown and foreign origins are the same `not_found`. Every mutation checks the handle's bound generation inside its transaction.
 
 ## Resource blockers
+
+Environment containers use a nonretainable `env-rootfs` blocker with exact `rw-env-<locatorId>` name and reservation label. The supervisor releases sandbox views first, then unmounts and removes the rootfs at step 5. Cgroups release at step 6. A finished workload can release these early; its ledger rows still settle through verified absence. Recovery treats Podman errors as unknown presence and quarantines anything it cannot prove absent.
 
 `server/stateBlockers.mjs` is the single module that touches the blocker tables. A blocker has a reservation ID (also its resource ID, never reused), a kind, an owning robot or none (worker-scoped), an owning execution and attempt or none, the owning generation, an immutable locator and, once, an identity tuple.
 

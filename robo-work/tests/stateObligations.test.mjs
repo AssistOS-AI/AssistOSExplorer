@@ -990,15 +990,16 @@ test('R-1: after a pause (fence revision 1) and a cancel through the paused refe
 
 // r10 Q1 = A. The Environment refusal belongs to admission validation only: the obligation REQUEST is an admission-time
 // payload, but recorded outbox data is not, and a refusal there would strand an accepted obligation's later revisions.
-test('r10 Q1 = A: an obligation request with a nonempty Environment is refused before any row; outbox data with an environment key still applies', (t) => {
+test('malformed obligation Environment is refused before any row; valid selection and generic outbox data apply', (t) => {
     const { dir, store } = setup(t);
     const alice = ownerRow('alice');
     const before = tableCounts(dir);
-    for (const environment of ['Repo/agent', ' ']) {
-        expectCode(assert, () => obligate(store, alice, 'flow-launch', { request: { flow: 'synthetic', environment } }), 'environment_unavailable');
+    for (const environment of ['a/b/c', ' ', '../agent']) {
+        expectCode(assert, () => obligate(store, alice, 'flow-launch', { request: { flow: 'synthetic', environment } }), 'invalid_request');
     }
     expectCode(assert, () => obligate(store, alice, 'flow-launch', { request: { flow: 'synthetic', environment: 7 } }), 'invalid_request');
     assert.deepEqual(tableCounts(dir), before, 'nothing recorded for a refused obligation request');
+    succeeds(() => obligate(store, alice, 'flow-launch', { request: { flow: 'synthetic', environment: 'Repo/agent' } }), 'a valid Environment selection is admitted');
     succeeds(() => obligate(store, alice, 'flow-launch', { request: { flow: 'synthetic', environment: '' } }), 'a blank Environment is the ordinary backend');
     const { admitted } = launch(store);
     outbox(store, admitted.obligationId, 1, 0, 'bound', { capturedInputsDigest: 'abc' });

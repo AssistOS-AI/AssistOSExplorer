@@ -348,7 +348,7 @@ function sendCompletion(res, response) {
 // the catalog request badly, and ExecutionSetupError('model_unavailable') when the allowed id is not in its catalog.
 export async function createModelChannel({
     socketDirectory, configDirectory, allowed, upstream, activity = () => {}, log = () => {}, executionId = null,
-    now = Date.now, monotonic = () => performance.now(), port = MODEL_RELAY_PORT, providerId = PROVIDER_ID, admission = ADMISSION
+    now = Date.now, monotonic = () => performance.now(), port = MODEL_RELAY_PORT, providerId = PROVIDER_ID, admission = ADMISSION, signal
 }) {
     const socketPath = path.join(socketDirectory, MODEL_SOCKET_NAME);
     if (Buffer.byteLength(socketPath) > SOCKET_PATH_MAX) throw new ExecutionSetupError('model_channel_unavailable');
@@ -356,7 +356,10 @@ export async function createModelChannel({
     // The catalog check (15 s): the model must exist before anything is published, so a typo or a retired model fails fast and plainly.
     let metadata;
     try {
-        const answer = await upstream.request({ operation: 'models', signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS), totalTimeoutMs: CATALOG_TIMEOUT_MS });
+        if (signal?.aborted) throw new ExecutionSetupError('model_channel_unavailable');
+        const timeout = AbortSignal.timeout(CATALOG_TIMEOUT_MS);
+        const answer = await upstream.request({ operation: 'models', signal: signal ? AbortSignal.any([signal, timeout]) : timeout, totalTimeoutMs: CATALOG_TIMEOUT_MS });
+        if (signal?.aborted) throw new ExecutionSetupError('model_channel_unavailable');
         if (!answer.ok) {
             log('model_channel_catalog_failed', { executionId, status: answer.status });
             throw new ExecutionSetupError('model_channel_unavailable');
@@ -505,18 +508,24 @@ export async function createModelChannel({
     server.timeout = 0;
     server.keepAliveTimeout = 1000;
     server.maxConnections = MAX_CONNECTIONS;
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
-
-    async function close() {
-        closed = true;
-        for (const controller of controllers) controller.abort();
-        await new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); });
+    let closing = null;
+    function close() {
+        closing ??= (async () => {
+            closed = true;
+            for (const controller of controllers) controller.abort();
+            await new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); });
+        })();
+        return closing;
     }
 
     // The configuration is written after the socket listens, so a workload never sees a config without a channel.
     try {
+        if (signal?.aborted) throw new ExecutionSetupError('model_channel_unavailable');
+        await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
+        if (signal?.aborted) throw new ExecutionSetupError('model_channel_unavailable');
         const config = `${JSON.stringify(openCodeConfig({ id: allowed, model: metadata.get(allowed), port, providerId }), null, 2)}\n`;
         await fs.writeFile(path.join(configDirectory, OPENCODE_CONFIG_NAME), config, { flag: 'wx', mode: 0o644 });
+        if (signal?.aborted) throw new ExecutionSetupError('model_channel_unavailable');
     } catch {
         await close();
         throw new ExecutionSetupError('model_channel_unavailable');

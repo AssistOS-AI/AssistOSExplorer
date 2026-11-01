@@ -311,6 +311,19 @@ export function createProcView({
         } catch { return null; }
     }
 
+    function cgroupContext() {
+        const subtree = cgroupSubtreeIdentity();
+        if (!subtree) return null;
+        try { return { dev: subtree.dev, ino: subtree.ino, namespace: nsLink('self', 'cgroup') }; }
+        catch { return null; }
+    }
+
+    function matchesCgroupContext(locator) {
+        if (!locator?.context) return true; // Legacy locators predate Environment cgroups.
+        const current = cgroupContext();
+        return current !== null && ['dev', 'ino', 'namespace'].every((key) => typeof locator.context[key] === 'string' && locator.context[key] === current[key]);
+    }
+
     // Whether the sandbox supervisor named by the locator is present, from its own S1 record: committed { pid, startTime }, or its
     // marker if it never committed. An unreadable record is present.
     function sandboxPresent(locator) {
@@ -346,7 +359,7 @@ export function createProcView({
     function exists(kind, locator) {
         switch (kind) {
             case 'runtime-dir': return !locatorPathAbsent(runtimeRoot, 'x/', locator?.path);
-            case 'cgroup': return cgroupSubtreeIdentity() === null || !locatorPathAbsent(cgroupSubtree, 'x-', locator?.path);
+            case 'cgroup': return !matchesCgroupContext(locator) || cgroupSubtreeIdentity() === null || !locatorPathAbsent(cgroupSubtree, 'x-', locator?.path);
             case 'pty': return ptyPresent(locator);
             default: return true; // veth, nft-table, GUI kinds and anything unknown: never proven absent here
         }
@@ -371,7 +384,7 @@ export function createProcView({
     }
 
     function remove(kind, locator) {
-        if (kind === 'cgroup' && cgroupSubtreeIdentity() === null) return false;
+        if (kind === 'cgroup' && (!matchesCgroupContext(locator) || cgroupSubtreeIdentity() === null)) return false;
         if (kind === 'runtime-dir' || kind === 'cgroup') {
             const root = kind === 'runtime-dir' ? runtimeRoot : cgroupSubtree;
             const infix = kind === 'runtime-dir' ? 'x/' : 'x-';
@@ -392,6 +405,7 @@ export function createProcView({
     return {
         cgroupSubtree,
         cgroupSubtreeIdentity,
+        cgroupContext,
         listProcesses,
         listMounts,
         exists,

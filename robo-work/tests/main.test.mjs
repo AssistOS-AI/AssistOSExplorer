@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 import { COORDINATOR_ADMISSION_TOOL, computeRchHttp, rawBodyHash } from '../server/coordinatorAuth.mjs';
@@ -183,6 +184,61 @@ test('bootstrap: signed coordinator calls reach the store; provision prepares th
     await assert.rejects(post(worker.coordinatorPort, hop('robots/list', {})), /ECONNREFUSED|ECONNRESET/u);
     assert.ok(logs.some((entry) => entry.event === 'listening' && entry.sandbox === true));
     assert.equal(JSON.stringify(logs).includes(SECRET_HEX), false, 'the secret is never logged');
+});
+
+test('Environment listing uses the signed coordinator route and startup GC follows recovery and the orphan sweep', async (t) => {
+    const root = makeTempDir(t); fs.mkdirSync(path.join(root, 'ws'));
+    const events = [];
+    const environments = [{ ref: 'fixtures/env', name: 'env', repo: 'fixtures', about: 'Fixture', available: false, reason: 'runtime_unavailable' }];
+    const worker = await startWorker({ env: environment(root), overrides: {
+        preflight: { ok: false, missing: ['bwrap'], masks: [], reason: 'test' }, alaRoot: null,
+        config: { coordinatorHost: '127.0.0.1' }, log: () => {},
+        podman: { initialize() {}, available: false, close() {} },
+        recover: async (store) => { events.push('recovery'); const started = store.beginGenerationRecovery(store.generationId); store.completeGenerationRecovery(started.generationId); },
+        environments: { list: async () => environments, recoverOrphans: async () => { events.push('sweep'); }, gc: async () => { events.push('gc'); }, close() {} },
+    } });
+    t.after(() => worker.close());
+    assert.deepEqual(events.slice(0, 3), ['recovery', 'sweep', 'gc']);
+    assert.deepEqual(await post(worker.coordinatorPort, hop('environments/list', {})), { status: 200, body: { environments } });
+    assert.equal((await post(worker.coordinatorPort, hop('environments/list', { owner: 'injected' }))).status, 400);
+    const config = readConfig({ ...environment('/tmp/x'), ROBO_WORK_CGROUP_SUBTREE: '/explicit', PLOINKY_CGROUP_SUBTREE: '/generic' });
+    assert.equal(config.cgroupSubtree, '/explicit');
+    assert.equal(readConfig({ ...environment('/tmp/x'), ROBO_WORK_CGROUP_SUBTREE: '', PLOINKY_CGROUP_SUBTREE: '/generic' }).cgroupSubtree, null);
+});
+
+test('operator SIGUSR2 invokes the current Environment GC, bounds errors, coalesces signals and removes only its handler on close', async (t) => {
+    const root = makeTempDir(t); fs.mkdirSync(path.join(root, 'ws'));
+    const signals = new EventEmitter(); const untouched = () => {};
+    signals.on('SIGUSR2', untouched);
+    const logs = []; let gcCalls = 0; let finishGc;
+    const worker = await startWorker({ env: environment(root), overrides: {
+        signalSource: signals, preflight: { ok: false, missing: ['bwrap'], masks: [], reason: 'test' }, alaRoot: null,
+        config: { coordinatorHost: '127.0.0.1' }, log: (event, fields) => logs.push({ event, ...fields }),
+        podman: { initialize() {}, available: false, close() {} },
+        recover: async (store) => { const started = store.beginGenerationRecovery(store.generationId); store.completeGenerationRecovery(started.generationId); },
+        environments: { list: async () => [], recoverOrphans: async () => {}, close() {}, gc: async () => {
+            gcCalls += 1;
+            if (gcCalls === 1) return; // startup
+            if (gcCalls === 2) return new Promise((resolve) => { finishGc = resolve; });
+            throw new Error('private registry text must not be logged');
+        } },
+    } });
+    t.after(() => worker.close());
+    assert.equal(signals.listenerCount('SIGUSR2'), 2);
+    signals.emit('SIGUSR2'); signals.emit('SIGUSR2');
+    await wait(() => finishGc, 'operator GC started');
+    assert.equal(gcCalls, 2, 'the current manager is invoked once for overlapping operator signals');
+    assert.ok(logs.some((entry) => entry.event === 'environment_gc_operator' && entry.reason === 'already_running'));
+    finishGc();
+    await wait(() => logs.some((entry) => entry.event === 'environment_gc_operator' && entry.state === 'completed'), 'operator completion');
+    signals.emit('SIGUSR2');
+    await wait(() => logs.some((entry) => entry.event === 'environment_gc_operator' && entry.state === 'failed'), 'bounded operator failure');
+    assert.equal(JSON.stringify(logs).includes('private registry text'), false);
+    assert.ok(logs.some((entry) => entry.reason === 'gc_failed'));
+    await worker.close();
+    assert.deepEqual(signals.listeners('SIGUSR2'), [untouched]);
+    signals.emit('SIGUSR2'); await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(gcCalls, 3, 'closed workers do not collect');
 });
 
 test('a worker whose sandbox preflight failed starts, answers reads and refuses provisioning with runtime_unavailable', async (t) => {

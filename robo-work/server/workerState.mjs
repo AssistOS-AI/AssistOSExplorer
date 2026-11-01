@@ -1,7 +1,7 @@
 import {
     ACTIVE_STATES, LOGICAL_KINDS, PROCESS_TREE_KIND, REFERENCE_VERSION, TERMINAL_KIND, TERMINAL_STATES, WorkerStateError, byteLength, canonicalJson,
     isPublicReferenceId, deriveFlowLogicalId, deriveOperationId, digest, exactObject, fail, hasOriginRow, isOriginId, randomId, requireContext,
-    refuseEnvironmentSelection, robotOwnerOf,
+    validateEnvironmentSelection, robotOwnerOf,
     validateAdmissionRequest, validateAttemptOutcome, validateConfiguration, validateInternalId, validateLimits, validateName,
     validateOperationId, validateRevision, validateSpecification, isInternalId
 } from './stateProtocol.mjs';
@@ -1070,7 +1070,7 @@ class WorkerState {
         const operationId = validateOperationId(request.operationId);
         if (!isOriginId(request.originRequestId)) fail('invalid_request');
         if (!OBLIGATION_KINDS.includes(request.obligationKind)) fail('invalid_request');
-        refuseEnvironmentSelection(request.request);
+        validateEnvironmentSelection(request.request);
         validateSpecification(request.request, this.#limits);
         let continuationOf = null;
         if (request.obligationKind === 'flow-continuation') {
@@ -1894,7 +1894,7 @@ class WorkerState {
         if (Object.hasOwn(request.locator, 'marker')) fail('invalid_request');
         const processBearing = request.processBearing === true;
         // Retention is an end-path decision (retainResource); a process-bearing resource is never retained.
-        if (request.retained === true && (request.executionId !== undefined || processBearing || request.kind === PROCESS_TREE_KIND)) fail('invalid_request');
+        if (request.retained === true && (request.executionId !== undefined || processBearing || request.kind === PROCESS_TREE_KIND || request.kind === 'env-rootfs')) fail('invalid_request');
         return this.#mutate('reserveResource', (db, generation) => {
             const resourceId = randomId();
             let robotId = request.robotId ?? null;
@@ -1989,7 +1989,7 @@ class WorkerState {
             if (blocker.retained === 1) return { resourceId: blocker.resource_id, retained: true };
             if (blocker.generation_id !== generation.id) fail('stale_generation');
             if (blocker.robot_id === null) fail('invalid_request');
-            if (blocker.process_bearing === 1 || blocker.kind === PROCESS_TREE_KIND) fail('invalid_request');
+            if (blocker.process_bearing === 1 || blocker.kind === PROCESS_TREE_KIND || blocker.kind === 'env-rootfs') fail('invalid_request');
             if (blocker.attempt_id !== null) {
                 const attempt = db.prepare('SELECT state FROM admission WHERE attempt_id = ?').get(blocker.attempt_id);
                 if (!attempt || TERMINAL_STATES.includes(attempt.state)) fail('operation_conflict');
@@ -2032,6 +2032,15 @@ class WorkerState {
             const active = db.prepare("SELECT id FROM generation WHERE state = 'active'").get();
             return db.prepare("SELECT * FROM resource_blocker WHERE release_state IN ('reserved', 'committed') ORDER BY created_at, resource_id").all()
                 .map((row) => ({ ...publicBlocker(row), current: row.generation_id === active.id }));
+        });
+    }
+
+    // Internal startup sweep lookup. Include quarantined rows: automatic cleanup cannot clear an operator-owned quarantine.
+    findEnvironmentRootfs({ name }) {
+        if (typeof name !== 'string' || !/^rw-env-[a-f0-9]{32}$/u.test(name)) fail('invalid_request');
+        return this.#state.read((db) => {
+            const row = db.prepare("SELECT * FROM resource_blocker WHERE kind = 'env-rootfs' AND json_extract(locator, '$.name') = ?").get(name);
+            return row ? publicBlocker(row) : null;
         });
     }
 

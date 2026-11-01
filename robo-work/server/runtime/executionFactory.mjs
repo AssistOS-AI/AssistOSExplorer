@@ -131,7 +131,8 @@ export function codeBinds({ serverDir, alaRoot, nodePath = process.execPath }) {
 // `runtime_sources_unavailable` (fail closed); a launch without a writable grant does not need it.
 export function createExecutionFactory({
     store, robots, launcher, view, walker, clock, workspaceRoot, runtimeDir, serverDir, alaRoot, nodePath = process.execPath,
-    log = () => {}, activityTickMs = WATCHDOG_TICK_MS, modelUpstream = null, runtimeSources = null, deps = {}
+    log = () => {}, activityTickMs = WATCHDOG_TICK_MS, modelUpstream = null, runtimeSources = null, deps = {},
+    environments = null, podman = null, workspaceId = null, cgroupSubtree = null, environmentLimits = {}
 }) {
     const make = {
         supervisor: deps.createExecutionSupervisor ?? createExecutionSupervisor,
@@ -209,7 +210,7 @@ export function createExecutionFactory({
                     launcher, view, roles, home: { path: where.home, fd: homeFd }, grants: resolved, mode: utility ? 'utility' : 'terminal',
                     onInfrastructureLoss: (reason) => lost.resolve(`infrastructure_lost:${reason}`)
                 });
-                const layout = { runtimeDir, cgroupSubtree: path.join(runtimeDir, 'cgroup') };
+                const layout = { runtimeDir, cgroupSubtree, cgroupContext: view.cgroupContext?.() ?? null };
                 const ledger = make.ledger({
                     state: store, context, robotId: item.robotId, executionId: item.executionId, attemptId: item.attemptId,
                     referenceId: null, layout, sandbox: supervisor, walker, clock
@@ -221,9 +222,10 @@ export function createExecutionFactory({
             }
         },
 
-        async open({ item, plan, context, channels = {}, activity = () => {} }) {
+        async open({ item, plan, context, channels = {}, activity = () => {}, signal }) {
             const fds = [];
             const grants = [];
+            let preparedEnvironment = null;
             const lost = deferred();
             // `lost` preserves its first event for existing callers. Infrastructure loss must also remain observable when
             // ordinary endpoint EOF won that promise first (short utilities may accept EOF while draining a successful exit).
@@ -231,8 +233,19 @@ export function createExecutionFactory({
             const closeAll = async () => {
                 for (const fd of fds.splice(0)) { try { make.closeFd(fd); } catch { /* closed */ } }
                 for (const grant of grants.splice(0)) { try { await grant.close(); } catch { /* closed */ } }
+                if (preparedEnvironment) { preparedEnvironment.release(); preparedEnvironment = null; }
+                if (plan.environment && environments) await environments.gc();
             };
             try {
+                if (plan.environment) {
+                    if (!environments || !cgroupSubtree || !view.cgroupContext?.()) {
+                        log('environment_unavailable', { reason: !environments ? 'runtime_unavailable' : 'limits_unavailable' });
+                        throw new ExecutionSetupError('environment_unavailable');
+                    }
+                    try { preparedEnvironment = await environments.prepare({ ref: plan.environment, activity, signal }); }
+                    catch { throw new ExecutionSetupError('environment_unavailable'); }
+                    if (signal?.aborted) throw new ExecutionSetupError('environment_unavailable');
+                }
                 const where = robots.paths(item.robotId);
                 const open = (target) => { const fd = make.openDirectory(target); fds.push(fd); return fd; };
                 let homeFd;
@@ -294,10 +307,18 @@ export function createExecutionFactory({
                         ]
                     },
                     endpoint: { ...common, env: {}, argv: [code.node, '--import', `${OPT}/fdTrim.mjs`, `${OPT}/execution/providerEndpointMain.mjs`] },
-                    workload: { roBinds: [...image.roBinds, ...(image.toolBinds ?? [])], symlinks: image.symlinks }
+                    workload: preparedEnvironment ? {
+                        environment: preparedEnvironment, symlinks: [],
+                        roBinds: [
+                            { source: TOOLS, dest: '/rw-opt/tools' }, { source: preparedEnvironment.contract.tools.node, dest: '/rw-opt/node/bin/node' },
+                            { source: path.join(serverDir, 'sandbox', 'environment-bin'), dest: '/rw-opt/bin' },
+                            { source: path.dirname(preparedEnvironment.contract.caBundle), dest: '/rw-opt/ca' },
+                        ],
+                    } : { roBinds: [...image.roBinds, ...(image.toolBinds ?? [])], symlinks: image.symlinks }
                 };
                 const supervisor = make.supervisor({
                     launcher, view, admission, roles, home: { path: where.home, fd: homeFd }, grants: resolved, skills, activityWalk: sharedActivityWalk,
+                    cgroupSubtree, environmentResources: { podman, workspaceId, executionId: item.executionId, limits: environmentLimits, log },
                     modelChannel: gatewayModel === null ? null : { directory: MODEL_DIRECTORY_VIEW, configPath: OPENCODE_CONFIG_VIEW },
                     onInfrastructureLoss: (reason) => {
                         infrastructureLost.resolve();
@@ -306,7 +327,7 @@ export function createExecutionFactory({
                 });
                 // referenceId stays null: the ledger would read the reference back with the adapter context, which the store (rightly) does
                 // not let see an owner's reference (scope and 'read' operation), and the dispatcher does not use that read.
-                const layout = { runtimeDir, cgroupSubtree: path.join(runtimeDir, 'cgroup') };
+                const layout = { runtimeDir, cgroupSubtree, cgroupContext: view.cgroupContext?.() ?? null };
                 const ledger = make.ledger({
                     state: store, context, robotId: item.robotId, executionId: item.executionId, attemptId: item.attemptId,
                     referenceId: null, layout, sandbox: supervisor, walker, clock
@@ -358,15 +379,40 @@ export function createExecutionFactory({
 
     function buildExecution({ supervisor, ledger, admission, closeAll, lost: lostRef, infrastructureLost, channels, activity, gatewayModel, gatewayProvider, executionId, writeGrants = [] }) {
         let endpointServer = null;
-        let hosted = null;
         let model = null;
         let tree = null;
         let ended = null;
+        let ending = false;
+        const startupResources = new Set();
         let activityTicker = null;
         let unwatch = null;
         const exitedControl = deferred();
         const exited = exitedControl.promise;
         const revokedControl = deferred();
+        const requireStarting = () => { if (ending) throw new ExecutionSetupError('execution_ending'); };
+        async function allocateStartup(open) {
+            requireStarting();
+            const resource = { controller: new AbortController(), promise: null, handle: null };
+            // Own the actual allocator before it can yield. End drains this promise, never the whole start() that may
+            // itself be waiting for the end path after an error. Keep late handles even before the caller assigns them.
+            startupResources.add(resource);
+            resource.promise = Promise.resolve().then(() => { requireStarting(); return open(resource.controller.signal); })
+                .then((handle) => { resource.handle = handle; return handle; });
+            const handle = await resource.promise;
+            requireStarting();
+            return handle;
+        }
+        async function closeStartup() {
+            for (const resource of startupResources) resource.controller.abort();
+            await Promise.allSettled([...startupResources].map((resource) => resource.promise));
+            let failed = false;
+            // Preserve the existing model-before-callback-channel close order, while still attempting every owned handle.
+            for (const resource of [...startupResources].reverse()) {
+                if (resource.handle === null) continue;
+                try { await resource.handle.close(); } catch { failed = true; }
+            }
+            if (failed) throw new ExecutionSetupError('startup_cleanup_unverified');
+        }
         return {
             exited,
             lost: lostRef.promise,
@@ -377,32 +423,46 @@ export function createExecutionFactory({
             // M-43 (a): the last upstream error the model channel saw ({ status, message }), or null.
             lastModelError: () => model?.lastError() ?? null,
             async start() {
+                requireStarting();
                 if (ended === null && unwatch === null) unwatch = sourceWatch.register({ executionId, grants: writeGrants, onOverlap: (reason) => revokedControl.resolve(reason) });
                 await ledger.startKeeper();
+                requireStarting();
                 await ledger.publish({ kind: 'runtime-dir' });
+                requireStarting();
+                try { await supervisor.prepareEnvironment?.(ledger); }
+                catch (error) {
+                    log('environment_unavailable', { reason: /^[a-z_]{1,48}$/u.test(error?.reason ?? '') ? error.reason : 'runtime_unavailable' });
+                    throw new ExecutionSetupError('environment_unavailable');
+                }
+                requireStarting();
                 // The admitted channels live in the channels directory of the runtime directory (read-only in every workload).
                 if (channels.taskFailure || channels.humanInput || channels.workflowCatalog) {
-                    hosted = await make.channels({ directory: `${supervisor.runtimeDir}/channels`, taskFailure: channels.taskFailure ?? null, humanInput: channels.humanInput ?? null, workflowCatalog: channels.workflowCatalog ?? null });
+                    await allocateStartup((signal) => make.channels({ directory: `${supervisor.runtimeDir}/channels`, taskFailure: channels.taskFailure ?? null, humanInput: channels.humanInput ?? null, workflowCatalog: channels.workflowCatalog ?? null, signal }));
                 }
+                requireStarting();
                 // M-26: the Soul Gateway model channel of an OpenCode robot with a gateway model. Its socket is in the `model/` directory,
                 // which only the endpoint sandbox sees; the endpoint relays 127.0.0.1:MODEL_RELAY_PORT of the execution network to it.
                 if (gatewayModel !== null) {
                     if (modelUpstream === null) throw new ExecutionSetupError('model_channel_unavailable');
-                    model = await make.modelChannel({
+                    model = await allocateStartup((signal) => make.modelChannel({
                         socketDirectory: `${supervisor.runtimeDir}/model`, configDirectory: `${supervisor.runtimeDir}/channels`,
-                        allowed: gatewayModel, providerId: gatewayProvider, upstream: modelUpstream, activity, log, executionId
-                    });
+                        allowed: gatewayModel, providerId: gatewayProvider, upstream: modelUpstream, activity, log, executionId, signal
+                    }));
                 }
+                requireStarting();
                 await ledger.publish({ kind: 'netns' });
+                requireStarting();
                 await ledger.publish({
                     kind: 'endpoint',
                     spec: { config: { streamDirectory: STREAM_DIRECTORY, relays: model === null ? [] : [{ port: MODEL_RELAY_PORT, target: { path: MODEL_SOCKET_VIEW } }] } }
                 });
+                requireStarting();
                 endpointServer = make.endpointServer({
                     socket: supervisor.endpointSocket, admission, sandbox: observed(supervisor.providerSandbox(ledger), activity), limits: endpointLimits, log,
                     onEnd: (reason) => { if (ended === null) lostRef.resolve(`endpoint_ended:${reason}`); }
                 });
                 const published = await ledger.publish({ kind: 'process-tree', spec: { role: 'orchestration' } });
+                requireStarting();
                 tree = published.handle;
                 // M-35: on each watchdog tick a workload that used CPU (or appeared) is activity of the attempt, so a silent but busy
                 // attempt is not ended as inactive; an idle one is. The 4 h maximum still bounds a busy loop.
@@ -413,16 +473,17 @@ export function createExecutionFactory({
                 tree.wait().then(({ exitCode, signal }) => exitedControl.resolve({ exitCode, signal }), (error) => exitedControl.reject(error));
                 return supervisor.controlStreams;
             },
-            // The section 5.5 end path (step 1, beginAttemptEnd, is the ledger's first act), then the local cleanup.
+            // Drain startup owners, then run the ledger's section 5.5 end path and close local grants/image pins.
             end(outcome) {
+                ending = true;
                 ended ??= (async () => {
                     if (activityTicker !== null) { make.timers.clearInterval(activityTicker); activityTicker = null; }
                     if (unwatch !== null) { unwatch(); unwatch = null; }
+                    endpointServer?.end('execution_ended');
+                    // Abort/drain non-ledger allocations and close even late handles before resource proofs or image-pin
+                    // release. A failed close remains unknown: do not publish clean cleanup or release that attempt pin.
+                    await closeStartup();
                     try {
-                        endpointServer?.end('execution_ended');
-                        // In-flight model requests are aborted, then the channel is closed, before the process trees are ended.
-                        await model?.close().catch(() => {});
-                        await hosted?.close().catch(() => {});
                         return await ledger.endExecution(outcome);
                     } finally {
                         await supervisor.exit().catch(() => {});

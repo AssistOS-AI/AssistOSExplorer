@@ -24,7 +24,7 @@ import crypto from 'node:crypto';
 
 export const RESOURCE_KINDS = Object.freeze([
     'keeper', 'endpoint', 'process-tree', 'netns', 'veth', 'nft-table', 'mount', 'pty', 'runtime-dir', 'cgroup',
-    'gui-container', 'gui-view'
+    'gui-container', 'gui-view', 'env-rootfs'
 ]);
 export const PROCESS_BEARING_KINDS = Object.freeze(['keeper', 'endpoint', 'process-tree']);
 
@@ -47,10 +47,11 @@ export function deriveLocator(kind, id, layout, extra = {}) {
     const digest = sha256Hex(id);
     switch (kind) {
         case 'runtime-dir': return { path: `${absolute(layout.runtimeDir, 'runtimeDir')}/x/${id}` };
-        case 'cgroup': return { path: `${absolute(layout.cgroupSubtree, 'cgroupSubtree')}/x-${id}` };
+        case 'cgroup': return { path: `${absolute(layout.cgroupSubtree, 'cgroupSubtree')}/x-${id}`, ...(layout.cgroupContext ? { context: layout.cgroupContext } : {}) };
         case 'nft-table': return { table: `rw_${digest.slice(0, 16)}` };
         case 'veth': return { host: `rw${digest.slice(0, 10)}h`, peer: `rw${digest.slice(0, 10)}n` };
         case 'gui-container': return { name: `rw-gui-${id}`, label: `robo-work.reservation=${id}` };
+        case 'env-rootfs': return { name: `rw-env-${id}`, label: `robo-work.reservation=${id}` };
         case 'gui-view': return { mountpoint: `${absolute(layout.runtimeDir, 'runtimeDir')}/gui/${id}/${extra.grant ?? 'view'}` };
         case 'netns': return { netns: id };
         case 'mount': return { mount: id };

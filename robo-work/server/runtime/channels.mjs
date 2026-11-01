@@ -87,8 +87,9 @@ function serve({ socketPath, route, token, handle }) {
 
 // `taskFailure({message}) -> {}` and `humanInput({question, options}) -> {id, instruction?}` are the durable handlers; either may be
 // absent (the channel is then not created). Returns { close() }.
-export async function createExecutionChannels({ directory, taskFailure = null, humanInput = null, workflowCatalog = null }) {
+export async function createExecutionChannels({ directory, taskFailure = null, humanInput = null, workflowCatalog = null, signal }) {
     const servers = [];
+    const checkCancelled = () => { if (signal?.aborted) throw Object.assign(new Error('channel_creation_cancelled'), { code: 'ABORT_ERR' }); };
     const defs = [
         ['task-failure', '/report-task-blocked', taskFailure && (async (input) => taskFailure(parseFailure(input)))],
         ['human-input', '/require-human-input', humanInput && (async (input) => {
@@ -97,19 +98,26 @@ export async function createExecutionChannels({ directory, taskFailure = null, h
         })]
     ];
     try {
+        checkCancelled();
         if (workflowCatalog) {
             const catalogDir = path.join(directory, 'workflow-catalog');
             await fs.mkdir(catalogDir, { mode: 0o700 });
+            checkCancelled();
             servers.push(await serveWorkflowCatalog(path.join(catalogDir, 'request.sock'), workflowCatalog));
+            checkCancelled();
         }
         for (const [name, route, handle] of defs) {
             if (!handle) continue;
             servers.push(await serve({ socketPath: path.join(directory, `${name}.sock`), route, token: null, handle }));
+            checkCancelled();
             const compat = path.join(directory, name);
             const token = crypto.randomBytes(32).toString('hex');
             await fs.mkdir(compat, { mode: 0o700 });
+            checkCancelled();
             await fs.writeFile(path.join(compat, 'context.json'), JSON.stringify({ token }), { mode: 0o600 });
+            checkCancelled();
             servers.push(await serve({ socketPath: path.join(compat, 'request.sock'), route, token, handle }));
+            checkCancelled();
         }
     } catch (error) {
         workflowCatalog?.close();

@@ -1090,7 +1090,7 @@ test('default runtime: obligation admission is runtime_unavailable with zero obl
 // during admission validation, before any row is written and before the dispatcher could start a process, on every row
 // (owner, MCP, background) and for every kind (task, continuation, turn) and for the obligation request. The dispatcher
 // below runs over the same real store with a counting factory; the blank-Environment control proves the counter can move.
-test('AC14: a nonempty Environment admission is refused environment_unavailable with zero rows and zero process starts', async (t) => {
+test('Environment: flow selection reaches dispatch once; malformed/turn refused; direct tasks never reach a launcher', async (t) => {
     const dir = makeTempDir(t);
     const store = openExtended(dir);
     t.after(() => store.close());
@@ -1102,46 +1102,53 @@ test('AC14: a nonempty Environment admission is refused environment_unavailable 
         permissions: 'full-access', ...extra
     });
     const spawns = [];
-    const factory = { async open({ item }) { spawns.push(item.executionId); throw new Error('counted start'); } };
+    const ends = [];
+    const factory = { async open({ item, plan }) {
+        spawns.push({ item, plan });
+        throw Object.assign(new Error('unavailable'), { reason: 'environment_unavailable' });
+    } };
     const dispatcher = createDispatcher({
         store, workspaceId: WORKSPACE, workspaceRoot: '/ws', factory,
-        options: { pollMs: 10, controlPollMs: 10, drainMs: 100, exitGraceMs: 80, failureAbortMs: 20 }
+        options: { pollMs: 10, controlPollMs: 10, drainMs: 100, exitGraceMs: 80, failureAbortMs: 20 },
+        log: (event, fields) => { if (event === 'attempt_end') ends.push(fields); },
     });
     t.after(() => dispatcher.close());
     dispatcher.start();
     const before = counts(dir);
     const beforeObligations = obligationCounts(dir);
+    const beforeResources = count(dir, 'resource_blocker');
     const environment = 'Repo/agent';
     const owner = (extra, specification) => hop(secret, admitBody(robotId, newOriginId(), { specification, ...extra }), { claims: ownerClaims('alice') });
     const refused = {
-        'owner task, v2': owner({}, specV2({ environment })),
-        'owner task, legacy specification': owner({}, { prompt: 'legacy', environment }),
         'owner task, blank-space value': owner({}, specV2({ environment: ' ' })),
-        'MCP task': hop(secret, mcpBody(secret, robotId, newOriginId(), {}, { specification: specV2({ environment }) })),
-        'background task': hop(secret, admitBody(robotId, newOriginId(), { bindingId: binding, specification: specV2({ environment }) })),
-        'owner continuation': owner({ kind: 'continuation', logical: { logicalId: newId() } }, specV2({ environment })),
-        'MCP continuation': hop(secret, mcpBody(secret, robotId, newOriginId(), {}, { kind: 'continuation', logical: { logicalId: newId() }, specification: specV2({ environment }) })),
+        'malformed ref': owner({}, specV2({ environment: 'a/b/c' })),
         'owner turn, v2': hop(secret, turnBody(robotId, newOriginId(), 'conv-env', { specification: specV2({ environment }) }), { claims: ownerClaims('alice') }),
         'owner turn, v1': hop(secret, turnBody(robotId, newOriginId(), 'conv-env', { specification: { version: 1, prompt: 'x', environment } }), { claims: ownerClaims('alice') })
     };
     for (const [label, request] of Object.entries(refused)) {
-        assert.throws(() => adapter.admit(request), (error) => error.name === 'WorkerStateError' && error.code === 'environment_unavailable', label);
+        assert.throws(() => adapter.admit(request), (error) => error.name === 'WorkerStateError' && error.code === 'invalid_request', label);
     }
     expectError(() => adapter.admit(owner({}, specV2({ environment: 7 }))), 'WorkerStateError', 'invalid_request');
-    // The obligation request is an admission-time payload too.
-    expectError(() => adapter.admitObligation(hop(secret, obligationBody(newOriginId(), { request: { flow: 'synthetic', environment } }), { path: OBLIGATIONS_PATH, claims: ownerClaims('alice') })),
-        'WorkerStateError', 'environment_unavailable');
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.deepEqual(counts(dir), before);
     assert.deepEqual(obligationCounts(dir), beforeObligations);
     assert.equal(count(dir, 'admission'), 0);
     assert.equal(count(dir, 'session'), 0);
     assert.equal(spawns.length, 0, 'no process start for a refused Environment');
-    // Controls: a blank Environment is the ordinary worker backend and reaches the factory.
+    const direct = adapter.admit(owner({}, specV2({ environment, workflowExecution: true })));
+    const flow = adapter.admit(hop(secret, admitBody(robotId, newOriginId(), { bindingId: binding, specification: specV2({ environment: 'rwenv-fixtures/nodeenv' }) })));
+    for (let waited = 0; ends.length < 1 && waited < 2000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(spawns.length, 1, 'only the flow reached image resolution, before any launcher');
+    assert.equal(spawns[0].item.logicalKind, 'flow');
+    assert.equal(spawns[0].plan.environment, 'rwenv-fixtures/nodeenv');
+    assert.ok(ends.some((entry) => entry.reason === 'environment_unavailable'));
+    assert.notEqual(direct.taskRef.id, flow.taskRef.id);
+    assert.equal(count(dir, 'resource_blocker'), beforeResources, 'resolution failure publishes no process resource');
+    // A blank Environment still reaches the ordinary factory path.
     const control = adapter.admit(owner({}, specV2({ environment: '' })));
     assert.equal(control.state, 'queued');
-    for (let waited = 0; spawns.length === 0 && waited < 2000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(spawns.length, 1, 'the counter moves for the ordinary backend');
+    for (let waited = 0; spawns.length < 2 && waited < 2000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(spawns.length, 2, 'the counter moves for the ordinary backend');
 });
 
 test('T5 models and agent-status authorize exactly as robots/get before touching the utility cache', async (t) => {

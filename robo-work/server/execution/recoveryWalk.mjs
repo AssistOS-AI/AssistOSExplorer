@@ -34,10 +34,10 @@ export const RELEASED = 'released';
 export const QUARANTINED = 'quarantined';
 
 // Dependency order of a walk: a resource is walked after everything that can hold it.
-const WALK_ORDER = ['keeper', 'endpoint', 'process-tree', 'pty', 'veth', 'nft-table', 'netns', 'mount', 'runtime-dir', 'cgroup', 'gui-view', 'gui-container'];
+const WALK_ORDER = ['keeper', 'endpoint', 'process-tree', 'pty', 'veth', 'nft-table', 'netns', 'mount', 'env-rootfs', 'runtime-dir', 'cgroup', 'gui-view', 'gui-container'];
 const PROCESS_KINDS = new Set(['keeper', 'endpoint', 'process-tree']);
 const NAMESPACE_KINDS = { netns: 'netNs', mount: 'mntNs' };
-const LOCATOR_KINDS = new Set(['veth', 'nft-table', 'runtime-dir', 'cgroup', 'pty', 'gui-container']);
+const LOCATOR_KINDS = new Set(['veth', 'nft-table', 'runtime-dir', 'cgroup', 'pty', 'gui-container', 'env-rootfs']);
 
 export function walkOrder(blockers) {
     const rank = (kind) => { const index = WALK_ORDER.indexOf(kind); return index < 0 ? WALK_ORDER.length : index; };
@@ -236,7 +236,7 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
             return { absent: left.length === 0, holders: left.map((mount) => ({ via: 'mountinfo', mountId: mount.mountId })) };
         }
         if (LOCATOR_KINDS.has(kind)) {
-            const present = view.exists(kind, blocker.locator);
+            const present = view.exists(kind, kind === 'env-rootfs' ? { ...blocker.locator, mergedPath: blocker.identity?.mergedPath } : blocker.locator);
             return { absent: !present, holders: present ? [{ via: 'locator' }] : [] };
         }
         // A kind this walker does not know cannot be proven absent.
@@ -270,7 +270,10 @@ export function createWalker({ view, clock, releaseDeadlineMs, pollMs, sandboxRe
         // that locator whether or not the identity was committed (the namespace inode is held by the /run/netns mount). A
         // removal that leaves something behind is not ignored: prove() asks the view again, finds it, and the walk ends quarantined.
         if (kind === 'netns') { if (view.exists?.('netns', blocker.locator) === true) view.remove?.('netns', blocker.locator); return; }
-        if (LOCATOR_KINDS.has(kind) && view.exists(kind, blocker.locator)) view.remove(kind, blocker.locator);
+        if (LOCATOR_KINDS.has(kind)) {
+            const locator = kind === 'env-rootfs' ? { ...blocker.locator, mergedPath: blocker.identity?.mergedPath } : blocker.locator;
+            if (view.exists(kind, locator)) view.remove(kind, locator);
+        }
     }
 
     // Force, then wait for proof of absence until the release deadline. `released` on proof, `quarantined` otherwise.

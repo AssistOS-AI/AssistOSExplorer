@@ -1,5 +1,11 @@
 # Test dependency exception
 
+## Environment runtime prerequisites
+
+Environment execution uses the worker image's pinned Podman 5.8.9 and containers/storage stack, plus its existing util-linux `setsid`, `kill`, `mount` and POSIX shell. The approved image build owns package pins, storage configuration, licenses and smoke checks in `container-image-builds/images/robo-work-worker/`. No package is installed or vendored by this worker change. Podman supplies image verification and disk-backed container layers; Node built-ins cannot replace that runtime. The worker checks its private runroot and refuses Environment acquisition when unavailable, while ordinary workloads remain usable. Installation and updates go through that image build and its source lock. Podman is Apache-2.0; system package notices and transitive dependency licenses remain in the built image. The worker does not redistribute their sources here.
+
+The image also supplies its schema-1 ABI contract, coding tools and copied CA bundle. Worker source owns the four fixed wrappers under `server/sandbox/environment-bin/`; the build checks their fixed targets. Removing Podman would require replacing the approved Environment rootfs backend. The shared Ploinky Agent library supplies signed `fetchAgentImages`; it is loaded from the runtime-selected Agent directory, never installed as a private dependency.
+
 Existing worker runtime prerequisites are documented in [README.md](README.md#storage), [confinement](README.md#confinement), and [runtime wiring](README.md#wiring-r10). This record covers only the additional environment prerequisite for `tests/sandbox/execWindow.test.mjs`. That Node test adds no npm package, compiler, vendored source, or production dependency.
 
 ## Python thread fixture

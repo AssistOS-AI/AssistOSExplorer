@@ -1,5 +1,4 @@
-// r10 Q1 = A preservation guard: the existing-agent Environment backend is not part of this version. Existing-agent
-// environments are refused in admission validation (stateProtocol.refuseEnvironmentSelection); no module under server/
+// Environment phases use a fresh image rootfs through the worker's ordinary launcher. No module under server/
 // may import an executionTarget library, a helper-ticket client or the helper's qualification or journal modules.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
