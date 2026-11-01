@@ -9,7 +9,7 @@ RoboTeam combines durable robot state with disposable browser or desktop contain
 
 ## Core Content
 
-RoboTeam owns the waiting manifest dependency `roboWorkAgent global`. Explorer retains `roboTeamAgent global no-wait` without listing RoboWork. Startup waits for RoboWork readiness, with a short retry for route-activation lag. RoboWork downtime yields a retryable error; workflow interruption is reconciled only after the first successful `run_list`. Startup ordering and independent restart behavior require live deployment checks.
+RoboTeam owns the waiting manifest dependency `roboWorkAgent global`. Explorer retains `roboTeamAgent global no-wait` without listing RoboWork. Startup waits for RoboWork readiness, with startup-only retries for exact typed 503 TARGET_INACTIVE and connection failures, using five delays totaling 5.75 seconds. Retries stop before RoboFlow initialization. RoboWork downtime yields a retryable error; workflow interruption is reconciled only after the first successful `run_list`. Startup ordering and independent restart behavior require live deployment checks.
 
 The Explorer RoboTeam toolbar button must open Explorer's shared `#agent-runtime-wait` route in a new tab, watching `AchillesIDE/roboTeamAgent` and targeting `/base-agent-additional-server/roboTeamAgent/3001/`. It must not navigate directly to the dashboard while startup may still be pending. Explorer must probe the dashboard and MCP readiness and wait for stable Router routes before navigation. Disabled or failed runtimes must show the shared explanatory state and retry controls.
 
