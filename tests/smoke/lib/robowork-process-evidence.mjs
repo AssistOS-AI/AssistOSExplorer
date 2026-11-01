@@ -79,7 +79,13 @@ export async function collectControllerProducer(initPid, record, options, io = n
     try {
         const before = fs.fstatSync(sourceFd, { bigint: true });
         assert.ok(before.isFile() && before.nlink === 1n && before.size > 0n && before.size <= 4n * 1024n * 1024n);
-        const source = fs.readFileSync(sourceFd), after = fs.fstatSync(sourceFd, { bigint: true });
+        const buffer = Buffer.alloc(4 * 1024 * 1024 + 1); let length = 0;
+        while (length < buffer.length) {
+            const size = fs.readSync(sourceFd, buffer, length, buffer.length - length, null);
+            if (!size) break; length += size;
+        }
+        assert.ok(length <= 4 * 1024 * 1024, 'Bounded controller source exceeded.');
+        const source = buffer.subarray(0, length), after = fs.fstatSync(sourceFd, { bigint: true });
         for (const key of ['dev', 'ino', 'uid', 'gid', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs']) assert.equal(before[key], after[key]);
         assert.equal(BigInt(source.length), before.size);
         sha256 = createHash('sha256').update(source).digest('hex'); assert.equal(sha256, options.scriptSha256);
