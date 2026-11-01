@@ -123,11 +123,52 @@ export async function readRegistryAndRuntime({ workspaceRoot, agentName = 'roboT
         mounts: runtime.Mounts.map(({ Type, Source, Destination, RW }) => ({ Type, Source, Destination, RW })) }));
 }
 
+// Executed only in the source- and mount-verified RoboWork container. The controller cannot
+// resolve its private home; carry the exact directory object and public native target instead.
+export async function readLiveSkillsHomeBinding({ robotId, robotName }, { dataRoot = '/data', fsApi,
+    emit = value => console.log(JSON.stringify(value)) } = {}) {
+    const assert = (await import('node:assert/strict')).default;
+    const fs = fsApi || await import('node:fs');
+    assert.match(robotId || '', /^[a-z0-9][a-z0-9-]{2,63}$/);
+    assert.equal(typeof robotName, 'string');
+    const root = `${dataRoot}/robots/${robotId}`, home = `${root}/home`, label = `${root}/label`;
+    const same = (first, second) => ['dev', 'ino', 'uid', 'gid', 'mode'].every(key => first[key] === second[key]);
+    const directory = filename => {
+        assert.equal(fs.realpathSync(filename), filename, 'Robot home path must remain canonical.');
+        const stat = fs.lstatSync(filename, { bigint: true });
+        assert.ok(stat.isDirectory(), 'Robot home path must be a real directory.');
+        return stat;
+    };
+    const paths = [dataRoot, `${dataRoot}/robots`, root, home], before = paths.map(directory);
+    assert.equal(fs.realpathSync(label), label, 'Robot home label must remain canonical.');
+    const observed = fs.lstatSync(label, { bigint: true });
+    assert.ok(observed.isFile() && observed.nlink === 1n && observed.size > 0n && observed.size <= 4096n);
+    const fd = fs.openSync(label, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    try {
+        const pinned = fs.fstatSync(fd, { bigint: true });
+        assert.ok(same(observed, pinned) && observed.size === pinned.size && observed.mtimeNs === pinned.mtimeNs && observed.ctimeNs === pinned.ctimeNs);
+        assert.equal(fs.realpathSync(`/proc/self/fd/${fd}`), label);
+        const bytes = fs.readFileSync(fd), record = JSON.parse(bytes);
+        assert.equal(record.id, robotId, 'Robot home belongs to another robot.');
+        assert.equal(record.name, robotName, 'Robot home label differs from the controller registration.');
+        for (const current of [fs.fstatSync(fd, { bigint: true }), fs.lstatSync(label, { bigint: true })]) {
+            assert.ok(same(observed, current) && observed.nlink === current.nlink && observed.size === current.size
+                && observed.mtimeNs === current.mtimeNs && observed.ctimeNs === current.ctimeNs && BigInt(bytes.length) === current.size,
+            'Robot home label changed during capture.');
+        }
+        assert.equal(fs.realpathSync(label), label);
+        assert.equal(fs.realpathSync(`/proc/self/fd/${fd}`), label);
+        paths.forEach((filename, index) => assert.ok(same(before[index], directory(filename)), 'Robot home directory changed during capture.'));
+        emit({ robotId, robotName, homeTarget: `/home/${robotId}`,
+            identity: Object.fromEntries(['dev', 'ino', 'uid', 'gid', 'mode'].map(key => [key, String(before[3][key])])) });
+    } finally { fs.closeSync(fd); }
+}
+
 // Executed inside the exact running RoboTeam container. Never instantiate RobotStore, execute helpers,
 // update settings, or read native auth/progress. All paths below are derived and confined.
 // `/data` and `/code` are runtime locations of the RoboTeam container. The workspace root is the admitted host path.
 export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, contractFiles, expectedRepository, workspaceRoot,
-    robotId, robotName, repositoryName, repositoryRoot, expectedAla },
+    robotId, robotName, repositoryName, repositoryRoot, expectedAla, expectedHome, sourceMapping = 'aliases' },
     { dataRoot = '/data', codeRoot = '/code', fsApi, emit = value => console.log(JSON.stringify(value)) } = {}) {
     const assert = (await import('node:assert/strict')).default;
     const fs = fsApi || await import('node:fs');
@@ -171,6 +212,10 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
     assert.equal(metadata.schema, 'roboteam-robot-v1');
     assert.equal(metadata.id, robotId);
     assert.equal(metadata.name, robotName);
+    assert.equal(expectedHome?.robotId, robotId, 'Home evidence belongs to another robot.');
+    assert.equal(expectedHome.robotName, robotName);
+    assert.equal(expectedHome.homeTarget, `/home/${robotId}`);
+    for (const field of ['dev', 'ino', 'uid', 'gid', 'mode']) assert.match(expectedHome.identity?.[field] || '', /^\d+$/);
     const registered = (metadata.skillsets || []).filter(source => source.name === repositoryName);
     assert.equal(registered.length, 1, 'Fixture source is not registered on the owned robot.');
     assert.equal(registered[0].source, repositoryRoot);
@@ -184,8 +229,7 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
     assert.equal(saved.cwd, workspace);
     if (saved.engine) {
         assert.equal(saved.engine.robotId, robotId);
-        assert.equal(saved.engine.home, `${robotRoot}/home`);
-        assert.equal(fs.realpathSync(saved.engine.home), saved.engine.home);
+        assert.equal(saved.engine.home, expectedHome.homeTarget, 'Native home differs from the owned RoboWork home.');
         assert.equal(saved.engine.cwd, workspace);
     }
     const transcriptFile = `${workspace}/.roboteam/.ala/sessions/${sessionId}.jsonl`;
@@ -229,7 +273,8 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
         turns: nativeSession.turns.map(({ turnId, user, final, status, startedAt, endedAt }) => ({ turnId, user, final, status, startedAt, endedAt })) };
     const capturedFiles = {}, liveLinks = {};
     let catalog = null;
-    const installed = await inspectSessionSkillLinks({ workspace, sessionId, execution: session.skillExecution }, { fsApi: fs });
+    assert.ok(['aliases', 'canonical'].includes(sourceMapping));
+    const installed = await inspectSessionSkillLinks({ workspace, sessionId, execution: session.skillExecution }, { fsApi: fs, sourceMapping });
     if (session.skillExecution) {
         const { links, directory } = installed;
         catalog = { revision: session.skillExecution.revision, links, entries: session.skillExecution.entries };
@@ -250,11 +295,14 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
             assert.equal(entries[0].identity, `${repositoryName}/${name}`);
             assert.equal(entries[0].sourcePath, source);
             assert.equal(link.source, source);
-            assert.equal(link.target, source);
-            assert.equal(fs.realpathSync(destination), source, 'Live skill link was retargeted.');
+            assert.equal(link.target, sourceMapping === 'aliases' ? session.skillExecution.mounts.find(mount => mount.source === source)?.target : source);
+            if (sourceMapping === 'canonical') assert.equal(fs.realpathSync(destination), source, 'Live skill link was retargeted.');
             capturedFiles[name] = { descriptorSha256: hash(bytes(`${source}/SKILL.md`, repositoryRoot)),
                 helperSha256: hash(bytes(`${source}/receipt.mjs`, repositoryRoot)) };
-            assert.equal(fs.realpathSync(destination), source, 'Live link changed during source read.');
+            if (sourceMapping === 'aliases') {
+                const stat = fs.lstatSync(`${source}/receipt.mjs`, { bigint: true });
+                capturedFiles[name].sourceIdentity = Object.fromEntries(['dev', 'ino', 'uid', 'gid', 'mode'].map(key => [key, String(stat[key])]));
+            } else assert.equal(fs.realpathSync(destination), source, 'Live link changed during source read.');
             assert.equal(fs.readlinkSync(destination), link.target);
             liveLinks[name] = { destination, linkTarget: link.target, resolvedSource: source };
         }
@@ -277,7 +325,7 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
             skillPolicyRef: session.skillPolicyRef, skillExecution: session.skillExecution, presentations,
             messages: session.messages.filter(message => ['user', 'assistant'].includes(message.role))
                 .map(({ id, role, text, status, turnId }) => ({ id, role, text, status, turnId })) },
-        native, catalog, capturedFiles, liveLinks, receipts, codeHashes, alaBinding: expectedAla, capturedAt: new Date().toISOString() });
+        native, catalog, capturedFiles, liveLinks, receipts, codeHashes, alaBinding: expectedAla, homeBinding: expectedHome, sourceMapping, capturedAt: new Date().toISOString() });
 }
 
 const RUNTIME_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -500,16 +548,22 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
             assert.match(fixture.robotId || '', /^[a-z0-9][a-z0-9-]{2,63}$/, 'An explicit owned robot ID is required.');
             assert.equal(fixture.repositoryRoot, `${hostWorkspace}/${fixture.repositoryName}`);
             const runtime = await binding(fixture.workspace, fixture.repositoryRoot);
+            const homeBinding = () => runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', executionSources.runtime.containerId,
+                'node', '--input-type=module', '-'], program(readLiveSkillsHomeBinding, { robotId: fixture.robotId, robotName: fixture.robotName }));
+            const expectedHome = await homeBinding();
             const snapshot = await runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
                 'node', '--input-type=module', '-'], program(readLiveSkillsSnapshot, {
                 sessionId, folder: fixture.folder, skillNames: [fixture.control.name, fixture.probe.name, fixture.added.name], contractFiles,
                 expectedRepository, workspaceRoot: hostWorkspace, robotId: fixture.robotId, robotName: fixture.robotName,
-                repositoryName: fixture.repositoryName, repositoryRoot: fixture.repositoryRoot, expectedAla,
+                repositoryName: fixture.repositoryName, repositoryRoot: fixture.repositoryRoot, expectedAla, expectedHome, sourceMapping: 'aliases',
             }));
             assert.equal(snapshot.workspaceRoot, hostWorkspace, 'The runtime capture used a different workspace root.');
             assert.deepEqual(snapshot.codeHashes, codeHashes, 'Running Copilot source differs from the verified checkout.');
             assert.deepEqual(snapshot.alaBinding, expectedAla, 'Runtime ALA evidence does not match selected source.');
+            assert.deepEqual(snapshot.homeBinding, expectedHome, 'Conversation capture used a different RoboWork home.');
+            assert.equal(snapshot.sourceMapping, 'aliases', 'Live capture requires the resident runtime source aliases.');
             await binding(fixture.workspace, fixture.repositoryRoot);
+            assert.deepEqual(await homeBinding(), expectedHome, 'Owned RoboWork home changed during conversation capture.');
             return snapshot;
         },
         async finish() {

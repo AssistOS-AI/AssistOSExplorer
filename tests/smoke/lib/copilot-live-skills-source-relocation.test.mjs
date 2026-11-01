@@ -5,7 +5,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { LIVE_SKILLS_CONTRACTS, readLiveSkillsCodeHashes } from './copilot-live-skills-runtime.mjs';
+import { LIVE_SKILLS_CONTRACTS, readLiveSkillsCodeHashes, readLiveSkillsHomeBinding } from './copilot-live-skills-runtime.mjs';
 import { createLiveSkillsFixture, liveSkillsHash } from './copilot-live-skills.mjs';
 const { operateLiveSkillsFixture } = await import(process.env.SMOKE_SOURCE_FIXTURE_MODULE || './copilot-live-skills-fixture-runtime.mjs');
 
@@ -13,6 +13,8 @@ const { createLiveSkillsRuntimeReader } = await import(process.env.SMOKE_SOURCE_
 const repositorySource = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/$/, '');
 const moved = ['server/soul-gateway-service.mjs', 'server/soul-gateway-opencode.mjs',
     'server/soul-gateway-connection.mjs', 'server/agent-model-config.mjs', 'server/robot-shell.mjs'];
+const homeEvidence = ({ robotId, robotName }) => ({ robotId, robotName, homeTarget: `/home/${robotId}`,
+    identity: { dev: '1', ino: '2', uid: '0', gid: '0', mode: '16832' } });
 
 function setup(t, agentName) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'source relocation ü ')));
@@ -71,6 +73,12 @@ function setup(t, agentName) {
             Config: { Env: [`PLOINKY_WORKSPACE_ROOT=${root}`], WorkingDir: root }, Mounts: state.outerMounts }];
         if (args[5] !== 'podman') return structuredClone(input.includes(`"agentName":"${agentName}"`) ? runtime : otherRuntime);
         const prefix = `(${readLiveSkillsCodeHashes.toString()})(`;
+        const homePrefix = `(${readLiveSkillsHomeBinding.toString()})(`;
+        if (input.startsWith(homePrefix)) {
+            assert.equal(args[8], (agentName === 'roboWorkAgent' ? runtime : otherRuntime).containerId, 'Home evidence must enter the exact RoboWork container.');
+            const value = homeEvidence(JSON.parse(input.slice(homePrefix.length, input.indexOf(').catch('))));
+            return state.onHome ? state.onHome(value) : value;
+        }
         if (!input.startsWith(prefix)) return state.onOperation();
         assert.ok(input.startsWith(prefix), 'Run the actual self-contained source reader.');
         const options = JSON.parse(input.slice(prefix.length, input.indexOf(').then(value =>')));
@@ -141,7 +149,7 @@ for (const operation of ['capture', 'fixtureOperation']) test(`controller ${oper
     const hashes = Object.fromEntries(LIVE_SKILLS_CONTRACTS.roboTeamAgent.map(file => [file, liveSkillsHash(fs.readFileSync(`${c.source}/${file}`))]));
     c.state.onOperation = () => {
         fs.appendFileSync(`${c.repository}/roboWorkAgent/${moved[0]}`, '\n// changed during operation\n');
-        return { prepared: true, workspaceRoot: c.root, codeHashes: hashes, alaBinding: {
+        return { prepared: true, workspaceRoot: c.root, codeHashes: hashes, homeBinding: homeEvidence(fixture), sourceMapping: 'aliases', alaBinding: {
             root: c.alaRoot, command: `${c.alaRoot}/bin/ala.mjs`, hashes: Object.fromEntries(['package.json', 'bin/ala.mjs', 'src/transcript.mjs']
                 .map(file => [file, liveSkillsHash(fs.readFileSync(`${c.alaRoot}/${file}`))])),
         } };
@@ -213,4 +221,17 @@ test('fixture source guard accepts the canonical /code bind object and rejects i
     await assert.rejects(run(), /verified source directory object/);
     assert.equal(descriptors.size, 0);
     assert.equal(fs.existsSync(fixture.workspace), false); assert.equal(fs.existsSync(fixture.repositoryRoot), false);
+});
+
+for (const invalid of ['canonical mapping', 'replaced home']) test(`production capture rejects ${invalid}`, async t => {
+    const c = setup(t, 'roboTeamAgent'), reader = await c.create(), fixture = createLiveSkillsFixture(c.root);
+    fixture.robotId = 'owned-live-robot'; let homeReads = 0;
+    c.state.onHome = value => { homeReads++; if (invalid === 'replaced home' && homeReads > 1) value.identity.ino = '99'; return value; };
+    c.state.onOperation = () => ({ workspaceRoot: c.root, codeHashes: Object.fromEntries(LIVE_SKILLS_CONTRACTS.roboTeamAgent.map(file =>
+        [file, liveSkillsHash(fs.readFileSync(`${c.source}/${file}`))])), homeBinding: homeEvidence(fixture),
+    sourceMapping: invalid === 'canonical mapping' ? 'canonical' : 'aliases', alaBinding: {
+        root: c.alaRoot, command: `${c.alaRoot}/bin/ala.mjs`, hashes: Object.fromEntries(['package.json', 'bin/ala.mjs', 'src/transcript.mjs']
+            .map(file => [file, liveSkillsHash(fs.readFileSync(`${c.alaRoot}/${file}`))])),
+    } });
+    await assert.rejects(reader.capture({ sessionId: randomUUID(), fixture }), invalid === 'canonical mapping' ? /source aliases/ : /home changed/);
 });
