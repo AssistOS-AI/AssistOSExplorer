@@ -204,6 +204,26 @@ test('auth refuses guests and stale/wrong-origin cookies and needs owned private
     await assert.rejects(openControllerSession({ config: {} }), error => error.code === 'CONTROLLER_PREREQUISITE');
 });
 
+test('controller cookies select root Router cookies from normal mixed-path browser state', () => {
+    const common = { domain: '127.0.0.1', expires: -1, secure: false };
+    const state = { cookies: [
+        { ...common, name: 'router-session', value: 'unit-session', path: '/' },
+        { ...common, name: 'router-csrf', value: 'unit-csrf', path: '/' },
+        { ...common, name: 'provider-session', value: 'unit-provider',
+            path: '/base-agent-additional-server/userPersistoAgent/7000/service/' },
+    ] };
+    assert.equal(cookieHeader(state, 'http://127.0.0.1:8080'), 'router-session=unit-session; router-csrf=unit-csrf');
+});
+
+test('controller cookies still require a usable valid root cookie on the selected host', () => {
+    const root = { domain: '127.0.0.1', expires: -1, secure: false, name: 'router-session', value: 'unit-session', path: '/' };
+    for (const change of [{ path: '/base-agent-additional-server/userPersistoAgent/7000/service/' },
+        { domain: 'foreign.example' }, { expires: 1 }, { secure: true }, { name: 'bad cookie' }, { value: 'bad;value' }]) {
+        assert.throws(() => cookieHeader({ cookies: [{ ...root, ...change }] }, 'http://127.0.0.1:8080'));
+    }
+    assert.throws(() => cookieHeader({ cookies: [root] }, 'http://localhost:8080'));
+});
+
 test('fresh mutation proof is route/origin bound and no forwarding/user grant headers are sent', async () => {
     const requests = [];
     const runtime = { receipts: [] };

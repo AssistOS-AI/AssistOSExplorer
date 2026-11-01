@@ -23,7 +23,8 @@ export async function privateJson(file) {
 
 export function cookieHeader(state, origin) {
     const url = new URL(origin);
-    const cookies = (state?.cookies || []).filter(cookie => String(cookie.domain || '').replace(/^\./u, '') === url.hostname
+    const cookies = (state?.cookies || []).filter(cookie => cookie.path === '/'
+        && String(cookie.domain || '').replace(/^\./u, '') === url.hostname
         && (!cookie.secure || url.protocol === 'https:') && (cookie.expires === -1 || cookie.expires > Date.now() / 1000));
     assert.ok(cookies.length > 0, 'Authenticated browser state is stale or for a different origin.');
     return cookies.map(cookie => {
