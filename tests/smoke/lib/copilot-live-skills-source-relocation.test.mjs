@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { LIVE_SKILLS_CONTRACTS, readLiveSkillsCodeHashes } from './copilot-live-skills-runtime.mjs';
 import { createLiveSkillsFixture, liveSkillsHash } from './copilot-live-skills.mjs';
+const { operateLiveSkillsFixture } = await import(process.env.SMOKE_SOURCE_FIXTURE_MODULE || './copilot-live-skills-fixture-runtime.mjs');
 
 const { createLiveSkillsRuntimeReader } = await import(process.env.SMOKE_SOURCE_READER_MODULE || './copilot-live-skills-runtime.mjs');
 const repositorySource = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/$/, '');
@@ -89,7 +90,8 @@ test('original moved source claims belong to RoboWork and remain protected exact
     assert.deepEqual(LIVE_SKILLS_CONTRACTS.roboWorkAgent, moved);
     const files = Object.values(LIVE_SKILLS_CONTRACTS).flat();
     assert.equal(new Set(files).size, files.length);
-    assert.equal(files.length, 35);
+    assert.equal(files.length, 36, 'All 35 original claims and the current RoboTeam runtime client must remain protected.');
+    assert.ok(LIVE_SKILLS_CONTRACTS.roboTeamAgent.includes('server/run-client.mjs'));
 });
 
 for (const agentName of ['roboTeamAgent', 'roboWorkAgent']) {
@@ -166,4 +168,49 @@ test('controller companion retains hash protection for every moved source claim'
         fs.writeFileSync(target, original);
     }
     await reader.finish();
+});
+
+test('every moved source claim is checked before a fixture action can mutate state', async t => {
+    const c = setup(t, 'roboTeamAgent'), reader = await c.create(), fixture = createLiveSkillsFixture(c.root);
+    let operations = 0; c.state.onOperation = () => { operations++; return { prepared: true }; };
+    for (const file of moved) {
+        const target = `${c.repository}/roboWorkAgent/${file}`, original = fs.readFileSync(target);
+        fs.appendFileSync(target, '\n// changed before operation\n');
+        await assert.rejects(reader.fixtureOperation('prepare', fixture), /source differs/, file);
+        fs.writeFileSync(target, original);
+    }
+    assert.equal(operations, 0, 'Unverified relocated source must prevent entry into the fixture operation.');
+});
+
+test('fixture source guard accepts the canonical /code bind object and rejects identical copied bytes before mutation', async t => {
+    const c = setup(t, 'roboTeamAgent');
+    let fixture = createLiveSkillsFixture(c.root);
+    const contractHashes = Object.fromEntries(LIVE_SKILLS_CONTRACTS.roboTeamAgent.map(file => [file, liveSkillsHash(fs.readFileSync(`${c.source}/${file}`))]));
+    const codeRoot = `${c.root}/runtime-code`, descriptors = new Map();
+    let backingRoot = c.source;
+    const backing = file => file === codeRoot || file.startsWith(`${codeRoot}/`) ? backingRoot + file.slice(codeRoot.length) : file;
+    const fsApi = { ...fs,
+        realpathSync(file) {
+            const match = String(file).match(/^\/proc\/self\/fd\/(\d+)$/);
+            if (match) {
+                const opened = descriptors.get(Number(match[1]));
+                const actual = process.platform === 'linux' ? fs.realpathSync(file) : fs.realpathSync(opened.backing);
+                return actual === opened.backing ? opened.filename : actual;
+            }
+            const actual = fs.realpathSync(backing(file));
+            return actual === backing(file) ? file : actual;
+        },
+        lstatSync(file, options) { return fs.lstatSync(backing(file), options); },
+        openSync(file, flags) { const fd = fs.openSync(backing(file), flags); descriptors.set(fd, { filename: file, backing: backing(file) }); return fd; },
+        closeSync(fd) { descriptors.delete(fd); return fs.closeSync(fd); },
+    };
+    const run = async () => { let result; await operateLiveSkillsFixture({ action: 'prepare', fixture, workspaceRoot: c.root,
+        expectedRepository: c.repository, contractHashes }, { codeRoot, fsApi, emit: value => { result = value; } }); return result; };
+    assert.equal((await run()).prepared, true);
+    assert.equal(descriptors.size, 0);
+    fixture = createLiveSkillsFixture(c.root);
+    fs.cpSync(c.source, `${c.root}/copied-code`, { recursive: true }); backingRoot = `${c.root}/copied-code`;
+    await assert.rejects(run(), /verified source directory object/);
+    assert.equal(descriptors.size, 0);
+    assert.equal(fs.existsSync(fixture.workspace), false); assert.equal(fs.existsSync(fixture.repositoryRoot), false);
 });

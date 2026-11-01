@@ -1,12 +1,13 @@
 import { inspectSessionSkillLinks } from './copilot-live-skills.mjs';
+import { readLiveSkillsCodeHashes } from './copilot-live-skills-code-hashes.mjs';
 
 // Shipped only to the verified RoboTeam runtime. Actions are finite and confined to one run's paths.
 export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot, expectedRepository, contractHashes }, {
-    codeRoot = '/code', dataRoot = '/data', service: suppliedService, runGit,
+    codeRoot = '/code', dataRoot = '/data', service: suppliedService, runGit, fsApi,
     emit = value => console.log(JSON.stringify(value)),
 } = {}) {
     const assert = (await import('node:assert/strict')).default;
-    const fs = await import('node:fs');
+    const fs = fsApi || await import('node:fs');
     const path = await import('node:path');
     const { createHash } = await import('node:crypto');
     const { pathToFileURL } = await import('node:url');
@@ -23,13 +24,8 @@ export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot,
     assert.equal(fixture.robotName, `copilot-live-${fixture.runId}`);
     assert.ok(expectedRepository && expectedRepository.startsWith(`${workspaceRoot}/`));
     assert.ok(contractHashes && Object.keys(contractHashes).length > 0);
-    for (const [file, digest] of Object.entries(contractHashes)) {
-        assert.ok(/^[a-zA-Z0-9/.-]+\.mjs$/.test(file) && !file.split('/').includes('..'));
-        const source = `${expectedRepository}/roboTeamAgent/${file}`;
-        assert.equal(fs.realpathSync(source), source);
-        assert.equal(fs.realpathSync(`${codeRoot}/${file}`), source);
-        assert.equal(hash(fs.readFileSync(source)), digest, 'Fixture operation source differs from the verified checkout.');
-    }
+    assert.deepEqual(await readLiveSkillsCodeHashes({ expectedRepository, contractFiles: Object.keys(contractHashes) }, { codeRoot, fsApi }),
+        contractHashes, 'Fixture operation source differs from the verified checkout.');
     const markerName = '.set2-live-fixture_codex.json';
     const ownership = { version: 1, runId: fixture.runId, workspace: fixture.workspace, repositoryRoot: fixture.repositoryRoot, robotName: fixture.robotName };
     function readRegular(file, root, limit = 1024 * 1024) {
