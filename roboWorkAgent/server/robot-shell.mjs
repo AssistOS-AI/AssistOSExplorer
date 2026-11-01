@@ -17,6 +17,9 @@ if [ -n "\${ROBOTEAM_SHELL_HOME:-}" ]; then
     if [ "$PWD" = "$roboteam_previous_home" ] || [ "$PWD" = /config ]; then cd -- "$HOME"; fi
     unset roboteam_previous_home
 fi
+# Image login profiles may derive these from the container's operating-system UID.
+export USER="\${HOME##*/}"
+export LOGNAME="$USER"
 # Ploinky loader options do not apply to interactive coding-agent CLIs.
 unset NODE_OPTIONS
 export CODEX_HOME="$HOME/.codex"

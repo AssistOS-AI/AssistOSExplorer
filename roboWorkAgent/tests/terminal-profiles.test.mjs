@@ -7,6 +7,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { RobotPaths } from '../server/robot-paths.mjs';
 import { createTerminalProfiles, ensureTerminalStub, parseTerminalProfile, terminalProfileAccess } from '../server/terminal-profiles.mjs';
 import { buildShellSandbox, buildTerminalLaunch, readTerminalDescriptor } from '../scripts/robot-shell.mjs';
+import { prepareRobotShell } from '../server/robot-shell.mjs';
 
 async function prepareReady(api, profile) {
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -223,6 +224,42 @@ test('hook no-ops in plain shells and gate cannot leave an outer prompt', async 
     assert.match(gate, /exec \/usr\/bin\/env node/u); assert.doesNotMatch(gate, /PROMPT_COMMAND/u);
     for (const value of ['abc.default', 'abc.YWdlbnQ']) assert.doesNotThrow(() => parseTerminalProfile(value));
     for (const value of ['ab.default', 'abc', 'abc.default.extra', 'abc.$(bad)', '../abc.default']) assert.throws(() => parseTerminalProfile(value));
+});
+
+test('robot login profiles restore identity after the image system profile resets USER and LOGNAME', async t => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'rw-terminal-identity-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const home = path.join(root, 'robot-a');
+    const project = path.join(root, 'project');
+    const binPath = path.join(root, 'tools', 'bin');
+    for (const directory of [home, project, binPath]) await fs.mkdir(directory, { recursive: true });
+    for (const name of ['codex', 'opencode', 'pi', 'claude']) {
+        await fs.writeFile(path.join(binPath, name), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    }
+    await prepareRobotShell(home, { binPath, cacheRoot: path.join(root, 'tools') });
+    // The runtime image's /etc/profile derives these from id -un, which is root.
+    const systemProfile = path.join(root, 'system-profile');
+    await fs.writeFile(systemProfile, 'USER=root\nLOGNAME=$USER\nexport USER LOGNAME\n');
+    const previousHome = path.join(root, 'previous-home');
+    await fs.mkdir(previousHome);
+    for (const { directory, selectedHome, shellHome, expectedDirectory } of [
+        { directory: home, selectedHome: home, expectedDirectory: home },
+        { directory: project, selectedHome: home, expectedDirectory: project },
+        { directory: previousHome, selectedHome: previousHome, shellHome: home, expectedDirectory: home },
+    ]) {
+        const result = spawnSync('/bin/bash', ['--noprofile', '--norc', '-c',
+            '. "$1"; printf "%s:%s\\n" "$USER" "$LOGNAME"; . "$2"; '
+            + 'printf "%s\\n" "$USER" "$LOGNAME" "$HOME" "$PWD"; '
+            + 'for cli in codex opencode pi claude; do command -v "$cli" || exit 1; done',
+            'login-fixture', systemProfile, path.join(home, shellHome ? '.roboteam-env.sh' : '.bash_profile')], {
+            cwd: directory, env: { PATH: '/usr/bin:/bin', HOME: selectedHome, USER: 'robot-a', LOGNAME: 'robot-a',
+                ...(shellHome ? { ROBOTEAM_SHELL_HOME: shellHome } : {}) }, encoding: 'utf8',
+        });
+        assert.ifError(result.error);
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(result.stdout.trim().split('\n'), ['root:root', 'robot-a', 'robot-a', home, expectedDirectory,
+            ...['codex', 'opencode', 'pi', 'claude'].map(name => path.join(binPath, name))]);
+    }
 });
 
 test('outer profile Bash leaves its empty stub unchanged on exit and failed gate while plain shells retain history', async t => {
