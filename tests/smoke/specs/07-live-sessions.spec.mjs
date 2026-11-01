@@ -13,6 +13,8 @@ import { createOrchestrationReader } from '../lib/live-sessions-orchestration.mj
 import { BOT, processSelection, runtimeEvidence, configuredNative, attachEvidence, withFixture, startTurn,
     assertUnchanged, assertStopped } from '../lib/live-sessions-fixture.mjs';
 
+const nativeTimeout = 120_000;
+
 test.describe('Deployed RoboTeam Live Sessions', () => {
     // A first provider refusal or feature failure must never launch another
     // native turn from the second case. A skipped remainder cannot pass ledger.
