@@ -19,6 +19,7 @@ test('engine saves run identity before MCP start, executes without a local home 
     const userMessageId = randomUUID(), assistantMessageId = randomUUID();
     const session = { sessionId, cwd: root };
     const calls = [];
+    const published = [];
     let reads = 0;
     const sessionStore = {
         loadSession: () => structuredClone(session),
@@ -37,6 +38,10 @@ test('engine saves run identity before MCP start, executes without a local home 
             assert.equal(input.ala.mcpServers, 'docs=https://docs.example/mcp');
             assert.deepEqual(input.folders, []);
             assert.equal(JSON.stringify(input.channels).includes('PLOINKY_'), false);
+            const stat = await fs.readFile(`/proc/${process.pid}/stat`, 'utf8');
+            assert.deepEqual(input.tag.producer, { pid: process.pid, startStamp: stat.slice(stat.lastIndexOf(') ') + 2).trim().split(/\s+/u)[19] });
+            assert.equal(JSON.stringify(input.channels).includes('producer'), false);
+            assert.equal(JSON.stringify(session).includes('producer'), false);
             const directory = path.join(root, '.roboteam/.ala/sessions');
             await fs.mkdir(directory, { recursive: true });
             const records = [{ type: 'session', id: sessionId }, { type: 'user', turnId, text: 'hello' },
@@ -60,13 +65,14 @@ test('engine saves run identity before MCP start, executes without a local home 
         skillCatalog: { refresh: async () => ({ skills: [] }) },
         execution: { robotId: 'robot-abc', mcpServers: 'docs=https://docs.example/mcp' } });
     t.after(() => engine.close());
-    const result = await engine.executeTurn({ sessionId, turnId, prompt: 'hello' });
+    const result = await engine.executeTurn({ sessionId, turnId, prompt: 'hello', onEvent: event => { published.push(event); } });
     assert.equal(result.outputText, 'answer');
     assert.equal(session.final, 'answer');
     assert.equal(session.remoteRun, undefined);
     assert.equal(calls.filter(call => call.tool === 'run_start').length, 1);
     assert.equal(calls.filter(call => call.tool === 'run_input' && call.input.data).length, 1);
     assert.equal(calls.some(call => call.tool === 'run_stop'), false);
+    assert.equal(JSON.stringify(published).includes('producer'), false);
 });
 
 test('reopened WebChat attaches its pending turn once without adding a user prompt or history entry', async t => {

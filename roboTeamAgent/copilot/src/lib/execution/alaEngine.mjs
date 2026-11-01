@@ -17,6 +17,7 @@ import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { webchatTurnLogUrl } from '../webchat/webchatTurnLog.mjs';
 import { codingAgentLabel } from '../webchat/webchatProgressState.mjs';
 import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
+import { captureRunProducer } from './runProducer.mjs';
 
 const BACKENDS = ['codex', 'opencode', 'pi', 'claude'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
@@ -284,13 +285,15 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 } };
             }
             await emit({ type: 'progress', reason: 'Starting ALA' });
+            const producer = savedRun ? null : await captureRunProducer();
             const remoteRun = savedRun || { runId: randomUUID(), turnId, userMessageId: turn.userMessageId, assistantMessageId: turn.assistantMessageId };
             await sessionStore.updateSession(sessionId, session => { session.remoteRun = remoteRun; });
             await emit({ type: 'run-started', runId: remoteRun.runId });
             const runTag = { kind: env.ROBOTEAM_TASK_TAG ? 'task' : 'copilot', sessionId, turnId,
                 userMessageId: turn.userMessageId, assistantMessageId: turn.assistantMessageId,
                 ...(env.ROBOTEAM_TASK_TAG ? JSON.parse(env.ROBOTEAM_TASK_TAG) : {}),
-                ...(context.ownerPrincipal ? { ownerPrincipal: context.ownerPrincipal } : {}) };
+                ...(context.ownerPrincipal ? { ownerPrincipal: context.ownerPrincipal } : {}),
+                ...(producer ? { producer } : {}) };
             child = await spawnRoboWorkRun({ client: roboWork, attach: Boolean(savedRun), input: {
                 runId: remoteRun.runId, robotId: config.robotId, cwd,
                 ala: { sessionId, turnId, permissions: permissionMode, ca: backend, resume: config.resume,
