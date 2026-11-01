@@ -134,10 +134,14 @@ export class RunManager {
             run.channels = new RunChannels({ directory: path.join(directory, 'channels'), definitions: channels,
                 changed: () => this.events.emit(input.runId) });
             const mounts = await run.channels.prepare();
+            const soul = { source: this.paths.soul(input.robotId), target: '/workspace/roboteam-soul', alias: 'roboteam-soul' };
+            const environmentFolders = folders.map(folder => ({ source: folder.source,
+                target: folder.at || (folder.alias ? '/workspace/' + folder.alias : folder.source), readOnly: true }));
             const robot = await this.robots.require(input.robotId);
             const tools = await this.toolCache.prepareCodingAgents(robot.codingAgents);
-            const runtimeEnv = codingAgentEnvironment(tools, { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' }, this.toolCache.root);
-            const args = ['--home', this.paths.home(input.robotId), '--cwd', cwd, '--session-id', ala.sessionId,
+            const runtimeEnv = codingAgentEnvironment(tools, { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8',
+                ALA_SESSIONS: path.join(cwd, '.roboteam', '.ala') }, this.toolCache.root);
+            const args = ['--home', input.environment ? homeTarget(input.robotId) : this.paths.home(input.robotId), '--cwd', cwd, '--session-id', ala.sessionId,
                 '--control-stdin', '--permissions', ala.permissions || 'full-access'];
             if (ala.turnId) args.push('--turn-id', ala.turnId);
             if (ala.model) args.push('--model', ala.model);
@@ -150,14 +154,14 @@ export class RunManager {
                 if (ignored !== path.join(cwd, '.roboteam') && !await fs.lstat(ignored).catch(error => { if (error.code !== 'ENOENT') throw error; return null; })) continue;
                 args.push('--ignore', ignored);
             }
-            for (const folder of folders) {
-                args.push('--folder', folder.source);
+            for (const [index, folder] of folders.entries()) {
+                args.push('--folder', input.environment ? environmentFolders[index].target : folder.source);
                 if (folder.alias) args.push('as', folder.alias);
                 else if (folder.at) args.push('at', folder.at);
                 if (folder.expose !== undefined && typeof folder.expose !== 'boolean') throw fail('INVALID_INPUT', 'Invalid folder exposure');
                 if (folder.expose) args.push('expose');
             }
-            for (const mount of [...mounts, { source: this.paths.soul(input.robotId), alias: 'roboteam-soul' }]) args.push('--folder', mount.source, 'as', mount.alias);
+            for (const mount of [...mounts, soul]) args.push('--folder', input.environment ? mount.target : mount.source, 'as', mount.alias);
             let gui;
             const requestedMcp = Array.isArray(ala.mcpServers) ? ala.mcpServers.join(',') : String(ala.mcpServers || '');
             if (requestedMcp.length > 65536 || /[\x00-\x1f]/u.test(requestedMcp)) throw fail('INVALID_INPUT', 'Invalid MCP servers');
@@ -176,9 +180,8 @@ export class RunManager {
                     toolCache: { source: this.toolCache.root, target: this.toolCache.root },
                     ala: { source: bundle.ala.path, target: '/opt/robowork-ala', entry: '/opt/robowork-ala/bin/ala.mjs' },
                     bwrap: { source: bundle.bwrap.bin, target: '/opt/robowork-bwrap' },
-                    channels: mounts, soul: { source: this.paths.soul(input.robotId), target: '/workspace/roboteam-soul' },
-                    folders: folders.map(folder => ({ source: folder.source, target: folder.at || (folder.alias ? '/workspace/' + folder.alias : folder.source), readOnly: true })),
-                    args: args.map(value => value === this.paths.home(input.robotId) ? homeTarget(input.robotId) : value), env: runtimeEnv });
+                    channels: mounts, soul,
+                    folders: environmentFolders, args, env: runtimeEnv });
             } else launch = await this.buildLaunch({ paths: this.paths, id: input.robotId, directory,
                 command: process.execPath, args: [this.alaEntry, ...args], env: runtimeEnv, guiPort: gui?.mcpPort });
             const child = this.spawnImpl(launch.command, launch.args, launch.options);

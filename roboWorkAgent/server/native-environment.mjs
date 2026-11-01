@@ -3,7 +3,7 @@ import path from 'node:path';
 // Only runtime inputs needed by ALA and the selected native executables cross the boundary.
 export function nativeEnvironment(env = {}, home) {
     const result = {};
-    for (const key of ['PATH', 'LANG', 'LC_ALL', 'TERM', 'TZ', 'CODEX_BIN', 'OPENCODE_BIN', 'PI_BIN', 'CLAUDE_BIN', 'ALA_BWRAP', 'ALA_EVENT_STREAM']) {
+    for (const key of ['PATH', 'LANG', 'LC_ALL', 'TERM', 'TZ', 'CODEX_BIN', 'OPENCODE_BIN', 'PI_BIN', 'CLAUDE_BIN', 'ALA_BWRAP', 'ALA_EVENT_STREAM', 'ALA_SESSIONS']) {
         if (typeof env[key] === 'string') result[key] = env[key];
     }
     return { ...result, HOME: home, USER: path.basename(home), LOGNAME: path.basename(home),

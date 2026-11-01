@@ -4,12 +4,15 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import { authorizeCaller } from '../server/caller.mjs';
 import { RobotPaths } from '../server/robot-paths.mjs';
 import { RunManager } from '../server/run-manager.mjs';
 import { RunChannels } from '../server/run-channels.mjs';
 import { nativeEnvironment } from '../server/native-environment.mjs';
 import { createRoboWorkServer } from '../server/http-server.mjs';
+import { EnvironmentManager } from '../server/environment.mjs';
+import { buildPrivateLaunch } from '../server/launch.mjs';
 
 const subject = 'agent:AchillesIDE/roboTeamAgent';
 const grant = () => ({ metadata: { invocation: { sub: subject, actor: { id: subject, kind: 'agent' } } } });
@@ -136,6 +139,64 @@ test('environment stop checks the exact container label and robot before signall
     calls.length = 0;
     await assert.rejects(manager.stopEnvironment({ ...run, meta: { robotId: 'bbb' } }, 'SIGTERM'), { code: 'ENVIRONMENT_STOP_FAILED' });
     assert.ok(!calls.some(args => args[0] === 'kill'));
+});
+
+test('Environment ALA arguments use mounted sources for skills, callbacks and Soul without private source binds', async t => {
+    const { manager, paths, input } = await fixture(t);
+    const skills = path.join(paths.workspaceRoot, '.data', 'roboTeamAgent', 'skills');
+    const plain = path.join(paths.workspaceRoot, 'public-files');
+    for (const directory of [skills, plain, manager.toolCache.root, paths.home(input.robotId), paths.soul(input.robotId)]) await fs.mkdir(directory, { recursive: true });
+    const environment = new EnvironmentManager();
+    environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/local/bin:/usr/bin:/bin' });
+    manager.environment = environment;
+    manager.runtimeBundle = { prepare: async () => ({ ala: { path: '/fixture/ala' }, bwrap: { bin: '/fixture/bwrap' } }) };
+    let command;
+    manager.spawnImpl = (executable, args) => {
+        command = { executable, args };
+        return spawn(process.execPath, ['-e', "process.stdin.on('data',()=>{});"], { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    };
+    manager.execFileImpl = async () => { throw Object.assign(new Error('No fixture container'), { code: 1 }); };
+    const exported = path.join(input.cwd, '.agents', 'skills');
+    const repeated = path.join(input.cwd, '.claude', 'skills');
+    await manager.start({ ...input, environment: 'repo/agent', folders: [
+        { source: skills, alias: 'roboteam-skill-0', expose: true },
+        { source: skills, at: exported, expose: true },
+        { source: skills, at: repeated, expose: true },
+        { source: plain },
+    ], channels: [{ name: 'ploinky-runtime' }, { name: 'human-input' }, { name: 'task-failure', alias: 'own-task-failure' }] });
+    const args = command.args.slice(command.args.indexOf('/opt/robowork-ala/bin/ala.mjs') + 1);
+    const mounts = command.args.flatMap((value, index) => value === '--volume' ? [command.args[index + 1].split(':')] : []);
+    const folderArguments = [];
+    for (let index = 0; index < args.length; index++) {
+        if (args[index] !== '--folder') continue;
+        const folder = [args[++index]];
+        if (['as', 'at'].includes(args[index + 1])) folder.push(args[++index], args[++index]);
+        if (args[index + 1] === 'expose') folder.push(args[++index]);
+        folderArguments.push(folder);
+    }
+    assert.deepEqual(folderArguments, [
+        [paths.workspaceRoot], ['/workspace/roboteam-skill-0', 'as', 'roboteam-skill-0', 'expose'],
+        [exported, 'at', exported, 'expose'], [repeated, 'at', repeated, 'expose'], [plain],
+        ['/workspace/ploinky-runtime', 'as', 'ploinky-runtime'], ['/workspace/roboflow-human-input', 'as', 'roboflow-human-input'],
+        ['/workspace/own-task-failure', 'as', 'own-task-failure'], ['/workspace/roboteam-soul', 'as', 'roboteam-soul'],
+    ]);
+    for (const [source] of folderArguments) assert.ok(mounts.some(([, target]) => target === source), `ALA source is not mounted: ${source}`);
+    assert.ok(!mounts.some(([, target]) => target.startsWith(paths.robot(input.robotId)) || target.startsWith(paths.run(input.runId))));
+    assert.equal(args[args.indexOf('--home') + 1], '/home/aaa');
+    assert.ok(command.args.includes(`ALA_SESSIONS=${path.join(input.cwd, '.roboteam', '.ala')}`));
+    assert.ok(args.some((value, index) => value === '--ignore' && args[index + 1] === path.join(input.cwd, '.roboteam')));
+});
+
+test('native ALA host receives the controller-derived transcript directory through the actual launch allowlist', async t => {
+    const { manager, paths, input } = await fixture(t);
+    let launch;
+    manager.buildLaunch = async options => { launch = await buildPrivateLaunch(options); return launch; };
+    manager.spawnImpl = () => spawn(process.execPath, ['-e', "process.stdin.on('data',()=>{});"], { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    await manager.start(input);
+    assert.equal(launch.options.env.ALA_SESSIONS, path.join(input.cwd, '.roboteam', '.ala'));
+    const wrapper = await fs.readFile(path.join(paths.run(input.runId), 'launch.sh'), 'utf8');
+    assert.ok(wrapper.includes("'--ignore' '" + path.join(input.cwd, '.roboteam') + "'"));
+    assert.ok(!Object.keys(launch.options.env).some(key => key.startsWith('PLOINKY_')));
 });
 
 test('resident HTTP service refuses missing token and returns stable operation errors', async t => {
