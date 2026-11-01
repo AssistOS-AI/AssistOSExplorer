@@ -757,6 +757,7 @@ test.describe('RoboWork robot terminals', () => {
         test.skip(process.env.SMOKE_ROBOWORK_TERMINAL_ROUTER_RESTART !== '1', 'Opt in with SMOKE_ROBOWORK_TERMINAL_ROUTER_RESTART=1 (kills the exact Router process).');
         test.setTimeout(8 * 60_000);
         const ctx = await setup(page, 'terminal-router-restart');
+        let primaryError = null;
         try {
             const robot = await ctx.createRobot();
             const terminal = await ctx.launch(robot);
@@ -782,6 +783,13 @@ test.describe('RoboWork robot terminals', () => {
             await page.goto(ROBOTEAM_BASE_PATH, { waitUntil: 'load' });
             const replacement = await ctx.launch(robot);
             expect(await terminalCommand(page, replacement, 'echo ROUTER_NEW_SESSION')).toContain('ROUTER_NEW_SESSION');
-        } finally { await cleanup(ctx, page); }
+        } catch (error) { primaryError = error; }
+        const cleanupErrors = [];
+        const clean = async (action) => { try { await action(); } catch (error) { cleanupErrors.push(error); } };
+        await clean(() => ctx.save('primary-error.json', primaryError ? { name: primaryError.name, message: primaryError.message } : null));
+        await clean(() => signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH, { requireConfiguredPrincipal: true }));
+        await clean(() => cleanup(ctx, page));
+        await clean(() => ctx.save('cleanup-errors.json', cleanupErrors.map((error) => ({ name: error.name, message: error.message }))));
+        throwScenarioFailures(primaryError, cleanupErrors);
     });
 });
