@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { RobotPaths } from '../server/robot-paths.mjs';
 import { createTerminalProfiles, ensureTerminalStub, parseTerminalProfile, terminalProfileAccess } from '../server/terminal-profiles.mjs';
 import { buildShellSandbox, buildTerminalLaunch, readTerminalDescriptor } from '../scripts/robot-shell.mjs';
@@ -213,6 +213,34 @@ test('hook no-ops in plain shells and gate cannot leave an outer prompt', async 
     assert.match(gate, /exec \/usr\/bin\/env node/u); assert.doesNotMatch(gate, /PROMPT_COMMAND/u);
     for (const value of ['abc.default', 'abc.YWdlbnQ']) assert.doesNotThrow(() => parseTerminalProfile(value));
     for (const value of ['ab.default', 'abc', 'abc.default.extra', 'abc.$(bad)', '../abc.default']) assert.throws(() => parseTerminalProfile(value));
+});
+
+test('outer profile Bash leaves its empty stub unchanged on exit and failed gate while plain shells retain history', async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rw-terminal-history-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const hook = new URL('../scripts/webtty-env.sh', import.meta.url).pathname;
+    const cases = [
+        { provider: 'roboWorkAgent', id: PROFILE, command: 'exit 0', status: 0, history: false },
+        { provider: 'roboWorkAgent', id: PROFILE, command: "exec /bin/sh -c 'exit 124'", status: 124, history: false },
+        { provider: '', id: '', command: 'exit 0', status: 0, history: true },
+        { provider: 'otherAgent', id: PROFILE, command: 'exit 0', status: 0, history: true },
+        { provider: 'roboWorkAgent', id: '', command: 'exit 0', status: 0, history: true },
+    ];
+    for (const [index, entry] of cases.entries()) {
+        const home = path.join(root, String(index));
+        await fs.mkdir(home);
+        const result = spawnSync('/bin/bash', ['--noprofile', '--norc', '-p', '-c',
+            '. "$1"; /bin/bash --noprofile --norc -i', 'wrapper', hook], {
+            env: { PATH: '/usr/bin:/bin', HOME: home, PLOINKY_WEBTTY_PROFILE_PROVIDER: entry.provider,
+                PLOINKY_WEBTTY_PROFILE_ID: entry.id },
+            input: `printf history-probe\\n\n${entry.command}\n`, encoding: 'utf8',
+        });
+        assert.ifError(result.error);
+        assert.equal(result.status, entry.status, result.stderr);
+        const files = await fs.readdir(home);
+        assert.deepEqual(files, entry.history ? ['.bash_history'] : []);
+        if (entry.history) assert.match(await fs.readFile(path.join(home, '.bash_history'), 'utf8'), /history-probe/u);
+    }
 });
 
 test('cached download failures can resolve and launch a selected terminal while other reasons stay refused', async t => {
