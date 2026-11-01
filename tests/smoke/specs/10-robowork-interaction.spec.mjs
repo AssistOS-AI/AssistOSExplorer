@@ -262,7 +262,7 @@ test.describe('RoboWork interaction scenarios', () => {
       await applySelectedModel(roboTeamApi, page, made);
       const row = workerRobots({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir }).find((entry) => entry.name === name);
       const dir = row?.id ?? workerRobotDirs(ctx.workspaceRoot).find((entry) => !before.includes(entry));
-      return { name, workerId: dir };
+      return { id: made.id, name, workerId: dir };
     };
     const deleteRobot = (name) => roboTeamApi(page, { method: 'POST', path: 'api/control', body: { robotName: name, operation: 'robot-delete' } });
     // Expected refusals (409, and the 500 of finding F12) are read through the APIRequestContext, so the browser does not log them as console errors
@@ -298,13 +298,17 @@ test.describe('RoboWork interaction scenarios', () => {
     projectDir = project;
     createProjectFixture({ workspaceRoot: ctx.workspaceRoot, name: project });
     let turn = null;
+    let turnFailure = null;
     let chatPage = null;
     try {
       startPoller(ctx.containers);
       chatPage = await page.context().newPage();
       turn = chatTurn(chatPage, { robot: busy.name, robotId: busy.id, project, prompt: 'This is an automated sandbox test on disposable synthetic files. Run exactly this single shell command, nothing else, and wait for it to finish: `sleep 70`   Then reply DONE.', timeoutMs: 8 * 60_000, check: guard });
-      turn.catch(() => {});
-      await waitFor('the sleep 70 command in the worker', async () => workerProcesses(ctx.containers, 'sleep 70').length > 0, { timeoutMs: 4 * 60_000, intervalMs: 1000, check: guard });
+      turn.catch((error) => { turnFailure = error; });
+      await waitFor('the sleep 70 command in the worker', async () => {
+        if (turnFailure) throw turnFailure;
+        return workerProcesses(ctx.containers, 'sleep 70').length > 0;
+      }, { timeoutMs: 4 * 60_000, intervalMs: 1000, check: guard });
       const refused = await deleteRobotQuietly(page, busy.name);
       record({ step: 'local-busy delete refused', robot: busy, status: refused.status, payload: refused.payload });
       expect.soft(refused.status, `refused: ${JSON.stringify(refused.payload)}`).toBe(409);
@@ -332,6 +336,11 @@ test.describe('RoboWork interaction scenarios', () => {
     } finally {
       // Best-effort removal of every scratch robot this test created (best effort: a refusal while a chat helper lives is retried for a few minutes).
       const leftovers = [];
+      if (projectDir) {
+        try {
+          ctx.save('ledger-before-cleanup.json', readLedgerSince({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, sinceMs: ctx.startedMs - 1000, cwd: path.join(ctx.workspaceRoot, projectDir) }));
+        } catch (error) { leftovers.push({ evidence: 'ledger-before-cleanup', error: String(error?.message ?? error) }); }
+      }
       try {
         const names = new Set((await robotsList()).map((robot) => robot.name));
         for (const name of created.filter((entry) => names.has(entry))) {
