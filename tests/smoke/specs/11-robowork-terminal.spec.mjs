@@ -6,7 +6,7 @@ import { execFileSync, spawn } from 'node:child_process';
 
 import { test, expect, attachPageDiagnostics, assertPageDiagnosticsClean } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
-import { signIn } from '../lib/auth.mjs';
+import { signIn, readAuthenticatedPrincipal } from '../lib/auth.mjs';
 import { ROBOTEAM_BASE_PATH, roboTeamApi, conversationFromSkillsURL } from '../lib/conversation-skills.mjs';
 import { discoverContainers, createProjectFixture, readLedger, nested, nestedLogsMerged, startPoller, readPoll, stopPoller, bwrapMarkerProcesses, removeRunDirectory } from '../lib/robowork-e2e.mjs';
 import { waitFor, apiOk, markerOf, workerProcesses } from '../lib/robowork-scenarios.mjs';
@@ -780,14 +780,17 @@ test.describe('RoboWork robot terminals', () => {
             const after = collectExactRoutingServerIdentity(evidence);
             expect(after.routerPid !== router.routerPid || after.routerStartTime !== router.routerStartTime).toBe(true);
             ctx.save('router-after.json', after);
-            await page.goto(ROBOTEAM_BASE_PATH, { waitUntil: 'load' });
+            await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH, { requireConfiguredPrincipal: true });
             const replacement = await ctx.launch(robot);
             expect(await terminalCommand(page, replacement, 'echo ROUTER_NEW_SESSION')).toContain('ROUTER_NEW_SESSION');
         } catch (error) { primaryError = error; }
         const cleanupErrors = [];
         const clean = async (action) => { try { await action(); } catch (error) { cleanupErrors.push(error); } };
         await clean(() => ctx.save('primary-error.json', primaryError ? { name: primaryError.name, message: primaryError.message } : null));
-        await clean(() => signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH, { requireConfiguredPrincipal: true }));
+        await clean(async () => {
+            try { await readAuthenticatedPrincipal(page, smokeConfig.primaryUser); }
+            catch { await signIn(page, smokeConfig.primaryUser, ROBOTEAM_BASE_PATH, { requireConfiguredPrincipal: true }); }
+        });
         await clean(() => cleanup(ctx, page));
         await clean(() => ctx.save('cleanup-errors.json', cleanupErrors.map((error) => ({ name: error.name, message: error.message }))));
         throwScenarioFailures(primaryError, cleanupErrors);
