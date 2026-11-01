@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { assertBox, selectAgent, sha256, validateConfig } from './contracts.mjs';
+import { assertBox, selectAgent, sha256, validateConfig, normalizeMcpOutcome } from './contracts.mjs';
 
 const execute = promisify(execFile);
 const nodeScript = (body, input) => ['node', '--input-type=module', '-e', body, JSON.stringify(input)];
@@ -19,7 +19,12 @@ export class ControllerRuntime {
             const result = await execute(command, args, { timeout: 200000, maxBuffer: 16 * 1024 * 1024, ...options });
             this.receipts.push({ command: path.basename(command), argumentHash: sha256(JSON.stringify(args)), outputHash: sha256(result.stdout) });
             return result.stdout;
-        } catch { throw new Error('Controller command failed; private command output withheld.'); }
+        } catch (error) {
+            this.receipts.push({ command: path.basename(command), argumentHash: sha256(JSON.stringify(args)),
+                failed: true, code: typeof error.code === 'number' ? error.code : 'COMMAND_FAILED',
+                outputHash: sha256(String(error.stdout || '')), diagnosticHash: sha256(String(error.stderr || '')) });
+            throw Object.assign(new Error('Controller command failed; private command output withheld.'), { code: 'CONTROLLER_COMMAND_FAILED' });
+        }
     }
 
     box(args) { return this.command(this.config.engine, ['exec', this.config.box.id, ...args]); }
@@ -29,6 +34,8 @@ export class ControllerRuntime {
     async verify() {
         const c = this.config;
         assert.equal(await fs.realpath(c.fixture), c.fixture, 'Fixture must be canonical, without symlink aliases.');
+        const fixture = await fs.lstat(c.fixture);
+        assert.ok(fixture.isDirectory() && !fixture.isSymbolicLink());
         const box = JSON.parse(await this.command(c.engine, ['inspect', c.box.id]));
         assert.equal(box.length, 1); assertBox(c, box[0]);
         await this.verifyRevision(c.ploinkyRoot, c.ploinkyRevision);
@@ -59,7 +66,11 @@ export class ControllerRuntime {
             await this.verifyRevision(source.root, source.revision);
             await this.verifyFiles(source, source.role === 'rt' ? c.rt : c.rw);
         }
-        return { box: c.box, rt: c.rt, rw: c.rw, sources: c.sources.map(({ role, revision }) => ({ role, revision })) };
+        return { fixture: { dev: fixture.dev, ino: fixture.ino }, box: c.box, rt: c.rt, rw: c.rw,
+            agents: Object.entries(this.registry).filter(([, row]) => row.type === 'agent').map(([name, row]) => ({
+                name, id: row.containerId, instanceId: row.instanceId, enableGeneration: row.enableGeneration,
+            })).sort((a, b) => a.name.localeCompare(b.name)),
+            sources: c.sources.map(({ role, revision }) => ({ role, revision })) };
     }
 
     async verifyFiles(source, containerId) {
@@ -94,13 +105,14 @@ export class ControllerRuntime {
         // Inherit the genuine RT process environment and canonical SDK. No actor,
         // callback grant, token, or claimed caller is accepted from runner config.
         return this.node(this.config.rt, `
+            const normalize=${normalizeMcpOutcome.toString()};
             const {pathToFileURL}=await import('node:url');
             const {createAgentClient}=await import(pathToFileURL(path.join(process.env.PLOINKY_AGENT_LIB_DIR||'/Agent','client/AgentMcpClient.mjs')).href);
             try {
                 const client=await createAgentClient('roboWorkAgent');
                 const result=await client.callTool(input.tool,input.input,{timeoutMs:180000});
-                console.log(JSON.stringify({ok:!(result?.isError||result?.ok===false),code:result?.code,result}));
-            } catch(error) { console.log(JSON.stringify({ok:false,code:error.code||'MCP_TRANSPORT_FAILED'})); }
+                console.log(JSON.stringify(normalize(result)));
+            } catch(error) { console.log(JSON.stringify(normalize(null,{code:error.code,message:error.message}))); }
         `, { tool, input });
     }
 
@@ -118,7 +130,7 @@ export class ControllerRuntime {
                 rows.push([relative,stat.mode,content]);
                 if(stat.isDirectory()) for(const name of fs.readdirSync(file).sort()) walk(path.join(file,name),path.join(relative,name));
             } walk(root,'.');
-            console.log(JSON.stringify({markerHash:crypto.createHash('sha256').update(fs.readFileSync(marker)).digest('hex'),treeHash:crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex'),entries:rows.length}));
+            console.log(JSON.stringify({markerHash:crypto.createHash('sha256').update(fs.readFileSync(marker)).digest('hex'),markerLength:st.size,treeHash:crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex'),entries:rows.length}));
         `, { id });
     }
 }
