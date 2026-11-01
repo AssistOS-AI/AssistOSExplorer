@@ -305,7 +305,7 @@ test.describe('RoboWork robot terminals', () => {
             const peer = await ctx.launch(peerRobot);
             const peerProgram = "require('net').createServer(s=>s.destroy()).listen(43127,'0.0.0.0')";
             await terminalCommand(page, peer, `node -e ${shellQuote(peerProgram)} >/dev/null 2>&1 &`);
-            const peerAddress = (await terminalCommand(page, peer, "node -p \"Object.values(require('os').networkInterfaces()).flat().find(a=>a.family==='IPv4'&&!a.internal).address\"" )).trim();
+            const peerAddress = (await terminalCommand(page, peer, `node -p ${shellQuote("Object.values(require('os').networkInterfaces()).flat().find(a=>a.family==='IPv4'&&!a.internal).address")}`)).trim();
             assert.match(peerAddress, /^\d+\.\d+\.\d+\.\d+$/u);
             const peerControl = "const s=require('net').connect({host:'127.0.0.1',port:43127,timeout:2000});s.on('connect',()=>{console.log('connected');s.destroy()});s.on('error',e=>{console.log(e.code);process.exitCode=1});s.on('timeout',()=>{console.log('timeout');s.destroy();process.exitCode=1});";
             expect((await terminalCommand(page, peer, `node -e ${shellQuote(peerControl)}`)).trim()).toBe('connected');
@@ -385,7 +385,8 @@ test.describe('RoboWork robot terminals', () => {
             await expect(card).toBeVisible();
             await card.locator('.open-toggle').click();
             const popup = await registerPopup(() => card.locator('.open-terminal').click());
-            await popup.locator('.xterm-helper-textarea').fill("printf '%s%s\\n' UI_ CARD_OK; pwd\n");
+            await popup.locator('.xterm-helper-textarea').fill("printf '%s%s\\n' UI_ CARD_OK; pwd");
+            await popup.locator('.xterm-helper-textarea').press('Enter');
             await expect(popup.locator('.xterm-rows')).toContainText('UI_CARD_OK');
             await expect(popup.locator('#directory')).toContainText('/home/robot');
             await card.locator('.manage-toggle').click();
@@ -413,7 +414,8 @@ test.describe('RoboWork robot terminals', () => {
                 const selected = kind === 'provider' ? robotRow : boxRow;
                 const terminal = await registerPopup(() => chooser.locator(`[data-launch="${selected.launch}"]`).click());
                 const token = crypto.randomBytes(12).toString('hex');
-                await terminal.locator('.xterm-helper-textarea').fill(`printf '%s%s\\n' UI_ ${token}; pwd\n`);
+                await terminal.locator('.xterm-helper-textarea').fill(`printf '%s%s\\n' UI_ ${token}; pwd`);
+                await terminal.locator('.xterm-helper-textarea').press('Enter');
                 await expect(terminal.locator('.xterm-rows')).toContainText(`UI_${token}`);
                 if (kind === 'provider') await expect(terminal.locator('#directory')).toContainText('/projects/');
                 else await expect(terminal.locator('#target')).toContainText('Ploinky Box');
@@ -429,16 +431,20 @@ test.describe('RoboWork robot terminals', () => {
         }
     });
 
-    test('F-6: terminal flood on A while B completes a real turn; worker RSS and provider responsiveness stay bounded', async ({ page, context }) => {
+    test('F-6: terminal flood on A while B completes a real turn; worker RSS and provider responsiveness stay bounded', async ({ page, context }, testInfo) => {
         test.skip(process.env.SMOKE_ROBOWORK_TERMINAL_FLOOD !== '1', 'Opt in with SMOKE_ROBOWORK_TERMINAL_FLOOD=1 (output flood and real model turn).');
         test.setTimeout(10 * 60_000);
         const ctx = await setup(page, 'terminal-flood');
         const chatPage = await context.newPage();
+        const chatDiagnostics = attachPageDiagnostics(chatPage, testInfo, 'f6-chat');
         const measurements = [];
-        let task;
+        let task; let taskOutcome;
+        let conversationObserver; let chatCleanup; let selectedConversation; let readB;
+        let primaryError = null;
         try {
             const a = await ctx.createRobot('-a');
             const b = await ctx.createRobot('-b');
+            readB = () => readLedger({ workspaceRoot: ctx.workspaceRoot, scratchDir: ctx.evidenceDir, robotName: b.name });
             const terminal = await ctx.launch(a);
             const pid = workerMainPid(ctx.containers);
             const measure = () => {
@@ -452,8 +458,31 @@ test.describe('RoboWork robot terminals', () => {
             await terminalInput(page, terminal, "node -e 'const b=Buffer.alloc(32768,120); const t=setInterval(()=>process.stdout.write(b),20); setTimeout(()=>{clearInterval(t);process.exit(0)},360000)'\n");
             await waitFor('flood actually produces output', async () => (await terminalSnapshot(page, terminal)).outputChars > 2 * 1024 * 1024, { timeoutMs: 30_000, intervalMs: 500 });
             let done = false;
-            task = chatTurn(chatPage, { robot: b.name, robotId: b.id, project: '.', prompt: 'Use your shell tool to run sleep 5; printf FLOOD_B_DONE, then reply FLOOD_B_DONE.', timeoutMs: 5 * 60_000 })
-                .then((answer) => ({ answer }), (error) => ({ error })).finally(() => { done = true; });
+            conversationObserver = await observeHSessionSelection(chatPage, { baseURL: smokeConfig.baseURL, agent: smokeConfig.webchatAgent, robot: b.name, directory: '.' });
+            chatCleanup = observeWebchatCleanup(chatPage, '.');
+            task = chatTurn(chatPage, { robot: b.name, robotId: b.id, project: '.', prompt: 'Use your shell tool to run sleep 5; printf FLOOD_B_DONE, then reply FLOOD_B_DONE.', timeoutMs: 5 * 60_000,
+                beforeSend: async () => {
+                    await expect(chatPage.locator('#sessionsBtn')).toBeEnabled();
+                    const listMark = conversationObserver.checkpoint();
+                    await chatPage.locator('#sessionsBtn').click();
+                    await expect(chatPage.locator('#sessionList .wa-session-list-new')).toBeVisible();
+                    let baseline;
+                    await expect.poll(() => Boolean(baseline = conversationObserver.listAfter(listMark))).toBe(true);
+                    const newMark = conversationObserver.checkpoint();
+                    await chatPage.locator('#sessionList .wa-session-list-new').click();
+                    await expect.poll(() => Boolean(selectedConversation = conversationObserver.selectedAfter(newMark, baseline))).toBe(true);
+                    let configLink;
+                    await expect.poll(async () => {
+                        configLink = await chatPage.locator('#sessionSettingsLink').getAttribute('href');
+                        if (!configLink) return false;
+                        try { return conversationFromSkillsURL(configLink, smokeConfig.baseURL, { robotId: b.id }).sessionId === selectedConversation.sessionId; }
+                        catch { return false; }
+                    }).toBe(true);
+                    conversationObserver.assertSelected(selectedConversation);
+                    ctx.save('fresh-b-conversation.json', { ...selectedConversation, configLink, robotId: b.id, robotName: b.name, directory: '.' });
+                },
+            })
+                .then((answer) => (taskOutcome = { answer }), (error) => (taskOutcome = { error })).finally(() => { done = true; });
             while (!done) {
                 measurements.push({ phase: 'flood', ...measure() });
                 expect((await terminalSnapshot(page, terminal)).exits, 'Flood must remain alive while B completes').toEqual([]);
@@ -462,6 +491,7 @@ test.describe('RoboWork robot terminals', () => {
             const result = await task;
             if (result.error) throw result.error;
             expect(result.answer).toContain('FLOOD_B_DONE');
+            conversationObserver.assertSelected(selectedConversation);
             const flood = await terminalSnapshot(page, terminal);
             expect(flood.outputChars).toBeGreaterThan(2 * 1024 * 1024);
             expect(flood.exits).toEqual([]);
@@ -472,13 +502,31 @@ test.describe('RoboWork robot terminals', () => {
             expect(Math.max(...samples.map((row) => row.latencyMs)), 'Signed provider responsiveness stays within baseline + 2 s (not an in-process event-loop histogram)').toBeLessThan(baseline.latencyMs + 2000);
             await terminalInput(page, terminal, '\u0003');
             expect(await terminalCommand(page, terminal, 'echo FLOOD_STOPPED')).toContain('FLOOD_STOPPED');
-        } finally {
-            ctx.save('measurements.json', { metric: 'worker VmRSS and signed provider response latency; response latency is a responsiveness proxy, not direct event-loop lag', measurements });
-            await stopChatTurn(chatPage);
-            await task?.catch(() => {});
-            await chatPage.close();
-            await cleanup(ctx, page);
-        }
+        } catch (error) { primaryError = error; }
+        const cleanupErrors = [];
+        const clean = async (action) => { try { await action(); } catch (error) { cleanupErrors.push(error); } };
+        await clean(() => ctx.save('primary-error.json', primaryError ? { name: primaryError.name, message: primaryError.message } : null));
+        await clean(() => ctx.save('measurements.json', { metric: 'worker VmRSS and signed provider response latency; response latency is a responsiveness proxy, not direct event-loop lag', measurements }));
+        await clean(() => { if (readB) ctx.save('b-ledger-before-cleanup.json', readB()); });
+        for (const terminal of ctx.terminals) await clean(() => closeTerminal(page, terminal));
+        if (task) await clean(async () => { expect(await stopChatTurn(chatPage), 'Own chat cancellation completes before stream navigation').toBe(true); });
+        let detachedAt;
+        if (chatCleanup) await clean(async () => { await chatCleanup.quiesce(); detachedAt = Date.now(); });
+        await clean(() => ctx.save('b-session-observer.json', conversationObserver?.evidence() || null));
+        await clean(() => conversationObserver?.assertNoFailure());
+        await clean(() => conversationObserver?.dispose());
+        await clean(() => chatCleanup?.dispose());
+        await clean(() => chatPage.close());
+        detachedAt ||= Date.now();
+        if (task) await clean(() => waitFor('own chat task settles after close', () => taskOutcome, { timeoutMs: 10_000, intervalMs: 100 }));
+        await clean(() => ctx.save('task-outcome.json', { state: taskOutcome ? (taskOutcome.error ? 'failed' : 'completed') : 'unsettled',
+            error: taskOutcome?.error && { name: taskOutcome.error.name, message: taskOutcome.error.message } }));
+        if (task) await clean(() => waitFor('own CLI disconnected-runtime grace expires', () => Date.now() >= detachedAt + 121_000, { timeoutMs: 122_000, intervalMs: 1000 }));
+        await clean(() => cleanup(ctx, page));
+        await clean(() => chatDiagnostics.flush());
+        await clean(() => assertPageDiagnosticsClean(chatPage, 'F6 chat has no unrelated browser errors'));
+        await clean(() => ctx.save('cleanup-errors.json', cleanupErrors.map((error) => ({ name: error.name, message: error.message }))));
+        throwScenarioFailures(primaryError, cleanupErrors);
     });
 
     test('L9/M-65: terminal A stays open while terminal and AI task B run; no inherited PTY master', async ({ page, context }, testInfo) => {
