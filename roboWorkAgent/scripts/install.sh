@@ -61,6 +61,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 node "$script_dir/prepare-data.mjs"
 mkdir -p /etc/ploinky
 if [ -f /code/scripts/webtty-env.sh ]; then ln -sfn /code/scripts/webtty-env.sh /etc/ploinky/webtty-env.sh; fi
+ln -sfn /code/scripts/robot-shell-gate.sh /etc/ploinky/webtty-profile-shell
 
 echo "RoboWork runtime contract verified"
 

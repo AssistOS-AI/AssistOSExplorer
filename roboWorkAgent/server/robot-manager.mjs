@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { normalizeCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
 import { fail, robotId, homeTarget } from './robot-paths.mjs';
 import { buildPrivateLaunch, capturePrivateLaunch } from './launch.mjs';
+import { ensureTerminalStub } from './terminal-profiles.mjs';
 
 async function realDirectory(directory) {
     await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
@@ -63,6 +64,7 @@ export class RobotManager {
                 runtimeEnv: codingAgentEnvironment(tools.agents, { PATH: '/usr/local/bin:/usr/bin:/bin' }, this.toolCache.root) });
             await this.write(record);
             await this.soulGateway.prepare(this.paths.soul(input.robotId));
+            await ensureTerminalStub(this.paths, input.robotId);
             return { homeTarget: homeTarget(input.robotId) };
         });
     }

@@ -11,6 +11,7 @@ import { resolveAlaCommand } from './ala-command.mjs';
 import { PUBLIC_BASE_PATH } from './constants.mjs';
 import { GuiManager, proxySessionHttp, proxySessionWebSocket } from './gui-manager.mjs';
 import { ProxyAgentClient } from './proxy-pool/proxy-client.mjs';
+import { createTerminalProfiles } from './terminal-profiles.mjs';
 
 const internalToken = process.env.ROBOWORK_INTERNAL_TOKEN;
 if (!internalToken) throw new Error('ROBOWORK_INTERNAL_TOKEN is required');
@@ -33,7 +34,8 @@ const gui = new GuiManager({ dataDir: paths.dataDir, workspaceRoot: paths.worksp
 });
 robots.gui = gui; runs.gui = gui;
 await gui.initialize();
-const server = createRoboWorkServer({ robots, runs, environment, gui, internalToken, publicBasePath: PUBLIC_BASE_PATH,
+const terminal = createTerminalProfiles({ paths, robots, toolCache, homeOperation, environment, runtimeBundle });
+const server = createRoboWorkServer({ robots, runs, environment, gui, terminal, internalToken, publicBasePath: PUBLIC_BASE_PATH,
     proxyHttp: proxySessionHttp, proxyWebSocket: proxySessionWebSocket });
 server.listen(Number(process.env.ROBOWORK_SERVICE_PORT || 3001), process.env.ROBOWORK_SERVICE_HOST || '0.0.0.0', () => {
     console.log('RoboWork service ready');
