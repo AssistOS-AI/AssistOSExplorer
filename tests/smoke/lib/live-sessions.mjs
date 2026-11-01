@@ -10,6 +10,7 @@ import { collectSecrets, createRedactor, findSecretLeaks } from './security.mjs'
 import { redactTraceText, findTraceCredentialResidue } from './redacted-trace.mjs';
 import { buildResidentRunProgram, processRuntimeFence } from './robowork-run-evidence.mjs';
 import { buildControllerProducerProgram } from './robowork-process-evidence.mjs';
+import { buildBoxProcReadProgram, residentProcReadBridge } from './robowork-proc-evidence.mjs';
 
 export const ROBOTEAM_BASE = '/base-agent-additional-server/roboTeamAgent/3001';
 export const LIVE_BASE = `${ROBOTEAM_BASE}/api/live-sessions`;
@@ -728,9 +729,12 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 ${validateNativeAlaBinding.toString()}
 ${collectNativeProcessSnapshot.toString()}
+${residentProcReadBridge.toString()}
 if (!/^[1-9][0-9]*$/.test(process.argv[1] || '')) throw new Error('invalid exact init PID argument');
-const identity = await collectNativeProcessSnapshot(Number(process.argv[1]), JSON.parse(process.argv[2]), process.argv[3], fs, process.argv[4] ? JSON.parse(process.argv[4]) : null);
-process.stdout.write(JSON.stringify(identity));
+const selection = process.argv[4] ? JSON.parse(process.argv[4]) : null;
+const bridge = residentProcReadBridge(fs, selection?.procReadProofs);
+const identity = await collectNativeProcessSnapshot(Number(process.argv[1]), JSON.parse(process.argv[2]), process.argv[3], bridge.io, selection);
+process.stdout.write(JSON.stringify(selection?.procReadProofs ? { identity, ownerInit: bridge.identity(1), procReads: [...bridge.used] } : identity));
 `;
 
 // Inspect only process identity, argv and the selected public executable. Never
@@ -869,14 +873,15 @@ export async function residentNativeProcessIdentity(evidence, runtime, native, d
             assert.equal(record.kind, 'task');
         }
         const relative = `server/${record.kind === 'task' ? 'robot-task' : 'robot-cli'}.mjs`;
-        const command = ['exec', evidence.outerContainerId, '/usr/local/bin/node', '--input-type=module', '--eval',
-            buildControllerProducerProgram(binding.controller.pid, record,
+        const command = ['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', runtime.containerId,
+            '/usr/local/bin/node', '--input-type=module', '--eval',
+            buildControllerProducerProgram(1, record,
                 { codeRoot: selection.codeRoot, workflowCodeRoot: selection.workflowCodeRoot,
                     scriptSha256: binding.controllerHashes[relative], ...(prior ? { attach: true } : {}) })];
         controllerCommands.set(record.runId, command);
         const proof = await run(command);
         assert.equal(proof.runId, record.runId);
-        assert.equal(proof.containerInit.pid, binding.controller.pid);
+        assert.equal(proof.containerInit.pid, 1);
         if (prior) {
             assert.equal(proof.attachRun, record.runId, 'Replacement producer must name the exact resident run.');
             assert.notDeepEqual(proof.containerInit, prior.controller.containerInit, 'Replacement controller process incarnation is unchanged.');
@@ -894,9 +899,25 @@ export async function residentNativeProcessIdentity(evidence, runtime, native, d
     }
     // The source and native process roots live in RoboWork's user namespace.
     // The outer Box cannot ptrace those roots even when their stat is visible.
-    const identity = await run(['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', binding.owner.containerId,
+    const procCommand = ['exec', evidence.outerContainerId, '/usr/local/bin/node', '--input-type=module', '--eval',
+        buildBoxProcReadProgram(binding.execution.pid)];
+    const procBefore = await run(procCommand);
+    assert.equal(procBefore.init.boxPid, binding.execution.pid);
+    assert.equal(procBefore.init.namespacePids.at(-1), 1);
+    nativeSelection.procReadProofs = procBefore.processes;
+    const observed = await run(['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', binding.owner.containerId,
         '/usr/local/bin/node', '--input-type=module', '--eval',
         NATIVE_PROCESS_SNAPSHOT_SOURCE, '1', JSON.stringify(native), cwd, JSON.stringify(nativeSelection)]);
+    const identity = observed.identity;
+    assert.deepEqual(observed.ownerInit, { pid: 1, ppid: 0, startToken: procBefore.init.startToken, pidNamespace: procBefore.init.pidNamespace });
+    const procAfter = await run(procCommand);
+    assert.deepEqual(procAfter.init, procBefore.init, 'RoboWork init changed during owner process reads.');
+    assert.ok(Array.isArray(observed.procReads) && observed.procReads.length <= 512 && new Set(observed.procReads).size === observed.procReads.length);
+    for (const pid of observed.procReads) {
+        const first = procBefore.processes.find(row => row.pid === pid), last = procAfter.processes.find(row => row.pid === pid);
+        assert.ok(first && last, 'Missing exact Box process-link incarnation.');
+        assert.deepEqual(last, first, 'Box process-link namespace or incarnation changed during owner reads.');
+    }
     if (selection.kind === 'census') {
         assertNativeProcessCensus(identity, { cwd, ...nativeSelection });
         for (const row of identity) assert.ok(controllerProofs.has(row.runId), 'Census is missing its exact controller proof.');

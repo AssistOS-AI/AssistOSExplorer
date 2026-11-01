@@ -15,18 +15,21 @@ function fixture() {
         ownerPrincipal: 'user:owner', producer: { pid: 7, startStamp: '350' } };
     const codeHashes = { 'server/main.mjs': 'e'.repeat(64) }, controllerHash = 'f'.repeat(64);
     const native = { robotId: 'robot-a', realpath: '/native', sha256: '9'.repeat(64) };
-    const service = id(12, 1, 111), ala = id(20, 12, 150), actual = id(22, 20, 200), controller = id(35, 30, 222);
-    const identity = { runId: record.runId, launch: ala, containerInit: id(1, 0, 111),
+    const service = id(12, 1, 111), ala = id(20, 12, 150), actual = id(22, 20, 200), controller = { ...id(7, 1, 222), startToken: '350' };
+    const ownerInit = { ...id(1, 0, 111), startToken: '100' };
+    const identity = { runId: record.runId, launch: ala, containerInit: ownerInit,
         ala: { ...ala, cwd, sessionId: 'session', turnId: 'turn', entrypoint: '/ALA/bin/ala.mjs', sha256: '8'.repeat(64) },
         producer: { ...service, kind: 'copilot', script: '/code/server/main.mjs' }, producerAncestry: [service],
-        serviceAncestry: [service, id(1, 0, 111)], native: { ...actual, executable: '/native', actualExecutable: '/native', scriptPath: null, sha256: native.sha256 },
+        serviceAncestry: [service, ownerInit], native: { ...actual, executable: '/native', actualExecutable: '/native', scriptPath: null, sha256: native.sha256 },
         ancestry: [actual] };
-    const producer = { runId: record.runId, containerInit: id(30, 1, 222),
+    const producer = { runId: record.runId, containerInit: id(1, 0, 222),
         producer: { ...controller, kind: 'copilot', script: '/code/server/robot-cli.mjs', sha256: controllerHash }, producerAncestry: [controller] };
     const binding = { owner: { containerId: work }, repository: '/fixture/AchillesIDE', contractFiles: ['server/main.mjs'], codeHashes,
         controllerHashes: { 'server/robot-cli.mjs': controllerHash },
         controller: processRuntimeFence(inspections.get(team)), execution: processRuntimeFence(inspections.get(work)) };
     const context = { outer, team, work, record, identity, producer, inspections, calls: [], metadataReads: 0, beforeReturn: null };
+    context.procProof = { init: { boxPid: 10, boxPpid: 1, startToken: '100', namespacePids: [10, 1], pidNamespace: 'pid:[111]' },
+        processes: [{ boxPid: 200, boxPpid: 120, pid: 20, ppid: 12, startToken: '200', pidNamespace: 'pid:[150]' }] };
     const selection = { kind: 'copilot', sessionId: 'session', turnId: 'turn', codeRoot: '/code',
         alaBinding: { root: '/ALA', command: '/ALA/bin/ala.mjs', hashes: { 'bin/ala.mjs': '8'.repeat(64) } }, residentBinding: binding };
     context.selection = selection;
@@ -37,7 +40,10 @@ function fixture() {
         if (args.some(arg => arg.includes('readResidentRunRecords'))) {
             assert.equal(args[4], work, 'Private metadata may be read only inside the execution owner.');
             context.metadataReads += 1; value = { codeHashes, records: [context.record] };
-        } else if (args.some(arg => arg.includes('collectControllerProducer'))) value = context.producer;
+        } else if (args.some(arg => arg.includes('collectControllerProducer'))) {
+            assert.equal(args[4], context.team, 'Controller source must be read inside its exact owner.');
+            value = context.producer;
+        } else if (args.some(arg => arg.includes('collectBoxProcReadProofs'))) value = context.procProof;
         else if (context.census) {
             assert.equal(args[4], work, 'Native process roots must be read inside their execution owner.');
             const { ala, launch, runId } = context.identity;
@@ -46,6 +52,7 @@ function fixture() {
             assert.equal(args[4], work, 'Native process roots must be read inside their execution owner.');
             value = context.identity;
         }
+        if (args.some(arg => arg.includes('collectNativeProcessSnapshot'))) value = { identity: value, ownerInit, procReads: context.procReads || [] };
         context.beforeReturn?.(value, args);
         return { stdout: JSON.stringify(value) };
     };
@@ -61,8 +68,8 @@ function fixture() {
         const replacement = '7'.repeat(64), current = inspection(replacement, 50);
         context.team = replacement; context.inspections.set(replacement, current);
         context.selection = { ...selection, residentBinding: { ...binding, controller: processRuntimeFence(current) } };
-        context.producer = { ...producer, attachRun: record.runId, containerInit: id(50, 1, 333),
-            producer: { ...producer.producer, ...id(55, 50, 333) }, producerAncestry: [id(55, 50, 333)] };
+        context.producer = { ...producer, attachRun: record.runId, containerInit: id(1, 0, 333),
+            producer: { ...producer.producer, ...id(55, 1, 333) }, producerAncestry: [id(55, 1, 333)] };
     };
     return context;
 }
@@ -70,9 +77,11 @@ function fixture() {
 test('two-container reader reads metadata only in RoboWork and links both process proofs through the same run', async () => {
     const f = fixture(), result = await f.read();
     assert.equal(result.runId, result.controller.runId); assert.equal(f.metadataReads, 2);
-    assert.equal(result.containerInit.pid, 1); assert.equal(result.controller.containerInit.pid, 30);
-    assert.equal(f.calls[2].args[4], f.work);
-    assert.equal(f.calls.length, 5); assert.equal(f.calls[0].args[4], f.work); assert.equal(f.calls[3].args[4], f.work);
+    assert.equal(result.containerInit.pid, 1); assert.equal(result.controller.containerInit.pid, 1);
+    assert.notEqual(result.containerInit.pidNamespace, result.controller.containerInit.pidNamespace);
+    assert.equal(f.calls[1].args[4], f.team);
+    assert.equal(f.calls[3].args[4], f.work);
+    assert.equal(f.calls.length, 7); assert.equal(f.calls[0].args[4], f.work); assert.equal(f.calls[5].args[4], f.work);
 });
 
 test('wrong native container, wrong controller, different run and stale controller incarnation fail', async () => {
@@ -113,7 +122,8 @@ test('continuity retains initial authority and verifies a new attach producer wi
     const current = await f.read({ retainedProofs: [initial] });
     assert.deepEqual(current.residentRecord, initial.residentRecord); assert.deepEqual(current.native, initial.native);
     assert.equal(current.runId, initial.runId); assert.equal(current.controller.attachRun, initial.runId);
-    assert.equal(initial.controller.containerInit.pid, 30); assert.equal(current.controller.containerInit.pid, 50);
+    assert.equal(initial.controller.containerInit.pidNamespace, 'pid:[222]');
+    assert.equal(current.controller.containerInit.pidNamespace, 'pid:[333]');
     assert.deepEqual(current.residentRecord.producer, { pid: 7, startStamp: '350' });
 });
 
@@ -139,4 +149,17 @@ test('retained native authority also fences the post-restart census ALA and laun
     assert.equal(rows[0].pid, initial.ala.pid); assert.deepEqual(rows[0].launch, initial.launch);
     f.identity.ala.pid += 1;
     await assert.rejects(f.read({ kind: 'census', retainedProofs: [initial] }), /ALA process changed/u);
+});
+
+test('owner namespace fallback requires exact Box before/after incarnation and root mapping', async () => {
+    const good = fixture(); good.procReads = [20]; await good.read();
+    for (const mutate of [
+        f => { f.procProof.init.boxPid = 999; },
+        f => { f.procProof.init.namespacePids = [10, 2]; },
+        f => { f.procProof.init.pidNamespace = 'pid:[999]'; },
+        f => { f.procReads = [999]; },
+        f => { f.procReads = [20]; let count = 0; f.beforeReturn = (_value, args) => {
+            if (args.some(arg => arg.includes('collectBoxProcReadProofs')) && ++count === 2) f.procProof.processes[0].startToken = 'reused';
+        }; },
+    ]) { const f = fixture(); mutate(f); await assert.rejects(f.read()); }
 });

@@ -59,6 +59,18 @@ test('controller proof links trusted run ID to exact process incarnation, canoni
     assert.equal(proof.containerInit.pid, 10); assert.equal(f.rows.size, 4);
 });
 
+test('controller proof runs in its verified owner namespace with init one and retains dead-producer refusal', async () => {
+    const f = fixture();
+    f.rows.delete(10); f.rows.set(1, { pid: 1, ppid: 0, start: '100', namespace: 'pid:[111]', localPid: 1, argv: ['init'] });
+    const producer = f.rows.get(40); f.rows.delete(40);
+    f.rows.set(7, { ...producer, pid: 7, ppid: 1 });
+    f.rows.get(60).ppid = 1;
+    const proof = await f.read(1);
+    assert.equal(proof.containerInit.pid, 1); assert.equal(proof.producer.pid, f.record.producer.pid);
+    assert.equal(proof.producer.startToken, f.record.producer.startStamp);
+    f.rows.delete(7); await assert.rejects(f.read(1), /dead or ambiguous/u);
+});
+
 test('different producer, dead producer, reused PID and wrong container all fail', async () => {
     for (const mutate of [
         f => { f.record.producer.pid = 9; }, f => { f.rows.delete(40); },

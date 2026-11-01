@@ -4,7 +4,7 @@ export async function collectControllerProducer(initPid, record, options, io = n
     const assert = (await import('node:assert/strict')).default;
     const fs = io || await import('node:fs');
     const { createHash } = await import('node:crypto');
-    assert.ok(Number.isSafeInteger(initPid) && initPid > 1);
+    assert.ok(Number.isSafeInteger(initPid) && initPid >= 1);
     assert.ok(Number.isSafeInteger(record?.producer?.pid) && record.producer.pid > 0);
     assert.match(record.producer.startStamp || '', /^[1-9][0-9]{0,19}$/u);
     assert.match(record.runId || '', /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u);
