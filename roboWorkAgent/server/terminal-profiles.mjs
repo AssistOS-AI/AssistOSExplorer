@@ -50,7 +50,7 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         const robot = await robots.require(id);
         const selected = key === 'default' ? null : (await environment.list()).find(entry => entry.key === key);
         if (key !== 'default' && !selected) throw fail('ENVIRONMENT_UNAVAILABLE', 'Terminal environment is unavailable', 409);
-        if (selected) await environment.require(selected.ref);
+        if (selected) await environment.require(selected.ref, { retry: true });
         return { id, key, robot, environment: selected?.ref || null };
     }
 

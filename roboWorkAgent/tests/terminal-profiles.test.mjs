@@ -166,3 +166,34 @@ test('hook no-ops in plain shells and gate cannot leave an outer prompt', async 
     for (const value of ['abc.default', 'abc.YWdlbnQ']) assert.doesNotThrow(() => parseTerminalProfile(value));
     for (const value of ['ab.default', 'abc', 'abc.default.extra', 'abc.$(bad)', '../abc.default']) assert.throws(() => parseTerminalProfile(value));
 });
+
+test('cached download failures can resolve and launch a selected terminal while other reasons stay refused', async t => {
+    const f = await fixture(t);
+    const { EnvironmentManager } = await import('../server/environment.mjs');
+    let failing = true, pulls = 0;
+    let manifest = { container: 'image:terminal' };
+    const environment = new EnvironmentManager({
+        loadMarketplace: async () => ({ agents: [{ repo: 'repo', name: 'agent', active: true, enableMode: 'global', manifestPath: '/manifest.json' }] }),
+        readManifest: async () => manifest, imageExists: async () => false,
+        ensureImage: async () => { pulls++; if (failing) throw new Error('download failed'); return {}; },
+    });
+    for (const name of ['list', 'require', 'prepare', 'buildLaunch']) f.environment[name] = environment[name].bind(environment);
+    await assert.rejects(environment.prepare('repo/agent'));
+    const entry = (await environment.list())[0];
+    const profile = `robot-a.${entry.key}`;
+    assert.equal((await f.api.catalog()).environments.find(item => item.key === entry.key).available, false);
+    assert.equal((await f.api.resolve(profile)).allowed, true);
+    await f.api.prepare(profile);
+    assert.equal(pulls, 1, 'terminal catalog, resolution and descriptor preparation never pull');
+    const { descriptor } = await readTerminalDescriptor(f.paths, profile, f.stub, f.stub);
+    failing = false;
+    assert.equal((await buildTerminalLaunch(descriptor, f.paths, { environment })).command, 'podman');
+    assert.equal(pulls, 2, 'only the selected actual terminal launch retries the download');
+    for (const value of [{ container: 'image:{{VERSION}}' }, {}, null]) {
+        manifest = value;
+        environment.cached = null;
+        assert.equal((await f.api.resolve(profile)).allowed, false);
+        await assert.rejects(f.api.prepare(profile));
+    }
+    assert.equal(pulls, 2, 'nonretryable choices never download');
+});

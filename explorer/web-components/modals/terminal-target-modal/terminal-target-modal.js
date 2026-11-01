@@ -515,7 +515,8 @@ export class TerminalTargetModal {
         const robot = this.selectedRobot();
         if (!robot) return null;
         if (!robot.environments) return { provider: robot.agent, id: robot.id };
-        const environment = robot.environments.find(entry => entry.key === this.selectedEnvironmentKey && entry.available);
+        const environment = robot.environments.find(entry => entry.key === this.selectedEnvironmentKey
+            && (entry.available || entry.reason === 'image cannot be pulled'));
         const id = environment ? `${robot.id}.${environment.key}` : '';
         return PROFILE_ID_PATTERN.test(id) ? { provider: robot.agent, id } : null;
     }
@@ -887,8 +888,9 @@ export class TerminalTargetModal {
             this.environmentSelect.replaceChildren(...(robot?.environments || []).map(entry => {
                 const option = document.createElement('option');
                 option.value = entry.key;
-                option.textContent = entry.reason ? `${entry.label} (${entry.reason})` : entry.label;
-                option.disabled = !entry.available;
+                const retry = !entry.available && entry.reason === 'image cannot be pulled';
+                option.textContent = entry.reason ? `${entry.label} (${entry.reason}${retry ? '; retry download' : ''})` : entry.label;
+                option.disabled = !entry.available && !retry;
                 option.selected = entry.key === this.selectedEnvironmentKey;
                 return option;
             }));

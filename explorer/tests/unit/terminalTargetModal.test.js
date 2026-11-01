@@ -1363,10 +1363,10 @@ test('environment declaration survives plugin normalization and validates exact 
         terminalProfiles: { ...WORK_SOURCE.terminalProfiles, environments: false } }] } }).application['terminal-profiles:source'].length, 0);
 });
 
-function environmentPage(t, workTargets = null) {
+function environmentPage(t, workTargets = null, environments = ENVIRONMENTS) {
     let sequence = 0;
     return pageHarness(t, { sources: [WORK_SOURCE], respond: async ({ method, url, body }) => {
-        if (method === 'GET') return { body: { ok: true, profiles: ROBOTS, environments: ENVIRONMENTS } };
+        if (method === 'GET') return { body: { ok: true, profiles: ROBOTS, environments } };
         if (url !== '/webtty/target-discoveries' || method !== 'POST') return null;
         const request = JSON.parse(body);
         if (!request.profile) return null;
@@ -1384,8 +1384,8 @@ test('environment picker launches only RoboWork and binds preparation to robot p
     await page.chooseRobot('Robot A');
     assert.equal(page.$('Environment').hidden, false);
     assert.deepEqual(page.$('Environment').children.map(option => option.textContent),
-        ['RoboWork (default)', 'Chosen agent', 'Unavailable agent (image cannot be pulled)']);
-    assert.equal(page.$('Environment').children[2].disabled, true);
+        ['RoboWork (default)', 'Chosen agent', 'Unavailable agent (image cannot be pulled; retry download)']);
+    assert.equal(page.$('Environment').children[2].disabled, false);
     assert.equal(page.rows().length, 1); assert.match(textTree(page.rows()[0]), /RoboWork/);
     assert.equal(page.modal.targetsByLaunch.has(id32('box')), false);
     assert.deepEqual(page.modal.currentDiscovery.profile, { provider: 'roboWorkAgent', id: 'robot-a.default', label: 'Robot A' });
@@ -1410,5 +1410,30 @@ test('environment flow refuses read-only, absent and ambiguous RoboWork rows', a
         assert.equal(page.$('Open').disabled, true);
         assert.equal(await page.modal.openTerminal(), false);
         assert.ok(!page.log.some(entry => String(entry[2]).endsWith('/prepare')));
+    }
+});
+
+test('cached image pull failure remains visible and can launch a retry from the terminal picker', async t => {
+    const page = environmentPage(t);
+    page.modal.afterRender(); await page.settle(); await page.chooseRobot('Robot A');
+    const retry = page.$('Environment').children.find(option => option.value === 'unavailable');
+    assert.equal(retry.disabled, false);
+    assert.match(retry.textContent, /image cannot be pulled.*retry download/u);
+    page.modal.handleChange({ target: { id: 'terminalTargetEnvironment', value: 'unavailable' } });
+    await page.settle();
+    assert.equal(page.modal.selectedProfile().id, 'robot-a.unavailable');
+    await page.chooseRow(/RoboWork/);
+    assert.equal(await page.modal.openTerminal(), true);
+    assert.ok(page.log.some(entry => entry[2] === `${WORK_BASE}/robot-a.unavailable/prepare`));
+});
+
+test('terminal picker keeps malformed and missing images disabled', async t => {
+    for (const reason of ['manifest unavailable', 'templated or invalid image', 'image unavailable', 'other failure']) {
+        const environments = ENVIRONMENTS.map(entry => entry.key === 'unavailable' ? { ...entry, reason } : entry);
+        const page = environmentPage(t, null, environments);
+        page.modal.afterRender(); await page.settle(); await page.chooseRobot('Robot A');
+        assert.equal(page.$('Environment').children[2].disabled, true);
+        page.modal.selectedEnvironmentKey = 'unavailable';
+        assert.equal(page.modal.selectedProfile(), null);
     }
 });

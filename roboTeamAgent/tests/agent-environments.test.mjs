@@ -220,8 +220,38 @@ test('RoboTeam is a thin environment_list MCP client and propagates unavailable 
     assert.deepEqual(await client.list(), entries);
     assert.equal((await client.require('AchillesIDE/gitAgent')).key, 'git');
     assert.deepEqual(calls[0], ['environment_list', {}, { timeoutMs: 120000 }]);
-    await assert.rejects(client.require('AchillesIDE/broken'), /image cannot be pulled/u);
+    assert.equal((await client.require('AchillesIDE/broken')).reason, 'image cannot be pulled');
     await assert.rejects(client.require('AchillesIDE/missing'), { statusCode: 409 });
     await assert.rejects(client.require('bad'), { statusCode: 400 });
     await assert.rejects(new AgentEnvironments({ call: async () => ({}) }).list(), /unreadable/u);
+});
+
+test('RoboTeam selected steps reach image preparation after a cached pull failure and refuse other reasons', async () => {
+    let failing = true;
+    const { manager } = fixture({ ensureImage: async () => {
+        if (failing) throw new Error('download failed');
+        return {};
+    } });
+    await assert.rejects(manager.prepare('AchillesIDE/gitAgent'));
+    const client = new AgentEnvironments({ call: () => manager.list() });
+    const selected = await client.require('AchillesIDE/gitAgent');
+    assert.equal(selected.available, false);
+    assert.equal(selected.reason, 'image cannot be pulled');
+    failing = false;
+    assert.equal((await manager.prepare(selected.ref)).available, true);
+    for (const reason of ['manifest unavailable', 'templated or invalid image', 'image unavailable', 'other failure']) {
+        const refused = new AgentEnvironments({ call: async () => [{ ref: 'repo/agent', available: false, reason }] });
+        await assert.rejects(refused.require('repo/agent'), { code: 'ENVIRONMENT_UNAVAILABLE' });
+    }
+});
+
+test('workflow environment choices permit only a labelled cached-download retry', async () => {
+    const { workflowEnvironmentChoice } = await import('../public/workflow-editor.js');
+    const retry = workflowEnvironmentChoice({ ref: 'repo/agent', available: false, reason: 'image cannot be pulled' });
+    assert.equal(retry.disabled, false);
+    assert.match(retry.label, /image cannot be pulled.*retry download/u);
+    assert.equal(workflowEnvironmentChoice({ ref: 'repo/agent', available: true, reason: '' }).disabled, false);
+    for (const reason of ['manifest unavailable', 'templated or invalid image', 'image unavailable', 'other failure']) {
+        assert.equal(workflowEnvironmentChoice({ ref: 'repo/agent', available: false, reason }).disabled, true);
+    }
 });
