@@ -15,11 +15,11 @@ function fixture() {
         ownerPrincipal: 'user:owner', producer: { pid: 7, startStamp: '350' } };
     const codeHashes = { 'server/main.mjs': 'e'.repeat(64) }, controllerHash = 'f'.repeat(64);
     const native = { robotId: 'robot-a', realpath: '/native', sha256: '9'.repeat(64) };
-    const service = id(12, 10, 111), ala = id(20, 12, 150), actual = id(22, 20, 200), controller = id(35, 30, 222);
-    const identity = { runId: record.runId, launch: ala, containerInit: id(10, 1, 111),
+    const service = id(12, 1, 111), ala = id(20, 12, 150), actual = id(22, 20, 200), controller = id(35, 30, 222);
+    const identity = { runId: record.runId, launch: ala, containerInit: id(1, 0, 111),
         ala: { ...ala, cwd, sessionId: 'session', turnId: 'turn', entrypoint: '/ALA/bin/ala.mjs', sha256: '8'.repeat(64) },
         producer: { ...service, kind: 'copilot', script: '/code/server/main.mjs' }, producerAncestry: [service],
-        serviceAncestry: [service, id(10, 1, 111)], native: { ...actual, executable: '/native', actualExecutable: '/native', scriptPath: null, sha256: native.sha256 },
+        serviceAncestry: [service, id(1, 0, 111)], native: { ...actual, executable: '/native', actualExecutable: '/native', scriptPath: null, sha256: native.sha256 },
         ancestry: [actual] };
     const producer = { runId: record.runId, containerInit: id(30, 1, 222),
         producer: { ...controller, kind: 'copilot', script: '/code/server/robot-cli.mjs', sha256: controllerHash }, producerAncestry: [controller] };
@@ -34,14 +34,18 @@ function fixture() {
         context.calls.push({ command, args, limits }); assert.equal(command, 'podman');
         assert.equal(limits.timeout, 30000); assert.equal(limits.maxBuffer, 65536);
         let value;
-        if (args.includes('/usr/bin/podman')) {
+        if (args.some(arg => arg.includes('readResidentRunRecords'))) {
             assert.equal(args[4], work, 'Private metadata may be read only inside the execution owner.');
             context.metadataReads += 1; value = { codeHashes, records: [context.record] };
         } else if (args.some(arg => arg.includes('collectControllerProducer'))) value = context.producer;
         else if (context.census) {
+            assert.equal(args[4], work, 'Native process roots must be read inside their execution owner.');
             const { ala, launch, runId } = context.identity;
             value = [{ kind: 'ala-turn', ...ala, producerKind: context.record.kind === 'task' ? 'workflow' : 'copilot', launch, runId }];
-        } else value = context.identity;
+        } else {
+            assert.equal(args[4], work, 'Native process roots must be read inside their execution owner.');
+            value = context.identity;
+        }
         context.beforeReturn?.(value, args);
         return { stdout: JSON.stringify(value) };
     };
@@ -66,7 +70,8 @@ function fixture() {
 test('two-container reader reads metadata only in RoboWork and links both process proofs through the same run', async () => {
     const f = fixture(), result = await f.read();
     assert.equal(result.runId, result.controller.runId); assert.equal(f.metadataReads, 2);
-    assert.equal(result.containerInit.pid, 10); assert.equal(result.controller.containerInit.pid, 30);
+    assert.equal(result.containerInit.pid, 1); assert.equal(result.controller.containerInit.pid, 30);
+    assert.equal(f.calls[2].args[4], f.work);
     assert.equal(f.calls.length, 5); assert.equal(f.calls[0].args[4], f.work); assert.equal(f.calls[3].args[4], f.work);
 });
 

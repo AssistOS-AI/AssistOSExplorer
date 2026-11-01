@@ -123,6 +123,26 @@ test('resident proof binds narrowed ALA through its exact RoboWork service and r
     await assert.rejects(collectNativeProcessSnapshot(10, native, cwd, fixture.io, censusSelection), /missing its exact ALA/u);
 });
 
+test('resident namespace init one is admitted only for the exact execution owner and launch wrappers need no exe access', async () => {
+    const fixture = snapshotFixture();
+    fixture.rows.delete(10); fixture.add(1, 0, ['init'], { namespacePids: [1] });
+    Object.assign(fixture.rows.get(40), { ppid: 1, args: ['node', '/code/server/main.mjs'], namespacePids: [40] });
+    fixture.add(41, 40, ['pasta'], { executable: '/usr/bin/pasta', namespacePids: [41] });
+    Object.assign(fixture.rows.get(20), { ppid: 41, pidNamespace: 'pid:[150]', namespacePids: [20, 1] });
+    const selection = { ...selectionFor(), residentRecords: [{ runId: 'resident-run', kind: 'copilot', cwd,
+        sessionId: 'session', turnId: 'turn', pid: 41, servicePid: 40, pidStamp: '141' }],
+        serviceSha256: crypto.createHash('sha256').update(serviceBytes).digest('hex') };
+    fixture.hook = file => { if (file === '/proc/41/exe') throw Object.assign(Error('Wrapper exe unavailable'), { code: 'EACCES' }); };
+    const proof = await collectNativeProcessSnapshot(1, native, cwd, fixture.io, selection);
+    assertNativeProcessIdentity(proof, native, { initPid: 1, cwd, ...selection });
+    assert.equal(proof.containerInit.pid, 1); assert.equal(proof.launch.pid, 41);
+    assert.equal(fixture.calls.get('/proc/41/exe'), undefined);
+    await assert.rejects(collectNativeProcessSnapshot(1, native, cwd, fixture.io, selectionFor()), /exact process context/u);
+    assert.throws(() => assertNativeProcessIdentity(proof, native, { initPid: 1, cwd, ...selectionFor() }));
+    const wrong = structuredClone(proof); wrong.containerInit.pid = 2;
+    assert.throws(() => assertNativeProcessIdentity(wrong, native, { initPid: 1, cwd, ...selection }));
+});
+
 test('same namespace selects a non-init-descendant ALA and preserves the entire native ancestry', async () => {
     const fixture = snapshotFixture();
     const first = await fixture.observe();

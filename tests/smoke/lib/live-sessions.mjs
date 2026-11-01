@@ -366,7 +366,7 @@ export function validateNativeAlaBinding(binding) {
 }
 
 export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd, io = fs, selection = null) {
-    if (!Number.isSafeInteger(rootPid) || rootPid <= 1
+    if (!Number.isSafeInteger(rootPid) || !(rootPid > 1 || rootPid === 1 && Array.isArray(selection?.residentRecords))
         || typeof expectedCwd !== 'string' || !expectedCwd.startsWith('/')
         || expectedCwd === '/' || /[\u0000-\u001f\u007f]/.test(expectedCwd)
         || expectedCwd.split('/').some((part, index) => index > 0 && ['', '.', '..'].includes(part))) {
@@ -892,13 +892,16 @@ export async function residentNativeProcessIdentity(evidence, runtime, native, d
         assert.equal(proof.producerAncestry.at(-1).ppid, proof.containerInit.pid);
         controllerProofs.set(record.runId, proof);
     }
-    const identity = await run(['exec', evidence.outerContainerId, '/usr/local/bin/node', '--input-type=module', '--eval',
-        NATIVE_PROCESS_SNAPSHOT_SOURCE, String(binding.execution.pid), JSON.stringify(native), cwd, JSON.stringify(nativeSelection)]);
+    // The source and native process roots live in RoboWork's user namespace.
+    // The outer Box cannot ptrace those roots even when their stat is visible.
+    const identity = await run(['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', binding.owner.containerId,
+        '/usr/local/bin/node', '--input-type=module', '--eval',
+        NATIVE_PROCESS_SNAPSHOT_SOURCE, '1', JSON.stringify(native), cwd, JSON.stringify(nativeSelection)]);
     if (selection.kind === 'census') {
         assertNativeProcessCensus(identity, { cwd, ...nativeSelection });
         for (const row of identity) assert.ok(controllerProofs.has(row.runId), 'Census is missing its exact controller proof.');
     } else {
-        assertNativeProcessIdentity(identity, native, { initPid: binding.execution.pid, cwd, ...nativeSelection });
+        assertNativeProcessIdentity(identity, native, { initPid: 1, cwd, ...nativeSelection });
         assert.ok(controllerProofs.has(identity.runId), 'Native process has no exact controller proof.');
     }
     assert.deepEqual(await read(), metadata, 'Authoritative run identity changed during the two-container proof.');
@@ -930,17 +933,19 @@ export async function residentNativeProcessIdentity(evidence, runtime, native, d
 
 export function assertNativeProcessIdentity(identity, native, expectedContext) {
     const alaBinding = validateNativeAlaBinding(expectedContext?.alaBinding);
-    assert.ok(Number.isSafeInteger(expectedContext?.initPid) && expectedContext.initPid > 1);
+    const residentInit = expectedContext?.residentRecords && expectedContext.initPid === 1;
+    assert.ok(Number.isSafeInteger(expectedContext?.initPid) && (expectedContext.initPid > 1 || residentInit));
     assert.ok(typeof expectedContext.cwd === 'string' && path.posix.isAbsolute(expectedContext.cwd)
         && expectedContext.cwd !== '/' && path.posix.normalize(expectedContext.cwd) === expectedContext.cwd
         && !/[\u0000-\u001f\u007f]/.test(expectedContext.cwd));
-    const processIdentity = value => {
-        assert.ok(Number.isSafeInteger(value?.pid) && value.pid > 1);
+    const processIdentity = (value, init = false) => {
+        assert.ok(Number.isSafeInteger(value?.pid) && (value.pid > 1 || init && residentInit && value.pid === 1));
         assert.ok(Number.isSafeInteger(value.ppid) && value.ppid >= 0);
         assert.match(value.startToken, /^[1-9][0-9]{0,19}$/);
         assert.match(value.pidNamespace, /^pid:\[[1-9][0-9]{0,19}\]$/);
     };
-    for (const value of [identity?.containerInit, identity?.ala, identity?.native]) processIdentity(value);
+    processIdentity(identity?.containerInit, true);
+    for (const value of [identity?.ala, identity?.native]) processIdentity(value);
     assert.equal(identity.containerInit.pid, expectedContext?.initPid);
     assert.equal(identity.ala.cwd, expectedContext?.cwd);
     if (!expectedContext.residentRecords) assert.equal(identity.ala.pidNamespace, identity.containerInit.pidNamespace);
@@ -976,7 +981,7 @@ export function assertNativeProcessIdentity(identity, native, expectedContext) {
                 'Trusted launch must be ALA or an exact ancestor between ALA and the resident service.');
             assert.ok(Array.isArray(identity.serviceAncestry) && identity.serviceAncestry.length > 1 && identity.serviceAncestry.length <= 256);
             identity.serviceAncestry.forEach((row, index) => {
-                processIdentity(row); assert.equal(row.pidNamespace, identity.containerInit.pidNamespace);
+                processIdentity(row, index === identity.serviceAncestry.length - 1); assert.equal(row.pidNamespace, identity.containerInit.pidNamespace);
                 if (index) assert.equal(identity.serviceAncestry[index - 1].ppid, row.pid);
             });
             assert.equal(identity.serviceAncestry[0].pid, identity.producer.pid);
