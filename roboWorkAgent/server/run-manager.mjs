@@ -59,6 +59,16 @@ export class RunManager {
                 // An incomplete start is not an attachable run.
             }
         }
+        this.retentionTimer = setInterval(() => { void this.prune().catch(() => {}); }, 60 * 60 * 1000);
+        this.retentionTimer.unref();
+    }
+
+    async prune() {
+        for (const run of this.runs.values()) {
+            if (!live(run.meta.state) && this.now() - Date.parse(run.meta.endedAt || run.meta.startedAt) > RETENTION) {
+                await this.release({ runId: run.meta.runId });
+            }
+        }
     }
 
     async persist(run) {
@@ -102,6 +112,7 @@ export class RunManager {
             || (ala.turnId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/u.test(ala.turnId))
             || (ala.permissions !== undefined && !['full-access', 'ask-for-approval'].includes(ala.permissions))
             || (ala.ca !== undefined && !['auto', 'codex', 'opencode', 'pi', 'claude'].includes(ala.ca))) throw fail('INVALID_INPUT', 'Invalid ALA options');
+        for (const key of ['resume', 'workflowExecution']) if (ala[key] !== undefined && typeof ala[key] !== 'boolean') throw fail('INVALID_INPUT', 'Invalid ALA option');
         for (const key of ['model', 'effort']) if (ala[key] !== undefined && (typeof ala[key] !== 'string' || !ala[key] || ala[key].length > 512 || /[\x00-\x1f]/u.test(ala[key]))) throw fail('INVALID_INPUT', 'Invalid ALA option');
         const cwd = await this.paths.grant(input.cwd, 'cwd');
         if (!Array.isArray(input.folders || []) || (input.folders || []).length > 128 || !Array.isArray(input.ignore || [])) throw fail('INVALID_INPUT', 'Invalid folder grants');
@@ -109,6 +120,7 @@ export class RunManager {
         const aliases = new Set(channels.map(channel => channel.alias)); aliases.add('roboteam-soul');
         const folders = [];
         for (const folder of input.folders || []) {
+            if (!folder || typeof folder !== 'object' || Array.isArray(folder)) throw fail('INVALID_INPUT', 'Invalid folder grant');
             const source = await this.paths.grant(folder?.source);
             if (folder.alias !== undefined && (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/u.test(folder.alias) || aliases.has(folder.alias))) throw fail('FOLDER_REFUSED', 'Invalid folder alias');
             if (folder.alias) aliases.add(folder.alias);
@@ -118,6 +130,7 @@ export class RunManager {
                 || aliases.has(folder.at.slice('/workspace/'.length)))) throw fail('FOLDER_REFUSED', 'Invalid folder target');
             folders.push({ ...folder, source });
         }
+        if (input.tag !== undefined && (!input.tag || typeof input.tag !== 'object' || Array.isArray(input.tag))) throw fail('INVALID_INPUT', 'Invalid run tag');
         if (Buffer.byteLength(JSON.stringify(input.tag || {})) > 65536) throw fail('INVALID_INPUT', 'Run tag too large');
         await this.robots.require(input.robotId);
         const directory = this.paths.run(input.runId);
@@ -248,6 +261,7 @@ export class RunManager {
 
     async input({ runId: id, data, close, reply }) {
         const run = this.get(id);
+        if (close !== undefined && typeof close !== 'boolean') throw fail('INVALID_INPUT', 'Invalid close flag');
         if (reply) await run.channels?.reply(reply);
         if (data !== undefined) {
             if (typeof data !== 'string' || Buffer.byteLength(data) > 1024 * 1024) throw fail('INVALID_INPUT', 'Invalid run input');
@@ -302,6 +316,7 @@ export class RunManager {
 
     async close() {
         this.closed = true;
+        clearInterval(this.retentionTimer);
         await Promise.allSettled([...this.starting.values()]);
         const active = [...this.runs.values()].filter(run => live(run.meta.state));
         for (const run of active) this.signal(run, 'SIGTERM');

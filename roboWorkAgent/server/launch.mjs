@@ -1,9 +1,37 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { nativeEnvironment } from './native-environment.mjs';
 import { homeTarget, fail } from './robot-paths.mjs';
 
 export const shellQuote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
+
+export function capturePrivateLaunch(launch, { timeoutMs = 90000, maxBytes = 8 * 1024 * 1024, spawnImpl = spawn } = {}) {
+    return new Promise((resolve, reject) => {
+        const child = spawnImpl(launch.command, launch.args, launch.options);
+        const chunks = []; let bytes = 0, failure, force;
+        const kill = signal => { try { process.kill(-child.pid, signal); } catch { child.kill(signal); } };
+        const stop = error => {
+            if (failure) return;
+            failure = error; kill('SIGTERM'); force = setTimeout(() => kill('SIGKILL'), 1000); force.unref();
+        };
+        const timer = setTimeout(() => stop(fail('MODEL_DISCOVERY_TIMEOUT', 'Model discovery timed out', 504)), timeoutMs);
+        child.stdin.end();
+        child.stdout.on('data', chunk => {
+            bytes += chunk.length;
+            if (bytes > maxBytes) stop(fail('MODEL_DISCOVERY_FAILED', 'Model catalog too large', 500));
+            else chunks.push(chunk);
+        });
+        child.stderr.resume();
+        child.once('error', error => { clearTimeout(timer); clearTimeout(force); reject(error); });
+        child.once('close', code => {
+            clearTimeout(timer); clearTimeout(force);
+            if (failure) reject(failure);
+            else if (code !== 0) reject(fail('MODEL_DISCOVERY_FAILED', 'Model discovery failed', 500));
+            else resolve({ stdout: Buffer.concat(chunks).toString('utf8') });
+        });
+    });
+}
 
 // Mount isolation narrows ALA's host view without an outer bwrap dropping namespace capabilities.
 export async function buildPrivateLaunch({ paths, id, directory, command, args, env = {}, guiPort, extraBindings = [] }) {

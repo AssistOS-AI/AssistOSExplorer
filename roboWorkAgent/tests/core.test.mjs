@@ -70,6 +70,8 @@ test('concurrent run_start is idempotent; stdin/output, durable replay and unkno
     await assert.rejects(manager.read({ runId: 'missing' }), { code: 'UNKNOWN_RUN' });
     await assert.rejects(manager.read({ runId: input.runId, after: -1 }), { code: 'INVALID_INPUT' });
     await assert.rejects(manager.start({ ...input, runId: '../bad' }), { code: 'INVALID_INPUT' });
+    await assert.rejects(manager.start({ ...input, runId: 'bad-folder', folders: [null] }), { code: 'INVALID_INPUT' });
+    await assert.rejects(manager.input({ runId: input.runId, close: 'yes' }), { code: 'INVALID_INPUT' });
     await manager.input({ runId: input.runId, close: true });
     await manager.close();
     const restored = new RunManager({ paths }); await restored.initialize();
@@ -117,6 +119,21 @@ test('native environment excludes service credentials and unrelated variables', 
     const env = nativeEnvironment({ PATH: '/bin', PLOINKY_AGENT_SECRET: 'forbidden', ROBOWORK_INTERNAL_TOKEN: 'forbidden', API_KEY: 'forbidden', NODE_OPTIONS: '--bad' }, '/home/aaa');
     assert.equal(env.HOME, '/home/aaa'); assert.equal(env.USER, 'aaa'); assert.equal(env.ALA_SANDBOX_HOME, '/home/aaa');
     assert.ok(!Object.keys(env).some(key => /SECRET|TOKEN|KEY|PLOINKY|NODE_OPTIONS/u.test(key)));
+});
+
+test('environment stop checks the exact container label and robot before signalling', async t => {
+    const { manager } = await fixture(t);
+    const calls = [];
+    manager.execFileImpl = async (command, args) => {
+        calls.push(args);
+        return { stdout: JSON.stringify({ 'robowork.environment': 'true', 'robowork.robot': 'aaa' }) };
+    };
+    const run = { meta: { robotId: 'aaa' }, containerName: 'robowork-env-' + 'a'.repeat(24) };
+    await manager.stopEnvironment(run, 'SIGTERM');
+    assert.equal(calls.at(-1)[0], 'kill');
+    calls.length = 0;
+    await assert.rejects(manager.stopEnvironment({ ...run, meta: { robotId: 'bbb' } }, 'SIGTERM'), { code: 'ENVIRONMENT_STOP_FAILED' });
+    assert.ok(!calls.some(args => args[0] === 'kill'));
 });
 
 test('resident HTTP service refuses missing token and returns stable operation errors', async t => {

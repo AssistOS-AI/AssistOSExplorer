@@ -1,14 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { normalizeCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
 import { fail, robotId, homeTarget } from './robot-paths.mjs';
-import { buildPrivateLaunch } from './launch.mjs';
-
-const execFileAsync = promisify(execFile);
+import { buildPrivateLaunch, capturePrivateLaunch } from './launch.mjs';
 
 async function realDirectory(directory) {
     await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
@@ -17,8 +13,8 @@ async function realDirectory(directory) {
 }
 
 export class RobotManager {
-    constructor({ paths, toolCache, homeOperation, soulGateway, alaEntry, execFileImpl = execFileAsync }) {
-        Object.assign(this, { paths, toolCache, homeOperation, soulGateway, alaEntry, execFileImpl });
+    constructor({ paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch = capturePrivateLaunch }) {
+        Object.assign(this, { paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch });
         this.operations = new Map(); this.runs = null; this.gui = null;
     }
 
@@ -123,7 +119,7 @@ export class RobotManager {
                     agent, cwd: workingDirectory, home: this.paths.home(id), soul: this.paths.soul(id), dataDir: this.paths.dataDir, robotId: id })],
                 extraBindings: [[cacheDirectory, cacheDirectory]],
                 env: codingAgentEnvironment(tools, { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' }, this.toolCache.root) });
-            const result = await this.execFileImpl(launch.command, launch.args, { ...launch.options, timeout: 90000, maxBuffer: 8 * 1024 * 1024, killSignal: 'SIGTERM' });
+            const result = await this.captureLaunch(launch);
             return { agent, models: JSON.parse(result.stdout) };
         } catch { throw fail('MODEL_DISCOVERY_FAILED', 'Model discovery failed', 500); }
         finally { await fs.rm(directory, { recursive: true, force: true }); }
