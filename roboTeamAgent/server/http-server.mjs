@@ -6,7 +6,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
-import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
@@ -205,78 +204,6 @@ function proxyAgentServer(req, res, mcpPort) {
     req.pipe(upstream);
 }
 
-function sessionHeaders(req, port) {
-    const headers = { host: `127.0.0.1:${port}` };
-    for (const name of ['accept', 'accept-encoding', 'accept-language', 'cache-control', 'content-length', 'content-type', 'cookie', 'origin', 'pragma', 'range', 'user-agent']) {
-        if (req.headers[name] !== undefined) headers[name] = req.headers[name];
-    }
-    headers['x-forwarded-proto'] = 'https';
-    return headers;
-}
-
-function sessionUpstreamPath(req, publicBasePath) {
-    const relative = String(req.url || '/').startsWith('/') ? String(req.url || '/') : `/${req.url}`;
-    return `${publicBasePath.slice(0, -1)}${relative}`;
-}
-
-function proxySessionHttp(req, res, port, publicBasePath) {
-    const upstream = http.request({
-        host: '127.0.0.1',
-        port,
-        method: req.method,
-        path: sessionUpstreamPath(req, publicBasePath),
-        headers: sessionHeaders(req, port),
-    }, (response) => {
-        const headers = { ...response.headers, 'cache-control': 'no-store' };
-        res.writeHead(response.statusCode || 502, headers);
-        response.pipe(res);
-    });
-    upstream.once('error', () => sendError(res, 502, 'robot session is unavailable'));
-    // The gate already consumed the stream; send the bytes it verified.
-    if (Buffer.isBuffer(req[RAW_BODY])) upstream.end(req[RAW_BODY]);
-    else req.pipe(upstream);
-}
-
-function websocketFailure(socket, status, reason) {
-    socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-    socket.destroy();
-}
-
-const DENIAL_REASONS = Object.freeze({ 401: 'Unauthorized', 403: 'Forbidden', 503: 'Service Unavailable' });
-
-// Gate refusal for an upgrade: a JSON body like the HTTP refusals. Only the
-// status and the path are logged, never headers or the query string. The
-// socket is destroyed once the response has flushed, so a peer that never
-// closes its side cannot keep the connection open; the timer is a safety net.
-function websocketDenial(socket, status, error, pathname) {
-    console.warn(`[roboTeamAgent] WebSocket upgrade ${pathname} rejected (${status})`);
-    socket.on('error', () => {});
-    const payload = Buffer.from(JSON.stringify({ ok: false, error }));
-    socket.write(`HTTP/1.1 ${status} ${DENIAL_REASONS[status] || 'Forbidden'}\r\nConnection: close\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${payload.length}\r\n\r\n`);
-    const safety = setTimeout(() => socket.destroy(), 2000);
-    safety.unref();
-    socket.once('close', () => clearTimeout(safety));
-    socket.end(payload, () => socket.destroy());
-}
-
-function proxySessionWebSocket(req, socket, head, port, publicBasePath) {
-    const upstream = net.connect({ host: '127.0.0.1', port });
-    upstream.once('connect', () => {
-        const headers = [`GET ${sessionUpstreamPath(req, publicBasePath)} HTTP/1.1`, `Host: 127.0.0.1:${port}`];
-        for (const name of ['upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version', 'sec-websocket-protocol', 'origin', 'user-agent', 'cookie']) {
-            const value = req.headers[name];
-            if (value) headers.push(`${name}: ${value}`);
-        }
-        upstream.write(`${headers.join('\r\n')}\r\n\r\n`);
-        if (head?.length) upstream.write(head);
-        socket.pipe(upstream);
-        upstream.pipe(socket);
-    });
-    upstream.once('error', () => websocketFailure(socket, 502, 'Bad Gateway'));
-    socket.once('error', () => upstream.destroy());
-    socket.once('close', () => upstream.destroy());
-}
-
 // view: { privileged, workspaceRoot }. Without proven verified-admin context
 // every caller receives the restricted projection.
 function publicRobot(robot, run, view = {}) {
@@ -296,10 +223,6 @@ function publicRobot(robot, run, view = {}) {
 function matchRobotPath(pathname, suffix) {
     const escaped = suffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return pathname.match(new RegExp(`^/api/robots/(${ROBOT_ID})${escaped}$`))?.[1] || null;
-}
-
-function sessionRobotId(pathname) {
-    return pathname.match(new RegExp(`^/api/robots/(${ROBOT_ID})/session(?:/|$)`))?.[1] || null;
 }
 
 // Live Sessions owner of work started by this request: the signed principal
@@ -990,4 +913,4 @@ export function createRoboTeamServer(options) {
     return server;
 }
 
-export const httpServerInternals = { normalizeBasePath, sessionUpstreamPath, matchRobotPath, sessionRobotId, renderRecordedTurn, lookupRecordedTurn };
+export const httpServerInternals = { normalizeBasePath, matchRobotPath, renderRecordedTurn, lookupRecordedTurn };

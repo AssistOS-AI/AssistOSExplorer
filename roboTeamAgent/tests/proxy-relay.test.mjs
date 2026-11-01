@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import test from 'node:test';
-import { ProxyRelay } from '../server/proxy-pool/proxy-relay.mjs';
+import { ProxyRelay } from '../../roboWorkAgent/server/proxy-pool/proxy-relay.mjs';
 
 const EXPECTED_AUTH = `Basic ${Buffer.from('user:pa:ss').toString('base64')}`;
 

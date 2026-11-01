@@ -106,7 +106,7 @@ export async function spawnRoboWorkRun({ client = new RoboWorkClient(), input, a
                 await wait(idleMs);
             } catch (error) {
                 if (disconnected) return;
-                if (['RUN_UNKNOWN', 'RUN_NOT_FOUND'].includes(error.code) || ++failures >= 6) return finish(null, null, error);
+                if (error.code === 'UNKNOWN_RUN' || ++failures >= 6) return finish(null, null, error);
                 await wait(Math.min(2000, 250 * 2 ** failures));
             }
         }

@@ -191,7 +191,7 @@ export class RuntimeManager {
         }
         const runs = await this.roboWork.call('run_list', {});
         for (const run of runs) {
-            if (!['starting', 'running'].includes(run.state) || run.tag?.kind !== 'task') continue;
+            if (run.tag?.kind !== 'task') continue;
             const robot = await this.robotStore?.get(run.robotId);
             if (!robot || !run.tag.taskId || !run.tag.request) continue;
             const request = { ...run.tag.request, runtimeTaskId: run.tag.taskId,
@@ -199,7 +199,10 @@ export class RuntimeManager {
                 ...(run.tag.ownerPrincipal ? { ownerPrincipal: run.tag.ownerPrincipal } : {}) };
             const task = this._newTask(robot, run.tag.type, request);
             task.attachRun = run.runId;
+            task.attachContext = { runId: run.runId, turnId: run.tag.turnId,
+                userMessageId: run.tag.userMessageId, assistantMessageId: run.tag.assistantMessageId };
             task.runId = run.runId;
+            task.remoteState = run.state;
             task.robotName = robot.name;
             task.startedAt = run.startedAt;
         }
@@ -208,8 +211,21 @@ export class RuntimeManager {
     resumeAttachedTasks() {
         for (const task of this.tasks.values()) {
             if (!task.attachRun || task.state !== 'queued') continue;
-            void this.robotStore.get(task.robotId).then(robot => this._runTask(robot, task));
+            const gui = GUI_MODES.has(task.type);
+            if (gui) this.activeTasks.set(task.robotId, task.taskId);
+            void this.robotStore.get(task.robotId).then(async robot => {
+                try { await this._runTask(robot, task); }
+                finally {
+                    if (gui && this.activeTasks.get(task.robotId) === task.taskId) this.activeTasks.delete(task.robotId);
+                    if (gui) queueMicrotask(() => void this._drainTaskQueue(robot));
+                }
+            }).catch(error => console.error(`[roboTeamAgent] could not reattach task: ${error.message}`));
         }
+    }
+
+    recoveredTask(taskId) {
+        const task = this.tasks.get(taskId);
+        return task?.attachRun ? task : null;
     }
 
     _serialize(robotId, operation) {
@@ -436,7 +452,8 @@ export class RuntimeManager {
             await Promise.resolve();
             const childEnv = { ...process.env, ALA_EVENT_STREAM: '1',
                 ROBOTEAM_TASK_TAG: JSON.stringify({ taskId: task.taskId, type: task.type, robotName: robot.name,
-                    request: task.request, ownerPrincipal: task.request.ownerPrincipal || null }) };
+                    request: task.request, ownerPrincipal: task.request.ownerPrincipal || null }),
+                ...(task.attachContext?.assistantMessageId ? { ROBOTEAM_ATTACH_RUN: JSON.stringify(task.attachContext) } : {}) };
             delete childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
             if (task.request.allowsHumanInput) {
                 if (!this.requestHumanInput) throw new Error('Workflow human-input handler is unavailable');
@@ -503,6 +520,7 @@ export class RuntimeManager {
                     task.result += resultDecoder.end();
                     if (forcedFailure) return reject(forcedFailure);
                     if (task.resultOverflow) return reject(new Error('Final response exceeds the 1 MiB limit'));
+                    if (code === 130) task.state = 'paused';
                     if (code === 0) resolve();
                     else reject(new Error(alaFailureMessage(signal || code, `${task.logTail}${task.result}`)));
                 });

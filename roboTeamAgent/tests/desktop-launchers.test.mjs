@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { CHROMIUM_LAUNCHER, prepareDesktopLaunchers } from '../server/desktop-launchers.mjs';
+import { CHROMIUM_LAUNCHER, prepareDesktopLaunchers } from '../../roboWorkAgent/server/desktop-launchers.mjs';
 
 test('the robot desktop receives an executable Chromium launcher', async (t) => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-desktop-launchers-'));

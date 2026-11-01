@@ -91,13 +91,33 @@ export class RoboFlowService {
         // this agent until it is ready (for example during a reinstall). They are loaded in the
         // background so startup never waits for or fails on them.
         this.presetReady = this._loadPresets();
-        for (const flow of await this.store.list()) if (flow.status !== 'pending' && !terminal(flow.status)) await this.store.update(flow.id, current => {
-            current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
-            for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'paused'; instance.error = current.error; instance.endedAt = current.finishedAt; }
-            current.status = deriveFlowStatus(current.instances);
-        });
+        for (const flow of await this.store.list()) {
+            if (['pending', 'completed', 'failed', 'terminated'].includes(flow.status)) continue;
+            const recovered = new Map();
+            for (const instance of flow.instances) {
+                const task = this.runtimeManager?.recoveredTask?.(instance.runtimeTaskId);
+                if (!task || task.robotId !== instance.robotId || task.request.workflowRunId !== flow.id
+                    || task.request.workflowInstanceId !== instance.id) continue;
+                recovered.set(instance.id, task);
+                this.bindings.set(task.taskId, { flowId: flow.id, instanceId: instance.id, manual: true });
+            }
+            await this.store.update(flow.id, current => {
+                for (const instance of current.instances) {
+                    if (['completed', 'failed', 'terminated'].includes(instance.state)) continue;
+                    const task = recovered.get(instance.id);
+                    if (task && ['starting', 'running', 'stopping'].includes(task.remoteState)) {
+                        if (current.humanInput?.status !== 'pending' || current.humanInput.runtimeTaskId !== task.taskId) instance.state = 'running';
+                        instance.error = null;
+                    } else if (!terminal(instance.state)) {
+                        instance.state = 'paused'; instance.error = 'interrupted by service restart'; instance.endedAt = new Date().toISOString();
+                    }
+                }
+                this._derive(current);
+            });
+        }
         for (const flow of await this.store.list()) if (flow.humanInput?.status === 'pending') await this.store.update(flow.id, current => {
-            current.humanInput.executionEnded = true;
+            const task = this.runtimeManager?.recoveredTask?.(current.humanInput.runtimeTaskId);
+            current.humanInput.executionEnded = !task || !['starting', 'running', 'stopping'].includes(task.remoteState);
             current.status = 'paused';
             const instance = current.instances.find(item => item.id === current.humanInput.instanceId);
             if (instance) { instance.state = 'paused'; instance.endedAt ||= new Date().toISOString(); }
@@ -499,6 +519,7 @@ export class RoboFlowService {
     onRuntimeTaskEvent(event) {
         // Admission and other observation-only events are for Live Sessions.
         if (!OBSERVED_TASK_EVENTS.has(event?.kind)) return;
+        if (event.kind === 'progress' && event.replayed) return;
         const generation = this.generations.get(event?.taskId);
         if (generation) { if (event.kind === 'terminal') { this.generations.delete(event.taskId); event.state === 'completed' && !event.error ? generation.resolve(event.result) : generation.reject(new Error(event.error || 'Graph generation failed')); } return; }
         const binding = this.bindings.get(event?.taskId);

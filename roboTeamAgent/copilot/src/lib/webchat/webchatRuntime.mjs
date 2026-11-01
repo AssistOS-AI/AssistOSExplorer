@@ -13,6 +13,7 @@ import { executeRuntimeCommand } from '../cli/cliRuntimeCommands.mjs';
 import { handleWebchatControlChunk, isWebchatEscapeControlChunk } from './webchatControl.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { errorFields, logDiagnostic } from '../storage/copilotDiagnostics.mjs';
+import { verifiedDirectUser } from '../../../../server/listing-access.mjs';
 
 function target(context) {
     return {
@@ -52,6 +53,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
     const connections = new Map();
     const running = new Set();
     const active = new Map();
+    const attaching = new Set();
     const send = (envelope, context = {}) => write(`${JSON.stringify({ ...envelope, ...target(context) })}\n`);
     const update = (session, context) => emitSessionUpdate(session, context, { write });
     const track = (promise) => {
@@ -92,7 +94,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
         }
         return connections.get(key);
     };
-    const execute = async (message, context, connection) => {
+    const execute = async (message, context, connection, { reattach = null } = {}) => {
         const sessionId = connection.sessionId;
         const sanitize = createSanitizer(context, process.env);
         const controller = new AbortController();
@@ -137,6 +139,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             if (kind === 'selected') {
                 send(createSelectedSessionEnvelope(payload), context);
                 track(publishModel(payload, context).catch((error) => fail(error, context, payload.sessionId)));
+                if (payload.remoteRun) attachPending(payload, context);
             } else if (kind === 'list') send(createSessionListEnvelope(payload), context);
             else if (kind === 'runtime') send(createWebchatRuntimeStateEnvelope(payload.model, { backend: payload.backend, effort: payload.effort }), context);
             else if (kind === 'skills') send(createWebchatSkillsEnvelope(payload.skillState, {
@@ -150,7 +153,9 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 Object.assign(context, { sessionId, turnId: operationId, assistantMessageId: commandTurn.assistantMessageId });
                 update(commandTurn.session, context);
             }
-            const result = isSlash
+            const result = reattach
+                ? await runtime.engine.executeTurn({ sessionId, prompt: '', attach: reattach, context, signal: controller.signal, onEvent })
+                : isSlash
                 ? await executeRuntimeCommand({ runtime, connection: isExec ? { ...connection, sessionId } : connection, input, context, signal: controller.signal, onEvent, emit })
                 : await runtime.engine.executeTurn({ sessionId, turnId: operationId, prompt: message.text.trim(), context, signal: controller.signal, onEvent });
             const output = sanitize(result.outputText ?? result.output ?? '');
@@ -159,7 +164,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 update(session, context);
             } else if (engineStarted) update(runtime.sessionStore.loadSession(sessionId), context);
             else if (isExec && output && emitOutput) fail(new Error(output), context, sessionId);
-            if (!isSlash) await runtime.historyManager.add(message.rawText);
+            if (!isSlash && !reattach) await runtime.historyManager.add(message.rawText);
             await afterAnswer();
             if (!context.sourceTabId && emitOutput && output) write(`${output}\n`);
             diag('execute.end', { engineStarted });
@@ -182,7 +187,19 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             diag('execute.finally', { activeOperations: active.size });
         }
     };
+    const attachPending = (session, context = {}) => {
+        const pending = session.remoteRun;
+        if (!pending || attaching.has(pending.runId)) return;
+        attaching.add(pending.runId);
+        const connection = connectionFor(context);
+        const promise = connection.chain.then(() => {
+            connection.sessionId = session.sessionId;
+            return execute({ rawText: '', text: '', visible: false }, context, connection, { reattach: pending });
+        }).finally(() => attaching.delete(pending.runId));
+        track(promise);
+    };
     return {
+        reattach: attachPending,
         receive(raw) {
             const response = parseWebchatInteractionResponse(raw);
             if (response) {
@@ -220,6 +237,12 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 runtime.livePublisher?.releaseOwner(liveOwner);
                 throw error;
             }
+            if (runtime.ownerVerifier && message.invocationToken && message.signedArgs) {
+                try {
+                    const verified = runtime.ownerVerifier(message.invocationToken, message.signedArgs);
+                    if (verified?.ok && verifiedDirectUser(verified.payload)) context.ownerPrincipal = verified.payload.actor.id;
+                } catch { /* Unverified callers remain system-owned. */ }
+            }
             if (liveOwner) context.liveOwner = liveOwner;
             const connection = connectionFor(context);
             logDiagnostic(runtime.workingDir, 'webchat.input.received', {
@@ -252,6 +275,7 @@ export async function runWebchatInteractive(runtime) {
         afterAnswer: () => workspaceFileIndex.refresh({ afterCurrent: true }),
     });
     emitSessionUpdate(runtime.initialSession, {}, { event: 'current' });
+    dispatcher.reattach(runtime.initialSession);
     // Each tab connection reports a failing conversation; startup must not exit on it.
     const selection = runtime.engine.getModel
         ? await runtime.engine.getModel({ sessionId: runtime.initialSession.sessionId }).catch(() => ({ backend: null, model: null })) : null;
