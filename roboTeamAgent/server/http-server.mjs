@@ -895,6 +895,10 @@ export function createRoboTeamServer(options) {
             if (roboflow && await handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath })) return;
             sendError(res, 404, 'not found');
         } catch (error) {
+            if (error.code === 'ROBOWORK_UNAVAILABLE' && error.retryable === true) {
+                return sendJson(res, 503, { ok: false, code: 'ROBOWORK_UNAVAILABLE', retryable: true,
+                    error: 'RoboWork is temporarily unavailable; retry this request.' });
+            }
             const message = String(error?.message || '');
             const badRequest = error instanceof SyntaxError || /required|invalid|at most|too large|must be browser or desktop/.test(message);
             const conflict = /already running|active robot limit|occupied|active task|different cwd|stop the|interrupted GUI/.test(message);

@@ -5,6 +5,22 @@ import { PassThrough, Writable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
+const STARTUP_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 2000];
+const CONNECTION_ERRORS = new Set(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT',
+    'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET']);
+
+function unavailable(error) {
+    if (error?.statusCode !== undefined || error?.status !== undefined) {
+        return (error.statusCode ?? error.status) === 503 && error.code === 'TARGET_INACTIVE';
+    }
+    const seen = new Set();
+    for (let cause = error; cause && !seen.has(cause); cause = cause.cause) {
+        seen.add(cause);
+        if (CONNECTION_ERRORS.has(cause.code)) return true;
+    }
+    return false;
+}
+
 export async function loadAgentClient(env = process.env) {
     const root = String(env.PLOINKY_AGENT_LIB_DIR || '/Agent');
     const file = path.join(root, 'client/AgentMcpClient.mjs');
@@ -13,15 +29,34 @@ export async function loadAgentClient(env = process.env) {
 }
 
 export class RoboWorkClient {
-    constructor({ createClient = null, agentName = 'roboWorkAgent' } = {}) {
+    constructor({ createClient = null, agentName = 'roboWorkAgent', startupRetry = false, wait = delay } = {}) {
         this.createClient = createClient;
         this.agentName = agentName;
+        this.startupRetry = startupRetry;
+        this.wait = wait;
     }
+
+    finishStartup() { this.startupRetry = false; }
 
     async call(tool, input = {}, { timeoutMs = 120000 } = {}) {
         const create = this.createClient || await loadAgentClient();
-        const client = await create(this.agentName);
-        const result = await client.callTool(tool, input, { timeoutMs });
+        let result;
+        for (let attempt = 0; ; attempt++) {
+            try {
+                const client = await create(this.agentName);
+                result = await client.callTool(tool, input, { timeoutMs });
+                break;
+            } catch (error) {
+                if (!unavailable(error)) throw error;
+                if (this.startupRetry && attempt < STARTUP_RETRY_DELAYS_MS.length) {
+                    await this.wait(STARTUP_RETRY_DELAYS_MS[attempt]);
+                    continue;
+                }
+                throw Object.assign(new Error('RoboWork is temporarily unavailable; retry this request.', { cause: error }), {
+                    code: 'ROBOWORK_UNAVAILABLE', statusCode: 503, retryable: true,
+                });
+            }
+        }
         if (result?.isError || result?.ok === false) {
             throw Object.assign(new Error(result.message || result.error || 'RoboWork request failed'), {
                 code: result.code || 'ROBOWORK_FAILED', statusCode: result.statusCode || 502,

@@ -8,6 +8,7 @@ import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
 import { LiveSessionsRegistry } from './live-sessions/registry.mjs';
 import { startLiveSessionsIpc } from './live-sessions/ipc-server.mjs';
 import { RuntimeLiveSource, composeTaskObservers } from './live-sessions/runtime-source.mjs';
+import { RoboWorkClient } from './run-client.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
@@ -20,7 +21,8 @@ if (!internalToken) {
 }
 
 const publicBasePath = PUBLIC_BASE_PATH;
-const robotStore = new RobotStore({ dataDir });
+const roboWork = new RoboWorkClient({ startupRetry: true });
+const robotStore = new RobotStore({ dataDir, roboWork });
 await robotStore.initialize();
 await robotStore.ensureDefaultRobot();
 
@@ -30,12 +32,14 @@ const runtimeManager = new RuntimeManager({
     workspaceRoot,
     ownerKey: internalToken,
     robotStore,
+    roboWork,
 });
 runtimeManager.skillsets = new RobotSkillsets({ robotStore,
     workspaceRoot, alaCommand: runtimeManager.alaCommand });
 await runtimeManager.initialize();
 // Shell and socket only: seeding copies thousands of files per robot and runs after the service is listening.
 for (const robot of await robotStore.list()) await runtimeManager.prepareOpenCode(robot.id, { seed: false });
+roboWork.finishStartup();
 
 const roboflow = new RoboFlowService({
     robotStore,

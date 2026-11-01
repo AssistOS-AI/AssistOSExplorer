@@ -5,7 +5,7 @@
   "cli": "node /code/server/robot-cli.mjs",
   "enable": [
     "soul-gateway no-wait",
-    "roboWorkAgent global no-wait"
+    "roboWorkAgent global"
   ],
   "webchat": {
     "auth": "static",
