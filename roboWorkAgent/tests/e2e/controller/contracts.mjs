@@ -145,6 +145,48 @@ export function assertNoMarker(value, markerHash, markerLength) {
     inspect(value);
 }
 
+// One guard belongs to one run. Keep only the longest possible partial marker
+// per output stream, including when run_read splits a stream across pages.
+export function createMarkerStreamGuard(markerHash, markerLength) {
+    assertNoMarker(null, markerHash, markerLength);
+    const carry = new Map();
+    return records => {
+        for (const record of records) {
+            assert.ok(['stdout', 'stderr'].includes(record.stream), 'Unknown native output stream.');
+            assert.equal(typeof record.data, 'string');
+            const decoded = Buffer.from(record.data, 'base64');
+            assert.equal(decoded.toString('base64'), record.data, 'Native output is not canonical base64.');
+            const bytes = Buffer.concat([carry.get(record.stream) || Buffer.alloc(0), decoded]);
+            for (let offset = 0; offset + markerLength <= bytes.length; offset++) {
+                assert.notEqual(sha256(bytes.subarray(offset, offset + markerLength)), markerHash, 'Victim marker leaked in tool output.');
+            }
+            carry.set(record.stream, Buffer.from(bytes.subarray(Math.max(0, bytes.length - markerLength + 1))));
+        }
+    };
+}
+
+export function assertProtectedPathRefusal(body, directory) {
+    const expected = `Access denied: protected path "${directory}"`;
+    let message;
+    if (body?.error && !body.result) {
+        assert.equal(body.error.code, -32603, 'Explorer failed outside protected-path tool validation.');
+        assert.ok(Object.keys(body.error).every(key => ['code', 'message'].includes(key)));
+        message = body.error.message;
+    } else {
+        const result = body?.result;
+        assert.ok(!body?.error && result?.isError === true && result.structuredContent === undefined,
+            'Explorer did not explicitly refuse the protected path.');
+        assert.equal(result.content?.length, 1);
+        assert.equal(result.content[0].type, 'text');
+        message = result.content[0].text;
+    }
+    assert.ok(message === expected || message === `MCP error -32603: ${expected}`,
+        'Explorer failed for a different reason or path.');
+    // Explorer's worker serializes its typed EXPLORER_PROTECTED_PATH error as
+    // this exact diagnostic; the MCP transport does not retain error.code.
+    return { code: 'EXPLORER_PROTECTED_PATH', diagnosticHash: sha256(expected) };
+}
+
 export function assertDualHome(stats) {
     assert.equal(stats.length, 2);
     for (const stat of stats) assert.ok(stat.directory && Number.isSafeInteger(stat.dev) && stat.dev >= 0

@@ -5,12 +5,12 @@ import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { argumentsFrom } from './isolation.mjs';
 import { ControllerRuntime } from './controller/runtime.mjs';
-import { explorerListing } from './controller/explorer-api.mjs';
+import { explorerListing, explorerProtectedListing } from './controller/explorer-api.mjs';
 import { BASELINE_REVISION, baselineSymlinkControl } from './controller/baseline-control.mjs';
 import { openControllerSession } from './controller/auth-session.mjs';
 import { FREE_MODEL, ProbeRobots } from './controller/robots.mjs';
 import { SENTINEL, assertNoAgentExec, assertVictimUnchanged, assertDualHome, assertDeleted,
-    assertEmptyPrivateListing, assertNoMarker, assertRefused, sha256, pending } from './controller/contracts.mjs';
+    assertEmptyPrivateListing, assertNoMarker, createMarkerStreamGuard, assertRefused, sha256, pending } from './controller/contracts.mjs';
 
 export const HELP = `Usage: node controller-scenarios.mjs --config <private-json> --scenario <I2|I8|I9|I10|I11|H2|H3>
 Run on the selected apparatus host. No SSH or model prompt is issued.
@@ -53,6 +53,7 @@ async function stopOwnedActivity(runtime, attacker, victim) {
     assert.ok(listed.ok && Array.isArray(listed.result), 'Cannot inventory owned runs for cleanup.');
     for (const run of listed.result) {
         assert.equal(run.robotId, attacker);
+        const scanRecords = victim ? createMarkerStreamGuard(victim.markerHash, victim.markerLength) : () => {};
         if (['starting', 'running', 'stopping'].includes(run.state)) {
             const stop = await runtime.mcp('run_stop', { runId: run.runId, signal: 'SIGTERM' });
             noMarker(stop);
@@ -65,6 +66,7 @@ async function stopOwnedActivity(runtime, attacker, victim) {
             assert.equal(read.ok, true, 'Cannot confirm owned run cleanup.');
             assert.ok(Number.isSafeInteger(read.result?.next) && read.result.next >= cursor
                 && Array.isArray(read.result.records), 'Owned run output cursor is unavailable.');
+            scanRecords(read.result.records);
             if (['completed', 'failed', 'stopped', 'interrupted', 'exited'].includes(read.result.state)
                 && read.result.records.length === 0 && read.result.next === cursor) { ended = true; break; }
             cursor = read.result.next;
@@ -205,8 +207,12 @@ export async function otherAgentMasks(runtime) {
         const positive = await explorerListing(runtime, control);
         assert.ok(Array.isArray(positive.listing) && positive.listing.some(entry => entry.name === 'positive-control'),
             'Explorer file API positive control is missing.');
-        api = await explorerListing(runtime, privatePath);
-        assertEmptyPrivateListing(api.listing);
+        const root = await explorerListing(runtime, runtime.config.workspace);
+        assert.ok(Array.isArray(root.listing) && root.listing.every(entry => typeof entry?.name === 'string'),
+            'Explorer workspace root listing is unavailable.');
+        assert.ok(!root.listing.some(entry => entry.name.normalize('NFKC').toLowerCase().replace(/[. ]+$/u, '') === '.data'),
+            'Explorer exposes private storage in the workspace root listing.');
+        api = await explorerProtectedListing(runtime, privatePath);
     } finally {
         await runtime.node(runtime.config.rw, `
             const stat=fs.lstatSync(input.directory);
@@ -216,7 +222,8 @@ export async function otherAgentMasks(runtime) {
         `, { directory: control, ...owner });
         assertVictimUnchanged(victim, await runtime.snapshot(runtime.config.victim));
     }
-    return { inventory, victim, apiGeneration: api.generation, privateApiEmpty: true, positiveControl: 'Explorer lists newly created owned file' };
+    return { inventory, victim, apiGeneration: api.generation, privateApiRefused: api.refusal,
+        workspacePrivateRootHidden: true, positiveControl: 'Explorer lists newly created owned file' };
 }
 
 export async function grantRefusals(runtime) {

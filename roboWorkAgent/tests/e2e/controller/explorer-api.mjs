@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { decodeMcpResult } from './contracts.mjs';
+import { assertProtectedPathRefusal, decodeMcpResult } from './contracts.mjs';
 
 // Reuse the operator's private authenticated browser state. No caller,
 // forwarded actor or grants are forged.
-export async function explorerListing(runtime, directory) {
+async function requestListing(runtime, directory) {
     assert.ok(runtime.auth, 'Authenticated controller session is required.');
     const proof = await runtime.auth.mutationHeaders('explorer');
     const initialize = await runtime.auth.request('/explorer/mcp', { method: 'POST', headers: {
@@ -21,5 +21,15 @@ export async function explorerListing(runtime, directory) {
     }, body: { jsonrpc: '2.0', id: 'controller-list', method: 'tools/call',
         params: { name: 'list_directory_detailed', arguments: { path: directory } } } });
     assert.equal(response.status, 200, 'Authenticated Explorer listing failed.');
-    return { listing: decodeMcpResult(response.payload), generation: proof.generation };
+    return { body: response.payload, generation: proof.generation };
+}
+
+export async function explorerListing(runtime, directory) {
+    const { body, generation } = await requestListing(runtime, directory);
+    return { listing: decodeMcpResult(body), generation };
+}
+
+export async function explorerProtectedListing(runtime, directory) {
+    const { body, generation } = await requestListing(runtime, directory);
+    return { refusal: assertProtectedPathRefusal(body, directory), generation };
 }

@@ -8,12 +8,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { validateConfig, assertBox, selectAgent, assertNoAgentExec, assertVictimUnchanged,
     assertRefused, assertDualHome, assertDeleted, assertEmptyPrivateListing, assertBrowserOrigin,
-    decodeMcpResult, normalizeMcpOutcome, assertNoMarker, sha256 } from './controller/contracts.mjs';
+    decodeMcpResult, normalizeMcpOutcome, assertNoMarker, assertProtectedPathRefusal, sha256 } from './controller/contracts.mjs';
 import { BASELINE_REVISION, BASELINE_METHOD, BASELINE_DIRECTORIES, baselineSymlinkControl } from './controller/baseline-control.mjs';
 import { runControllerScenario, runVerifiedScenario, dualHome, manifests, otherAgentMasks,
     grantRefusals, symlinkHelpers, safeDelete, workspaceStorage } from './controller-scenarios.mjs';
 import { ControllerRuntime } from './controller/runtime.mjs';
-import { explorerListing } from './controller/explorer-api.mjs';
+import { explorerListing, explorerProtectedListing } from './controller/explorer-api.mjs';
 import { FREE_MODEL, ProbeRobots, assertFreeConfig } from './controller/robots.mjs';
 import { ControllerSession, assertAdminToken, cookieHeader, privateJson, openControllerSession } from './controller/auth-session.mjs';
 
@@ -329,7 +329,7 @@ test('source proof rejects wrong revision, dirty checkout and mismatched runtime
     } finally { await fs.rm(root, { recursive: true }); }
 });
 
-function controllerApiFixture(runtime, listings = directory => directory.endsWith('/.private') ? [] : [{ name: 'positive-control' }]) {
+function controllerApiFixture(runtime, listings = () => [{ name: 'positive-control' }], refusal) {
     const calls = [];
     runtime.auth = {
         async mutationHeaders(route) { assert.equal(route, 'explorer'); return { headers: { 'x-ploinky-browser-csrf-token': 'unit-proof' }, generation: 'unit-generation' }; },
@@ -339,14 +339,18 @@ function controllerApiFixture(runtime, listings = directory => directory.endsWit
                 payload: { result: { protocolVersion: '2025-06-18' } } };
             assert.equal(options.body.params.name, 'list_directory_detailed');
             assert.equal(options.headers['mcp-session-id'], 'unit-session');
+            const directory = options.body.params.arguments.path;
+            if (directory.endsWith('/.private')) return { status: 200, payload: refusal || {
+                result: { isError: true, content: [{ type: 'text', text: `MCP error -32603: Access denied: protected path "${directory}"` }] },
+            } };
             return { status: 200, payload: { result: { content: [{ type: 'text',
-                text: JSON.stringify(listings(options.body.params.arguments.path)) }] } } };
+                text: JSON.stringify(listings(directory)) }] } } };
         },
     };
     return calls;
 }
 
-test('I8 inventories every active agent and uses the controlled Explorer API positive and empty controls', async () => {
+test('I8 inventories every active agent and requires Explorer positive listing, root invisibility and protected-path refusal', async () => {
     const snapshot = { markerHash: hash, treeHash: hash, entries: 1 };
     const runtime = { config: config(), registry: { rt: { type: 'agent', containerId: config().rt },
         rw: { type: 'agent', containerId: config().rw }, third: { type: 'agent', containerId: 'd'.repeat(64) } },
@@ -360,18 +364,39 @@ test('I8 inventories every active agent and uses the controlled Explorer API pos
     const result = await otherAgentMasks(runtime);
     assert.equal(result.inventory.length, 3);
     assert.ok(result.inventory.some(row => row.containerId === 'd'.repeat(64)));
-    assert.equal(result.privateApiEmpty, true);
-    assert.equal(calls.filter(call => call.body.method === 'tools/call').length, 2);
+    assert.equal(result.privateApiRefused.code, 'EXPLORER_PROTECTED_PATH');
+    assert.equal(result.workspacePrivateRootHidden, true);
+    assert.equal(calls.filter(call => call.body.method === 'tools/call').length, 3);
     controllerApiFixture(runtime, () => ({ error: 'not a listing' }));
     await assert.rejects(otherAgentMasks(runtime));
+    controllerApiFixture(runtime, directory => directory === runtime.config.workspace ? [{ name: '.data' }] : [{ name: 'positive-control' }]);
+    await assert.rejects(otherAgentMasks(runtime), /exposes private storage/u);
+    controllerApiFixture(runtime, undefined, { result: { isError: true, content: [{ type: 'text', text: 'unavailable' }] } });
+    await assert.rejects(otherAgentMasks(runtime), /different reason or path/u);
 });
 
 test('Explorer API never accepts an error-shaped or missing listing as empty', async () => {
     const runtime = {};
     controllerApiFixture(runtime, () => []);
-    assert.deepEqual((await explorerListing(runtime, '/task/.data/.private')).listing, []);
+    assert.deepEqual((await explorerListing(runtime, '/task/ordinary')).listing, []);
     runtime.auth.request = async () => ({ status: 503, payload: {}, headers: {} });
     await assert.rejects(explorerListing(runtime, '/task/.data/.private'));
+});
+
+test('I8 accepts only exact protected-path MCP refusal and rejects generic errors, wrong paths and successful empty replies', async () => {
+    const directory = '/task/.data/.private'; const message = `Access denied: protected path "${directory}"`;
+    const errorResult = text => ({ result: { isError: true, content: [{ type: 'text', text }] } });
+    assert.equal(assertProtectedPathRefusal(errorResult(message), directory).code, 'EXPLORER_PROTECTED_PATH');
+    assertProtectedPathRefusal({ error: { code: -32603, message } }, directory);
+    for (const body of [errorResult('Access denied'), errorResult('unavailable'), errorResult(`${message} extra data`),
+        errorResult('Access denied: protected path "/foreign"'), { error: { code: -32003, message } },
+        { error: { code: -32603, message, data: ['private entry'] } }, { result: { content: [{ type: 'text', text: message }] } },
+        { result: { content: [{ type: 'text', text: '[]' }] } },
+        { result: { isError: true, content: [{ type: 'text', text: message }, { type: 'text', text: 'private entry' }] } }]) {
+        assert.throws(() => assertProtectedPathRefusal(body, directory));
+    }
+    const runtime = {}; controllerApiFixture(runtime);
+    assert.equal((await explorerProtectedListing(runtime, directory)).refusal.code, 'EXPLORER_PROTECTED_PATH');
 });
 
 test('I9 reads nonempty object manifests for every active agent and rejects agentExec', async () => {
@@ -399,7 +424,7 @@ function isolationFixture({ leak = false, mutateVictim = false, admitted = false
                 : admitted && ++lists > 1 ? [{ runId: 'unexpected' }] : [] };
             if (tool === 'run_stop') return { ok: true, result: {} };
             if (tool === 'run_read') return { ok: true, result: { state: 'exited', next: 1,
-                records: input.after === 0 ? [{ seq: 1, data: Buffer.from(leakOnRead ? marker : 'unit-output').toString('base64') }] : [] } };
+                records: input.after === 0 ? [{ seq: 1, stream: 'stdout', data: Buffer.from(leakOnRead ? marker : 'unit-output').toString('base64') }] : [] } };
             if (tool === 'run_release') { running = false; return { ok: true, result: {} }; }
             if (tool === 'gui_stop') { assert.equal(running, false); return { ok: true, result: { state: 'stopped' } }; }
             if (tool === 'run_start' && input.tag?.padding) {
@@ -429,6 +454,44 @@ test('I2 stops and drains owned native output before GUI cleanup and rejects enc
     assert.equal(runtime.observations.filter(tool => tool === 'run_read').length, 2);
     assert.ok(runtime.observations.indexOf('run_release') < runtime.observations.indexOf('gui_stop'));
     await assert.rejects(symlinkHelpers(isolationFixture({ activeRun: true, leakOnRead: true })), /Victim marker leaked/u);
+});
+
+function splitMarkerFixture({ pages = false, separateStreams = false, separateRuns = false } = {}) {
+    const runtime = isolationFixture();
+    const marker = 'unit-victim-marker';
+    const records = [marker.slice(0, 8), marker.slice(8)].map((part, index) => ({
+        seq: index + 1, stream: separateStreams && index === 1 ? 'stderr' : 'stdout',
+        data: Buffer.from(part).toString('base64'),
+    }));
+    const runs = new Set(separateRuns ? ['unit-run-one', 'unit-run-two'] : ['unit-run-one']);
+    const mcp = runtime.mcp;
+    runtime.mcp = async (tool, input) => {
+        if (tool === 'run_list') return { ok: true, result: [...runs].map(runId => ({
+            runId, robotId: 'owned-new-probe', state: 'exited',
+        })) };
+        if (tool === 'run_read') {
+            const output = (separateRuns ? [records[input.runId === 'unit-run-one' ? 0 : 1]] : records)
+                .filter(record => record.seq > input.after).slice(0, pages ? 1 : 2);
+            return { ok: true, result: { state: 'exited', next: output.at(-1)?.seq ?? input.after, records: output } };
+        }
+        if (tool === 'run_release') { runs.delete(input.runId); return { ok: true, result: {} }; }
+        return mcp.call(runtime, tool, input);
+    };
+    return runtime;
+}
+
+test('I2 rejects a decoded marker split across records in one native stream', async () => {
+    await assert.rejects(symlinkHelpers(splitMarkerFixture()), /Victim marker leaked/u);
+});
+
+test('I2 rejects a decoded marker split across run_read pages in one native stream', async () => {
+    await assert.rejects(symlinkHelpers(splitMarkerFixture({ pages: true })), /Victim marker leaked/u);
+});
+
+test('I2 keeps unrelated native streams and runs separate while scanning marker fragments', async () => {
+    for (const options of [{ separateStreams: true }, { separateRuns: true }]) {
+        assert.equal((await symlinkHelpers(splitMarkerFixture(options))).observations.at(-1).tool, 'robot_delete');
+    }
 });
 
 test('I10 records exact CWD/folder refusals and remains pending without a real native symlink fixture', async () => {
