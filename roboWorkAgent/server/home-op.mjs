@@ -33,6 +33,10 @@ export function createHomeOperations({ paths, alaEntry, toolCache, execFileImpl 
 }
 
 export async function homeOperation(operation, input, home = process.env.HOME) {
+    if (operation === 'delete') {
+        for (const entry of await fs.readdir(home)) await fs.rm(path.join(home, entry), { recursive: true, force: true });
+        return { ok: true };
+    }
     const { prepareRobotShell } = await import('./robot-shell.mjs');
     const { ensureAgentConfig, DEFAULT_OPENCODE_MODEL, agentConfigPath } = await import('./agent-model-config.mjs');
     const { resolveAlaInstallation } = await import('./ala-installation.mjs');

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { normalizeCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
 import { fail, robotId, homeTarget } from './robot-paths.mjs';
 import { buildPrivateLaunch } from './launch.mjs';
@@ -109,15 +110,18 @@ export class RobotManager {
     async models({ robotId: id, agent, cwd }) {
         const record = await this.require(id);
         if (!record.codingAgents.includes(agent)) throw fail('INVALID_INPUT', 'Coding agent is unavailable');
-        if (cwd !== undefined) await this.paths.grant(cwd, 'cwd');
+        const workingDirectory = cwd !== undefined ? await this.paths.grant(cwd, 'cwd') : this.paths.home(id);
         const tools = await this.toolCache.prepareCodingAgents([agent]);
         await this.soulGateway.prepare(this.paths.soul(id));
         const directory = path.join(this.paths.dataDir, 'runs', 'models-' + randomUUID());
         await fs.mkdir(directory, { mode: 0o700 });
+        let cacheDirectory = this.paths.dataDir;
+        for (const segment of ['server-state', 'model-catalog', id]) { cacheDirectory = path.join(cacheDirectory, segment); await realDirectory(cacheDirectory); }
         try {
             const launch = await buildPrivateLaunch({ paths: this.paths, id, directory, command: process.execPath,
-                args: [this.alaEntry, 'agent', agent, 'models', '--home', this.paths.home(id), '--json',
-                    '--folder', this.paths.soul(id), 'as', 'roboteam-soul'],
+                args: [fileURLToPath(new URL('./model-op.mjs', import.meta.url)), JSON.stringify({ alaEntry: this.alaEntry,
+                    agent, cwd: workingDirectory, home: this.paths.home(id), soul: this.paths.soul(id), dataDir: this.paths.dataDir, robotId: id })],
+                extraBindings: [[cacheDirectory, cacheDirectory]],
                 env: codingAgentEnvironment(tools, { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' }, this.toolCache.root) });
             const result = await this.execFileImpl(launch.command, launch.args, { ...launch.options, timeout: 90000, maxBuffer: 8 * 1024 * 1024, killSignal: 'SIGTERM' });
             return { agent, models: JSON.parse(result.stdout) };
@@ -129,9 +133,12 @@ export class RobotManager {
         return this.serialized(id, async () => {
             await this.require(id);
             if (this.runs?.list({ robotId: id }).some(run => ['starting', 'running', 'stopping'].includes(run.state))
-                || this.gui && (await this.gui.status(id)).state === 'running') throw fail('ROBOT_ACTIVE', 'Stop robot activity before deleting it', 409);
+                || this.gui && (await this.gui.status(id)).state !== 'stopped') throw fail('ROBOT_ACTIVE', 'Stop robot activity before deleting it', 409);
+            if (this.gui) await this.gui.releaseProxy({ robotId: id });
             await this.soulGateway.remove(this.paths.soul(id));
-            // Home is an entry beneath a service-owned directory; recursive rm unlinks symlinks.
+            await this.homeOperation(id, 'delete', {});
+            // Remove the empty mount root without traversing any new robot-written entries.
+            await fs.rmdir(this.paths.home(id));
             await fs.rm(this.paths.robot(id), { recursive: true, force: true });
             return { deleted: true };
         });

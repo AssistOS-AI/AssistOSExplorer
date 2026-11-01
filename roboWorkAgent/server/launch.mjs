@@ -6,9 +6,9 @@ import { homeTarget, fail } from './robot-paths.mjs';
 export const shellQuote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
 
 // Mount isolation narrows ALA's host view without an outer bwrap dropping namespace capabilities.
-export async function buildPrivateLaunch({ paths, id, directory, command, args, env = {}, guiPort }) {
+export async function buildPrivateLaunch({ paths, id, directory, command, args, env = {}, guiPort, extraBindings = [] }) {
     const robot = paths.robot(id);
-    const bindings = [[robot, robot], [directory, directory], [path.join(paths.dataDir, 'tool-cache'), path.join(paths.dataDir, 'tool-cache')]];
+    const bindings = [[robot, robot], [directory, directory], [path.join(paths.dataDir, 'tool-cache'), path.join(paths.dataDir, 'tool-cache')], ...extraBindings];
     const script = ['#!/bin/sh', 'set -eu', 'mount --make-rprivate /',
         'stage=$(mktemp -d /tmp/robowork-mount.XXXXXX)'];
     for (const [index, [source]] of bindings.entries()) {

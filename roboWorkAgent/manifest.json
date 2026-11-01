@@ -12,7 +12,7 @@
   "volumes": { ".data/.private/roboWorkAgent": "/data" },
   "profiles": {
     "default": {
-      "openPorts": ["7000:7000", "3001:3001"],
+      "openPorts": ["17000:7000", "13001:3001"],
       "install": "sh /code/scripts/install.sh",
       "env": ["ROBOTEAM_CODEX_VERSION", "ROBOTEAM_OPENCODE_VERSION", "ROBOTEAM_PI_VERSION", "ROBOTEAM_CLAUDE_VERSION"]
     }

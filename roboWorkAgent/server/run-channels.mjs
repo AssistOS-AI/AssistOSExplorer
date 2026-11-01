@@ -30,7 +30,7 @@ export function validateChannels(input = []) {
 export class RunChannels {
     constructor({ directory, definitions = [], changed = () => {} }) {
         Object.assign(this, { directory, definitions: validateChannels(definitions), changed });
-        this.pending = new Map(); this.servers = []; this.mounts = []; this.closed = false;
+        this.pending = new Map(); this.servers = []; this.mounts = []; this.directories = []; this.closed = false;
     }
 
     async prepare() {
@@ -69,7 +69,11 @@ export class RunChannels {
             server.headersTimeout = 15000;
             const socket = path.join(directory, 'request.sock');
             await fs.unlink(socket).catch(error => { if (error.code !== 'ENOENT') throw error; });
-            await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socket, resolve); });
+            const handle = process.platform === 'linux' ? await fs.open(directory, 'r') : null;
+            const address = handle ? `/proc/self/fd/${handle.fd}/request.sock` : socket;
+            try { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(address, resolve); }); }
+            catch (error) { await handle?.close(); throw error; }
+            if (handle) this.directories.push(handle);
             await fs.chmod(socket, 0o600);
             if (definition.name === 'ploinky-runtime') {
                 await fs.unlink(path.join(directory, 'tasks.sock')).catch(error => { if (error.code !== 'ENOENT') throw error; });
@@ -84,7 +88,7 @@ export class RunChannels {
     list() { return [...this.pending.values()].map(entry => entry.callback); }
 
     async reply({ id, status = 200, body = {} }) {
-        if (typeof id !== 'string' || !Number.isInteger(status) || status < 100 || status > 599
+        if (typeof id !== 'string' || !Number.isInteger(status) || status < 200 || status > 599
             || Buffer.byteLength(JSON.stringify(body)) > 1024 * 1024) throw fail('INVALID_INPUT', 'Invalid callback reply');
         const entry = this.pending.get(id);
         if (!entry) throw fail('UNKNOWN_CALLBACK', 'Callback is not pending', 404);
@@ -97,5 +101,7 @@ export class RunChannels {
         this.closed = true;
         for (const entry of this.pending.values()) entry.reply(503, { error: 'Run interrupted' });
         for (const server of this.servers) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+        for (const handle of this.directories) await handle.close();
+        this.servers = []; this.directories = [];
     }
 }

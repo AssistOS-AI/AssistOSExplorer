@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { fail, robotId, runId, homeTarget, within } from './robot-paths.mjs';
@@ -12,6 +13,7 @@ export const LOG_CAP = 64 * 1024 * 1024;
 const RETENTION = 7 * 24 * 60 * 60 * 1000;
 const live = state => ['starting', 'running', 'stopping'].includes(state);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const execute = promisify(execFile);
 
 async function processStamp(pid) {
     try { return (await fs.readFile(`/proc/${pid}/stat`, 'utf8')).split(') ').at(-1).split(' ')[19]; } catch { return null; }
@@ -19,8 +21,8 @@ async function processStamp(pid) {
 
 export class RunManager {
     constructor({ paths, toolCache, runtimeBundle, robots, environment = null, gui = null, alaEntry,
-        spawnImpl = spawn, buildLaunch = buildPrivateLaunch, logCap = LOG_CAP, now = Date.now } = {}) {
-        Object.assign(this, { paths, toolCache, runtimeBundle, robots, environment, gui, alaEntry, spawnImpl, buildLaunch, logCap, now });
+        spawnImpl = spawn, buildLaunch = buildPrivateLaunch, logCap = LOG_CAP, now = Date.now, execFileImpl = execute } = {}) {
+        Object.assign(this, { paths, toolCache, runtimeBundle, robots, environment, gui, alaEntry, spawnImpl, buildLaunch, logCap, now, execFileImpl });
         this.runs = new Map(); this.starting = new Map(); this.events = new EventEmitter(); this.events.setMaxListeners(0);
         this.launchId = randomUUID(); this.closed = false;
     }
@@ -38,6 +40,7 @@ export class RunManager {
                     await fs.rm(directory, { recursive: true, force: true }); continue;
                 }
                 if (live(meta.state)) {
+                    if (meta.containerName) await this.stopEnvironment({ meta, containerName: meta.containerName }, 'SIGKILL');
                     if (meta.pid && meta.pidStamp && await processStamp(meta.pid) === meta.pidStamp) {
                         try { process.kill(-meta.pid, 'SIGKILL'); } catch { /* Already exited. */ }
                     }
@@ -51,7 +54,10 @@ export class RunManager {
                 }
                 const run = { meta, directory, records, bytes: Buffer.byteLength(text), seq: records.at(-1)?.seq || 0, queue: Promise.resolve() };
                 this.runs.set(id, run); await this.persist(run);
-            } catch { /* An incomplete start is not an attachable run. */ }
+            } catch (error) {
+                if (error.code === 'ENVIRONMENT_STOP_FAILED') throw error;
+                // An incomplete start is not an attachable run.
+            }
         }
     }
 
@@ -254,13 +260,29 @@ export class RunManager {
 
     signal(run, signal) {
         if (!live(run.meta.state)) return;
-        if (run.containerName && this.environment?.stop) void this.environment.stop(run.containerName, signal);
-        try { process.kill(-run.child.pid, signal); } catch { run.child?.kill(signal); }
+        const stopChild = () => { try { process.kill(-run.child.pid, signal); } catch { run.child?.kill(signal); } };
+        if (run.containerName) {
+            run.stopQueue = (run.stopQueue || Promise.resolve()).then(() => this.stopEnvironment(run, signal)).then(stopChild);
+            void run.stopQueue.catch(() => { run.meta.stopError = true; });
+        } else stopChild();
+    }
+
+    async stopEnvironment(run, signal) {
+        const command = this.environment?.podmanCommand || 'podman';
+        try {
+            try { await this.execFileImpl(command, ['container', 'exists', run.containerName], { timeout: 15000 }); }
+            catch (error) { if (error.code === 1) return; throw error; }
+            const result = await this.execFileImpl(command, ['inspect', '--format', '{{json .Config.Labels}}', run.containerName], { timeout: 15000 });
+            const labels = JSON.parse(result.stdout);
+            if (!/^robowork-env-[a-f0-9]{24}$/u.test(run.containerName)
+                || labels['robowork.environment'] !== 'true' || labels['robowork.robot'] !== run.meta.robotId) throw new Error('Container ownership mismatch');
+            await this.execFileImpl(command, ['kill', '--signal', signal, run.containerName], { timeout: 15000 });
+        } catch { throw fail('ENVIRONMENT_STOP_FAILED', 'Could not stop the owned environment container', 500); }
     }
 
     async stop({ runId: id, signal = 'SIGTERM' }) {
         if (!['SIGINT', 'SIGTERM', 'SIGKILL'].includes(signal)) throw fail('INVALID_INPUT', 'Invalid stop signal');
-        const run = this.get(id); this.signal(run, signal); return { ok: true };
+        const run = this.get(id); this.signal(run, signal); await run.stopQueue; return { ok: true };
     }
 
     list({ robotId: id } = {}) {
@@ -283,9 +305,10 @@ export class RunManager {
         await Promise.allSettled([...this.starting.values()]);
         const active = [...this.runs.values()].filter(run => live(run.meta.state));
         for (const run of active) this.signal(run, 'SIGTERM');
+        await Promise.all(active.map(run => run.stopQueue));
         if (active.length) await sleep(500);
         for (const run of active) {
-            if (live(run.meta.state)) { this.signal(run, 'SIGKILL'); await this.finish(run, null, 'SERVICE_RESTART'); }
+            if (live(run.meta.state)) { this.signal(run, 'SIGKILL'); await run.stopQueue; await this.finish(run, null, 'SERVICE_RESTART'); }
         }
         await Promise.allSettled([...this.runs.values()].map(run => run.finishing || run.queue));
     }

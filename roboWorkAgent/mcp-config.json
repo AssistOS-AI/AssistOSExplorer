@@ -126,11 +126,13 @@
         },
         "model": {
           "type": "string",
-          "optional": true
+          "optional": true,
+          "nullable": true
         },
         "effort": {
           "type": "string",
-          "optional": true
+          "optional": true,
+          "nullable": true
         }
       }
     },
@@ -455,6 +457,40 @@
       ],
       "timeoutMs": 180000,
       "inputSchema": {}
+    },
+    {
+      "name": "proxy_assignments",
+      "description": "Internal robot proxy operation: proxy_assignments.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "proxy_assignments"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 30000,
+      "inputSchema": {}
+    },
+    {
+      "name": "proxy_release",
+      "description": "Internal robot proxy operation: proxy_release.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "proxy_release"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        }
+      }
     }
   ]
 }

@@ -29,7 +29,9 @@ export function createRoboWorkServer({ robots, runs, environment, gui = null, te
         run_stop: value => runs.stop(value), run_list: value => runs.list(value), run_release: value => runs.release(value),
         environment_list: () => environment.list(),
         gui_ensure: value => needGui().ensure(value), gui_stop: value => needGui().stop(value), gui_logs: value => needGui().logs(value),
-        proxy_settings_set: value => needGui().setProxySettings(value),
+        proxy_settings_set: async value => ({ useProxy: await needGui().proxySettings.setUseProxy(value.useProxy) }),
+        proxy_assignments: value => needGui().proxyAssignments(value),
+        proxy_release: value => needGui().releaseProxy(value),
     };
     function needGui() {
         if (!gui) throw fail('GUI_NOT_READY', 'GUI support is not ready', 503);
@@ -48,14 +50,17 @@ export function createRoboWorkServer({ robots, runs, environment, gui = null, te
                 if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('INVALID_INPUT', 'Input must be an object');
                 return reply(res, 200, await operations[operation](input));
             }
-            const access = await authorizeWorkspaceRequest(req, url, { refusal: 'Explorer access is required to use RoboWork', readBody: () => readBody(req) });
+            let rawBody;
+            const access = await authorizeWorkspaceRequest(req, url, { refusal: 'Explorer access is required to use RoboWork',
+                readBody: async () => { rawBody = await readBody(req); return rawBody; } });
             if (!access.ok) return reply(res, access.status, { code: 'CALLER_REFUSED', error: access.error });
             const pathname = url.pathname.startsWith(publicBasePath) ? '/' + url.pathname.slice(publicBasePath.length) : url.pathname;
             const session = pathname.match(/^\/api\/robots\/([a-z0-9-]+)\/session(?:\/|$)/u);
             if (session && gui && proxyHttp) {
                 const port = gui.activePort(session[1]);
                 if (!port) throw fail('GUI_STOPPED', 'GUI session is stopped', 404);
-                return proxyHttp(req, res, port, `${publicBasePath}api/robots/${session[1]}/session/`, access.body);
+                req.url = pathname + url.search;
+                return proxyHttp(req, res, port, publicBasePath, rawBody);
             }
             if (terminal && pathname.startsWith('/api/terminal-profiles')) return terminal.handle(req, res, url, access);
             throw fail('NOT_FOUND', 'Route not found', 404);
@@ -69,7 +74,8 @@ export function createRoboWorkServer({ robots, runs, environment, gui = null, te
         const match = url.pathname.match(/\/api\/robots\/([a-z0-9-]+)\/session(?:\/|$)/u);
         const port = match && gui?.activePort(match[1]);
         if (!access.ok || !port || !proxyWebSocket) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
-        proxyWebSocket(req, socket, head, port, `${publicBasePath}api/robots/${match[1]}/session/`);
+        if (url.pathname.startsWith(publicBasePath)) req.url = '/' + url.pathname.slice(publicBasePath.length) + url.search;
+        proxyWebSocket(req, socket, head, port, publicBasePath);
     });
     return server;
 }
