@@ -259,7 +259,7 @@ export class RobotStore {
             updatedAt: now,
         };
         await this._writeMetadata(robotRoot, metadata);
-        await this.roboWork.call('robot_ensure', { robotId, name: normalizedName, codingAgents: selectedAgents });
+        await this.roboWork.call('robot_ensure', { robotId, name: normalizedName, codingAgents: selectedAgents, seed: false });
         return metadata;
     }
 

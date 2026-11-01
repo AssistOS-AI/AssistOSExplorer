@@ -52,16 +52,17 @@ export class RobotManager {
     async ensure(input) {
         return this.serialized(input.robotId, async () => {
             const codingAgents = normalizeCodingAgents(input.codingAgents);
+            if (input.seed !== undefined && typeof input.seed !== 'boolean') throw fail('INVALID_INPUT', 'seed must be a boolean');
             if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 80) throw fail('INVALID_INPUT', 'Invalid robot name');
             for (const directory of [this.paths.robot(input.robotId), this.paths.home(input.robotId),
                 path.join(this.paths.robot(input.robotId), 'run'), this.paths.soul(input.robotId)]) await realDirectory(directory);
             const record = { id: input.robotId, name: input.name.trim(), codingAgents };
-            const tools = await this.toolCache.prepareShellTools(codingAgents);
-            const version = openCodeVersion(tools);
+            const tools = input.seed === false ? null : await this.toolCache.prepareShellTools(codingAgents);
+            const version = tools ? openCodeVersion(tools) : null;
             const template = version ? await this.toolCache.prepareOpenCodePlugin(version) : null;
-            await this.homeOperation(input.robotId, 'ensure', { codingAgents, binPath: tools.binPath,
+            await this.homeOperation(input.robotId, 'ensure', { codingAgents, binPath: tools?.binPath,
                 cacheRoot: this.toolCache.root, openCodePlugin: template,
-                runtimeEnv: codingAgentEnvironment(tools.agents, { PATH: '/usr/local/bin:/usr/bin:/bin' }, this.toolCache.root) });
+                runtimeEnv: codingAgentEnvironment(tools?.agents || {}, { PATH: '/usr/local/bin:/usr/bin:/bin' }, this.toolCache.root) });
             await this.write(record);
             await this.soulGateway.prepare(this.paths.soul(input.robotId));
             await ensureTerminalStub(this.paths, input.robotId);

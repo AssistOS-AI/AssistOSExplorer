@@ -27,7 +27,7 @@
           }
         },
         "seed": {
-          "type": "object",
+          "type": "boolean",
           "optional": true
         }
       }

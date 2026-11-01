@@ -13,6 +13,9 @@ import { nativeEnvironment } from '../server/native-environment.mjs';
 import { createRoboWorkServer } from '../server/http-server.mjs';
 import { EnvironmentManager } from '../server/environment.mjs';
 import { buildPrivateLaunch } from '../server/launch.mjs';
+import { RobotManager } from '../server/robot-manager.mjs';
+import { homeOperation } from '../server/home-op.mjs';
+import { RobotStore } from '../../roboTeamAgent/server/robot-store.mjs';
 
 const subject = 'agent:AchillesIDE/roboTeamAgent';
 const grant = () => ({ metadata: { invocation: { sub: subject, actor: { id: subject, kind: 'agent' } } } });
@@ -124,6 +127,78 @@ test('native environment excludes service credentials and unrelated variables', 
     const env = nativeEnvironment({ PATH: '/bin', PLOINKY_AGENT_SECRET: 'forbidden', ROBOWORK_INTERNAL_TOKEN: 'forbidden', API_KEY: 'forbidden', NODE_OPTIONS: '--bad' }, '/home/aaa');
     assert.equal(env.HOME, '/home/aaa'); assert.equal(env.USER, 'aaa'); assert.equal(env.ALA_SANDBOX_HOME, '/home/aaa');
     assert.ok(!Object.keys(env).some(key => /SECRET|TOKEN|KEY|PLOINKY|NODE_OPTIONS/u.test(key)));
+});
+
+test('lightweight robot ensure completes on a cold cache without downloads and retains config on repeated calls', async t => {
+    const { paths } = await fixture(t);
+    await fs.mkdir(path.join(paths.workspaceRoot, '.data'), { recursive: true });
+    await fs.mkdir(path.join(paths.home('aaa'), '.ala'), { recursive: true });
+    const config = { codingAgent: 'opencode', models: { opencode: 'kept-model' }, efforts: { opencode: 'high' } };
+    const file = path.join(paths.home('aaa'), '.ala', 'config.json');
+    await fs.writeFile(file, JSON.stringify(config));
+    let downloads = 0;
+    const homes = [], sockets = [];
+    const never = () => { downloads++; return new Promise(() => {}); };
+    const robots = new RobotManager({ paths, toolCache: { root: path.join(paths.dataDir, 'tool-cache'),
+        prepareShellTools: never, prepareOpenCodePlugin: never },
+    homeOperation: async (id, operation, input) => { homes.push({ id, operation, input }); return homeOperation(operation, input, paths.home(id)); },
+    soulGateway: { prepare: async directory => { sockets.push(directory); } } });
+    await robots.initialize();
+    const input = { robotId: 'aaa', name: 'default', codingAgents: ['opencode'], seed: false };
+    let timer;
+    try {
+        await Promise.race([robots.ensure(input), new Promise((resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('Lightweight startup waited for cold native tools')), 500);
+        })]);
+    } finally { clearTimeout(timer); }
+    const record = await robots.require('aaa');
+    await Promise.all([robots.ensure(input), robots.ensure(input)]);
+    assert.equal(downloads, 0);
+    assert.deepEqual(await robots.require('aaa'), record);
+    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), config);
+    assert.equal(homes.length, 3);
+    assert.ok(homes.every(entry => entry.operation === 'ensure' && !entry.input.openCodePlugin));
+    assert.ok(sockets.every(directory => directory === paths.soul('aaa')));
+    const shell = await fs.readFile(path.join(paths.home('aaa'), '.roboteam-env.sh'), 'utf8');
+    assert.ok(shell.includes(path.join(paths.dataDir, 'tool-cache', 'shell-selections', 'shell', 'bin')));
+    assert.equal((await fs.stat(path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal', 'aaa'))).isDirectory(), true);
+});
+
+test('full robot ensure still prepares native tools and plugin templates before home preparation', async t => {
+    const { paths } = await fixture(t);
+    await fs.mkdir(path.join(paths.workspaceRoot, '.data'), { recursive: true });
+    const calls = [];
+    const cacheRoot = path.join(paths.dataDir, 'tool-cache');
+    const tools = { binPath: path.join(cacheRoot, 'shell-selections', 'shell-opencode', 'bin'),
+        agents: { opencode: { binPath: path.join(cacheRoot, 'opencode', 'bin'), versions: { opencode: '1.2.3' } } } };
+    const template = { path: path.join(cacheRoot, 'plugin'), version: '1.2.3' };
+    const robots = new RobotManager({ paths, toolCache: { root: cacheRoot,
+        prepareShellTools: async agents => { calls.push(['tools', agents]); return tools; },
+        prepareOpenCodePlugin: async version => { calls.push(['plugin', version]); return template; } },
+    homeOperation: async (id, operation, input) => { calls.push(['home', id, operation, input]); },
+    soulGateway: { prepare: async () => {} } });
+    await robots.initialize();
+    await robots.ensure({ robotId: 'aaa', name: 'default', codingAgents: ['opencode'] });
+    assert.deepEqual(calls.slice(0, 2), [['tools', ['opencode']], ['plugin', '1.2.3']]);
+    assert.equal(calls[2][3].openCodePlugin, template);
+    assert.equal(calls[2][3].binPath, tools.binPath);
+});
+
+test('registry creation requests lightweight setup without replacing its stored default record', async t => {
+    const { paths } = await fixture(t);
+    const calls = [];
+    const store = new RobotStore({ dataDir: path.join(paths.workspaceRoot, '.data', 'roboTeamAgent'),
+        roboWork: { call: async (tool, input) => { calls.push({ tool, input }); } } });
+    // The public registry lock needs Linux /proc; this is its shared creation body.
+    const first = await store._create({ name: 'default' });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].tool, 'robot_ensure');
+    assert.equal(calls[0].input.seed, false);
+    assert.deepEqual(await store.getByName('default'), first);
+    assert.deepEqual(await store.getByName('default'), first);
+    assert.equal(calls.length, 1);
+    const config = JSON.parse(await fs.readFile(new URL('../mcp-config.json', import.meta.url), 'utf8'));
+    assert.equal(config.tools.find(tool => tool.name === 'robot_ensure').inputSchema.seed.type, 'boolean');
 });
 
 test('environment stop checks the exact container label and robot before signalling', async t => {
