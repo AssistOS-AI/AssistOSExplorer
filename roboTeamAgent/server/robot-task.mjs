@@ -14,7 +14,8 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
     }
     const controller = new AbortController();
     const abort = () => controller.abort();
-    process.once('SIGTERM', abort);
+    const detach = () => process.exit(0);
+    process.once('SIGTERM', detach);
     process.once('SIGINT', abort);
     let runtime;
     let input;
@@ -35,6 +36,8 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         input.on('line', (line) => {
             try {
                 const message = JSON.parse(line);
+                if (message.type === 'detach') return detach();
+                if (message.type === 'stop') return abort();
                 if (receivePrompt) {
                     if (message.type !== 'prompt' || typeof message.prompt !== 'string' || !message.prompt.trim()) throw new Error('The first task record must be the prompt.');
                     receivePrompt(message); receivePrompt = null;
@@ -45,11 +48,13 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         const task = await promptRecord;
         if (!task) throw new Error('The task prompt was not received.');
         runtime = await createCliRuntime({ workingDir: options['--cwd'], skillRoots: [],
-            sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session']), skillSelection,
+            sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session'] || options['--attach-run']), skillSelection,
             execution: { workflowExecution: options['--workflow-execution'] === true, captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
                 model: options['--model'], effort: options['--effort'], mcpServers: options['--MCPServers'], permissions: 'full-access',
                 ...(options['--environment'] ? { environment: options['--environment'] } : {}),
+                ...(options['--gui'] ? { gui: { mode: options['--gui'], cwd: options['--cwd'] } } : {}),
                 ...(task.systemPrompt ? { systemPrompt: task.systemPrompt } : {}) } }, { reattachExistingTasks: false });
+        if (options['--attach-run'] && runtime.initialSession.remoteRun?.runId !== options['--attach-run']) throw new Error('The saved run does not match RoboWork');
         const result = await runtime.engine.executeTurn({ sessionId: runtime.initialSession.sessionId, prompt: task.prompt,
             signal: controller.signal, context: { workingDir: options['--cwd'], rawText: task.prompt },
             onControl: (send) => { control = send; },
@@ -63,6 +68,8 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         process.stdin.pause();
         await runtime?.close();
         await releaseUsage?.();
+        process.removeListener('SIGTERM', detach);
+        process.removeListener('SIGINT', abort);
     }
 }
 

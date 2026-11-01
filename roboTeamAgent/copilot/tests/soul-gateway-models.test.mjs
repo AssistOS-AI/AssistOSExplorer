@@ -7,8 +7,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createAlaEngine } from '../src/lib/execution/alaEngine.mjs';
 import { ConversationSessionStore } from '../src/lib/storage/conversationSessionStore.mjs';
 import { loadAutocompleteCatalog } from '../src/mcp/list-slash-commands.mjs';
-import { prepareRobotShell } from '../../server/robot-shell.mjs';
-import { createSoulGatewayOpenCode } from '../../server/soul-gateway-opencode.mjs';
+import { prepareRobotShell } from '../../../roboWorkAgent/server/robot-shell.mjs';
+import { createSoulGatewayOpenCode } from '../../../roboWorkAgent/server/soul-gateway-opencode.mjs';
 import { resolveAlaCommand } from '../../server/ala-command.mjs';
 
 test('webchat autocomplete and robot execution receive the same dynamic OpenCode provider', async (t) => {

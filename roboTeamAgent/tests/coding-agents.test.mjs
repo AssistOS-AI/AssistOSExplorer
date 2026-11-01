@@ -5,9 +5,9 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { RobotStore } from '../server/robot-store.mjs';
-import { ToolCache } from '../server/tool-cache.mjs';
+import { ToolCache } from '../../roboWorkAgent/server/tool-cache.mjs';
 import { CODING_AGENT_NAMES, codingAgentEnvironment, GUI_CODING_AGENTS, robotCodingAgents } from '../server/coding-agents.mjs';
-import { prepareRobotShell } from '../server/robot-shell.mjs';
+import { prepareRobotShell } from '../../roboWorkAgent/server/robot-shell.mjs';
 import { buildRobotRunArgs } from '../server/runtime-manager.mjs';
 import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 

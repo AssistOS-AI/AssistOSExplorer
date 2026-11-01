@@ -8,11 +8,11 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { buildRobotRunArgs, RuntimeManager, runtimeManagerInternals } from '../server/runtime-manager.mjs';
-import { CHROMIUM_LAUNCHER } from '../server/desktop-launchers.mjs';
-import { CONTAINER_FIREWALL_RULES } from '../server/proxy-pool/container-firewall.mjs';
+import { RuntimeManager as RemoteRuntimeManager, runtimeManagerInternals } from '../server/runtime-manager.mjs';
 import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
 import { emailInstructions } from '../server/robot-email.mjs';
+import { RoboWorkClient, spawnRoboWorkRun } from '../server/run-client.mjs';
+import { createPloinkyTaskContext } from '../copilot/src/lib/ploinky/ploinkyTaskContext.mjs';
 
 const preparedToolCache = {
     root: '/cache',
@@ -27,338 +27,81 @@ const preparedToolCache = {
     }])),
 };
 
-test('runtime initialization awaits the storage initializer before engine checks and managed cleanup', async () => {
-    const calls = [];
-    let release;
-    const pending = new Promise(resolve => { release = resolve; });
-    const manager = new RuntimeManager({
-        toolCache: preparedToolCache,
-        execFileImpl: async (command, args, options) => {
-            calls.push({ command, args, options });
-            if (command === '/usr/local/bin/roboteam-podman-init') await pending;
-            return { stdout: args[0] === 'ps' ? '[{"Id":"owned-container"}]' : '', stderr: '' };
-        },
-    });
-    const initialized = manager.initialize();
-    await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(calls.map(call => [call.command, call.args]), [['/usr/local/bin/roboteam-podman-init', []]]);
-    assert.equal(calls[0].options.timeout, 30000);
-    release();
-    await initialized;
-    assert.deepEqual(calls.map(call => [call.command, call.args]), [
-        ['/usr/local/bin/roboteam-podman-init', []],
-        ['/usr/bin/podman', ['info']],
-        ['/usr/bin/podman', ['ps', '-a', '--filter', 'label=io.assistos.roboteam.robot=1', '--format', 'json']],
-        ['/usr/bin/podman', ['rm', '-f', 'owned-container']],
-    ]);
-    calls.length = 0;
-    await manager.initialize();
-    assert.equal(calls[0].command, '/usr/local/bin/roboteam-podman-init');
-});
 
-for (const failure of [
-    Object.assign(new Error('initializer missing'), { code: 'ENOENT' }),
-    Object.assign(new Error('initializer failed'), { code: 1 }),
-    Object.assign(new Error('initializer timed out'), { code: 'ETIMEDOUT', killed: true }),
-]) {
-    test(`runtime initialization rejects ${failure.message} before engine access`, async () => {
-        const calls = [];
-        const manager = new RuntimeManager({
-            toolCache: preparedToolCache,
-            execFileImpl: async (command, args) => {
-                calls.push({ command, args });
-                if (command === '/usr/local/bin/roboteam-podman-init') throw failure;
-                return { stdout: '[]', stderr: '' };
-            },
-        });
-        await assert.rejects(manager.initialize(), error => error === failure);
-        assert.deepEqual(calls, [{ command: '/usr/local/bin/roboteam-podman-init', args: [] }]);
-    });
+class RuntimeManager extends RemoteRuntimeManager {
+    constructor(options = {}) {
+        super({ roboWork: { call: async (tool) => tool === 'run_list' ? [] : tool === 'robot_status' ? { robots: [] } : {} }, ...options });
+    }
 }
 
-test('builds browser and desktop containers around the persistent robot directories', () => {
-    const plan = buildRobotRunArgs({
-        robot: { id: 'research-a1b2c3', name: 'Research' },
-        mode: 'browser',
-        dataDir: '/data',
-        publicBasePath: '/base-agent-additional-server/roboTeamAgent/3001/',
-        images: { browser: 'browser:image', desktop: 'desktop:image' },
-        timezone: 'Europe/Bucharest',
-        cwd: '/workspace/project',
-        workspaceRoot: '/workspace',
-        toolsPath: '/cache/browser',
-    });
-    assert.equal(plan.image, 'browser:image');
-    assert.ok(plan.args.includes('SUBFOLDER=/base-agent-additional-server/roboTeamAgent/3001/api/robots/research-a1b2c3/session/'));
-    assert.ok(plan.args.includes('/data/robots/research-a1b2c3/home:/config'));
-    assert.ok(plan.args.includes('127.0.0.1::3000'));
-    assert.ok(plan.args.includes('127.0.0.1::8100'));
-    assert.ok(plan.args.includes('/workspace:/workspace:ro'));
-    assert.ok(plan.args.includes('/workspace/project:/workspace/project:rw'));
-    assert.equal(plan.args[plan.args.indexOf('-w') + 1], '/workspace/project');
-    assert.ok(plan.args.includes('/cache/browser:/opt/roboteam-tools:ro'));
-    assert.ok(plan.args.some((value) => value.includes('--remote-debugging-port=9222')));
-    assert.equal(plan.args.includes('--privileged'), false);
-    assert.deepEqual(plan.args.slice(2, 8), ['--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777']);
-
-    const desktop = buildRobotRunArgs({
-        robot: { id: 'research-a1b2c3', name: 'Research' },
-        mode: 'desktop',
-        dataDir: '/data',
-        publicBasePath: '/rt/',
-        images: { browser: 'browser:image', desktop: 'desktop:image' },
-        timezone: 'Europe/Bucharest',
-        cwd: '/workspace/project',
-        workspaceRoot: '/workspace',
-        toolsPath: '/cache/desktop',
-        shellTools: { root: '/cache', path: '/cache/shell-generations/test', binPath: '/cache/shell-generations/test/bin',
-            agents: { codex: { path: '/cache/codex' } } },
-    });
-    assert.ok(desktop.args.includes('/cache/codex:/cache/codex:ro'));
-    assert.ok(desktop.args.includes('/cache/shell-generations/test:/cache/shell-generations/test:ro'));
-    assert.equal(desktop.args.includes('/cache:/data/tool-cache:ro'), false);
-    assert.ok(desktop.args.includes('CODEX_HOME=/config/.codex'));
-    assert.ok(desktop.args.includes('PATH=/cache/shell-generations/test/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'));
-    assert.deepEqual(desktop.args.slice(2, 4), ['--log-driver', 'k8s-file']);
+test('run client drains base64 output, preserves last-sequence cursor and relays callback replies once', async () => {
+    const calls = [], waits = [];
+    let reads = 0, callbackCount = 0;
+    const client = { call: async (tool, input) => {
+        calls.push({ tool, input });
+        if (tool !== 'run_read') return { ok: true };
+        reads++;
+        return { state: 'exited', exit: { code: 0 }, next: 1,
+            records: reads === 1 ? [{ seq: 1, stream: 'stdout', data: Buffer.from('answer').toString('base64') }] : [],
+            callbacks: reads === 1 ? [{ id: 'callback-one', channel: 'ploinky-runtime', path: '/agent-call', body: {} }] : [] };
+    } };
+    const child = await spawnRoboWorkRun({ client, input: { runId: 'run-one' }, wait: async ms => { waits.push(ms); await new Promise(setImmediate); },
+        onCallback: async () => { callbackCount++; return { answer: true }; } });
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stdin.write('control\n');
+    const closed = new Promise(resolve => child.once('close', resolve));
+    assert.equal(await closed, 0);
+    assert.equal(output, 'answer');
+    assert.equal(callbackCount, 1);
+    assert.deepEqual(calls.filter(call => call.tool === 'run_read').map(call => [call.input.after, call.input.waitMs]), [[0, 100], [1, 100]]);
+    assert.equal(calls.find(call => call.input.data)?.input.data, Buffer.from('control\n').toString('base64'));
+    assert.deepEqual(calls.find(call => call.input.reply)?.input.reply, { id: 'callback-one', status: 200, body: { answer: true } });
+    assert.deepEqual(waits, [100]);
 });
 
-test('mounts the opened workspace root once and writable when cwd is the root', () => {
-    const plan = buildRobotRunArgs({
-        robot: { id: 'research-a1b2c3', name: 'Research' },
-        mode: 'browser',
-        dataDir: '/data',
-        publicBasePath: '/base/',
-        images: { browser: 'browser:image', desktop: 'desktop:image' },
-        timezone: 'Europe/Bucharest',
-        cwd: '/workspace',
-        workspaceRoot: '/workspace',
-        toolsPath: '/cache/browser',
-    });
-    assert.ok(plan.args.includes('/workspace:/workspace:rw'));
-    assert.equal(plan.args.includes('/workspace:/workspace:ro'), false);
-    assert.equal(plan.args.filter((value) => value === '/workspace:/workspace:rw').length, 1);
-    assert.equal(plan.args[plan.args.indexOf('-w') + 1], '/workspace');
+test('attached runs replay without starting or sending prompt and disconnect never stops the run', async () => {
+    const calls = [], waits = [];
+    let child;
+    child = await spawnRoboWorkRun({ client: { call: async (tool, input) => {
+        calls.push({ tool, input });
+        return { state: 'running', records: [], callbacks: [] };
+    } }, input: { runId: 'existing' }, attach: true, wait: async ms => {
+        waits.push(ms); if (ms >= 2000) child.disconnect();
+    } });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(calls.every(call => call.tool === 'run_read'), true);
+    assert.equal(waits.at(-1), 2000);
+    assert.ok(waits[0] >= 100 && waits[0] <= 250);
+    assert.equal(child.kill(), false);
 });
 
-test('reads only the active GUI container log', async () => {
+test('MCP client never falls back locally when RoboWork refuses a call', async () => {
     const calls = [];
-    const manager = new RuntimeManager({
-        execFileImpl: async (_command, args) => {
-            calls.push(args);
-            return { stdout: 'desktop stdout\n', stderr: 'desktop stderr\n' };
-        },
-        toolCache: preparedToolCache,
-    });
-    manager.sessions.set('worker-a1b2c3', {
-        robotId: 'worker-a1b2c3',
-        mode: 'desktop',
-        state: 'running',
-        containerName: 'roboteam-desktop-worker-a1b2c3',
-    });
-    manager.tasks.set('old-task', { taskId: 'old-task', robotId: 'idle-a1b2c3', logTail: 'ALA output' });
-    manager.latestTask.set('idle-a1b2c3', 'old-task');
-
-    assert.equal(await manager.logs('worker-a1b2c3', 250), 'desktop stdout\ndesktop stderr\n');
-    assert.deepEqual(calls, [['logs', '--tail', '250', 'roboteam-desktop-worker-a1b2c3']]);
-    assert.equal(await manager.logs('idle-a1b2c3'), '');
+    const client = new RoboWorkClient({ createClient: async agent => ({ callTool: async (...args) => {
+        calls.push({ agent, args }); return { isError: true, code: 'RUN_UNKNOWN', message: 'Unknown run' };
+    } }) });
+    await assert.rejects(client.call('run_read', { runId: 'absent' }, { timeoutMs: 123 }), { code: 'RUN_UNKNOWN' });
+    assert.deepEqual(calls, [{ agent: 'roboWorkAgent', args: ['run_read', { runId: 'absent' }, { timeoutMs: 123 }] }]);
 });
 
-test('a robot named by an email address is told its identity in browser and desktop tasks only', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-email-task-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const dataDir = path.join(root, 'data');
-    const workspace = path.join(root, 'workspace');
-    const robot = { id: 'mailer-a1b2c3', name: 'mailer@example.com' };
-    await Promise.all([
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true }),
-        fs.mkdir(workspace, { recursive: true }),
-    ]);
-    const listener = http.createServer((_request, response) => response.end());
-    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-    t.after(() => listener.close());
-    const port = listener.address().port;
-    const written = [];
-    const spawnImpl = () => {
-        const child = new EventEmitter();
-        child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-        child.stdin = new PassThrough(); let text = '';
-        child.stdin.on('data', (chunk) => { text += chunk; });
-        setImmediate(() => { written.push(JSON.parse(text.split('\n')[0])); child.emit('close', 0, null); });
-        return child;
-    };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, toolCache: preparedToolCache,
-        execFileImpl: async (_command, args) => ({ stdout: args[0] === 'port' ? `127.0.0.1:${port}\n` : '[]', stderr: '' }) });
-    t.after(() => manager.stopAll());
-    const run = async (type) => {
-        const before = written.length;
-        const accepted = manager.startTask(robot, type, { cwd: workspace, task: 'Write to the client', ca: 'codex', systemPrompt: 'Route it' });
-        while (!['completed', 'failed'].includes(manager.taskStatus(robot.id, accepted.taskId).state)) await new Promise((resolve) => setTimeout(resolve, 5));
-        assert.equal(written.length, before + 1, `the ${type} task wrote its prompt`);
-        return written.at(-1);
-    };
-
-    assert.equal((await run('simple')).systemPrompt, 'Route it', 'a terminal task works outside Chromium and is not told the address');
-    assert.equal((await run('browser')).systemPrompt, `${emailInstructions('mailer@example.com')}\n\nRoute it`);
-    assert.match(emailInstructions('mailer@example.com'), /You are the robot mailer@example\.com/u);
-});
-
-test('runs independent CLI sessions for one robot concurrently', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-task-test-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const dataDir = path.join(root, 'data');
-    const workspace = path.join(root, 'workspace');
-    const robot = { id: 'worker-a1b2c3', name: 'Worker' };
-    await Promise.all([
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true }),
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'runtime'), { recursive: true }),
-        fs.mkdir(workspace, { recursive: true }),
-    ]);
-    const invocations = [];
-    const children = [];
-    const spawnImpl = (command, args, options) => {
-        invocations.push({ command, args, options });
-        const child = new EventEmitter();
-        child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-        child.stdin = new PassThrough(); child.written = '';
-        child.stdin.on('data', (chunk) => { child.written += chunk; });
-        children.push(child);
-        return child;
-    };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, execFileImpl: async () => ({ stdout: '[]', stderr: '' }), toolCache: preparedToolCache });
-    const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', model: 'gpt-test', effort: 'low', systemPrompt: 'Route it' });
-    const second = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Second', ca: 'codex', mcpServers: 'roboTeamAgent=http://127.0.0.1:7000/mcp' });
-    assert.match(first.taskId, /^[0-9a-f-]{36}$/);
-    assert.equal(first.sessionUrl, undefined);
-    assert.equal(first.queuePosition, 0);
-    assert.equal(second.queuePosition, 0);
-    while (children.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(children.length, 2);
-    assert.equal(manager.taskStatus(robot.id, second.taskId).state, 'running');
-    assert.equal(manager.taskStatus(robot.id, second.taskId).queuePosition, 0);
-    assert.throws(() => manager.stopTask(robot, 'simple'), /specify taskId/);
-    const firstIndex = invocations.findIndex(({ args }) => args[args.indexOf('--session-id') + 1] === first.taskId);
-    const firstInvocation = invocations[firstIndex];
-    const secondInvocation = invocations.find(({ args }) => args[args.indexOf('--session-id') + 1] === second.taskId);
-    assert.equal(secondInvocation.args[secondInvocation.args.indexOf('--MCPServers') + 1], 'roboTeamAgent=http://127.0.0.1:7000/mcp');
-    children[firstIndex].stderr.write('working\n');
-    children[firstIndex].stdout.write('first result\n');
-    children[firstIndex].emit('close', 0, null);
-    while (manager.taskStatus(robot.id, first.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(manager.taskStatus(robot.id, first.taskId).state, 'completed');
-    assert.equal(manager.taskStatus(robot.id, first.taskId).logTail, 'working\n');
-    assert.equal(manager.taskStatus(robot.id, first.taskId).result, 'first result\n');
-    assert.equal(manager.taskStatus(robot.id, second.taskId).state, 'running');
-    children[1 - firstIndex].emit('close', 0, null);
-    while (manager.taskStatus(robot.id, second.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(firstInvocation.command, process.execPath);
-    assert.match(firstInvocation.args[0], /robot-task.mjs$/);
-    assert.equal(firstInvocation.args[3], '--home');
-    assert.equal(firstInvocation.args[4], await fs.realpath(path.join(dataDir, 'robots', robot.id, 'home')));
-    assert.deepEqual(firstInvocation.args.slice(5, 7), ['--cwd', workspace]);
-    // The task prompt is the runner's first stdin record, not a file.
-    assert.equal(firstInvocation.args.includes('--taskFile'), false);
-    assert.deepEqual(JSON.parse(children[firstIndex].written.split('\n')[0]), { type: 'prompt', prompt: 'Do work', systemPrompt: 'Route it' });
-    assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--ca') + 1], 'codex');
-    assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--session-id') + 1], first.taskId);
-    assert.deepEqual(firstInvocation.args.slice(-4), ['--model', 'gpt-test', '--effort', 'low']);
-    assert.equal(secondInvocation.args.includes('--effort'), false);
-    assert.ok(firstInvocation.options.env.PATH.startsWith('/cache/codex/bin:'));
-    assert.equal(firstInvocation.options.env.ALA_EVENT_STREAM, '1');
-    assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.codex'))).isDirectory(), true);
-    assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.config', 'opencode'))).isDirectory(), true);
-    assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.pi', 'agent'))).isDirectory(), true);
-});
-
-test('places the selected OpenCode and Pi caches on the ALA path', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-agent-path-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const dataDir = path.join(root, 'data');
-    const workspace = path.join(root, 'workspace');
-    const robot = { id: 'agent-path-a1b2c3', name: 'Agent Path' };
-    await Promise.all([
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true }),
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'runtime'), { recursive: true }),
-        fs.mkdir(workspace, { recursive: true }),
-    ]);
-    const invocations = [];
-    const manager = new RuntimeManager({
-        dataDir,
-        workspaceRoot: root,
-        toolCache: preparedToolCache,
-        spawnImpl: (_command, args, options) => {
-            invocations.push({ args, options });
-            const child = new EventEmitter();
-            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-            setImmediate(() => child.emit('close', 0, null));
-            return child;
-        },
-    });
-    const opencode = manager.startTask(robot, 'simple', { cwd: workspace, task: 'OpenCode task', ca: 'opencode' });
-    while (manager.taskStatus(robot.id, opencode.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
-    const pi = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Pi task', ca: 'pi' });
-    while (manager.taskStatus(robot.id, pi.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.ok(invocations[0].options.env.PATH.startsWith('/cache/opencode/bin:'));
-    assert.ok(invocations[1].options.env.PATH.startsWith('/cache/pi/bin:'));
-});
-
-test('preserves explicit GUI agents and leaves automatic selection to the robot home', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-gui-agent-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const dataDir = path.join(root, 'data');
-    const workspace = path.join(root, 'workspace');
-    await fs.mkdir(workspace, { recursive: true });
-    const listener = http.createServer((_request, response) => response.end());
-    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-    t.after(() => listener.close());
-    const port = listener.address().port;
-    const invocations = [];
-    const manager = new RuntimeManager({
-        dataDir,
-        workspaceRoot: root,
-        publicBasePath: '/rt/',
-        execFileImpl: async (_command, args) => {
-            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
-            return { stdout: '', stderr: '' };
-        },
-        spawnImpl: (_command, args, options) => {
-            invocations.push({ args, env: options.env });
-            const child = new EventEmitter();
-            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-            setImmediate(() => child.emit('close', 0, null));
-            return child;
-        },
-        toolCache: preparedToolCache,
-    });
-    t.after(() => manager.stopAll());
-
-    const openCodeRobot = { id: 'gui-opencode-a1b2c3', name: 'OpenCode GUI', codingAgents: ['opencode'] };
-    const accepted = manager.startTask(openCodeRobot, 'desktop', { cwd: workspace, task: 'Show the desktop.', ca: 'opencode' });
-    while (!['completed', 'failed'].includes(manager.taskStatus(openCodeRobot.id, accepted.taskId).state)) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
+test('task context carries no environment, SDK or delegation and refuses other robots and tools', async () => {
+    const calls = [], observed = [];
+    const context = await createPloinkyTaskContext({ context: { workingDir: '/workspace/project', resources: [] },
+        env: { PLOINKY_AGENT_SECRET: 'private-sentinel', PLOINKY_AGENT_API_KEY: 'api-sentinel' },
+        createClient: async agent => ({ callToolWithoutWait: async (tool, input) => {
+            calls.push({ agent, tool, input }); return { metadata: { taskId: 'research-one' } };
+        }, getTaskStatus: async () => ({ status: 'running' }) }), onTask: async task => { observed.push(task); } });
+    assert.deepEqual(context.context, { version: 3, workingDir: '/workspace/project', resources: [], paths: [], origin: {} });
+    assert.equal(JSON.stringify(context.context).includes('PLOINKY_'), false);
+    for (const body of [{ agent: 'roboTeamAgent', tool: 'startSimpleALATaskForRobot', payload: { robotName: 'victim' } },
+        { agent: 'roboWorkAgent', tool: 'run_start' }, { agent: 'other/GPTResearcher', tool: 'start_research' }]) {
+        await assert.rejects(context.dispatch({ path: '/agent-call', body }), { statusCode: 403 });
     }
-    assert.equal(manager.taskStatus(openCodeRobot.id, accepted.taskId).state, 'completed',
-        manager.taskStatus(openCodeRobot.id, accepted.taskId).error);
-    assert.equal(invocations.length, 1);
-    assert.equal(invocations[0].args[invocations[0].args.indexOf('--ca') + 1], 'opencode');
-    assert.equal(invocations[0].args[invocations[0].args.indexOf('--MCPServers') + 1], `desktop=http://127.0.0.1:${port}/mcp`);
-    assert.equal(invocations[0].env.OPENCODE_BIN, '/cache/opencode/bin/opencode');
-
-    const piRobot = { id: 'gui-pi-a1b2c3', name: 'Pi GUI', codingAgents: ['pi'] };
-    const inherited = manager._newTask(piRobot, 'browser', { cwd: workspace, task: 'Browse.', ca: 'auto' });
-    await manager._runTask(piRobot, inherited);
-    assert.equal(inherited.state, 'completed', inherited.error);
-    assert.equal(invocations.length, 2);
-    assert.equal(invocations[1].args.includes('--ca'), false);
-    assert.equal(invocations[1].env.PI_BIN, '/cache/pi/bin/pi');
-    assert.equal(invocations[1].args[invocations[1].args.indexOf('--MCPServers') + 1], `browser=http://127.0.0.1:${port}/mcp`);
-
-    const autoRobot = { id: 'gui-auto-a1b2c3', name: 'Auto GUI', codingAgents: ['codex', 'opencode'] };
-    const auto = manager._newTask(autoRobot, 'desktop', { cwd: workspace, task: 'Auto.', ca: 'auto' });
-    await manager._runTask(autoRobot, auto);
-    assert.equal(auto.state, 'completed', auto.error);
-    assert.equal(invocations[2].args.includes('--ca'), false);
-    assert.equal(invocations[2].args.includes('--model'), false);
-    assert.equal(invocations[2].args.includes('--effort'), false);
+    await context.dispatch({ path: '/agent-call', body: { agent: 'GPTResearcher', tool: 'start_research', payload: { query: 'public facts' } } });
+    assert.equal(calls.length, 1);
+    assert.equal(observed[0].taskId, 'research-one');
+    await assert.rejects(context.dispatch({ path: '/ensure-agent', body: { ref: 'other/agent' } }), { statusCode: 403 });
 });
 
 test('extracts visible coding-agent messages from the ALA event stream', () => {
@@ -368,41 +111,6 @@ test('extracts visible coding-agent messages from the ALA event stream', () => {
     parser.push(Buffer.from('message\\n"}\n@@ALA_EVENT@@{"type":"coding-agent-final","message":"duplicate"}\n'));
     parser.finish();
     assert.equal(output, 'ala diagnostic\nfirst message\n');
-});
-
-test('automatic MCP tasks expose only the robot selection and cannot prepare a disabled backend', async t => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-selected-task-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const cwd = path.join(root, 'project');
-    await fs.mkdir(cwd);
-    const robot = { id: 'selected-abc123', name: 'Selected', codingAgents: ['opencode'] };
-    const invocations = [];
-    const manager = new RuntimeManager({ dataDir: root, workspaceRoot: root,
-        toolCache: preparedToolCache,
-        spawnImpl: (_command, args, options) => {
-            invocations.push({ args, env: options.env });
-            const child = new EventEmitter();
-            child.stdout = new PassThrough(); child.stderr = new PassThrough();
-            setImmediate(() => child.emit('close', 0, null));
-            return child;
-        },
-    });
-    t.after(() => manager.stopAll());
-    assert.equal(await manager.resolveCwd(root), await fs.realpath(root));
-    const task = manager._newTask(robot, 'simple', { cwd, task: 'Read the project' });
-    await manager._runTask(robot, task);
-    assert.equal(task.state, 'completed', task.error);
-    assert.equal(invocations.length, 1);
-    const { args, env } = invocations[0];
-    assert.equal(args.includes('--ca'), false);
-    assert.equal(env.OPENCODE_BIN, '/cache/opencode/bin/opencode');
-    assert.equal(env.CODEX_BIN, undefined);
-    assert.equal(env.PI_BIN, undefined);
-    const disabled = manager._newTask(robot, 'simple', { cwd, task: 'Read the project', ca: 'codex' });
-    await manager._runTask(robot, disabled);
-    assert.equal(disabled.state, 'failed');
-    assert.match(disabled.error, /not enabled/);
-    assert.equal(invocations.length, 1);
 });
 
 test('reports the bounded ALA diagnostic when the process exits unsuccessfully', () => {
@@ -516,7 +224,7 @@ test('holds the robot queue during manual GUI control and resumes the interrupte
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(manager.manualControl.get(robot.id), interrupted.taskId);
-    assert.deepEqual(killed, ['SIGTERM']);
+    assert.deepEqual(killed, ['SIGINT']);
     assert.equal(manager.taskStatus(robot.id, interrupted.taskId).state, 'paused');
     await manager._drainTaskQueue(robot);
     assert.equal(manager.taskStatus(robot.id, waiting.taskId).state, 'queued');
@@ -608,186 +316,6 @@ test('an explicit GUI stop does not enter manual-control mode', async () => {
 
     assert.equal(manager.taskStatus(robot.id, active.taskId).state, 'paused');
     assert.equal(manager.manualControl.has(robot.id), false);
-});
-
-test('allows exactly one active mode per robot and removes only its exact container', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-slot-test-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const dataDir = path.join(root, 'data');
-    const robot = { id: 'research-a1b2c3', name: 'Research' };
-    await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'workspace'), { recursive: true });
-    const listener = http.createServer((_request, response) => {
-        response.writeHead(400, { 'content-length': '0' });
-        response.end();
-    });
-    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-    t.after(() => listener.close());
-    const port = listener.address().port;
-    const calls = [];
-    const execFileImpl = async (_command, args) => {
-        calls.push(args);
-        if (args[0] === 'ps') return { stdout: '[]', stderr: '' };
-        if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
-        if (args[0] === 'inspect') return { stdout: 'true\n', stderr: '' };
-        return { stdout: '', stderr: '' };
-    };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, publicBasePath: '/rt/', execFileImpl, toolCache: preparedToolCache });
-    await manager.initialize();
-    const running = await manager.start(robot, 'desktop');
-    assert.equal(running.mode, 'desktop');
-    const robotRoot = path.join(dataDir, 'robots', robot.id);
-    assert.equal(manager.sessions.get(robot.id).cwd, robotRoot);
-    const launch = calls.find(args => args[0] === 'run');
-    assert.ok(launch.includes(`${robotRoot}:${robotRoot}:rw`));
-    assert.ok(launch.includes(`${root}:${root}:ro`));
-    assert.ok(launch.includes(`ROBOTEAM_WORKING_DIRECTORY=${robotRoot}`));
-    assert.equal(launch[launch.indexOf('-w') + 1], robotRoot);
-    await assert.rejects(fs.stat(path.join(robotRoot, '.roboteam-homes')), { code: 'ENOENT' });
-    await assert.rejects(() => manager.start(robot, 'browser'), /occupied by its desktop container/);
-    await manager.stop(robot.id);
-    assert.deepEqual(manager.status(robot.id), { state: 'stopped', task: null, queueDepth: 0 });
-    assert.ok(calls.some((args) => args[0] === 'rm' && args[2] === 'roboteam-desktop-research-a1b2c3'));
-});
-
-test('recreates a reused desktop when an Achilles task requests a different cwd', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-remount-test-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const dataDir = path.join(root, 'workspace', '.data', 'roboTeamAgent');
-    const workspaceRoot = path.join(root, 'workspace');
-    const firstCwd = path.join(workspaceRoot, 'configured-home');
-    const secondCwd = path.join(workspaceRoot, 'achilles-project');
-    const robot = { id: 'remount-a1b2c3', name: 'Remount' };
-    await Promise.all([
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true }),
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'runtime'), { recursive: true }),
-        fs.mkdir(firstCwd, { recursive: true }),
-        fs.mkdir(secondCwd, { recursive: true }),
-    ]);
-    const listener = http.createServer((_request, response) => {
-        response.writeHead(400, { 'content-length': '0' });
-        response.end();
-    });
-    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-    t.after(() => listener.close());
-    const port = listener.address().port;
-    const podmanCalls = [];
-    const execFileImpl = async (_command, args) => {
-        podmanCalls.push(args);
-        if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
-        return { stdout: '', stderr: '' };
-    };
-    let written = '';
-    const spawnImpl = () => {
-        const child = new EventEmitter();
-        child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-        child.stdin = new PassThrough(); child.stdin.on('data', (chunk) => { written += chunk; });
-        setImmediate(() => child.emit('close', 0, null));
-        return child;
-    };
-    const manager = new RuntimeManager({
-        dataDir,
-        workspaceRoot,
-        publicBasePath: '/rt/',
-        execFileImpl,
-        spawnImpl,
-        toolCache: preparedToolCache,
-    });
-
-    await manager.openDesktop(robot, firstCwd);
-    const accepted = manager.startTask(robot, 'desktop', {
-        cwd: secondCwd,
-        task: 'Show the files in the current directory.',
-        ca: 'codex',
-    });
-    while (!['completed', 'failed'].includes(manager.taskStatus(robot.id, accepted.taskId).state)) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-
-    assert.equal(manager.taskStatus(robot.id, accepted.taskId).state, 'completed');
-    assert.equal(manager.status(robot.id).state, 'running');
-    assert.equal(manager.sessions.get(robot.id).cwd, secondCwd);
-    // The coding agent's shell is not the desktop; the prompt says so and the desktop shows Chromium.
-    assert.deepEqual(JSON.parse(written.split('\n')[0]), { type: 'prompt', prompt: 'Show the files in the current directory.', systemPrompt: DESKTOP_TASK_INSTRUCTIONS });
-    assert.equal(await fs.readFile(path.join(dataDir, 'robots', robot.id, 'home', 'Desktop', 'chromium.desktop'), 'utf8'), CHROMIUM_LAUNCHER);
-    const runCalls = podmanCalls.filter((args) => args[0] === 'run');
-    assert.equal(runCalls.length, 2);
-    assert.ok(runCalls[0].includes(`${firstCwd}:${firstCwd}:rw`));
-    assert.ok(runCalls[1].includes(`${secondCwd}:${secondCwd}:rw`));
-    assert.ok(podmanCalls.some((args) => (
-        args[0] === 'rm'
-        && args[1] === '-f'
-        && args[2] === 'roboteam-desktop-remount-a1b2c3'
-    )));
-});
-
-test('returns the deterministic live URL with an asynchronous GUI task', async () => {
-    const manager = new RuntimeManager({
-        dataDir: '/data',
-        publicBasePath: '/base-agent-additional-server/roboTeamAgent/3001/',
-        workspaceRoot: '/workspace',
-        execFileImpl: async () => ({ stdout: '', stderr: '' }),
-        toolCache: preparedToolCache,
-    });
-    const accepted = manager.startTask(
-        { id: 'analyst-a1b2c3', name: 'Analyst' },
-        'desktop',
-        { cwd: '/workspace/project', task: 'Inspect the visible application.', ca: 'codex' },
-    );
-    assert.match(accepted.taskId, /^[0-9a-f-]{36}$/);
-    assert.equal(
-        accepted.sessionUrl,
-        '/base-agent-additional-server/roboTeamAgent/3001/api/robots/analyst-a1b2c3/session/',
-    );
-    assert.equal(manager.taskStatus('analyst-a1b2c3', accepted.taskId).sessionUrl, accepted.sessionUrl);
-    while (!['failed', 'paused'].includes(manager.taskStatus('analyst-a1b2c3', accepted.taskId).state)) {
-        await new Promise((resolve) => setTimeout(resolve, 1));
-    }
-});
-
-test('replaces the retained GUI container when the next queued task needs another mode', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-mode-queue-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const dataDir = path.join(root, 'data');
-    const workspace = path.join(root, 'workspace');
-    const robot = { id: 'queue-a1b2c3', name: 'Queue' };
-    await Promise.all([
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true }),
-        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'runtime'), { recursive: true }),
-        fs.mkdir(workspace, { recursive: true }),
-    ]);
-    const listener = http.createServer((_request, response) => response.end());
-    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-    t.after(() => listener.close());
-    const port = listener.address().port;
-    const podmanCalls = [];
-    const children = [];
-    const manager = new RuntimeManager({
-        dataDir,
-        workspaceRoot: root,
-        execFileImpl: async (_command, args) => {
-            podmanCalls.push(args);
-            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
-            return { stdout: '', stderr: '' };
-        },
-        spawnImpl: () => {
-            const child = new EventEmitter();
-            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
-            children.push(child);
-            return child;
-        },
-        toolCache: preparedToolCache,
-    });
-    const desktop = manager.startTask(robot, 'desktop', { cwd: workspace, task: 'Desktop', ca: 'codex' });
-    const browser = manager.startTask(robot, 'browser', { cwd: workspace, task: 'Browser', ca: 'codex' });
-    while (children.length < 1) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(manager.taskStatus(robot.id, browser.taskId).state, 'queued');
-    children[0].emit('close', 0, null);
-    while (children.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(manager.taskStatus(robot.id, desktop.taskId).state, 'completed');
-    assert.equal(manager.sessions.get(robot.id).mode, 'browser');
-    assert.ok(podmanCalls.some((args) => args[0] === 'rm' && args[2] === `roboteam-desktop-${robot.id}`));
-    children[1].emit('close', 0, null);
-    while (manager.taskStatus(robot.id, browser.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
 });
 
 test('new GUI work clears manual control after every previous GUI task was paused', async () => {
@@ -916,195 +444,6 @@ test('reported task failure never publishes completed even when the wrapper exit
     assert.equal(launches[2].includes('--workflow-execution'), false);
 });
 
-test('puts a proxied workstation behind its own relay and the managed Chromium policy', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-gui-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const listener = http.createServer((_request, response) => response.end());
-    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-    t.after(() => listener.close());
-    const port = listener.address().port;
-    const calls = [], relays = [], leases = [];
-    let upstream = { id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' };
-    const manager = new RuntimeManager({
-        dataDir: path.join(root, 'data'),
-        workspaceRoot: root,
-        proxyPool: { lease: async (...args) => { leases.push(args); return { upstream, locale: { timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' } }; }, release: async () => true },
-        createRelay: (target) => {
-            const relay = { target, closed: false, port: 45000 + relays.length, listen: async () => relay.port, close: async () => { relay.closed = true; } };
-            relays.push(relay);
-            return relay;
-        },
-        execFileImpl: async (command, args) => {
-            calls.push(command === '/usr/bin/podman' ? args : [command, ...args]);
-            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
-            if (args[0] === 'inspect') return { stdout: '/run/netns/netns-test\n', stderr: '' };
-            return { stdout: '', stderr: '' };
-        },
-        toolCache: preparedToolCache,
-    });
-    t.after(() => manager.stopAll());
-    const robot = { id: 'proxied-a1b2c3', name: 'Proxied', codingAgents: ['opencode'] };
-
-    await manager.start(robot, 'browser');
-    assert.deepEqual(leases[0], ['proxied-a1b2c3', 'Proxied'], 'the lease names the robot for the pool page');
-    const run = calls.find(args => args[0] === 'create');
-    assert.equal(calls.some(args => args[0] === 'run'), false, 'a proxied browser is created, not started, before its firewall');
-    assert.equal(run[run.indexOf('--network') + 1], 'pasta:-T,3128:45000');
-    // The firewall is loaded into the initialized container's network namespace before it starts.
-    const rulesFile = path.join(root, 'data', 'proxy-pool', 'container-firewall.nft');
-    const order = calls.map(args => args[0]);
-    assert.deepEqual(order.slice(order.indexOf('create'), order.indexOf('start') + 1), ['create', 'init', 'inspect', '/usr/bin/nsenter', 'start']);
-    assert.deepEqual(calls.find(args => args[0] === '/usr/bin/nsenter'), ['/usr/bin/nsenter', '--net=/run/netns/netns-test', '/usr/bin/nft', '-f', rulesFile]);
-    assert.equal(await fs.readFile(rulesFile, 'utf8'), CONTAINER_FIREWALL_RULES);
-    // The policy lives under the manager's data directory, never the production /data.
-    const policyFile = path.join(root, 'data', 'proxy-pool', 'chromium-proxy-policy.json');
-    assert.ok(run.includes(`${policyFile}:/etc/chromium/policies/managed/roboteam-proxy.json:ro`));
-    assert.deepEqual(JSON.parse(await fs.readFile(policyFile, 'utf8')), {
-        ProxySettings: { ProxyMode: 'fixed_servers', ProxyServer: 'http://127.0.0.1:3128' },
-        WebRtcIPHandling: 'disable_non_proxied_udp',
-    });
-    assert.ok(run.includes('TZ=Europe/Berlin'));
-    assert.ok(run.includes('LC_ALL=de_DE.UTF-8'));
-    assert.ok(run.some(value => value.startsWith('CHROME_CLI=') && value.includes('--lang=de-DE')));
-    assert.equal(relays[0].target, upstream);
-    assert.doesNotMatch(run.join(' '), /198\.51\.100\.7|\bu:p\b/u);
-
-    await manager.start(robot, 'browser');
-    assert.equal(calls.filter(args => args[0] === 'create').length, 1, 'the same proxy reuses the running workstation');
-    upstream = { ...upstream, id: 'pxp_fedcba9876543210', host: '198.51.100.8' };
-    await manager.start(robot, 'browser');
-    assert.equal(relays[0].closed, true);
-    assert.equal(calls.filter(args => args[0] === 'create').length, 2, 'a different proxy replaces the workstation');
-    await manager.stop(robot.id);
-    assert.equal(relays[1].closed, true);
-});
-
-test('a proxied desktop keeps its network for other programs and a failed firewall stops the browser', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-firewall-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const listener = http.createServer((_request, response) => response.end());
-    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-    t.after(() => listener.close());
-    const port = listener.address().port;
-    const calls = [], relays = [];
-    const manager = new RuntimeManager({
-        dataDir: path.join(root, 'data'),
-        workspaceRoot: root,
-        proxyPool: { lease: async () => ({ upstream: { id: 'pxp_0123456789abcdef', scheme: 'http', host: '198.51.100.7', port: 6001, username: 'u', password: 'p' },
-            locale: { timezone: 'Europe/Berlin', locale: 'de_DE.UTF-8', lang: 'de-DE' } }), release: async () => true },
-        createRelay: () => {
-            const relay = { closed: false, listen: async () => 45000, close: async () => { relay.closed = true; } };
-            relays.push(relay);
-            return relay;
-        },
-        execFileImpl: async (command, args) => {
-            calls.push(command === '/usr/bin/podman' ? args : [command, ...args]);
-            if (command === '/usr/bin/nsenter') throw new Error('nft: Operation not permitted');
-            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
-            if (args[0] === 'inspect') return { stdout: '/run/netns/netns-test\n', stderr: '' };
-            return { stdout: '', stderr: '' };
-        },
-        toolCache: preparedToolCache,
-    });
-    t.after(() => manager.stopAll());
-
-    const desktop = { id: 'desktop-a1b2c3', name: 'Desktop', codingAgents: ['opencode'] };
-    await manager.start(desktop, 'desktop');
-    const desktopRun = calls.find(args => args[1] === '-d');
-    assert.deepEqual(desktopRun?.slice(0, 2), ['run', '-d']);
-    assert.ok(desktopRun.includes('TZ=Europe/Berlin'));
-    assert.ok(desktopRun.includes('LC_ALL=de_DE.UTF-8'));
-    assert.ok(desktopRun.includes('LANG=de_DE.UTF-8'));
-    assert.equal(calls.some(args => args[0] === '/usr/bin/nsenter'), false);
-    await manager.stop(desktop.id);
-
-    const browser = { id: 'browser-a1b2c3', name: 'Browser', codingAgents: ['opencode'] };
-    await assert.rejects(manager.start(browser, 'browser'), /Operation not permitted/u);
-    assert.equal(calls.some(args => args[0] === 'start'), false, 'the browser never starts without its firewall');
-    assert.ok(calls.some(args => args[0] === 'rm' && args[2] === 'roboteam-browser-browser-a1b2c3'));
-    assert.equal(relays.at(-1).closed, true);
-    assert.equal(manager.status(browser.id).state, 'stopped');
-});
-
-test('an active pool without a free proxy keeps the workstation from starting', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-none-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const calls = [];
-    const manager = new RuntimeManager({
-        dataDir: path.join(root, 'data'),
-        workspaceRoot: root,
-        proxyPool: { lease: async () => { throw Object.assign(new Error('No free proxy is available in the shared proxy pool.'), { statusCode: 409 }); } },
-        createRelay: () => assert.fail('no relay without a proxy'),
-        execFileImpl: async (_command, args) => { calls.push(args); return { stdout: '', stderr: '' }; },
-        toolCache: preparedToolCache,
-    });
-    await assert.rejects(manager.start({ id: 'unproxied-a1b2c3', name: 'Waiting', codingAgents: ['opencode'] }, 'desktop'),
-        error => error.statusCode === 409);
-    assert.equal(calls.some(args => args[0] === 'run'), false);
-    assert.equal(manager.status('unproxied-a1b2c3').state, 'stopped');
-});
-
-test('without a proxy lease the workstation connects directly with the service timezone', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-direct-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const listener = http.createServer((_request, response) => response.end());
-    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-    t.after(() => listener.close());
-    const port = listener.address().port;
-    const calls = [];
-    const manager = new RuntimeManager({
-        dataDir: path.join(root, 'data'),
-        workspaceRoot: root,
-        // What the proxyAgent client answers when the agent is missing, unreachable or has no usable proxy.
-        proxyPool: { lease: async () => null, release: async () => false },
-        createRelay: () => assert.fail('no relay without a proxy'),
-        execFileImpl: async (_command, args) => {
-            calls.push(args);
-            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
-            return { stdout: '', stderr: '' };
-        },
-        toolCache: preparedToolCache,
-    });
-    t.after(() => manager.stopAll());
-    await manager.start({ id: 'direct-a1b2c3', name: 'Direct', codingAgents: ['opencode'] }, 'browser');
-    const run = calls.find(args => args[0] === 'run');
-    assert.equal(run[run.indexOf('--network') + 1], 'pasta');
-    assert.ok(run.includes('TZ=UTC'));
-    assert.equal(run.some(value => value.startsWith('LC_ALL=')), false);
-    assert.equal(run.some(value => value.includes('roboteam-proxy.json')), false);
-});
-
-test('with Use Proxy off the workstation connects directly without asking for a lease', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-proxy-off-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const listener = http.createServer((_request, response) => response.end());
-    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
-    t.after(() => listener.close());
-    const port = listener.address().port;
-    const calls = [];
-    const manager = new RuntimeManager({
-        dataDir: path.join(root, 'data'),
-        workspaceRoot: root,
-        proxyPool: { lease: async () => assert.fail('no lease while Use Proxy is off'), release: async () => false },
-        createRelay: () => assert.fail('no relay without a proxy'),
-        execFileImpl: async (_command, args) => {
-            calls.push(args);
-            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
-            return { stdout: '', stderr: '' };
-        },
-        toolCache: preparedToolCache,
-    });
-    t.after(() => manager.stopAll());
-    assert.equal(await manager.proxySettings.useProxy(), true);
-    await manager.proxySettings.setUseProxy(false);
-    await manager.start({ id: 'proxyoff-a1b2c3', name: 'Direct', codingAgents: ['opencode'] }, 'browser');
-    const run = calls.find(args => args[0] === 'run');
-    assert.equal(run[run.indexOf('--network') + 1], 'pasta');
-    assert.ok(run.includes('TZ=UTC'));
-});
-
-// Live Sessions observation: admission, exactly-once terminal, private owner
-// and phase association, transcript identifiers and typed message outcomes.
 test('queued admission is observed with owner and phase association, without a state event or startedAt', async () => {
     const robot = { id: 'admit-a1b2c3', name: 'Admit' };
     const manager = new RuntimeManager({ toolCache: preparedToolCache });
@@ -1177,18 +516,6 @@ test('a CLI task stopped before or after its run starts reports one terminal eve
     await manager._runTask(robot, manager.tasks.get(second.taskId));
     assert.deepEqual(events.filter((event) => event.kind === 'terminal').map((event) => [event.taskId, event.state]), [[second.taskId, 'paused']]);
     assert.equal(events.some((event) => event.kind === 'state'), false);
-});
-
-test('shutdown reports queued work once and running work through its own exit', async () => {
-    const robot = { id: 'shutdown-a1b2c3', name: 'Shutdown' };
-    const manager = new RuntimeManager({ toolCache: preparedToolCache, soulGateway: { close: async () => {} } });
-    manager.shuttingDown = true;
-    const events = [];
-    manager.setTaskObserver((event) => events.push(event));
-    const queued = manager.startTask(robot, 'desktop', { cwd: '/workspace', task: 'Later' });
-    await manager.stopAll();
-    await manager.stopAll();
-    assert.deepEqual(events.filter((event) => event.kind === 'terminal').map((event) => [event.taskId, event.state]), [[queued.taskId, 'paused']]);
 });
 
 test('the first turn-started event binds the task transcript to its own session; nothing else is accepted', async (t) => {
@@ -1445,4 +772,53 @@ test('each continuation is a new attempt: own id, phase only when RoboFlow resum
     const viaRoboFlow = await manager.resumeTask(robot, viaControl.taskId, 'go', { runtimeTaskId: '55555555-1234-4123-8123-123456789abc', workflowInstanceId: instance });
     const flowEvent = events.find((event) => event.kind === 'admitted' && event.taskId === viaRoboFlow.taskId);
     assert.deepEqual([flowEvent.workflowRunId, flowEvent.workflowInstanceId, flowEvent.ownerPrincipal], [flow, instance, 'user:alice']);
+});
+
+test('RoboWork owns initialization, GUI, models and shutdown resources', async t => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-remote-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const gui = { state: 'running', mode: 'desktop', sessionUrl: '/base-agent-additional-server/roboWorkAgent/3001/api/robots/robot-abc/session/', mcpPort: 8100, cwd: '/home/robot-abc' };
+    const manager = new RuntimeManager({ dataDir: root, workspaceRoot: root, roboWork: { call: async (tool, input) => {
+        calls.push({ tool, input });
+        if (tool === 'robot_status') return { robots: [{ id: 'robot-abc', gui }] };
+        if (tool === 'run_list') return [];
+        if (tool === 'gui_ensure') return gui;
+        if (tool === 'gui_logs') return { logs: 'own log' };
+        return { state: 'stopped' };
+    } } });
+    await manager.initialize();
+    assert.equal(manager.status('robot-abc').sessionUrl, gui.sessionUrl);
+    const robot = { id: 'robot-abc', name: 'A', codingAgents: ['codex'] };
+    assert.equal((await manager.openDesktop(robot)).sessionUrl, gui.sessionUrl);
+    assert.deepEqual(calls.find(call => call.tool === 'gui_ensure').input, { robotId: robot.id, mode: 'desktop', codingAgents: ['codex'], allowReplace: false });
+    assert.equal(await manager.logs(robot.id), 'own log');
+    await manager.stopAll();
+    assert.equal(calls.some(call => ['gui_stop', 'run_stop'].includes(call.tool)), false);
+    manager.shuttingDown = false;
+    await manager.stopContainer(robot.id, 'desktop');
+    assert.deepEqual(calls.at(-1), { tool: 'gui_stop', input: { robotId: robot.id, mode: 'desktop' } });
+});
+
+test('runtime reattaches only authenticated live run records and preserves their owner across boot keys', async t => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-reattach-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'robot-abc', name: 'A', codingAgents: ['codex'] };
+    const taskId = '12345678-1234-4123-8123-123456789abc';
+    const runs = [{ runId: 'run-one', robotId: robot.id, state: 'running', startedAt: new Date().toISOString(),
+        tag: { kind: 'task', taskId, type: 'simple', sessionId: taskId, ownerPrincipal: 'user:alice', request: { cwd: root, task: 'wait', ca: 'codex' } } },
+        { runId: 'old', robotId: robot.id, state: 'interrupted', tag: {} }];
+    const manager = new RuntimeManager({ dataDir: root, workspaceRoot: root, ownerKey: 'new-launch',
+        robotStore: { get: async id => id === robot.id ? robot : null },
+        roboWork: { call: async tool => tool === 'run_list' ? runs : tool === 'robot_status' ? { robots: [] } : {} } });
+    await manager.initialize();
+    assert.equal(manager.tasks.size, 1);
+    assert.equal(manager.tasks.get(taskId).attachRun, 'run-one');
+    assert.equal(manager.tasks.get(taskId).request.ownerPrincipal, 'user:alice');
+    const resumed = await manager.resumeTask(robot, taskId);
+    assert.deepEqual(resumed, { taskId, state: 'queued', runId: 'run-one' });
+    const events = [];
+    manager.setTaskObserver(event => events.push(event));
+    assert.equal(events[0].ownerPrincipal, 'user:alice');
+    assert.equal(events[0].taskId, taskId);
 });

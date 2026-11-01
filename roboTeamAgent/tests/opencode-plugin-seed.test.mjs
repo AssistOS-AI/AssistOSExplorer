@@ -3,12 +3,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { OPENCODE_PLUGIN_PACKAGE, openCodePluginState, seedOpenCodePlugin } from '../server/opencode-plugin-seed.mjs';
-import { prepareRobotShell } from '../server/robot-shell.mjs';
+import { OPENCODE_PLUGIN_PACKAGE, openCodePluginState, seedOpenCodePlugin } from '../../roboWorkAgent/server/opencode-plugin-seed.mjs';
+import { prepareRobotShell } from '../../roboWorkAgent/server/robot-shell.mjs';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 import { RuntimeManager } from '../server/runtime-manager.mjs';
-import { ToolCache, toolCacheInternals } from '../server/tool-cache.mjs';
+import { ToolCache, toolCacheInternals } from '../../roboWorkAgent/server/tool-cache.mjs';
 
 const PLUGIN = OPENCODE_PLUGIN_PACKAGE;
 
