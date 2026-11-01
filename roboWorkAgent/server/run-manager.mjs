@@ -254,9 +254,10 @@ export class RunManager {
         if (close !== undefined && typeof close !== 'boolean') throw fail('INVALID_INPUT', 'Invalid close flag');
         if (reply) await run.channels?.reply(reply);
         if (data !== undefined) {
-            if (typeof data !== 'string' || Buffer.byteLength(data) > 1024 * 1024) throw fail('INVALID_INPUT', 'Invalid run input');
+            if (typeof data !== 'string' || Buffer.byteLength(data) > 1024 * 1024
+                || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(data)) throw fail('INVALID_INPUT', 'Run input must be base64');
             if (!run.child || !live(run.meta.state) || run.child.stdin.destroyed) throw fail('RUN_NOT_RUNNING', 'Run is not running', 409);
-            await new Promise((resolve, reject) => run.child.stdin.write(data, error => error ? reject(error) : resolve()));
+            await new Promise((resolve, reject) => run.child.stdin.write(Buffer.from(data, 'base64'), error => error ? reject(error) : resolve()));
         }
         if (close) run.child?.stdin.end();
         return { ok: true };

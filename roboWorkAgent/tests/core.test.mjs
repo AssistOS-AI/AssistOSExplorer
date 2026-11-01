@@ -59,7 +59,7 @@ test('concurrent run_start is idempotent; stdin/output, durable replay and unkno
     const { manager, input, spawns, paths } = await fixture(t);
     const starts = await Promise.all([manager.start(input), manager.start(input)]);
     assert.equal(spawns(), 1); assert.equal(starts.filter(value => value.alreadyRunning).length, 1);
-    await manager.input({ runId: input.runId, data: 'hello\n' });
+    await manager.input({ runId: input.runId, data: Buffer.from('hello\n').toString('base64') });
     let result;
     for (let attempt = 0; attempt < 20; attempt++) {
         result = await manager.read({ runId: input.runId, after: 0, waitMs: 100 });
