@@ -9,6 +9,47 @@ import { createRoboTeamServer } from '../server/http-server.mjs';
 
 const inactive = () => Object.assign(new Error('agent-to-agent target is inactive'), { statusCode: 503, code: 'TARGET_INACTIVE' });
 
+async function startupPreparation(robotStore, runtimeManager, roboWork, log) {
+    const main = await fs.readFile(new URL('../server/main.mjs', import.meta.url), 'utf8');
+    const start = main.indexOf('// Shell and socket only:');
+    const endMarker = 'roboWork.finishStartup();';
+    const end = main.indexOf(endMarker, start);
+    assert.ok(start >= 0 && end > start);
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    await new AsyncFunction('robotStore', 'runtimeManager', 'roboWork', 'console', main.slice(start, end + endMarker.length))(
+        robotStore, runtimeManager, roboWork, { error: (...args) => log.push(args) });
+}
+
+test('startup isolates per-robot preparation failures and logs only the robot identity and error code', async () => {
+    const calls = [], log = [];
+    let initialized = false, finished = false;
+    await startupPreparation({ list: async () => [{ id: 'robot-good' }, { id: 'robot-bad' }, { id: 'robot-next' }] }, {
+        prepareOpenCode: async (id, options) => {
+            calls.push({ id, options });
+            if (id === 'robot-bad') throw Object.assign(new Error('private diagnostic must not be logged'), { code: 'UNSAFE_STORAGE' });
+        }, initialize: async () => { initialized = true; },
+    }, { finishStartup: () => { finished = true; } }, log);
+    assert.deepEqual(calls, ['robot-good', 'robot-bad', 'robot-next'].map(id => ({ id, options: { seed: false } })));
+    assert.equal(initialized, true); assert.equal(finished, true);
+    assert.equal(log.length, 1);
+    assert.deepEqual(log[0].slice(1), ['robot-bad', 'UNSAFE_STORAGE']);
+    assert.doesNotMatch(JSON.stringify(log), /private diagnostic/u);
+});
+
+test('startup still fails when resident initialization cannot reach RoboWork', async () => {
+    const log = [];
+    let finished = false, snapshots = 0;
+    const unavailable = Object.assign(new Error('RoboWork is unavailable; retry'), { code: 'ROBOWORK_UNAVAILABLE', retryable: true });
+    const runtime = new RuntimeManager({ workspaceRoot: os.tmpdir(), roboWork: { call: async () => {
+        snapshots++; throw unavailable;
+    } }, robotStore: { list: async () => [] } });
+    runtime.prepareOpenCode = async () => { throw Object.assign(new Error('individual failure'), { code: 'UNSAFE_STORAGE' }); };
+    await assert.rejects(startupPreparation({ list: async () => [{ id: 'robot-bad' }] }, runtime,
+        { finishStartup: () => { finished = true; } }, log), error => error === unavailable);
+    assert.ok(snapshots > 0);
+    assert.equal(finished, false);
+});
+
 test('RoboTeam waits for its direct RoboWork dependency while Explorer keeps the no-wait path', async () => {
     const team = JSON.parse(await fs.readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
     const explorer = JSON.parse(await fs.readFile(new URL('../../explorer/manifest.json', import.meta.url), 'utf8'));

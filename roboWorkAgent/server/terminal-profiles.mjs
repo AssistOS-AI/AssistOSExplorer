@@ -27,13 +27,13 @@ export async function terminalDirectory(directory, { create = false, empty = fal
     return stat;
 }
 
-export async function ensureTerminalStub(paths, id) {
+export async function ensureTerminalStub(paths, id, { empty = true } = {}) {
     robotId(id);
     let directory = path.join(paths.workspaceRoot, '.data');
     await terminalDirectory(directory);
     for (const segment of ['roboWorkAgent', 'terminal', id]) {
         directory = path.join(directory, segment);
-        await terminalDirectory(directory, { create: true, empty: segment === id });
+        await terminalDirectory(directory, { create: true, empty: empty && segment === id });
     }
     return directory;
 }

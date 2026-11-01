@@ -162,6 +162,11 @@ test('lightweight robot ensure completes on a cold cache without downloads and r
     const shell = await fs.readFile(path.join(paths.home('aaa'), '.roboteam-env.sh'), 'utf8');
     assert.ok(shell.includes(path.join(paths.dataDir, 'tool-cache', 'shell-selections', 'shell', 'bin')));
     assert.equal((await fs.stat(path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal', 'aaa'))).isDirectory(), true);
+    const history = path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal', 'aaa', '.bash_history');
+    await fs.writeFile(history, 'old outer-shell history');
+    await robots.ensure(input);
+    assert.equal(await fs.readFile(history, 'utf8'), 'old outer-shell history');
+    assert.deepEqual(await robots.require('aaa'), record);
 });
 
 test('full robot ensure still prepares native tools and plugin templates before home preparation', async t => {

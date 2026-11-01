@@ -124,9 +124,11 @@ test('default terminal preparation never builds static Bubblewrap while selected
 
 test('resolve and prepare refuse substituted stub paths and unexpected files', async t => {
     const f = await fixture(t);
+    await f.api.prepare(PROFILE);
     await fs.writeFile(path.join(f.stub, 'not-empty'), 'fixture');
     assert.deepEqual(await f.api.resolve(PROFILE), { allowed: false });
     await assert.rejects(f.api.prepare(PROFILE), { code: 'UNSAFE_STORAGE' });
+    await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub), { code: 'UNSAFE_STORAGE' });
     await fs.rm(path.join(f.stub, 'not-empty'));
     await fs.rename(f.stub, f.stub + '-saved');
     await fs.symlink(f.stub + '-saved', f.stub);

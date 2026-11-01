@@ -37,7 +37,10 @@ const runtimeManager = new RuntimeManager({
 runtimeManager.skillsets = new RobotSkillsets({ robotStore,
     workspaceRoot, alaCommand: runtimeManager.alaCommand });
 // Shell and socket only: seeding copies thousands of files per robot and runs after the service is listening.
-for (const robot of await robotStore.list()) await runtimeManager.prepareOpenCode(robot.id, { seed: false });
+for (const robot of await robotStore.list()) {
+    try { await runtimeManager.prepareOpenCode(robot.id, { seed: false }); }
+    catch (error) { console.error('[roboTeamAgent] robot preparation failed:', robot.id, error?.code || 'PREPARATION_FAILED'); }
+}
 await runtimeManager.initialize();
 roboWork.finishStartup();
 
