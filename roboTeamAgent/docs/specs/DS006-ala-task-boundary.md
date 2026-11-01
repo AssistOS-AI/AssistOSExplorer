@@ -27,7 +27,7 @@ RoboTeam does not read or migrate an old `.achilles-cli/` directory. There is no
 
 RoboTeam stores only project-location references in its shared `projects/` registry to find saved conversations and execution records after restart. Records themselves stay in the project and are never read from robot-scoped or workspace-wide locations. Missing records and duplicate copied identifiers fail explicitly. A saved execution must match its robot ID; a recreated robot with the same name cannot inherit it. Native session bindings record the robot ID and reject continuation through another robot.
 
-PLOINKY_WORKSPACE_ROOT is mandatory at RoboTeam startup and CLI entry. It must identify an accessible absolute directory. Missing, empty, relative or unavailable values must fail explicitly; neither cwd nor `/workspace` is a fallback. The validated root remains an explicit controller configuration value and determine the read-only parent mount.
+PLOINKY_WORKSPACE_ROOT is mandatory at RoboTeam startup and CLI entry. It must identify an accessible absolute directory. Missing, empty, relative or unavailable values must fail explicitly; neither cwd nor `/workspace` is a fallback. The validated root remains an explicit controller configuration value and determines the read-only parent mount.
 
 Opening a manual terminal, Desktop or Browser must not install skills; only ALA executions install them, from their own policy. Robot record IDs are not skill policy IDs.
 
