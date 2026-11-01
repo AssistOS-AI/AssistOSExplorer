@@ -33,18 +33,37 @@ export const verifyHttpRouteAuthInfoFromHeaders = () => ({ok:true,payload:{sub:'
         const internal = (tool, input) => fetch(base + '/internal/' + tool, { method: 'POST', headers: { 'x-robowork-internal-token': 'fixture-token' }, body: JSON.stringify(input) });
         const failedEnvironment = await internal('run_start', { runId: 'environment-run', robotId: 'robot-a', cwd: ready.cwd,
             ala: { sessionId: 'environment-session' }, folders: [], channels: [], ignore: [], tag: {}, environment: 'repo/agent' });
-        assert.equal(failedEnvironment.status, 500);
-        assert.equal((await failedEnvironment.json()).code, 'INTERNAL_ERROR');
+        assert.equal(failedEnvironment.status, 200);
+        assert.equal((await failedEnvironment.json()).state, 'starting');
+        let failure;
+        for (let attempt = 0; attempt < 30; attempt++) {
+            failure = await (await internal('run_read', { runId: 'environment-run', after: 0, waitMs: 100 })).json();
+            if (failure.state === 'exited') break;
+        }
+        assert.equal(failure.state, 'exited');
+        assert.equal(failure.exit.signal, 'START_FAILED');
         const failedTerminal = await fetch(`${base}/api/terminal-profiles/${profile}/prepare`, { method: 'POST', headers: { 'x-ploinky-auth-info': '{}' }, body: '{}' });
-        assert.equal(failedTerminal.status, 500);
-        assert.equal((await failedTerminal.json()).code, 'INTERNAL_ERROR');
+        if (profile.endsWith('default')) {
+            assert.equal(failedTerminal.status, 500);
+            assert.equal((await failedTerminal.json()).code, 'INTERNAL_ERROR');
+        } else {
+            assert.equal(failedTerminal.status, 409);
+            assert.equal((await failedTerminal.json()).error, 'TERMINAL_PREPARING');
+            await new Promise(resolve => setImmediate(resolve));
+            const final = await fetch(`${base}/api/terminal-profiles/${profile}/prepare`, { method: 'POST', headers: { 'x-ploinky-auth-info': '{}' }, body: '{}' });
+            assert.equal(final.status, 500);
+            assert.equal((await final.json()).code, 'INTERNAL_ERROR');
+        }
         assert.equal((await fetch(base + '/health')).status, 200);
         const listed = await (await internal('run_list', {})).json();
         assert.equal(listed.find(run => run.runId === 'active-run').state, 'running');
         assert.equal((await internal('run_input', { runId: 'active-run', data: Buffer.from('still running\n').toString('base64') })).status, 200);
         let records = [];
-        for (let attempt = 0; attempt < 20 && !records.length; attempt++) records = (await (await internal('run_read', { runId: 'active-run', after: 0, waitMs: 100 })).json()).records;
-        assert.equal(records.map(record => Buffer.from(record.data, 'base64').toString()).join(''), 'still running\n');
+        for (let attempt = 0; attempt < 20 && !records.some(record => record.stream === 'stdout'); attempt++) {
+            records = (await (await internal('run_read', { runId: 'active-run', after: 0, waitMs: 100 })).json()).records;
+            if (!records.some(record => record.stream === 'stdout')) await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        assert.equal(records.filter(record => record.stream === 'stdout').map(record => Buffer.from(record.data, 'base64').toString()).join(''), 'still running\n');
         const next = await fetch(base + '/api/terminal-profiles', { headers: { 'x-ploinky-auth-info': '{}' } });
         assert.equal(next.status, 200); assert.equal((await next.json()).profiles.length, 1);
         assert.equal(child.exitCode, null, stderr);

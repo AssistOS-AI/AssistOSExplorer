@@ -275,8 +275,15 @@ export class RuntimeManager {
                 throw new Error('Stop the active task before changing its workstation');
             }
             const cwd = cwdValue ? await this.resolveCwd(cwdValue) : undefined;
-            const session = await this.roboWork.call('gui_ensure', { robotId: robot.id, mode,
+            let session = await this.roboWork.call('gui_ensure', { robotId: robot.id, mode,
                 ...(cwd ? { cwd } : {}), codingAgents: robotCodingAgents(robot), allowReplace: Boolean(options.taskId) });
+            while (session.state === 'starting') {
+                this.sessions.set(robot.id, { robotId: robot.id, ...session });
+                await new Promise(resolve => setTimeout(resolve, 250));
+                const status = await this.roboWork.call('robot_status', { robotIds: [robot.id] });
+                session = status.robots.find(value => value.id === robot.id)?.gui || { state: 'stopped' };
+            }
+            if (session.state !== 'running') throw Object.assign(new Error('Robot workstation preparation failed; retry this request.'), { code: 'GUI_START_FAILED' });
             this.sessions.set(robot.id, { robotId: robot.id, ...session });
             return session;
         });

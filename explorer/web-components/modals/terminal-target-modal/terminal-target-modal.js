@@ -300,6 +300,7 @@ function profileFailure(error, robot) {
 }
 
 function prepareFailure(error, robot) {
+    if (error?.code === 'TERMINAL_PREPARING') return `${robot.label}'s terminal environment is preparing. Try Open again shortly.`;
     if (error?.status === 401) return 'Your authentication session has expired.';
     if (error?.status === 403) return 'Administrator access is required.';
     return `${robot.label} could not be prepared. No terminal was opened.`;

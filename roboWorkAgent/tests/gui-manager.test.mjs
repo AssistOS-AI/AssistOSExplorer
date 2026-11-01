@@ -58,12 +58,12 @@ async function fixture(t, overrides = {}) {
 test('GUI preparation uses helper only and repeat ensure returns exact result', async t => {
     const { manager, calls, homeCalls } = await fixture(t);
     const request = { robotId: 'robot-a', mode: 'desktop', codingAgents: ['codex'] };
-    const first = await manager.ensure(request);
+    const first = await manager.ensureReady(request);
     assert.deepEqual(first, { state: 'running', mode: 'desktop', sessionUrl: '/base-agent-additional-server/roboWorkAgent/3001/api/robots/robot-a/session/', mcpPort: 4567, cwd: '/home/robot-a' });
-    assert.deepEqual(await manager.ensure(request), first);
+    assert.deepEqual(await manager.ensureReady(request), first);
     assert.deepEqual(homeCalls.map(call => call[1]), ['shell', 'desktop-launchers']);
     assert.equal(calls.filter(([, args]) => args[0] === 'run').length, 1);
-    await assert.rejects(manager.ensure({ ...request, mode: 'browser' }), /occupied/u);
+    await assert.rejects(manager.ensureReady({ ...request, mode: 'browser' }), /occupied/u);
     assert.deepEqual(await manager.stop({ robotId: 'robot-a', mode: 'desktop' }), { state: 'stopped' });
 });
 
@@ -71,9 +71,9 @@ test('eight simultaneous reservations prevent a ninth launch', async t => {
     let release;
     const blocked = new Promise(resolve => { release = resolve; });
     const { manager } = await fixture(t, { prepareRobot: async () => blocked });
-    const starting = Array.from({ length: 8 }, (_, index) => manager.ensure({ robotId: `robot-${index}`, mode: 'browser' }));
+    const starting = Array.from({ length: 8 }, (_, index) => manager.ensureReady({ robotId: `robot-${index}`, mode: 'browser' }));
     await new Promise(resolve => setImmediate(resolve));
-    await assert.rejects(manager.ensure({ robotId: 'robot-9', mode: 'browser' }), /active robot limit/u);
+    await assert.rejects(manager.ensureReady({ robotId: 'robot-9', mode: 'browser' }), /active robot limit/u);
     release();
     await Promise.all(starting);
     await manager.shutdown();
@@ -92,9 +92,10 @@ test('failed start cleans only its own container and closes its relay', async t 
     const { manager, calls } = await fixture(t, { proxyPool: { lease: async () => ({ upstream: { id: 'proxy', host: 'proxy.invalid', port: 80 }, locale: null }) },
         createRelay: () => ({ listen: async () => 4567, close: async () => { closed++; } }),
         waitForSession: async () => { throw new Error('not ready'); } });
-    await assert.rejects(manager.ensure({ robotId: 'robot-a', mode: 'desktop' }), /not ready/u);
+    await assert.rejects(manager.ensureReady({ robotId: 'robot-a', mode: 'desktop' }), /not ready/u);
     assert.equal(closed, 1);
-    assert.equal(manager.sessions.size, 0);
+    assert.equal(manager.sessions.size, 1);
+    assert.equal(manager.status('robot-a').state, 'failed');
     assert.deepEqual(calls.find(([, args]) => args[0] === 'rm')[1], ['rm', '-f', '--ignore', 'robowork-desktop-robot-a']);
 });
 
@@ -102,12 +103,12 @@ test('proxy off skips lease; exhausted pool prevents container launch', async t 
     let leases = 0;
     const { manager, calls } = await fixture(t, { proxyPool: { lease: async () => { leases++; throw new Error('pool exhausted'); } },
         proxySettings: { useProxy: async () => false } });
-    await manager.ensure({ robotId: 'robot-a', mode: 'browser' });
+    await manager.ensureReady({ robotId: 'robot-a', mode: 'browser' });
     assert.equal(leases, 0);
     await manager.stop({ robotId: 'robot-a' });
     calls.length = 0;
     manager.proxySettings = { useProxy: async () => true };
-    await assert.rejects(manager.ensure({ robotId: 'robot-a', mode: 'browser' }), /pool exhausted/u);
+    await assert.rejects(manager.ensureReady({ robotId: 'robot-a', mode: 'browser' }), /pool exhausted/u);
     assert.equal(calls.length, 0);
 });
 
@@ -128,9 +129,9 @@ test('proxied Browser loads firewall before start, failure never starts containe
             return { stdout: '' };
         },
     });
-    await assert.rejects(manager.ensure({ robotId: 'robot-a', mode: 'browser' }), /firewall failed/u);
+    await assert.rejects(manager.ensureReady({ robotId: 'robot-a', mode: 'browser' }), /firewall failed/u);
     assert.deepEqual(events, ['create', 'init', 'inspect', '--net=/run/netns/owned', 'rm', 'relay-close']);
-    assert.equal(manager.status('robot-a').state, 'stopped');
+    assert.equal(manager.status('robot-a').state, 'failed');
 });
 
 test('proxy listing prunes orphan leases and release refuses running GUI', async t => {
@@ -145,7 +146,7 @@ test('proxy listing prunes orphan leases and release refuses running GUI', async
     } });
     assert.deepEqual(await manager.proxyAssignments(), { available: true, active: true, useProxy: true, assignments: [assignments[0]] });
     assert.deepEqual(released, ['robot-gone']);
-    await manager.ensure({ robotId: 'robot-a', mode: 'browser' });
+    await manager.ensureReady({ robotId: 'robot-a', mode: 'browser' });
     await assert.rejects(manager.releaseProxy({ robotId: 'robot-a' }), error => error.code === 'ROBOT_BUSY');
     await manager.stop({ robotId: 'robot-a' });
     assert.deepEqual(await manager.releaseProxy({ robotId: 'robot-a' }), { released: true });

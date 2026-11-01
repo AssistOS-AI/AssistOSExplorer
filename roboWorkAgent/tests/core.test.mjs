@@ -17,6 +17,8 @@ import { RobotManager } from '../server/robot-manager.mjs';
 import { homeOperation } from '../server/home-op.mjs';
 import { RobotStore } from '../../roboTeamAgent/server/robot-store.mjs';
 
+async function startReady(manager, input) { const result = await manager.start(input); await manager.get(input.runId).preparing; return result; }
+
 const subject = 'agent:AchillesIDE/roboTeamAgent';
 const grant = () => ({ metadata: { invocation: { sub: subject, actor: { id: subject, kind: 'agent' } } } });
 
@@ -64,14 +66,16 @@ test('cwd and folder grants reject private storage, ancestors and symlink aliase
 test('concurrent run_start is idempotent; stdin/output, durable replay and unknown ids', async t => {
     const { manager, input, spawns, paths } = await fixture(t);
     const starts = await Promise.all([manager.start(input), manager.start(input)]);
+    await manager.get(input.runId).preparing;
     assert.equal(spawns(), 1); assert.equal(starts.filter(value => value.alreadyRunning).length, 1);
     await manager.input({ runId: input.runId, data: Buffer.from('hello\n').toString('base64') });
     let result;
     for (let attempt = 0; attempt < 20; attempt++) {
         result = await manager.read({ runId: input.runId, after: 0, waitMs: 100 });
-        if (result.records.length) break;
+        if (result.records.some(record => record.stream === 'stdout')) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
     }
-    assert.equal(result.records.map(record => Buffer.from(record.data, 'base64').toString()).join(''), 'hello\n');
+    assert.equal(result.records.filter(record => record.stream === 'stdout').map(record => Buffer.from(record.data, 'base64').toString()).join(''), 'hello\n');
     assert.equal(result.next, result.records.at(-1).seq);
     await assert.rejects(manager.read({ runId: 'missing' }), { code: 'UNKNOWN_RUN' });
     await assert.rejects(manager.read({ runId: input.runId, after: -1 }), { code: 'INVALID_INPUT' });
@@ -87,7 +91,7 @@ test('concurrent run_start is idempotent; stdin/output, durable replay and unkno
 
 test('read accepts interface wait values but never holds more than 100 ms plus scheduler tolerance', async t => {
     const { manager, input } = await fixture(t);
-    await manager.start(input);
+    await startReady(manager, input);
     const start = performance.now();
     await manager.read({ runId: input.runId, after: 0, waitMs: 5000 });
     assert.ok(performance.now() - start < 1000);
@@ -97,7 +101,7 @@ test('read accepts interface wait values but never holds more than 100 ms plus s
 
 test('log cap stops a noisy process and persists the cap outcome', async t => {
     const { manager, input } = await fixture(t, { logCap: 65536, program: "setInterval(()=>process.stdout.write(Buffer.alloc(32768,65)),1);" });
-    await manager.start(input);
+    await startReady(manager, input);
     for (let attempt = 0; attempt < 50 && manager.get(input.runId).meta.state === 'running'; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
     const run = manager.get(input.runId);
     await run.finishing;
@@ -238,7 +242,7 @@ test('Environment ALA arguments use mounted sources for skills, callbacks and So
     manager.execFileImpl = async () => { throw Object.assign(new Error('No fixture container'), { code: 1 }); };
     const exported = path.join(input.cwd, '.agents', 'skills');
     const repeated = path.join(input.cwd, '.claude', 'skills');
-    await manager.start({ ...input, environment: 'repo/agent', folders: [
+    await startReady(manager, { ...input, environment: 'repo/agent', folders: [
         { source: skills, alias: 'roboteam-skill-0', expose: true },
         { source: skills, at: exported, expose: true },
         { source: skills, at: repeated, expose: true },
@@ -272,7 +276,7 @@ test('native ALA host receives the controller-derived transcript directory throu
     let launch;
     manager.buildLaunch = async options => { launch = await buildPrivateLaunch(options); return launch; };
     manager.spawnImpl = () => spawn(process.execPath, ['-e', "process.stdin.on('data',()=>{});"], { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    await manager.start(input);
+    await startReady(manager, input);
     assert.equal(launch.options.env.ALA_SESSIONS, path.join(input.cwd, '.roboteam', '.ala'));
     const wrapper = await fs.readFile(path.join(paths.run(input.runId), 'launch.sh'), 'utf8');
     assert.ok(wrapper.includes("'--ignore' '" + path.join(input.cwd, '.roboteam') + "'"));

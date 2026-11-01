@@ -822,3 +822,23 @@ test('runtime reattaches only authenticated live run records and preserves their
     assert.equal(events[0].ownerPrincipal, 'user:alice');
     assert.equal(events[0].taskId, taskId);
 });
+
+test('GUI preparation waits by polling status and surfaces a failed preparation', async t => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-gui-poll-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = []; let polls = 0, failing = false;
+    const manager = new RuntimeManager({ dataDir: root, workspaceRoot: root, roboWork: { call: async (tool, input) => {
+        calls.push({ tool, input });
+        if (tool === 'gui_ensure') return { state: 'starting', mode: 'desktop', cwd: '/home/robot-abc' };
+        if (tool === 'robot_status') return { robots: [{ id: 'robot-abc', gui: {
+            state: failing ? 'failed' : ++polls === 1 ? 'starting' : 'running', mode: 'desktop', sessionUrl: '/own/session/',
+        } }] };
+        throw new Error('Unexpected tool');
+    } } });
+    const robot = { id: 'robot-abc', name: 'A', codingAgents: ['codex'] };
+    assert.equal((await manager.openDesktop(robot)).sessionUrl, '/own/session/');
+    assert.equal(polls, 2);
+    assert.equal(calls.filter(call => call.tool === 'gui_ensure').length, 1);
+    failing = true;
+    await assert.rejects(manager.openDesktop(robot), { code: 'GUI_START_FAILED' });
+});

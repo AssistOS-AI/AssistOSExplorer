@@ -24,6 +24,7 @@ const runs = new RunManager({ paths, robots, toolCache, runtimeBundle, environme
 });
 await runs.initialize();
 await runs.start({ runId: 'active-run', robotId: 'robot-a', cwd, ala: { sessionId: 'active-session' }, folders: [], channels: [], ignore: [], tag: {} });
+await runs.get('active-run').preparing;
 const server = createRoboWorkServer({ robots, runs, environment, terminal, internalToken: 'fixture-token' });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 process.send({ port: server.address().port, pid: runs.get('active-run').child.pid, cwd });

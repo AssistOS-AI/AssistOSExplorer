@@ -8,6 +8,14 @@ import { RobotPaths } from '../server/robot-paths.mjs';
 import { createTerminalProfiles, ensureTerminalStub, parseTerminalProfile, terminalProfileAccess } from '../server/terminal-profiles.mjs';
 import { buildShellSandbox, buildTerminalLaunch, readTerminalDescriptor } from '../scripts/robot-shell.mjs';
 
+async function prepareReady(api, profile) {
+    for (let attempt = 0; attempt < 100; attempt++) {
+        try { return await api.prepare(profile); } catch (error) { if (error.code !== 'TERMINAL_PREPARING') throw error; }
+        await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    throw new Error('Terminal preparation did not finish');
+}
+
 const ADMIN = { ok: true, internal: false, canAdmin: true, principal: 'user:owner' };
 const PROFILE = 'robot-a.default';
 
@@ -25,7 +33,7 @@ async function fixture(t) {
     const calls = { tools: 0, runtime: 0, ala: 0, home: [], pulls: 0 };
     const robot = { id: 'robot-a', name: 'Robot A', codingAgents: ['opencode'] };
     const environment = { list: async () => [{ ref: 'repo/agent', key: 'YWdlbnQ', name: 'Agent', available: true, reason: '' }],
-        require: async ref => ({ ref, image: 'image:fixture' }) };
+        require: async ref => ({ ref, image: 'image:fixture' }), prepare: async () => ({}) };
     const toolCache = { root: path.join(paths.dataDir, 'tool-cache'), prepareShellTools: async () => {
         calls.tools++; return { binPath: path.join(paths.dataDir, 'tool-cache/shell-selections/shell/bin') };
     } };
@@ -117,7 +125,7 @@ test('default terminal preparation never builds static Bubblewrap while selected
     assert.equal(descriptor.bwrap, '/usr/bin/bwrap');
     assert.equal(descriptor.alaEntry, '/opt/ala/bin/ala.mjs');
     assert.equal(f.calls.ala, 1); assert.equal(staticCalls, 0);
-    await assert.rejects(f.api.prepare('robot-a.YWdlbnQ'), /Static preparation unavailable/u);
+    await assert.rejects(prepareReady(f.api, 'robot-a.YWdlbnQ'), /Static preparation unavailable/u);
     assert.equal(staticCalls, 1);
     await assert.rejects(fs.access(path.join(f.paths.dataDir, 'server-state', 'terminal', 'robot-a.YWdlbnQ.json')), { code: 'ENOENT' });
 });
@@ -192,7 +200,7 @@ test('shell sandbox requires private proc, one layer, own home, masks and newSes
 
 test('environment terminal creates an interactive new image launch and never executes in a live agent', async t => {
     const f = await fixture(t);
-    await f.api.prepare('robot-a.YWdlbnQ');
+    await prepareReady(f.api, 'robot-a.YWdlbnQ');
     const { descriptor } = await readTerminalDescriptor(f.paths, 'robot-a.YWdlbnQ', f.stub, f.stub);
     let options;
     const environment = { require: f.environment.require, buildLaunch: async input => { options = input; return { command: 'podman', args: ['run', '-it'], options: {} }; } };
@@ -261,17 +269,31 @@ test('cached download failures can resolve and launch a selected terminal while 
     const profile = `robot-a.${entry.key}`;
     assert.equal((await f.api.catalog()).environments.find(item => item.key === entry.key).available, false);
     assert.equal((await f.api.resolve(profile)).allowed, true);
-    await f.api.prepare(profile);
-    assert.equal(pulls, 1, 'terminal catalog, resolution and descriptor preparation never pull');
+    failing = false;
+    await prepareReady(f.api, profile);
+    assert.equal(pulls, 2, 'only selected terminal preparation retries the download');
     const { descriptor } = await readTerminalDescriptor(f.paths, profile, f.stub, f.stub);
     failing = false;
     assert.equal((await buildTerminalLaunch(descriptor, f.paths, { environment })).command, 'podman');
-    assert.equal(pulls, 2, 'only the selected actual terminal launch retries the download');
+    assert.equal(pulls, 3, 'the selected terminal launch revalidates its image');
     for (const value of [{ container: 'image:{{VERSION}}' }, {}, null]) {
         manifest = value;
         environment.cached = null;
         assert.equal((await f.api.resolve(profile)).allowed, false);
         await assert.rejects(f.api.prepare(profile));
     }
-    assert.equal(pulls, 2, 'nonretryable choices never download');
+    assert.equal(pulls, 3, 'nonretryable choices never download');
+});
+
+test('chosen terminal preparation returns retry immediately and default preparation remains usable', async t => {
+    const f = await fixture(t); let release;
+    f.runtimeBundle.prepare = () => new Promise(resolve => { release = resolve; });
+    const started = performance.now();
+    await assert.rejects(f.api.prepare('robot-a.YWdlbnQ'), { code: 'TERMINAL_PREPARING', statusCode: 409 });
+    assert.ok(performance.now() - started < 500);
+    await f.api.prepare(PROFILE);
+    await assert.rejects(fs.access(path.join(f.paths.dataDir, 'server-state', 'terminal', 'robot-a.YWdlbnQ.json')), { code: 'ENOENT' });
+    release({ ala: { entry: '/opt/ala/bin/ala.mjs' }, bwrap: { bin: '/opt/bwrap' } });
+    const ready = await prepareReady(f.api, 'robot-a.YWdlbnQ');
+    assert.equal(ready.ok, true); assert.equal(ready.id, 'robot-a.YWdlbnQ');
 });

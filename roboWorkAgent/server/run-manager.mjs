@@ -8,6 +8,7 @@ import { fail, robotId, runId, homeTarget, within } from './robot-paths.mjs';
 import { RunChannels, validateChannels } from './run-channels.mjs';
 import { buildPrivateLaunch } from './launch.mjs';
 import { codingAgentEnvironment } from './coding-agents.mjs';
+import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 
 export const LOG_CAP = 64 * 1024 * 1024;
 const RETENTION = 7 * 24 * 60 * 60 * 1000;
@@ -111,6 +112,7 @@ export class RunManager {
         const folders = [];
         for (const folder of input.folders || []) {
             if (!folder || typeof folder !== 'object' || Array.isArray(folder)) throw fail('INVALID_INPUT', 'Invalid folder grant');
+            if (folder.expose !== undefined && typeof folder.expose !== 'boolean') throw fail('INVALID_INPUT', 'Invalid folder exposure');
             const source = await this.paths.grant(folder?.source);
             if (folder.alias !== undefined && (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/u.test(folder.alias) || aliases.has(folder.alias))) throw fail('FOLDER_REFUSED', 'Invalid folder alias');
             if (folder.alias) aliases.add(folder.alias);
@@ -126,6 +128,9 @@ export class RunManager {
                 || aliases.has(folder.at.slice('/workspace/'.length)))) throw fail('FOLDER_REFUSED', 'Invalid folder target');
             folders.push({ ...folder, source });
         }
+        for (const ignored of input.ignore || []) if (typeof ignored !== 'string' || !path.isAbsolute(ignored)) throw fail('INVALID_INPUT', 'Ignore path must be absolute');
+        const requestedMcp = Array.isArray(ala.mcpServers) ? ala.mcpServers.join(',') : String(ala.mcpServers || '');
+        if (requestedMcp.length > 65536 || /[\x00-\x1f]/u.test(requestedMcp)) throw fail('INVALID_INPUT', 'Invalid MCP servers');
         if (input.tag !== undefined && (!input.tag || typeof input.tag !== 'object' || Array.isArray(input.tag))) throw fail('INVALID_INPUT', 'Invalid run tag');
         if (Buffer.byteLength(JSON.stringify(input.tag || {})) > 65536) throw fail('INVALID_INPUT', 'Run tag too large');
         await this.robots.require(input.robotId);
@@ -135,8 +140,21 @@ export class RunManager {
             cwd, ala, startedAt: new Date(this.now()).toISOString(), launchId: this.launchId };
         const run = { meta, directory, records: [], bytes: 0, seq: 0, queue: Promise.resolve() };
         this.runs.set(input.runId, run);
+        run.abort = new AbortController(); run.inputQueue = []; run.inputBytes = 0;
         await this.persist(run);
+        run.preparing = new Promise(resolve => setImmediate(resolve)).then(() => this.prepareRun(run, input, { cwd, ala, folders, channels, requestedMcp }));
+        // The resident service owns preparation after the short admission response.
+        void run.preparing.catch(() => {});
+        return { runId: input.runId, state: 'starting', alreadyRunning: false };
+    }
+
+    async prepareRun(run, input, { cwd, ala, folders, channels, requestedMcp }) {
+        const { meta, directory } = run;
+        const signal = run.abort.signal;
+        const check = () => { if (signal.aborted || this.closed) throw preparationCancelled(); };
+        const wait = operation => waitForPreparation(operation, signal);
         try {
+            check(); this.append(run, 'stderr', Buffer.from('[RoboWork] preparing run\n'));
             run.channels = new RunChannels({ directory: path.join(directory, 'channels'), definitions: channels,
                 changed: () => this.events.emit(input.runId) });
             const mounts = await run.channels.prepare();
@@ -144,7 +162,8 @@ export class RunManager {
             const environmentFolders = folders.map(folder => ({ source: folder.source,
                 target: folder.at || (folder.alias ? '/workspace/' + folder.alias : folder.source), readOnly: true }));
             const robot = await this.robots.require(input.robotId);
-            const tools = await this.toolCache.prepareCodingAgents(robot.codingAgents);
+            const tools = await wait(this.toolCache.prepareCodingAgents(robot.codingAgents));
+            check();
             const runtimeEnv = codingAgentEnvironment(tools, { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8',
                 ALA_SESSIONS: path.join(cwd, '.roboteam', '.ala') }, this.toolCache.root);
             const args = ['--home', input.environment ? homeTarget(input.robotId) : this.paths.home(input.robotId), '--cwd', cwd, '--session-id', ala.sessionId,
@@ -169,27 +188,30 @@ export class RunManager {
             }
             for (const mount of [...mounts, soul]) args.push('--folder', input.environment ? mount.target : mount.source, 'as', mount.alias);
             let gui;
-            const requestedMcp = Array.isArray(ala.mcpServers) ? ala.mcpServers.join(',') : String(ala.mcpServers || '');
-            if (requestedMcp.length > 65536 || /[\x00-\x1f]/u.test(requestedMcp)) throw fail('INVALID_INPUT', 'Invalid MCP servers');
             if (input.gui) {
                 if (!this.gui) throw fail('GUI_NOT_READY', 'GUI support is not ready', 503);
-                gui = await this.gui.ensure({ ...input.gui, robotId: input.robotId, codingAgents: robot.codingAgents });
+                gui = await wait(this.gui.ensureReady({ ...input.gui, robotId: input.robotId, codingAgents: robot.codingAgents }));
+                check();
             }
             const mcpServers = [requestedMcp, gui ? `${input.gui.mode || 'gui'}=http://127.0.0.1:${gui.mcpPort}/mcp` : ''].filter(Boolean).join(',');
             if (mcpServers) args.push('--MCPServers', mcpServers);
             let launch;
             if (input.environment) {
                 if (!this.environment) throw fail('ENVIRONMENT_NOT_READY', 'Environment support is not ready', 503);
-                const bundle = await this.runtimeBundle.prepare();
+                this.append(run, 'stderr', Buffer.from('[RoboWork] preparing Environment runtime\n'));
+                const bundle = await this.runtimeBundle.prepare({ signal });
+                check();
                 launch = await this.environment.buildLaunch({ environment: input.environment, runId: input.runId, robotId: input.robotId,
                     home: this.paths.home(input.robotId), workspaceRoot: this.paths.workspaceRoot, cwd,
                     toolCache: { source: this.toolCache.root, target: this.toolCache.root },
                     ala: { source: bundle.ala.path, target: '/opt/robowork-ala', entry: '/opt/robowork-ala/bin/ala.mjs' },
                     bwrap: { source: bundle.bwrap.bin, target: '/opt/robowork-bwrap' },
                     channels: mounts, soul,
-                    folders: environmentFolders, args, env: runtimeEnv });
+                    folders: environmentFolders, args, env: runtimeEnv, signal });
+                check();
             } else launch = await this.buildLaunch({ paths: this.paths, id: input.robotId, directory,
                 command: process.execPath, args: [this.alaEntry, ...args], env: runtimeEnv, guiPort: gui?.mcpPort });
+            check();
             const child = this.spawnImpl(launch.command, launch.args, launch.options);
             run.child = child; run.containerName = launch.containerName; meta.containerName = launch.containerName;
             child.stdout.on('data', chunk => this.append(run, 'stdout', chunk));
@@ -198,11 +220,19 @@ export class RunManager {
             child.once('close', (code, signal) => { void this.finish(run, code, signal); });
             meta.pid = child.pid; meta.servicePid = process.pid;
             meta.pidStamp = await processStamp(child.pid);
-            if (!run.finishing) { meta.state = 'running'; await this.persist(run); }
+            if (!run.finishing && !signal.aborted) {
+                for (const input of run.inputQueue) await this.writeInput(run, input);
+                run.inputQueue = []; run.inputReady = true;
+                run.inputBytes = 0;
+                meta.state = 'running'; await this.persist(run);
+            } else this.signal(run, 'SIGTERM');
             return { runId: input.runId, state: meta.state, alreadyRunning: false };
         } catch (error) {
-            await this.finish(run, null, error.code || 'START_FAILED');
-            throw error;
+            run.preparationError = error;
+            if (run.child && !run.finishing) { this.signal(run, 'SIGKILL'); await run.stopQueue; }
+            this.append(run, 'stderr', Buffer.from(`[RoboWork] preparation ended: ${error.code || 'START_FAILED'}\n`));
+            await this.finish(run, null, error.code === 'PREPARATION_CLEANUP_FAILED' ? error.code
+                : signal.aborted ? run.stopSignal || 'SIGTERM' : error.code || 'START_FAILED');
         }
     }
 
@@ -266,16 +296,33 @@ export class RunManager {
         if (data !== undefined) {
             if (typeof data !== 'string' || Buffer.byteLength(data) > 1024 * 1024
                 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(data)) throw fail('INVALID_INPUT', 'Run input must be base64');
-            if (!run.child || !live(run.meta.state) || run.child.stdin.destroyed) throw fail('RUN_NOT_RUNNING', 'Run is not running', 409);
-            await new Promise((resolve, reject) => run.child.stdin.write(Buffer.from(data, 'base64'), error => error ? reject(error) : resolve()));
+            if (!['starting', 'running'].includes(run.meta.state) || run.inputClosed) throw fail('RUN_NOT_RUNNING', 'Run is not running', 409);
         }
-        if (close) run.child?.stdin.end();
+        if (data !== undefined || close) {
+            const input = { data, close };
+            if (!run.inputReady && run.meta.state === 'starting') {
+                const bytes = Buffer.byteLength(data || '');
+                if (run.inputBytes + bytes > 4 * 1024 * 1024 || run.inputQueue.length >= 128) throw fail('INPUT_LIMIT', 'Pending run input is full', 409);
+                run.inputBytes += bytes; run.inputQueue.push(input);
+            } else {
+                const operation = (run.inputOperation || Promise.resolve()).then(() => this.writeInput(run, input));
+                run.inputOperation = operation.catch(() => {});
+                await operation;
+            }
+            if (close) run.inputClosed = true;
+        }
         return { ok: true };
+    }
+
+    async writeInput(run, { data, close }) {
+        if (!run.child || !live(run.meta.state) || run.child.stdin.destroyed) throw fail('RUN_NOT_RUNNING', 'Run is not running', 409);
+        if (data !== undefined) await new Promise((resolve, reject) => run.child.stdin.write(Buffer.from(data, 'base64'), error => error ? reject(error) : resolve()));
+        if (close) run.child.stdin.end();
     }
 
     signal(run, signal) {
         if (!live(run.meta.state)) return;
-        const stopChild = () => { try { process.kill(-run.child.pid, signal); } catch { run.child?.kill(signal); } };
+        const stopChild = () => { if (!run.child) return; try { process.kill(-run.child.pid, signal); } catch { run.child.kill(signal); } };
         if (run.containerName) {
             run.stopQueue = (run.stopQueue || Promise.resolve()).then(() => this.stopEnvironment(run, signal)).then(stopChild);
             void run.stopQueue.catch(() => { run.meta.stopError = true; });
@@ -297,7 +344,14 @@ export class RunManager {
 
     async stop({ runId: id, signal = 'SIGTERM' }) {
         if (!['SIGINT', 'SIGTERM', 'SIGKILL'].includes(signal)) throw fail('INVALID_INPUT', 'Invalid stop signal');
-        const run = this.get(id); this.signal(run, signal); await run.stopQueue; return { ok: true };
+        const run = this.get(id);
+        if (run.meta.state === 'starting') {
+            run.stopSignal = signal; run.meta.state = 'stopping'; run.abort.abort();
+            run.inputQueue = []; run.inputBytes = 0;
+            await run.preparing;
+            if (run.preparationError?.code === 'PREPARATION_CLEANUP_FAILED') throw run.preparationError;
+        }
+        this.signal(run, signal); await run.stopQueue; return { ok: true };
     }
 
     list({ robotId: id } = {}) {
@@ -311,7 +365,7 @@ export class RunManager {
     async release({ runId: id }) {
         const run = this.get(id);
         if (live(run.meta.state)) throw fail('RUN_ACTIVE', 'Stop the run before releasing it', 409);
-        await run.finishing; await run.channels?.close();
+        await run.preparing; await run.finishing; await run.channels?.close();
         await fs.rm(run.directory, { recursive: true, force: true }); this.runs.delete(id); return { ok: true };
     }
 
@@ -319,7 +373,8 @@ export class RunManager {
         this.closed = true;
         await Promise.allSettled([...this.starting.values()]);
         const active = [...this.runs.values()].filter(run => live(run.meta.state));
-        for (const run of active) { run.interrupting = true; this.signal(run, 'SIGTERM'); }
+        for (const run of active) { run.interrupting = true; run.abort?.abort(); this.signal(run, 'SIGTERM'); }
+        await Promise.allSettled(active.map(run => run.preparing));
         await Promise.all(active.map(run => run.stopQueue));
         if (active.length) await sleep(500);
         for (const run of active) {

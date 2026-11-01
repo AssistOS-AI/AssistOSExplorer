@@ -74,13 +74,14 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         } catch { return { allowed: false }; }
     }
 
-    async function prepare(profile) {
+    async function prepareNow(profile) {
         if (prepareOperations.has(profile)) return prepareOperations.get(profile);
         const operation = (async () => {
             const selected = await selection(profile);
             const tools = await toolCache.prepareShellTools();
             const bundle = selected.environment ? await runtimeBundle.prepare()
                 : { ala: await runtimeBundle.prepareAla(), bwrap: { bin: '/usr/bin/bwrap' } };
+            if (selected.environment) await environment.prepare(selected.environment);
             await homeOperation(selected.id, 'shell', { codingAgents: selected.robot.codingAgents,
                 binPath: tools.binPath, cacheRoot: toolCache.root });
             await ensureTerminalStub(paths, selected.id);
@@ -100,6 +101,24 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         try { return await operation; } finally { prepareOperations.delete(profile); }
     }
 
+    const selectedPreparations = new Map();
+    async function prepare(profile) {
+        const { key } = parseTerminalProfile(profile);
+        if (key === 'default') return prepareNow(profile);
+        let entry = selectedPreparations.get(profile);
+        if (entry?.state === 'ready') { selectedPreparations.delete(profile); return entry.result; }
+        if (entry?.state === 'failed') { selectedPreparations.delete(profile); throw entry.error; }
+        if (!entry) {
+            // Validate the choice before returning a retry response.
+            await selection(profile);
+            entry = { state: 'preparing' };
+            selectedPreparations.set(profile, entry);
+            void prepareNow(profile).then(result => { entry.state = 'ready'; entry.result = result; },
+                error => { entry.state = 'failed'; entry.error = error; });
+        }
+        throw fail('TERMINAL_PREPARING', 'Terminal environment is preparing; retry shortly.', 409);
+    }
+
     async function handle(req, res, url, access) {
         const reply = (status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
         const authority = terminalProfileAccess(access);
@@ -114,7 +133,11 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         const match = pathname.match(/^\/api\/terminal-profiles\/([^/]+)\/prepare$/u);
         if (match && req.method === 'POST') {
             if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) return reply(400, { ok: false, error: 'Invalid terminal preparation request' });
-            return reply(200, await prepare(decodeURIComponent(match[1])));
+            try { return reply(200, await prepare(decodeURIComponent(match[1]))); }
+            catch (error) {
+                if (error.code === 'TERMINAL_PREPARING') return reply(409, { ok: false, error: 'TERMINAL_PREPARING', message: error.message });
+                throw error;
+            }
         }
         return reply(404, { ok: false, error: 'not_found' });
     }

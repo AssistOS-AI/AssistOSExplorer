@@ -38,7 +38,7 @@ async function service(t) {
     for (const directory of [cwd, dataDir, skill]) await fs.mkdir(directory, { recursive: true });
     const paths = new RobotPaths({ dataDir, workspaceRoot });
     const guiCalls = [], launches = [], payloads = [];
-    const gui = { ensure: async input => { guiCalls.push(input); return { mcpPort: 34568 }; } };
+    const gui = { ensureReady: async input => { guiCalls.push(input); return { mcpPort: 34568 }; } };
     const runs = new RunManager({ paths, gui, alaEntry: '/unused',
         robots: { require: async id => ({ id, codingAgents: ['opencode'] }) },
         toolCache: { root: path.join(dataDir, 'tool-cache'), prepareCodingAgents: async () => ({}) },
@@ -71,7 +71,8 @@ async function service(t) {
 test('published compiler preserves run inputs through the real tool entry and resident validation', async t => {
     const { paths, runs, call, input, guiCalls, launches, payloads } = await service(t);
     assert.deepEqual(schema('run_start').parse(input), input);
-    assert.equal((await call('run_start', input)).state, 'running');
+    assert.equal((await call('run_start', input)).state, 'starting');
+    await runs.get(input.runId).preparing;
     assert.deepEqual(payloads[0], input);
     assert.deepEqual(runs.get(input.runId).meta.ala, input.ala);
     assert.deepEqual(runs.get(input.runId).meta.tag, input.tag);
@@ -87,9 +88,10 @@ test('published compiler preserves run inputs through the real tool entry and re
     let output;
     for (let attempt = 0; attempt < 20; attempt++) {
         output = await call('run_read', { runId: input.runId, after: 0, waitMs: 100 });
-        if (output.records.length) break;
+        if (output.records.some(record => record.stream === 'stdout')) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
     }
-    assert.equal(output.records.map(record => Buffer.from(record.data, 'base64').toString()).join(''), 'decoded stdin\n');
+    assert.equal(output.records.filter(record => record.stream === 'stdout').map(record => Buffer.from(record.data, 'base64').toString()).join(''), 'decoded stdin\n');
     const socketPath = path.join(paths.run(input.runId), 'channels', 'ploinky-runtime', 'request.sock');
     for (const body of [{ opaque: { entries: [1, false, null, { value: 'kept' }] } }, ['array', null], null, 'text']) {
         const response = new Promise((resolve, reject) => {
@@ -156,7 +158,8 @@ test('actual skill overlays in a public workspace under home survive schema and 
     assert.equal(folders.length, 5);
     assert.deepEqual(folders.slice(-2).map(folder => folder.at), [path.join(cwd, '.agents', 'skills'), path.join(cwd, '.claude', 'skills')]);
     const request = { ...input, cwd, folders, gui: undefined };
-    assert.equal((await call('run_start', request)).state, 'running');
+    assert.equal((await call('run_start', request)).state, 'starting');
+    await runs.get(request.runId).preparing;
     assert.deepEqual(runs.get(input.runId).meta.tag, input.tag);
     for (const folder of folders) assert.ok(launches[0].args.some((value, index) => value === 'at' && launches[0].args[index + 1] === folder.at));
     const forbidden = ['/', '/home', '/home/skutner', '/home/victim', '/home/aaa', workspace,

@@ -1437,3 +1437,17 @@ test('terminal picker keeps malformed and missing images disabled', async t => {
         assert.equal(page.modal.selectedProfile(), null);
     }
 });
+
+test('a preparing Environment closes the reserved popup and tells the user to retry Open', async t => {
+    const page = pageHarness(t, {
+        respond: async ({ url }) => url.endsWith('/prepare')
+            ? { status: 409, body: { ok: false, error: 'TERMINAL_PREPARING' } } : null,
+    });
+    page.modal.afterRender(); await page.settle();
+    await page.chooseRobot('Robot A'); await page.chooseRow(/Ploinky Box/);
+    assert.equal(await page.modal.openTerminal(), false);
+    assert.equal(page.popups[0].closed, true);
+    assert.equal(page.$('Warning').textContent, "Robot A's terminal environment is preparing. Try Open again shortly.");
+    assert.equal(page.$('Open').disabled, false);
+    assert.ok(!page.log.some(entry => entry[0] === 'navigate' || entry[0] === 'closeModal'));
+});

@@ -1,6 +1,8 @@
 import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 
 // The tools a robot phase needs inside another Ploinky agent's container, kept in the tool cache
 // (`/data/tool-cache`, the workspace folder `.data/roboTeamAgent/tool-cache`) beside the coding agents,
@@ -62,9 +64,30 @@ export class RuntimeBundle {
         Object.assign(this, { toolCache, workspaceRoot: workspaceRoot ? path.resolve(workspaceRoot) : '', alaEntry, log });
     }
 
+    warmup() {
+        if (!this.warming) {
+            this.warmupAbort = new AbortController();
+            this.warming = this.prepare({ signal: this.warmupAbort.signal });
+        }
+        return this.warming;
+    }
+
+    async close() {
+        this.warmupAbort?.abort();
+        await this.warming?.catch(() => {});
+    }
+
     // { root, bwrap, ala } with absolute paths inside the tool cache or the workspace.
-    async prepare() {
-        const [bwrap, ala] = await Promise.all([this.prepareBwrap(), this.prepareAla()]);
+    async prepare({ signal } = {}) {
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        if (signal?.aborted) abort();
+        signal?.addEventListener('abort', abort, { once: true });
+        const operations = [this.prepareBwrap({ signal: controller.signal }), waitForPreparation(this.prepareAla(), controller.signal)];
+        let bwrap, ala;
+        try { [bwrap, ala] = await Promise.all(operations); }
+        catch (error) { controller.abort(); await Promise.allSettled(operations); throw error; }
+        finally { signal?.removeEventListener('abort', abort); }
         // A fallback generation (update unavailable) carries only its path; derive the files from it.
         return {
             root: this.toolCache.root,
@@ -73,16 +96,56 @@ export class RuntimeBundle {
         };
     }
 
-    prepareBwrap() {
-        return this.toolCache._once('runtime-bwrap', () => this.toolCache._prepare('bwrap', async () => ({
+    async prepareBwrap({ signal } = {}) {
+        if (signal?.aborted) throw preparationCancelled();
+        if (this.bwrapPending?.controller.signal.aborted) {
+            await this.bwrapPending.promise.catch(() => {});
+            return this.prepareBwrap({ signal });
+        }
+        let pending = this.bwrapPending;
+        if (!pending) {
+            pending = { controller: new AbortController(), consumers: 0 };
+            pending.promise = this.buildBwrap(pending.controller.signal);
+            this.bwrapPending = pending;
+            void pending.promise.finally(() => { if (this.bwrapPending === pending) this.bwrapPending = null; }).catch(() => {});
+        }
+        pending.consumers++;
+        try { return await waitForPreparation(pending.promise, signal); }
+        finally {
+            pending.consumers--;
+            if (!pending.consumers && this.bwrapPending === pending) {
+                pending.controller.abort();
+                // An owned builder is gone before the cancelled preparation settles.
+                await pending.promise.catch(error => { if (error.code === 'PREPARATION_CLEANUP_FAILED') throw error; });
+            }
+        }
+    }
+
+    buildBwrap(signal) {
+        let cleanupError;
+        return this.toolCache._prepare('bwrap', async () => ({
             identity: { ...STATIC_BWRAP, arch: process.arch },
             versions: { bwrap: STATIC_BWRAP.version },
             install: async (directory) => {
                 this.log(`[tool-cache] building static Bubblewrap ${STATIC_BWRAP.version} in nested Podman`);
-                await this.toolCache.execFileImpl(this.toolCache.podmanCommand, [
-                    'run', '--rm', '--ipc', 'none', '--network', 'pasta', '--user', '0:0', '-v', `${directory}:/out`,
-                    STATIC_BWRAP.builder, 'sh', '-c', BWRAP_BUILD_SCRIPT,
-                ], { timeout: 15 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: process.env });
+                const name = `robowork-bwrap-${randomUUID()}`;
+                try {
+                    await this.toolCache.execFileImpl(this.toolCache.podmanCommand, [
+                        'run', '--rm', '--name', name, '--ipc', 'none', '--network', 'pasta', '--user', '0:0', '-v', `${directory}:/out`,
+                        STATIC_BWRAP.builder, 'sh', '-c', BWRAP_BUILD_SCRIPT,
+                    ], { timeout: 15 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: process.env, signal });
+                    if (signal.aborted) throw preparationCancelled();
+                } finally {
+                    if (signal.aborted) {
+                        try {
+                            await this.toolCache.execFileImpl(this.toolCache.podmanCommand,
+                                ['rm', '-f', '--ignore', name], { timeout: 30000, maxBuffer: 1024 * 1024, env: process.env });
+                        } catch {
+                            cleanupError = Object.assign(new Error('Could not stop the owned runtime builder'), { code: 'PREPARATION_CLEANUP_FAILED' });
+                            throw cleanupError;
+                        }
+                    }
+                }
             },
             validate: async (directory) => {
                 const binary = path.join(directory, 'bin', 'bwrap');
@@ -90,7 +153,11 @@ export class RuntimeBundle {
                 await this.toolCache.execFileImpl(binary, ['--version'], { timeout: 30000, maxBuffer: 64 * 1024 });
             },
             result: (directory) => ({ path: directory, bin: path.join(directory, 'bin', 'bwrap'), version: STATIC_BWRAP.version }),
-        })));
+        })).then(result => {
+            if (cleanupError) throw cleanupError;
+            if (signal.aborted) throw preparationCancelled();
+            return result;
+        }, error => { throw cleanupError || error; });
     }
 
     // ALA from the workspace checkout when another agent can see it there, otherwise a cached copy.

@@ -4,6 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
@@ -262,49 +263,81 @@ export class GuiManager {
             const locale = upstream ? lease.locale : null;
             const proxyKey = upstream ? `${upstream.id}@${upstream.host}:${upstream.port}` : '';
             const localeKey = locale ? `${locale.timezone}|${locale.locale}` : '';
-            const existing = this.sessions.get(robotId);
+            let existing = this.sessions.get(robotId);
+            if (existing?.state === 'failed') { this.sessions.delete(robotId); existing = null; }
             if (existing) {
                 if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey && existing.proxyKey === proxyKey && existing.localeKey === localeKey) return this._result(existing);
                 if (!allowReplace) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
                 if (this.hasActiveRun(robotId)) throw new Error('stop the robot run before replacing its container');
+                existing.abort?.abort();
+                await existing.preparing?.catch(() => {});
                 await this._remove(existing);
             }
             // Reserve before awaiting preparation, so parallel robots cannot exceed the limit.
-            if (this.sessions.size >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
-            const session = { robotId, mode, cwd, codingAgentsKey, proxyKey, localeKey, state: 'starting', relay: null, containerName: null };
+            if ([...this.sessions.values()].filter(value => value.state !== 'failed').length >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
+            const session = { robotId, mode, cwd, codingAgentsKey, proxyKey, localeKey, state: 'starting', relay: null, containerName: null, abort: new AbortController() };
             this.sessions.set(robotId, session);
-            try {
-                await this.prepareRobot(robotId);
-                const [tools, shellTools] = await Promise.all([this.toolCache.prepareMode(mode), this.toolCache.prepareShellTools()]);
-                await this.homeOps(robotId, 'shell', { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
-                if (mode === 'desktop') await this.homeOps(robotId, 'desktop-launchers', {});
-                const policyFile = upstream ? await writeChromiumProxyPolicy(this.proxyPolicyDir) : null;
-                const firewallFile = upstream && mode === 'browser' ? await writeContainerFirewallRules(this.proxyPolicyDir) : null;
-                session.relay = upstream ? this.createRelay(upstream) : null;
-                const proxy = session.relay ? { relayPort: await session.relay.listen(), policyFile } : null;
-                const maskEnv = await fs.lstat(path.join(this.workspaceRoot, '.env')).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
-                const plan = buildRobotRunArgs({ robot: { ...robot, id: robotId }, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images,
-                    timezone: locale?.timezone || this.timezone, locale, cwd, toolsPath: tools.path, shellTools, proxy, workspaceRoot: this.workspaceRoot, maskEnv });
-                Object.assign(session, { containerName: plan.containerName, sessionUrl: plan.subfolder });
-                await this._podman(plan.args, 10 * 60 * 1000);
-                if (plan.firewalled) await this._startFirewalled(plan.containerName, firewallFile);
-                session.sessionPort = mappedPort((await this._podman(['port', plan.containerName, '3000/tcp'])).stdout);
-                session.mcpPort = mappedPort((await this._podman(['port', plan.containerName, '8100/tcp'])).stdout);
-                await this.waitForSession(session);
-                session.state = 'running';
-                return this._result(session);
-            } catch (error) {
-                await this._remove(session);
-                throw error;
-            }
+            session.preparing = this._prepareSession(session, { robot, codingAgents, mode, cwd, upstream, locale });
+            void session.preparing.catch(() => {});
+            return this._result(session);
         });
     }
 
-    async _startFirewalled(containerName, rulesFile) {
+    async ensureReady(input, { signal } = {}) {
+        await this.ensure(input);
+        const session = this.sessions.get(input.robotId);
+        await waitForPreparation(session.preparing, signal);
+        if (session.state !== 'running') throw session.error || new Error('GUI preparation failed');
+        return this._result(session);
+    }
+
+    async _prepareSession(session, { robot, codingAgents, mode, cwd, upstream, locale }) {
+        const { robotId } = session;
+        const signal = session.abort.signal;
+        const check = () => { if (signal.aborted) throw preparationCancelled(); };
+        const wait = operation => waitForPreparation(operation, signal);
+        try {
+            await this.prepareRobot(robotId); check();
+            const [tools, shellTools] = await wait(Promise.all([this.toolCache.prepareMode(mode), this.toolCache.prepareShellTools()]));
+            check();
+            await this.homeOps(robotId, 'shell', { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
+            if (mode === 'desktop') await this.homeOps(robotId, 'desktop-launchers', {});
+            check();
+            const policyFile = upstream ? await writeChromiumProxyPolicy(this.proxyPolicyDir) : null;
+            const firewallFile = upstream && mode === 'browser' ? await writeContainerFirewallRules(this.proxyPolicyDir) : null;
+            session.relay = upstream ? this.createRelay(upstream) : null;
+            const proxy = session.relay ? { relayPort: await session.relay.listen(), policyFile } : null;
+            const maskEnv = await fs.lstat(path.join(this.workspaceRoot, '.env')).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
+            const plan = buildRobotRunArgs({ robot: { ...robot, id: robotId }, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images,
+                timezone: locale?.timezone || this.timezone, locale, cwd, toolsPath: tools.path, shellTools, proxy, workspaceRoot: this.workspaceRoot, maskEnv });
+            Object.assign(session, { containerName: plan.containerName, sessionUrl: plan.subfolder });
+            check();
+            await this.execFileImpl(this.podmanCommand, plan.args, { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: process.env, signal });
+            check();
+            if (plan.firewalled) await this._startFirewalled(plan.containerName, firewallFile, signal);
+            session.sessionPort = mappedPort((await this._podman(['port', plan.containerName, '3000/tcp'])).stdout);
+            session.mcpPort = mappedPort((await this._podman(['port', plan.containerName, '8100/tcp'])).stdout);
+            await wait(this.waitForSession(session));
+            check();
+            session.state = 'running';
+            return this._result(session);
+        } catch (error) {
+            try { await this._remove(session); }
+            finally {
+                session.state = 'failed'; session.error = error;
+                this.sessions.set(robotId, session);
+            }
+            throw error;
+        }
+    }
+
+    async _startFirewalled(containerName, rulesFile, signal) {
+        signal?.throwIfAborted();
         await this._podman(['init', containerName]);
         const namespace = (await this._podman(['inspect', '--format', '{{.NetworkSettings.SandboxKey}}', containerName])).stdout.trim();
         if (!path.isAbsolute(namespace)) throw new Error('could not resolve the container network namespace');
         await this.execFileImpl(this.nsenterCommand, [`--net=${namespace}`, this.nftCommand, '-f', rulesFile], { timeout: 30000, maxBuffer: 1024 * 1024, env: process.env });
+        signal?.throwIfAborted();
         await this._podman(['start', containerName]);
     }
 
@@ -324,6 +357,8 @@ export class GuiManager {
             if (!session) return { state: 'stopped' };
             if (mode && mode !== session.mode) throw new Error(`robot slot is occupied by its ${session.mode} container`);
             if (this.hasActiveRun(robotId)) throw new Error('stop the robot run before its container');
+            session.abort?.abort();
+            await session.preparing?.catch(() => {});
             await this._remove(session);
             return { state: 'stopped' };
         });
@@ -340,6 +375,8 @@ export class GuiManager {
     async shutdown() {
         this.shuttingDown = true;
         await Promise.allSettled([...this.pending.values()]);
+        for (const session of this.sessions.values()) session.abort?.abort();
+        await Promise.allSettled([...this.sessions.values()].map(session => session.preparing));
         const results = await Promise.allSettled([...this.sessions.values()].map(session => this._remove(session)));
         if (results.some(result => result.status === 'rejected')) throw new Error('GUI cleanup failed');
     }

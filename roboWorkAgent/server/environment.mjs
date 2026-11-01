@@ -55,9 +55,9 @@ export class EnvironmentManager {
                 return true;
             } catch { return false; }
         });
-        this.ensureImage = ensureImage || (async image => {
+        this.ensureImage = ensureImage || (async (image, { signal } = {}) => {
             if (!await this.imageExists(image)) {
-                await this.execFileImpl(this.podmanCommand, ['pull', image], { maxBuffer: 1024 * 1024 });
+                await this.execFileImpl(this.podmanCommand, ['pull', image], { maxBuffer: 1024 * 1024, signal });
             }
             const result = await this.execFileImpl(this.podmanCommand, ['image', 'inspect', '--format', '{{json .Config.Env}}', image], { timeout: 15000 });
             const variables = JSON.parse(result.stdout || '[]') || [];
@@ -116,10 +116,11 @@ export class EnvironmentManager {
     }
 
     // Only an actual selected step prepares an image. Discovery and profile resolution stay read-only.
-    async prepare(ref) {
+    async prepare(ref, { signal } = {}) {
         const entry = await this.require(ref, { retry: true });
         let imageInfo;
-        try { imageInfo = await this.ensureImage(entry.image) || {}; } catch {
+        try { imageInfo = await this.ensureImage(entry.image, { signal }) || {}; } catch (error) {
+            if (signal?.aborted) throw error;
             this.pullFailures.set(entry.image, 'image cannot be pulled');
             this.cached = null;
             throw failure('ENVIRONMENT_UNAVAILABLE', 'Agent environment unavailable: image cannot be pulled');
@@ -130,9 +131,10 @@ export class EnvironmentManager {
     }
 
     async buildLaunch({ environment, runId, robotId, home, workspaceRoot, cwd, toolCache, ala, bwrap,
-        channels = [], soul, folders = [], args = [], env = {}, tty = false }) {
+        channels = [], soul, folders = [], args = [], env = {}, tty = false, signal }) {
         if (!ID.test(robotId) || typeof runId !== 'string' || !runId) throw failure('ENVIRONMENT_INVALID', 'Invalid environment run identity', 400);
-        const entry = await this.prepare(environment);
+        const entry = await this.prepare(environment, { signal });
+        signal?.throwIfAborted();
         const workspace = await fs.realpath(absolute(workspaceRoot));
         const directory = await fs.realpath(absolute(cwd));
         if (!within(workspace, directory) || ['.data', '.ploinky'].some(name => within(path.join(workspace, name), directory))) {

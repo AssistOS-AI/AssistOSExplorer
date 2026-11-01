@@ -40,6 +40,10 @@ const server = createRoboWorkServer({ robots, runs, environment, gui, terminal, 
 server.listen(Number(process.env.ROBOWORK_SERVICE_PORT || 3001), process.env.ROBOWORK_SERVICE_HOST || '0.0.0.0', () => {
     console.log('RoboWork service ready');
     // Downloads must not delay service readiness; requests share pending cache preparations.
+    console.log('[runtime-bundle] startup preparation starting');
+    void runtimeBundle.warmup().then(() => console.log('[runtime-bundle] startup preparation ready'), error => {
+        console.error(`[runtime-bundle] startup preparation failed; will retry on demand: ${error.code || 'BUILD_FAILED'}`);
+    });
     void toolCache.warmup().catch(error => {
         console.error(`[tool-cache] startup preparation failed: ${error.message}`);
     });
@@ -48,7 +52,7 @@ let closing;
 async function close() {
     if (closing) return closing;
     closing = (async () => {
-        server.close(); await runs.close(); await gui.shutdown(); await soulGateway.close(); server.closeAllConnections();
+        server.close(); await runs.close(); await gui.shutdown(); await runtimeBundle.close(); await soulGateway.close(); server.closeAllConnections();
     })();
     return closing;
 }
