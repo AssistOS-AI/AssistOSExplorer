@@ -9,6 +9,10 @@ RoboFlow runs directed graphs of tasks inside RoboTeam. Administrators describe 
 
 ## Core Content
 
+### Resident phase execution
+
+RoboTeam keeps workflow graphs, queues, schedules and phase state. RoboWork runs each phase's ALA process. On RoboTeam restart, runtime reattachment precedes workflow reconciliation; a phase with a matching live run remains running. Pending human-input and task-failure callbacks reappear through `run_read`. Output replay does not duplicate phase progress; final unwritten phase-log chunks may be absent. RoboWork restart interrupts runs and RoboTeam exposes paused work for Resume. A selected Environment is a fresh container from the chosen agent's image. Its live target's environment, installed-after-start programs and localhost are unavailable. Workflows do not accept a target robot, but robot-written prompts can indirectly influence another robot.
+
 ### Workflow default objectives
 
 Each custom workflow exposes `defaultObjective`, limited to 32768 characters. Both generation entrypoints capture the caller's original generation description as the draft's default objective, independently of the model's shorter graph description. Save persists that value with the definition; generation itself remains draft-only. Manual definitions and legacy records without a captured objective derive one from their nonempty description, or from the names and prompts of ordinary tasks when no description exists. Managed coordinator instructions are excluded. Oversized derived instructions are not truncated; such a workflow requires an explicit objective. Legacy reads expose the derived value without writing or migrating the stored record. Standard development and Code Development are generic templates whose prompts require a concrete caller request; their default objective is empty, and launching them without one fails validation rather than inventing work.

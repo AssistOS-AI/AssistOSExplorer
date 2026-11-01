@@ -1,0 +1,32 @@
+---
+title: DS002-execution-boundary
+summary: Specifies storage, caller, filesystem, network and recovery boundaries.
+---
+
+## Introduction
+
+RoboWork is a resident global Ploinky agent on the existing roboteam-agent runtime image. RoboTeam calls its internal synchronous MCP tools.
+
+## Core Content
+
+Every tool requires an AgentServer-verified invocation naming exactly `agent:AchillesIDE/roboTeamAgent`, acting for itself with no delegated user. An `internal` tag alone does not establish this authority. Tools call the resident loopback service with a per-launch capability. Users cannot invoke these tools directly.
+
+RoboTeam declares the waiting dependency `roboWorkAgent global`. Explorer keeps `roboTeamAgent global no-wait` and does not declare RoboWork directly. RoboTeam startup waits for RoboWork readiness and tolerates only a short route-activation lag. An unavailable RoboWork returns a clear retryable error. Workflow interruption reconciliation waits for the first successful `run_list` answer. Explorer startup ordering and unchanged RoboWork container identity across RoboTeam restart require deployment evidence.
+
+The persistent bind `.data/.private/roboWorkAgent` becomes `/data`. Ploinky masks `.data/.private` from other agents and from RoboWork's workspace view. Homes are `robots/<id>/home`; run metadata, logs and callback sockets are service-owned siblings under `runs/<runId>`. Tool generations, image storage, proxy state and model-catalog cache stay service-owned. Empty terminal stubs under `.data/roboWorkAgent/terminal` carry no secrets. No migration from old robot homes is provided.
+
+Robot processes see their home at `/home/<id>` with matching HOME and USER. Browser and Desktop mount the same folder at `/config` and `/home/<id>`. Their default cwd and Desktop shell cwd are the home. Project turns keep their admitted project cwd. Cwd under workspace `.data` or `.ploinky` is refused. Cwd and folder grants are realpath-checked and refuse `/data`, private storage, its descendants and ancestors.
+
+ALA runs under a private pasta network with gateway mapping disabled and a mount namespace where `/data` includes only the current robot, current run and read-only tool cache. The coding agent retains one Bubblewrap sandbox with private procfs and dropped capabilities. Service helpers use a separate confined helper with only the selected home and no network. Workspace `.data`, `.ploinky`, existing `.env` and project `.roboteam` are masked after writable grants. Skill sources use read-only aliases. Callback channels expose only the current run. No Ploinky environment copy or SDK credential enters robot code. The Soul Gateway socket lives outside the writable home and is mounted at `/workspace/roboteam-soul`.
+
+Only the run's own GUI MCP port is forwarded. Explicit MCP URLs on RoboTeam or RoboWork loopback, including `http://127.0.0.1:7000/mcp`, are unreachable; non-loopback services remain usable over the private network. A robot terminal and its task have different localhost networks. Browser session HTTP and WebSocket traffic uses the authenticated route `/base-agent-additional-server/roboWorkAgent/3001/api/robots/<id>/session/`. Box bindings are `17000:7000` and `13001:3001`; the routed container port stays 3001.
+
+`run_start` is idempotent on run ID. `run_read` returns sequence-numbered stdout/stderr and unanswered callbacks, holds at most 100 ms and caps each response at 1 MiB. Clients poll at 100 to 250 ms while active and back off to about two seconds while idle. Sustained fairness requires the live eight-run acceptance check. A 64 MiB run log stops the run with an error. At service startup, ended unreleased runs older than seven days are removed; no periodic retention sweep is implied.
+
+RoboTeam restart leaves RoboWork runs and GUI containers alive. Reattachment uses authoritative `run_list`, matches robot/session/turn identity and replays output from sequence zero with replayed progress marked. Robot-writable project records never authorize a run. RoboWork restart marks live runs interrupted; Resume continues through RoboTeam. An asynchronous RoboTeam MCP queue caller can fail across restart even while its resident run continues. Replayed phase progress is not duplicated; the final unwritten phase-log tail may be absent.
+
+An Environment is a new short-lived container from an enabled global agent's declared image, never the live target. It inherits neither target credentials nor programs installed after target startup nor target localhost. Node is required for ALA. Discovery excludes RoboTeam, RoboWork and private-data agents; persistentStorage alone is not private. Listing checks image presence and cached failures without pulling all images. Only a chosen step prepares its image, without a fixed 120-second cap. A cached pull failure stays visible and an explicit selection retries it.
+
+Administrator robot terminals use RoboWork's profile source and only its verified writable discovery row. The second-prompt launcher enters the sandbox after Ploinky identity capture and exits the terminal when the sandbox exits. Plain terminals in every agent retain their ordinary behavior. An administrator can access all homes through a plain RoboWork terminal. A robot can indirectly influence another robot through workflow prompts; workflows do not accept a target robot. These accepted limits do not grant direct sibling-home or credential access.
+
+Proxy assignments and release retain RoboTeam's administrator HTTP routes. RoboWork owns leases, relays and firewall setup. Releasing an active GUI robot is refused; orphan assignments are released. The tools add no robot credentials, ports or mounts.
