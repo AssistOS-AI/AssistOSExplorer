@@ -39,6 +39,10 @@ const server = createRoboWorkServer({ robots, runs, environment, gui, terminal, 
     proxyHttp: proxySessionHttp, proxyWebSocket: proxySessionWebSocket });
 server.listen(Number(process.env.ROBOWORK_SERVICE_PORT || 3001), process.env.ROBOWORK_SERVICE_HOST || '0.0.0.0', () => {
     console.log('RoboWork service ready');
+    // Downloads must not delay service readiness; requests share pending cache preparations.
+    void toolCache.warmup().catch(error => {
+        console.error(`[tool-cache] startup preparation failed: ${error.message}`);
+    });
 });
 let closing;
 async function close() {
