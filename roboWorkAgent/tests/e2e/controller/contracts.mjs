@@ -5,6 +5,13 @@ import path from 'node:path';
 export const SENTINEL = 'ROBOWORK_CONTROLLER_PROBE_V1';
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
 
+function imageDigest(value) {
+    assert.equal(typeof value, 'string', 'Box image must be a complete immutable SHA-256 identity.');
+    const match = /^(?:sha256:)?([a-f0-9]{64})$/u.exec(value);
+    assert.ok(match && match[0] === value, 'Box image must be a complete immutable SHA-256 identity.');
+    return match[1];
+}
+
 export function validateConfig(config) {
     const fields = (value, allowed) => {
         assert.ok(value && typeof value === 'object' && !Array.isArray(value));
@@ -19,7 +26,7 @@ export function validateConfig(config) {
     assert.match(config.ploinkyRevision || '', /^[a-f0-9]{40}$/u);
     for (const id of [config.box?.id, config.rt, config.rw]) assert.match(id || '', /^[a-f0-9]{64}$/u);
     assert.equal(new Set([config.box.id, config.rt, config.rw]).size, 3);
-    assert.match(config.box.image || '', /^sha256:[a-f0-9]{64}$/u);
+    assert.equal(config.box.image, `sha256:${imageDigest(config.box.image)}`);
     assert.ok(config.box.startedAt && !Number.isNaN(Date.parse(config.box.startedAt)));
     assert.ok(['podman', 'docker'].includes(config.engine));
     assert.ok(Array.isArray(config.sources) && config.sources.length === 3);
@@ -44,7 +51,7 @@ export function validateConfig(config) {
 
 export function assertBox(config, inspection) {
     assert.equal(inspection?.Id || inspection?.ID, config.box.id, 'Wrong Box ID.');
-    assert.equal(inspection.Image, config.box.image, 'Wrong Box image.');
+    assert.equal(imageDigest(inspection.Image), imageDigest(config.box.image), 'Wrong Box image.');
     assert.equal(inspection.State?.StartedAt, config.box.startedAt, 'Wrong Box generation.');
     assert.equal(inspection.State?.Running, true, 'Box is not running.');
     assert.ok(inspection.Mounts?.some(mount => mount.Type === 'bind' && mount.Source === config.fixture

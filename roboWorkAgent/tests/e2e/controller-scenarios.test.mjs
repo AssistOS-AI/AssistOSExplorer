@@ -47,6 +47,28 @@ test('wrong fixture, image, exact container and generation cannot satisfy Box pr
     }
 });
 
+test('Box image proof accepts the same complete raw or prefixed immutable digest', () => {
+    const c = config();
+    const inspection = { Id: c.box.id, State: { Running: true, StartedAt: c.box.startedAt },
+        Mounts: [{ Type: 'bind', Source: c.fixture, Destination: c.workspace }] };
+    for (const Image of [hash, `sha256:${hash}`]) assertBox(c, { ...inspection, Image });
+});
+
+test('Box image proof rejects wrong digests, malformed encodings and a different immutable container', () => {
+    const c = config();
+    const inspection = { Id: c.box.id, State: { Running: true, StartedAt: c.box.startedAt },
+        Mounts: [{ Type: 'bind', Source: c.fixture, Destination: c.workspace }] };
+    for (const Image of ['d'.repeat(64), `sha256:${'d'.repeat(64)}`, hash.slice(1), `sha256:${hash.slice(1)}`,
+        hash.toUpperCase(), `sha256:${hash.toUpperCase()}`, `${hash}\n`, `sha256:${hash}\n`, ` ${hash}`,
+        `sha512:${hash}`, `sha256:sha256:${hash}`, '', null, 123]) {
+        assert.throws(() => assertBox(c, { ...inspection, Image }));
+    }
+    assert.throws(() => assertBox(c, { ...inspection, Image: hash, Id: 'd'.repeat(64) }));
+    for (const image of [hash, `sha256:${hash}\n`, `sha256:${hash.toUpperCase()}`]) {
+        assert.throws(() => validateConfig({ ...c, box: { ...c.box, image } }));
+    }
+});
+
 test('orphan, nonexistent, foreign and ambiguous registry IDs fail', () => {
     const id = config().rt;
     const row = { type: 'agent', agentName: 'roboTeamAgent', repoName: 'AchillesIDE', containerId: id };
