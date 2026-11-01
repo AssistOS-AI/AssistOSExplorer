@@ -9,7 +9,7 @@ import test from 'node:test';
 import { RobotStore } from '../server/robot-store.mjs';
 import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
-import { ToolCache } from '../server/tool-cache.mjs';
+import { ToolCache } from '../../roboWorkAgent/server/tool-cache.mjs';
 import { robotCodingAgents } from '../server/coding-agents.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 import { alaTranscript, alaSessionsRoot } from '../copilot/src/lib/execution/alaTranscript.mjs';

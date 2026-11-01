@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createCodingAgentStatus } from '../server/coding-agent-status.mjs';
+import { createCodingAgentStatus } from '../../roboWorkAgent/server/coding-agent-status.mjs';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 

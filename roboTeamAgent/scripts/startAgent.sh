@@ -1,9 +1,6 @@
 #!/bin/sh
 set -eu
 
-# Re-establish disposable storage after a container restart, before Podman use.
-roboteam-podman-init
-
 # Required source mounts must be usable before either readiness surface opens.
 required_skills_check="${ROBOTEAM_REQUIRED_SKILLS_CHECK:-/code/scripts/check-required-skills.mjs}"
 node "$required_skills_check"

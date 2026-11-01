@@ -8,7 +8,6 @@ import { pathToFileURL } from 'node:url';
 
 import { resolveAlaCommand } from '../server/ala-command.mjs';
 import { conversationSummaries } from '../server/impact-summaries.mjs';
-import { LEGACY_STORAGE_MARKER, removeLegacyStorage } from '../server/legacy-storage-cleanup.mjs';
 import { registerProject } from '../server/project-storage.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 
@@ -62,29 +61,4 @@ test('human reports are read from the assistant output and final answers ALA rec
     assert.deepEqual(result.summaries.map((entry) => entry.text), ['Step one done.', 'All done.']);
     assert.equal(result.summaries[0].messageId, turn.assistantMessageId);
     assert.equal(result.active, false);
-});
-
-test('legacy conversation storage is removed once and never followed through links', async t => {
-    const { root, workspaceRoot, project, dataDir } = await workspace(t);
-    registerProject({ dataDir, workspaceRoot }, project);
-    const outside = path.join(root, 'outside');
-    await fs.mkdir(path.join(outside, 'keep'), { recursive: true });
-    await fs.mkdir(path.join(project, '.achilles-cli', 'sessions'), { recursive: true });
-    await fs.writeFile(path.join(project, '.achilles-cli', 'sessions', 'old.json'), '{}');
-    await fs.symlink(outside, path.join(project, '.ala-pi-sessions'));
-    const robotSessions = path.join(dataDir, 'robots', 'default-abc123', 'home', '.ala', 'sessions');
-    await fs.mkdir(robotSessions, { recursive: true });
-    await fs.writeFile(path.join(dataDir, 'robots', 'default-abc123', 'home', '.ala', 'config.json'), '{}');
-
-    const removed = await removeLegacyStorage({ dataDir, workspaceRoot });
-    assert.deepEqual(removed.sort(), [path.join(project, '.achilles-cli'), robotSessions].sort());
-    await assert.rejects(fs.stat(path.join(project, '.achilles-cli')), { code: 'ENOENT' });
-    await assert.rejects(fs.stat(robotSessions), { code: 'ENOENT' });
-    await fs.stat(path.join(dataDir, 'robots', 'default-abc123', 'home', '.ala', 'config.json'));
-    await fs.stat(path.join(outside, 'keep'));
-    await fs.stat(path.join(dataDir, LEGACY_STORAGE_MARKER));
-
-    await fs.mkdir(path.join(project, '.achilles-cli'));
-    assert.deepEqual(await removeLegacyStorage({ dataDir, workspaceRoot }), []);
-    await fs.stat(path.join(project, '.achilles-cli'));
 });

@@ -3,8 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { ensureAgentConfig, DEFAULT_OPENCODE_MODEL } from '../server/agent-model-config.mjs';
-import { prepareRobotShell } from '../server/robot-shell.mjs';
+import { ensureAgentConfig, DEFAULT_OPENCODE_MODEL } from '../../roboWorkAgent/server/agent-model-config.mjs';
+import { prepareRobotShell } from '../../roboWorkAgent/server/robot-shell.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 
 async function home(t) {

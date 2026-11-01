@@ -5,11 +5,11 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { prepareRobotShell } from '../server/robot-shell.mjs';
-import { openCodeGatewayModels } from '../server/soul-gateway-models.mjs';
-import { createSoulGatewayOpenCode } from '../server/soul-gateway-opencode.mjs';
-import { soulGatewayConnection } from '../server/soul-gateway-connection.mjs';
-import { createSoulGatewayService } from '../server/soul-gateway-service.mjs';
+import { prepareRobotShell } from '../../roboWorkAgent/server/robot-shell.mjs';
+import { openCodeGatewayModels } from '../../roboWorkAgent/server/soul-gateway-models.mjs';
+import { createSoulGatewayOpenCode } from '../../roboWorkAgent/server/soul-gateway-opencode.mjs';
+import { soulGatewayConnection } from '../../roboWorkAgent/server/soul-gateway-connection.mjs';
+import { createSoulGatewayService } from '../../roboWorkAgent/server/soul-gateway-service.mjs';
 
 const listing = () => ({ data: [
     { id: 'vendor/model-a', _context: { window: 128000, max_output_tokens: 8192 },
