@@ -22,18 +22,19 @@ async function fixture(t) {
     await fs.writeFile(path.join(paths.workspaceRoot, '.env'), 'test fixture only');
     await fs.writeFile(path.join(paths.dataDir, 'robots', 'robot-a', 'label'), '{}');
     const stub = await ensureTerminalStub(paths, 'robot-a');
-    const calls = { tools: 0, runtime: 0, home: [], pulls: 0 };
+    const calls = { tools: 0, runtime: 0, ala: 0, home: [], pulls: 0 };
     const robot = { id: 'robot-a', name: 'Robot A', codingAgents: ['opencode'] };
     const environment = { list: async () => [{ ref: 'repo/agent', key: 'YWdlbnQ', name: 'Agent', available: true, reason: '' }],
         require: async ref => ({ ref, image: 'image:fixture' }) };
     const toolCache = { root: path.join(paths.dataDir, 'tool-cache'), prepareShellTools: async () => {
         calls.tools++; return { binPath: path.join(paths.dataDir, 'tool-cache/shell-selections/shell/bin') };
     } };
-    const runtimeBundle = { prepare: async () => { calls.runtime++; return { ala: { entry: '/opt/ala/bin/ala.mjs' }, bwrap: { bin: '/opt/bwrap' } }; } };
+    const runtimeBundle = { prepare: async () => { calls.runtime++; return { ala: { entry: '/opt/ala/bin/ala.mjs' }, bwrap: { bin: '/opt/bwrap' } }; },
+        prepareAla: async () => { calls.ala++; return { entry: '/opt/ala/bin/ala.mjs' }; } };
     const api = createTerminalProfiles({ paths, toolCache, runtimeBundle, environment,
         robots: { require: async id => { if (id !== robot.id) throw new Error('Unknown robot'); return robot; } },
         homeOperation: async (...args) => calls.home.push(args) });
-    return { root, paths, stub, calls, api, environment };
+    return { root, paths, stub, calls, api, environment, runtimeBundle };
 }
 
 test('catalog and resolve are readonly, even before first preparation; compound environment identity is required', async t => {
@@ -47,7 +48,7 @@ test('catalog and resolve are readonly, even before first preparation; compound 
     for (const value of ['robot-a', 'robot-a.unknown', '../bad.default', 'robot-b.default', '', null, {}, 'robot-a.default.extra']) {
         assert.deepEqual(await f.api.resolve(value), { allowed: false });
     }
-    assert.deepEqual(f.calls, { tools: 0, runtime: 0, home: [], pulls: 0 });
+    assert.deepEqual(f.calls, { tools: 0, runtime: 0, ala: 0, home: [], pulls: 0 });
     assert.deepEqual(await fs.readdir(f.stub), []);
     await assert.rejects(fs.access(path.join(f.paths.dataDir, 'server-state')), { code: 'ENOENT' });
 });
@@ -57,7 +58,7 @@ test('prepare confines home writes, records only protected metadata and deduplic
     const answers = await Promise.all([f.api.prepare(PROFILE), f.api.prepare(PROFILE)]);
     assert.deepEqual(answers[0], { ok: true, id: PROFILE, label: 'Robot A', root: '.data/roboWorkAgent/terminal/robot-a' });
     assert.deepEqual(answers[0], answers[1]);
-    assert.equal(f.calls.tools, 1); assert.equal(f.calls.runtime, 1);
+    assert.equal(f.calls.tools, 1); assert.equal(f.calls.runtime, 0); assert.equal(f.calls.ala, 1);
     assert.equal(f.calls.home.length, 1); assert.deepEqual(f.calls.home[0].slice(0, 2), ['robot-a', 'shell']);
     assert.deepEqual(await fs.readdir(f.stub), []);
     const file = path.join(f.paths.dataDir, 'server-state/terminal', PROFILE + '.json');
@@ -72,6 +73,20 @@ test('prepare confines home writes, records only protected metadata and deduplic
     const saved = f.stub + '-saved';
     await fs.rename(f.stub, saved); await fs.mkdir(f.stub);
     await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub), { code: 'PROFILE_REFUSED' });
+});
+
+test('default terminal preparation never builds static Bubblewrap while selected Environments still require it', async t => {
+    const f = await fixture(t);
+    let staticCalls = 0;
+    f.runtimeBundle.prepare = async () => { staticCalls++; throw new Error('Static preparation unavailable'); };
+    await f.api.prepare(PROFILE);
+    const { descriptor } = await readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub);
+    assert.equal(descriptor.bwrap, '/usr/bin/bwrap');
+    assert.equal(descriptor.alaEntry, '/opt/ala/bin/ala.mjs');
+    assert.equal(f.calls.ala, 1); assert.equal(staticCalls, 0);
+    await assert.rejects(f.api.prepare('robot-a.YWdlbnQ'), /Static preparation unavailable/u);
+    assert.equal(staticCalls, 1);
+    await assert.rejects(fs.access(path.join(f.paths.dataDir, 'server-state', 'terminal', 'robot-a.YWdlbnQ.json')), { code: 'ENOENT' });
 });
 
 test('resolve and prepare refuse substituted stub paths and unexpected files', async t => {

@@ -79,7 +79,8 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         const operation = (async () => {
             const selected = await selection(profile);
             const tools = await toolCache.prepareShellTools();
-            const bundle = await runtimeBundle.prepare();
+            const bundle = selected.environment ? await runtimeBundle.prepare()
+                : { ala: await runtimeBundle.prepareAla(), bwrap: { bin: '/usr/bin/bwrap' } };
             await homeOperation(selected.id, 'shell', { codingAgents: selected.robot.codingAgents,
                 binPath: tools.binPath, cacheRoot: toolCache.root });
             await ensureTerminalStub(paths, selected.id);
@@ -87,7 +88,7 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
             const stat = await terminalDirectory(stub(selected.id), { empty: true });
             const descriptor = { profile, id: selected.id, environment: selected.environment,
                 workspaceRoot: paths.workspaceRoot, dataDir: paths.dataDir, binPath: tools.binPath,
-                cacheRoot: toolCache.root, alaEntry: bundle.ala.entry, bwrap: bundle.bwrap.bin,
+                cacheRoot: toolCache.root, alaEntry: bundle.ala.entry || path.join(bundle.ala.path, 'bin', 'ala.mjs'), bwrap: bundle.bwrap.bin,
                 stub: { path: stub(selected.id), dev: stat.dev, ino: stat.ino } };
             const temporary = path.join(stateRoot, '.' + randomUUID());
             await fs.writeFile(temporary, JSON.stringify(descriptor), { mode: 0o600, flag: 'wx' });

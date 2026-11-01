@@ -2,6 +2,23 @@
 set -eu
 
 # Re-establish disposable storage after a container restart, before Podman use.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/roboteam-podman-xdg}"
+node --input-type=module <<'RUNTIME_DIRECTORY'
+import fs from 'node:fs/promises';
+import { constants } from 'node:fs';
+import path from 'node:path';
+const directory = process.env.XDG_RUNTIME_DIR;
+if (!path.isAbsolute(directory) || path.normalize(directory) !== directory || directory === '/') {
+    throw new Error('Invalid Podman runtime directory');
+}
+await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+const handle = await fs.open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+try {
+    const stat = await handle.stat();
+    if (!stat.isDirectory() || stat.uid !== process.getuid()) throw new Error('Unsafe Podman runtime directory');
+    await handle.chmod(0o700);
+} finally { await handle.close(); }
+RUNTIME_DIRECTORY
 roboteam-podman-init
 
 # Fresh per launch, shared only by AgentServer callbacks and the HTTP service.
