@@ -9,6 +9,8 @@ export async function collectControllerProducer(initPid, record, options, io = n
     assert.match(record.producer.startStamp || '', /^[1-9][0-9]{0,19}$/u);
     assert.match(record.runId || '', /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u);
     assert.ok(['copilot', 'task'].includes(record.kind));
+    const attach = options.attach === true;
+    if (attach) assert.equal(record.kind, 'task', 'Only robot-task has the trusted attach-run command.');
     const script = `${record.kind === 'copilot' ? options.codeRoot : options.workflowCodeRoot || options.codeRoot}/server/${record.kind === 'copilot' ? 'robot-cli' : 'robot-task'}.mjs`;
     assert.ok(script.startsWith('/') && !script.includes('/../') && !script.includes('//'));
     assert.match(options.scriptSha256 || '', /^[a-f0-9]{64}$/u);
@@ -48,7 +50,13 @@ export async function collectControllerProducer(initPid, record, options, io = n
         try { row = identity(pid); }
         catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) continue; throw error; }
         if (row.pidNamespace !== init.pidNamespace) continue;
-        if (namespacePid(pid) === record.producer.pid && row.startToken === record.producer.startStamp) matches.push(row);
+        if (attach) {
+            const bytes = bounded(`/proc/${pid}/cmdline`);
+            assert.ok(!bytes.length || bytes.at(-1) === 0 && bytes.toString('utf8').isWellFormed());
+            const args = bytes.length ? bytes.toString('utf8').slice(0, -1).split('\0') : [];
+            const index = args.indexOf('--attach-run');
+            if (args[1] === script && index > 1 && args[index + 1] === record.runId) matches.push(row);
+        } else if (namespacePid(pid) === record.producer.pid && row.startToken === record.producer.startStamp) matches.push(row);
     }
     assert.equal(matches.length, 1, 'Missing, dead or ambiguous trusted RoboTeam producer.');
     const producer = matches[0]; assert.notEqual(producer.pid, initPid);
@@ -66,6 +74,7 @@ export async function collectControllerProducer(initPid, record, options, io = n
     if (record.kind === 'task') {
         assert.equal(value('--session-id'), record.sessionId);
         assert.equal(argv.filter(argument => argument === '--control-stdin').length, 1);
+        if (attach) assert.equal(value('--attach-run'), record.runId, 'Reattached task names another resident run.');
     }
     const chain = [producer], seen = new Set([producer.pid]); let cursor = producer;
     while (cursor.ppid !== initPid) {
@@ -91,10 +100,11 @@ export async function collectControllerProducer(initPid, record, options, io = n
         sha256 = createHash('sha256').update(source).digest('hex'); assert.equal(sha256, options.scriptSha256);
     } finally { fs.closeSync(sourceFd); }
     for (const row of [init, ...chain]) assert.deepEqual(identity(row.pid), row, 'Controller ancestry changed during observation.');
-    assert.equal(namespacePid(producer.pid), record.producer.pid);
+    if (!attach) assert.equal(namespacePid(producer.pid), record.producer.pid);
     assert.equal(fs.readlinkSync(`/proc/${producer.pid}/exe`), executable);
     assert.deepEqual(bounded(`/proc/${producer.pid}/cmdline`), bytes);
-    return { runId: record.runId, containerInit: init, producer: { ...producer, kind: record.kind === 'task' ? 'workflow' : 'copilot', script, sha256 },
+    return { runId: record.runId, ...(attach ? { attachRun: record.runId } : {}), containerInit: init,
+        producer: { ...producer, kind: record.kind === 'task' ? 'workflow' : 'copilot', script, sha256 },
         producerAncestry: chain };
 }
 

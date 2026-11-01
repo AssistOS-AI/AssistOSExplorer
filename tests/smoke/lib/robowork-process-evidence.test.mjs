@@ -90,6 +90,34 @@ test('workflow producer retains exact session and control-stdin requirements', a
     f.rows.get(40).argv[5] = 'foreign-session'; await assert.rejects(f.read());
 });
 
+test('replacement task proves attach-run in the current exact controller namespace without reviving the original producer', async () => {
+    const f = fixture(); f.record.kind = 'task'; f.options.attach = true;
+    f.rows.delete(40);
+    f.rows.get(60).argv = ['node', '/code/server/robot-task.mjs', '--cwd', f.record.cwd, '--session-id', 'session',
+        '--control-stdin', '--attach-run', f.record.runId];
+    const proof = await f.read();
+    assert.equal(proof.producer.pid, 60); assert.equal(proof.producer.startToken, '600');
+    assert.equal(proof.attachRun, f.record.runId); assert.deepEqual(f.record.producer, { pid: 7, startStamp: '400' });
+    f.options.attach = false; await assert.rejects(f.read(), /dead or ambiguous/u);
+});
+
+test('reattachment refuses a wrong run ID, wrong session, wrong current container and a dead replacement', async () => {
+    const prepare = () => {
+        const f = fixture(); f.record.kind = 'task'; f.options.attach = true; f.rows.delete(40);
+        f.rows.get(60).argv = ['node', '/code/server/robot-task.mjs', '--cwd', f.record.cwd, '--session-id', 'session',
+            '--control-stdin', '--attach-run', f.record.runId];
+        return f;
+    };
+    for (const mutate of [
+        f => { f.rows.get(60).argv[8] = 'another-run'; },
+        f => { f.rows.get(60).argv[5] = 'another-session'; },
+        f => { f.rows.get(60).namespace = 'pid:[222]'; },
+        f => { f.rows.delete(60); },
+        f => { f.rows.get(60).argv.push('--attach-run', f.record.runId); },
+    ]) { const f = prepare(); mutate(f); await assert.rejects(f.read()); }
+    await assert.rejects(prepare().read(80));
+});
+
 test('controller identity changing during source capture fails final settlement', async () => {
     const f = fixture(); f.hook = file => { if (file.endsWith('/root/code/server/robot-cli.mjs')) f.rows.get(40).start = '401'; };
     await assert.rejects(f.read(), /changed during observation/u);

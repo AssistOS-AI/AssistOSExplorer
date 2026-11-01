@@ -29,6 +29,7 @@ function fixture() {
     const context = { outer, team, work, record, identity, producer, inspections, calls: [], metadataReads: 0, beforeReturn: null };
     const selection = { kind: 'copilot', sessionId: 'session', turnId: 'turn', codeRoot: '/code',
         alaBinding: { root: '/ALA', command: '/ALA/bin/ala.mjs', hashes: { 'bin/ala.mjs': '8'.repeat(64) } }, residentBinding: binding };
+    context.selection = selection;
     const executeImpl = async (command, args, limits) => {
         context.calls.push({ command, args, limits }); assert.equal(command, 'podman');
         assert.equal(limits.timeout, 30000); assert.equal(limits.maxBuffer, 65536);
@@ -41,8 +42,21 @@ function fixture() {
         context.beforeReturn?.(value, args);
         return { stdout: JSON.stringify(value) };
     };
-    context.read = () => residentNativeProcessIdentity({ outerContainerId: outer, workspaceRoot: '/fixture', workspaceHash: workspaceHash('/fixture') },
-        { containerId: team }, native, 'project', selection, { executeImpl, inspect: (_outer, inner) => context.inspections.get(inner) });
+    context.read = (overrides = {}) => residentNativeProcessIdentity({ outerContainerId: outer, workspaceRoot: '/fixture', workspaceHash: workspaceHash('/fixture') },
+        { containerId: context.team }, native, 'project', { ...context.selection, ...overrides },
+        { executeImpl, inspect: (_outer, inner) => context.inspections.get(inner) });
+    context.task = () => {
+        record.kind = 'task'; identity.producer.kind = 'workflow'; producer.producer.kind = 'workflow';
+        producer.producer.script = '/code/server/robot-task.mjs'; selection.kind = 'workflow';
+        binding.controllerHashes['server/robot-task.mjs'] = controllerHash;
+    };
+    context.replace = () => {
+        const replacement = '7'.repeat(64), current = inspection(replacement, 50);
+        context.team = replacement; context.inspections.set(replacement, current);
+        context.selection = { ...selection, residentBinding: { ...binding, controller: processRuntimeFence(current) } };
+        context.producer = { ...producer, attachRun: record.runId, containerInit: id(50, 1, 333),
+            producer: { ...producer.producer, ...id(55, 50, 333) }, producerAncestry: [id(55, 50, 333)] };
+    };
     return context;
 }
 
@@ -82,4 +96,30 @@ test('a controller incarnation that dies or changes after its first proof cannot
     const f = fixture();
     f.beforeReturn = (_value, args) => { if (args.some(arg => arg.includes('collectNativeProcessSnapshot'))) f.producer.producer.startToken = 'reused'; };
     await assert.rejects(f.read(), /controller producer changed/u);
+});
+
+test('continuity retains initial authority and verifies a new attach producer with the same resident/native identity', async () => {
+    const f = fixture(); f.task(); const initial = await f.read();
+    assert.ok(Object.isFrozen(initial) && Object.isFrozen(initial.residentRecord));
+    f.replace();
+    const current = await f.read({ retainedProofs: [initial] });
+    assert.deepEqual(current.residentRecord, initial.residentRecord); assert.deepEqual(current.native, initial.native);
+    assert.equal(current.runId, initial.runId); assert.equal(current.controller.attachRun, initial.runId);
+    assert.equal(initial.controller.containerInit.pid, 30); assert.equal(current.controller.containerInit.pid, 50);
+    assert.deepEqual(current.residentRecord.producer, { pid: 7, startStamp: '350' });
+});
+
+test('continuity rejects a JSON prior proof, wrong attachment/current generation and changed native or trusted owner', async () => {
+    for (const mutate of [
+        (f, _prior, request) => { request.retainedProofs = [JSON.parse(JSON.stringify(request.retainedProofs[0]))]; },
+        f => { f.producer.attachRun = 'another-run'; },
+        (f, prior) => { f.selection.residentBinding.controller = prior.controllerRuntime; f.team = prior.controllerRuntime.id; },
+        (f, prior) => { f.producer.containerInit = prior.controller.containerInit; },
+        f => { f.identity.native.pid += 1; f.identity.ancestry[0].pid += 1; },
+        f => { f.record.ownerPrincipal = 'user:foreign'; },
+    ]) {
+        const f = fixture(); f.task(); const initial = await f.read(); f.replace();
+        const request = { retainedProofs: [initial] }; mutate(f, initial, request);
+        await assert.rejects(f.read(request));
+    }
 });

@@ -14,6 +14,17 @@ import { buildControllerProducerProgram } from './robowork-process-evidence.mjs'
 export const ROBOTEAM_BASE = '/base-agent-additional-server/roboTeamAgent/3001';
 export const LIVE_BASE = `${ROBOTEAM_BASE}/api/live-sessions`;
 export const ENDED = ['finished', 'failed', 'stopped', 'lost'];
+const retainedResidentProofs = new WeakSet();
+
+function sealResidentProof(proof) {
+    const freeze = value => {
+        if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
+        return value;
+    };
+    const retained = freeze(proof);
+    retainedResidentProofs.add(retained);
+    return retained;
+}
 const execute = promisify(execFile);
 const REFUSAL = /\[input error\]|\[error\]|unauthenticated|authentication (?:failed|required)|not logged in|please (?:log|sign) in|invalid.api.key|insufficient.quota|quota.exceeded|rate.limit|tier.exhausted|all models.*exhausted|provider.*(?:error|failure)|billing|credit balance|backend.*unavailable|Agent process exited repeatedly|bwrap:/i;
 
@@ -832,20 +843,35 @@ export async function residentNativeProcessIdentity(evidence, runtime, native, d
             contractFiles: binding.contractFiles, contractHashes: binding.codeHashes, robotId: native.robotId, cwd })]);
     const metadata = await read();
     assert.deepEqual(metadata.codeHashes, binding.codeHashes);
-    const { residentBinding: _binding, ...selected } = selection;
+    const retained = selection.retainedProofs || [];
+    assert.ok(Array.isArray(retained) && retained.length <= 512);
+    for (const proof of retained) assert.ok(retainedResidentProofs.has(proof), 'Continuity requires the original in-memory verified proof, never project or JSON authority.');
+    assert.equal(new Set(retained.map(proof => proof.runId)).size, retained.length);
+    const { residentBinding: _binding, retainedProofs: _retained, ...selected } = selection;
     const nativeSelection = { ...selected, residentRecords: metadata.records, serviceSha256: binding.codeHashes['server/main.mjs'] };
     const controllerProofs = new Map();
     const controllerCommands = new Map();
     for (const record of metadata.records) {
+        const prior = retained.find(proof => proof.runId === record.runId);
+        if (prior) {
+            assert.deepEqual(record, prior.residentRecord, 'Reattachment must use the same authoritative resident run and owner.');
+            assert.deepEqual(binding.execution, prior.executionRuntime, 'Reattachment changed RoboWork generation or mounts.');
+            assert.notEqual(binding.controller.id, prior.controllerRuntime.id, 'Reattachment must prove the replacement RoboTeam generation.');
+            assert.equal(record.kind, 'task');
+        }
         const relative = `server/${record.kind === 'task' ? 'robot-task' : 'robot-cli'}.mjs`;
         const command = ['exec', evidence.outerContainerId, '/usr/local/bin/node', '--input-type=module', '--eval',
             buildControllerProducerProgram(binding.controller.pid, record,
-                { codeRoot: selection.codeRoot, workflowCodeRoot: selection.workflowCodeRoot, scriptSha256: binding.controllerHashes[relative] })];
+                { codeRoot: selection.codeRoot, workflowCodeRoot: selection.workflowCodeRoot,
+                    scriptSha256: binding.controllerHashes[relative], ...(prior ? { attach: true } : {}) })];
         controllerCommands.set(record.runId, command);
         const proof = await run(command);
         assert.equal(proof.runId, record.runId);
         assert.equal(proof.containerInit.pid, binding.controller.pid);
-        assert.equal(proof.producer.startToken, record.producer.startStamp);
+        if (prior) {
+            assert.equal(proof.attachRun, record.runId, 'Replacement producer must name the exact resident run.');
+            assert.notDeepEqual(proof.containerInit, prior.controller.containerInit, 'Replacement controller process incarnation is unchanged.');
+        } else assert.equal(proof.producer.startToken, record.producer.startStamp);
         assert.equal(proof.producer.sha256, binding.controllerHashes[relative]);
         assert.equal(proof.producer.script, `${record.kind === 'task' ? selection.workflowCodeRoot || selection.codeRoot : selection.codeRoot}/${relative}`);
         assert.equal(proof.producer.kind, record.kind === 'task' ? 'workflow' : 'copilot');
@@ -871,8 +897,26 @@ export async function residentNativeProcessIdentity(evidence, runtime, native, d
         assert.deepEqual(await run(command), controllerProofs.get(runId), 'Exact controller producer changed before native proof settlement.');
     }
     fence();
-    if (selection.kind === 'census') return identity.map(row => ({ ...row, controller: controllerProofs.get(row.runId) }));
-    return { ...identity, controller: controllerProofs.get(identity.runId) };
+    const finish = row => {
+        const record = metadata.records.find(value => value.runId === row.runId);
+        const prior = retained.find(proof => proof.runId === row.runId);
+        if (prior) {
+            if (selection.kind === 'census') {
+                for (const key of ['pid', 'ppid', 'startToken', 'pidNamespace', 'cwd', 'sessionId', 'turnId', 'entrypoint', 'sha256']) {
+                    assert.deepEqual(row[key], prior.ala[key], 'The resident ALA process changed across controller restart.');
+                }
+                assert.deepEqual(row.launch, prior.launch);
+            } else {
+                for (const key of ['runId', 'containerInit', 'ala', 'launch', 'producer', 'producerAncestry', 'serviceAncestry', 'native', 'ancestry']) {
+                    assert.deepEqual(row[key], prior[key], 'The native process or source identity changed across controller restart.');
+                }
+            }
+        }
+        return sealResidentProof({ ...row, controller: controllerProofs.get(row.runId), residentRecord: record,
+            controllerRuntime: binding.controller, executionRuntime: binding.execution });
+    };
+    if (selection.kind === 'census') return identity.map(finish);
+    return finish(identity);
 }
 
 export function assertNativeProcessIdentity(identity, native, expectedContext) {
