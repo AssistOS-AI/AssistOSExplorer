@@ -328,9 +328,11 @@ export function createWorkerEngine({ workingDir, sessionStore, skillCatalog, set
             }
 
             const ready = await provisioner.ensureReady(await getRobot(), await grantFor(authority, { signal: controller.signal }));
-            const resume = Boolean(session.engine?.backend) && (session.messages || []).some((message) => message.role === 'assistant'
-                && message.status === 'completed' && message.context !== false);
-            const resumeBackend = resume ? session.engine.backend : null;
+            // Task continuations carry explicit intent even when the preceding turn was interrupted before a final answer.
+            // ALA validates that the native continuation exists; never turn a requested resume into a fresh native conversation.
+            const resume = execution.resumeSessionId === sessionId || (Boolean(session.engine?.backend) && (session.messages || []).some((message) => message.role === 'assistant'
+                && message.status === 'completed' && message.context !== false));
+            const resumeBackend = resume ? session.engine?.backend : null;
             const configured = ALA_BACKENDS.includes(ready.configuration?.backend) ? ready.configuration.backend : null;
             const requestedBackend = execution.backend || (!resumeBackend && (session.engine?.backend || session.modelOverride?.backend)) || null;
             const backend = resumeBackend || requestedBackend || configured || null;

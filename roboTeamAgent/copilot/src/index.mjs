@@ -86,7 +86,8 @@ export async function createCliRuntime(options, { webchat = false, reattachExist
             onTaskStarted: (task, origin) => attachTaskToSession(sessionStore, task, origin, { webchat }),
             livePublisher,
         }) : null;
-        const execution = { ...options.execution, robotId: robotContext?.robot.id };
+        const execution = { ...options.execution, resumeSessionId: options.resumeSession === true ? initialSession.sessionId : null,
+            robotId: robotContext?.robot.id };
         const webchatLogsBase = `${PUBLIC_BASE_PATH.replace(/\/+$/, '')}/webchat-logs`;
         const engine = createExecutionEngine({
             workerOptions: { workingDir, sessionStore, skillCatalog, settings, interactions, execution, webchatLogsBase, livePublisher,
