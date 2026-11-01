@@ -112,3 +112,93 @@ export function buildControllerProducerProgram(initPid, record, options) {
     return `(${collectControllerProducer.toString()})(${JSON.stringify(initPid)},${JSON.stringify(record)},${JSON.stringify(options)})\n`
         + '.then(value => process.stdout.write(JSON.stringify(value))).catch(() => { console.error("Invalid exact controller-producer evidence"); process.exitCode = 1; });\n';
 }
+
+// Inventory wrappers independently of resident metadata. These observations
+// block settlement; they never establish a native run or a user owner.
+export async function collectControllerProducerCensus(initPid, options, io = null) {
+    const assert = (await import('node:assert/strict')).default;
+    const fs = io || await import('node:fs');
+    assert.ok(Number.isSafeInteger(initPid) && initPid >= 1);
+    const root = options.workflowCodeRoot || options.codeRoot;
+    assert.ok(typeof root === 'string' && root.startsWith('/') && !root.endsWith('/')
+        && !root.split('/').slice(1).some(part => ['', '.', '..'].includes(part)));
+    assert.ok(typeof options.cwd === 'string' && options.cwd.startsWith('/') && options.cwd !== '/');
+    assert.match(options.scriptSha256 || '', /^[a-f0-9]{64}$/u);
+    const script = `${root}/server/robot-task.mjs`;
+    const bounded = file => {
+        const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+        try {
+            const buffer = Buffer.alloc(65537); let length = 0;
+            while (length < buffer.length) {
+                const count = fs.readSync(fd, buffer, length, buffer.length - length, null);
+                if (!count) break; length += count;
+            }
+            assert.ok(length <= 65536, 'Bounded controller census metadata exceeded.');
+            const bytes = buffer.subarray(0, length), text = bytes.toString('utf8');
+            assert.ok(text.isWellFormed() && Buffer.from(text).equals(bytes), 'Malformed controller census metadata.');
+            return text;
+        } finally { fs.closeSync(fd); }
+    };
+    const identity = pid => {
+        const text = bounded(`/proc/${pid}/stat`), fields = text.slice(text.lastIndexOf(')') + 1).trim().split(/\s+/u);
+        assert.equal(Number(text.slice(0, text.indexOf('(')).trim()), pid);
+        assert.ok(fields.length >= 20);
+        if (fields[0] === 'Z') throw Object.assign(Error('Process ended.'), { code: 'ESRCH' });
+        assert.match(fields[1], /^(?:0|[1-9][0-9]*)$/u); assert.match(fields[19], /^[1-9][0-9]{0,19}$/u);
+        const pidNamespace = fs.readlinkSync(`/proc/${pid}/ns/pid`); assert.match(pidNamespace, /^pid:\[[1-9][0-9]*\]$/u);
+        return { pid, ppid: Number(fields[1]), startToken: fields[19], pidNamespace };
+    };
+    const init = identity(initPid), rows = [], names = fs.readdirSync('/proc').filter(name => /^[1-9][0-9]*$/u.test(name));
+    assert.ok(names.length <= 8192);
+    for (const name of names) {
+        let row;
+        try { row = identity(Number(name)); }
+        catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) continue; throw error; }
+        if (row.pidNamespace !== init.pidNamespace) continue;
+        const text = bounded(`/proc/${row.pid}/cmdline`);
+        assert.ok(!text.length || text.endsWith('\0') && text.isWellFormed());
+        const args = text ? text.slice(0, -1).split('\0') : [];
+        const advertised = args.some(value => value === '--control-stdin' || value.startsWith('--control-stdin='));
+        if (args[1] !== script) {
+            assert.equal(advertised, false, 'Unknown controller control-stdin producer.');
+            continue;
+        }
+        assert.match(fs.readlinkSync(`/proc/${row.pid}/exe`), /(?:^|\/)(?:node|nodejs|bun)$/u);
+        assert.equal(args.some(value => value === '--turn-id' || value.startsWith('--turn-id=')), false);
+        const value = flag => {
+            assert.equal(args.filter(argument => argument === flag || argument.startsWith(flag + '=')).length, 1);
+            const offset = args.indexOf(flag); assert.ok(offset > 1);
+            if (flag === '--control-stdin') return;
+            assert.ok(args[offset + 1] && !args[offset + 1].startsWith('--') && args[offset + 1].length <= 4096
+                && !/[\u0000-\u001f\u007f]/u.test(args[offset + 1]));
+            return args[offset + 1];
+        };
+        value('--control-stdin');
+        const cwd = value('--cwd'), sessionId = value('--session-id');
+        assert.match(sessionId, /^[A-Za-z0-9_-]{1,128}$/u);
+        if (cwd !== options.cwd) continue;
+        const status = bounded(`/proc/${row.pid}/status`), matches = [...status.matchAll(/^NSpid:\s*([0-9]+(?:[\t ]+[0-9]+)*)\s*$/gmu)];
+        assert.equal(matches.length, 1);
+        const ids = matches[0][1].trim().split(/\s+/u).map(Number);
+        assert.ok(ids.length <= 32 && ids.every(value => Number.isSafeInteger(value) && value > 0));
+        // This temporary selector proves only the observed process and source.
+        // Its placeholder run ID is never returned or used for association.
+        const proof = await collectControllerProducer(initPid, { runId: 'observed-producer', kind: 'task', cwd, sessionId,
+            producer: { pid: ids.at(-1), startStamp: row.startToken } }, { ...options, codeRoot: root }, fs);
+        for (const key of ['pid', 'ppid', 'startToken', 'pidNamespace']) assert.equal(proof.producer[key], row[key]);
+        rows.push({ kind: 'producer-pending', ...row, script, cwd, sessionId });
+    }
+    assert.ok(rows.length <= 512);
+    assert.deepEqual(identity(initPid), init);
+    for (const row of rows) {
+        const current = identity(row.pid);
+        for (const key of ['pid', 'ppid', 'startToken', 'pidNamespace']) assert.equal(current[key], row[key]);
+    }
+    return rows.sort((first, second) => first.pid - second.pid);
+}
+
+export function buildControllerProducerCensusProgram(initPid, options) {
+    return `const collectControllerProducer = ${collectControllerProducer.toString()};\n`
+        + `(${collectControllerProducerCensus.toString()})(${JSON.stringify(initPid)},${JSON.stringify(options)})\n`
+        + '.then(value => process.stdout.write(JSON.stringify(value))).catch(() => { console.error("Invalid exact controller-producer census"); process.exitCode = 1; });\n';
+}

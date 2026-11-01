@@ -113,25 +113,28 @@ export async function readResidentRunRecords(options, { fsApi, codeRoot = '/code
         assert.equal(record.runId, entry.name);
         assert.match(record.robotId || '', /^[a-z0-9][a-z0-9-]{2,63}$/u);
         assert.ok(['starting', 'running', 'stopping', 'exited', 'interrupted'].includes(record.state));
-        if (record.robotId !== robotId || record.cwd !== cwd || !['running', 'stopping'].includes(record.state)) continue;
+        if (record.robotId !== robotId || record.cwd !== cwd || !['starting', 'running', 'stopping'].includes(record.state)) continue;
         assert.ok(['copilot', 'task'].includes(record.tag?.kind));
         for (const field of ['sessionId', 'turnId']) {
             assert.match(record.ala?.[field] || '', /^[A-Za-z0-9_-]{1,128}$/u);
             assert.equal(record.tag[field], record.ala[field], 'Trusted run tag and ALA identity disagree.');
         }
-        for (const key of ['pid', 'servicePid']) assert.ok(Number.isSafeInteger(record[key]) && record[key] > 0);
-        assert.match(record.pidStamp || '', /^[1-9][0-9]{0,19}$/u);
         assert.match(record.launchId || '', /^[a-f0-9-]{36}$/u);
         assert.ok(record.tag.ownerPrincipal === null || record.tag.ownerPrincipal === undefined
             || /^user:.{1,200}$/u.test(record.tag.ownerPrincipal));
         assert.ok(record.tag.producer && Object.keys(record.tag.producer).sort().join(',') === 'pid,startStamp'
             && Number.isSafeInteger(record.tag.producer.pid) && record.tag.producer.pid > 0
             && /^[1-9][0-9]{0,19}$/u.test(record.tag.producer.startStamp), 'Missing trusted controller producer incarnation.');
-        records.push({ runId: record.runId, robotId: record.robotId, cwd: record.cwd, state: record.state,
+        const projected = { runId: record.runId, robotId: record.robotId, cwd: record.cwd, state: record.state,
             kind: record.tag.kind, sessionId: record.ala.sessionId, turnId: record.ala.turnId,
-            ownerPrincipal: record.tag.ownerPrincipal || null, pid: record.pid, servicePid: record.servicePid,
-            pidStamp: record.pidStamp, launchId: record.launchId,
-            producer: { pid: record.tag.producer.pid, startStamp: record.tag.producer.startStamp } });
+            ownerPrincipal: record.tag.ownerPrincipal || null, launchId: record.launchId,
+            producer: { pid: record.tag.producer.pid, startStamp: record.tag.producer.startStamp } };
+        if (record.state !== 'starting') {
+            for (const key of ['pid', 'servicePid']) assert.ok(Number.isSafeInteger(record[key]) && record[key] > 0);
+            assert.match(record.pidStamp || '', /^[1-9][0-9]{0,19}$/u);
+            Object.assign(projected, { pid: record.pid, servicePid: record.servicePid, pidStamp: record.pidStamp });
+        }
+        records.push(projected);
     }
     for (const { name, stat } of directories) {
         assert.equal(fs.realpathSync(name), name);

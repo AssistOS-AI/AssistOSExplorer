@@ -25,9 +25,9 @@ function fixture() {
     const producer = { runId: record.runId, containerInit: id(1, 0, 222),
         producer: { ...controller, kind: 'copilot', script: '/code/server/robot-cli.mjs', sha256: controllerHash }, producerAncestry: [controller] };
     const binding = { owner: { containerId: work }, repository: '/fixture/AchillesIDE', contractFiles: ['server/main.mjs'], codeHashes,
-        controllerHashes: { 'server/robot-cli.mjs': controllerHash },
+        controllerHashes: { 'server/robot-cli.mjs': controllerHash, 'server/robot-task.mjs': controllerHash },
         controller: processRuntimeFence(inspections.get(team)), execution: processRuntimeFence(inspections.get(work)) };
-    const context = { outer, team, work, record, identity, producer, inspections, calls: [], metadataReads: 0, beforeReturn: null };
+    const context = { outer, team, work, record, identity, producer, inspections, calls: [], metadataReads: 0, beforeReturn: null, controllerCensus: [] };
     context.procProof = { init: { boxPid: 10, boxPpid: 1, startToken: '100', namespacePids: [10, 1], pidNamespace: 'pid:[111]' },
         processes: [{ boxPid: 200, boxPpid: 120, pid: 20, ppid: 12, startToken: '200', pidNamespace: 'pid:[150]' }] };
     const selection = { kind: 'copilot', sessionId: 'session', turnId: 'turn', codeRoot: '/code',
@@ -39,7 +39,10 @@ function fixture() {
         let value;
         if (args.some(arg => arg.includes('readResidentRunRecords'))) {
             assert.equal(args[4], work, 'Private metadata may be read only inside the execution owner.');
-            context.metadataReads += 1; value = { codeHashes, records: [context.record] };
+            context.metadataReads += 1; value = { codeHashes, records: context.records || [context.record] };
+        } else if (args.some(arg => arg.includes('collectControllerProducerCensus'))) {
+            assert.equal(args[4], context.team, 'Independent pending-wrapper census belongs to the exact controller.');
+            value = context.controllerCensus;
         } else if (args.some(arg => arg.includes('collectControllerProducer'))) {
             assert.equal(args[4], context.team, 'Controller source must be read inside its exact owner.');
             value = context.producer;
@@ -47,7 +50,7 @@ function fixture() {
         else if (context.census) {
             assert.equal(args[4], work, 'Native process roots must be read inside their execution owner.');
             const { ala, launch, runId } = context.identity;
-            value = [{ kind: 'ala-turn', ...ala, producerKind: context.record.kind === 'task' ? 'workflow' : 'copilot', launch, runId }];
+            value = context.emptyNative ? [] : [{ kind: 'ala-turn', ...ala, producerKind: context.record.kind === 'task' ? 'workflow' : 'copilot', launch, runId }];
         } else {
             assert.equal(args[4], work, 'Native process roots must be read inside their execution owner.');
             value = context.identity;
@@ -74,14 +77,72 @@ function fixture() {
     return context;
 }
 
+function pendingWrapper(f) {
+    const { producer } = f.producer;
+    return { kind: 'producer-pending', pid: producer.pid, ppid: producer.ppid, startToken: producer.startToken,
+        pidNamespace: producer.pidNamespace, cwd: f.record.cwd, sessionId: f.record.sessionId,
+        script: '/code/server/robot-task.mjs' };
+}
+
+test('resident census reads RoboTeam independently when private active records are empty and blocks until wrapper retirement', async () => {
+    const f = fixture(); f.task(); f.census = true; f.emptyNative = true; f.records = [];
+    const pending = pendingWrapper(f); f.controllerCensus = [pending];
+    assert.deepEqual(await f.read({ kind: 'census' }), [pending]);
+    assert.equal(f.calls.filter(call => call.args.some(arg => arg.includes('collectControllerProducerCensus'))).length, 2);
+    for (const field of ['runId', 'turnId', 'native', 'ala', 'ownerPrincipal', 'entrypoint', 'sha256']) assert.equal(field in pending, false);
+    f.controllerCensus = [];
+    assert.deepEqual(await f.read({ kind: 'census' }), []);
+});
+
+test('resident census coalesces only the exact associated controller incarnation and rejects ambiguous same-session wrappers', async () => {
+    const f = fixture(); f.task(); f.census = true;
+    f.controllerCensus = [pendingWrapper(f)];
+    const associated = await f.read({ kind: 'census' });
+    assert.equal(associated.length, 1); assert.equal(associated[0].kind, 'ala-turn');
+    const extra = { ...f.controllerCensus[0], pid: 70, startToken: '700', sessionId: 'unassociated' };
+    f.controllerCensus.push(extra);
+    const both = await f.read({ kind: 'census' });
+    assert.equal(both.length, 2); assert.deepEqual(both[1], extra);
+    extra.sessionId = f.record.sessionId;
+    await assert.rejects(f.read({ kind: 'census' }));
+});
+
+test('pending-wrapper census rejects malformed source, cwd, owner-runtime and before/after identity substitutions', async () => {
+    for (const mutate of [
+        f => { f.controllerCensus[0].script = '/other/server/robot-task.mjs'; },
+        f => { f.controllerCensus[0].cwd = '/foreign'; },
+        f => { f.controllerCensus[0].ownerPrincipal = 'user:invented'; },
+        f => { f.inspections.get(f.team).Id = f.work; },
+        f => { f.beforeReturn = (_value, args) => {
+            if (args.some(arg => arg.includes('collectNativeProcessSnapshot'))) f.controllerCensus[0].startToken = 'reused';
+        }; },
+    ]) {
+        const f = fixture(); f.task(); f.census = true; f.emptyNative = true; f.records = [];
+        f.controllerCensus = [pendingWrapper(f)]; mutate(f);
+        await assert.rejects(f.read({ kind: 'census' }));
+    }
+});
+
+test('starting resident records block settlement without inventing a native process or double-counting their wrapper', async () => {
+    const f = fixture(); f.task(); f.census = true; f.emptyNative = true;
+    f.record.state = 'starting';
+    for (const field of ['pid', 'servicePid', 'pidStamp']) delete f.record[field];
+    f.controllerCensus = [pendingWrapper(f)];
+    const rows = await f.read({ kind: 'census' });
+    assert.equal(rows.length, 1); assert.equal(rows[0].kind, 'resident-pending');
+    assert.equal(rows[0].runId, f.record.runId);
+    for (const field of ['native', 'ala', 'pid', 'entrypoint', 'sha256']) assert.equal(field in rows[0], false);
+});
+
 test('two-container reader reads metadata only in RoboWork and links both process proofs through the same run', async () => {
     const f = fixture(), result = await f.read();
     assert.equal(result.runId, result.controller.runId); assert.equal(f.metadataReads, 2);
     assert.equal(result.containerInit.pid, 1); assert.equal(result.controller.containerInit.pid, 1);
     assert.notEqual(result.containerInit.pidNamespace, result.controller.containerInit.pidNamespace);
     assert.equal(f.calls[1].args[4], f.team);
-    assert.equal(f.calls[3].args[4], f.work);
-    assert.equal(f.calls.length, 7); assert.equal(f.calls[0].args[4], f.work); assert.equal(f.calls[5].args[4], f.work);
+    assert.equal(f.calls[4].args[4], f.work);
+    assert.equal(f.calls.length, 9); assert.equal(f.calls[0].args[4], f.work); assert.equal(f.calls[6].args[4], f.work);
+    assert.equal(f.calls[8].args[4], f.team);
 });
 
 test('wrong native container, wrong controller, different run and stale controller incarnation fail', async () => {

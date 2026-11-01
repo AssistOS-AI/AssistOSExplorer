@@ -70,6 +70,18 @@ test('model-discovery helper directories do not become resident runs and missing
     fs.rmSync(helper, { recursive: true }); fs.unlinkSync(f.file); await assert.rejects(f.read());
 });
 
+test('starting metadata retains trusted producer and ownership while launch process fields are not yet available', async t => {
+    const f = fixture(t); f.record.state = 'starting';
+    for (const field of ['pid', 'servicePid', 'pidStamp']) delete f.record[field];
+    f.write(f.record);
+    const result = await f.read();
+    assert.equal(result.records.length, 1); assert.equal(result.records[0].state, 'starting');
+    assert.deepEqual(result.records[0].producer, f.record.tag.producer);
+    assert.equal(result.records[0].ownerPrincipal, 'user:owner');
+    assert.equal('pid' in result.records[0], false);
+    f.record.tag.ownerPrincipal = 'agent:foreign'; f.write(f.record); await assert.rejects(f.read());
+});
+
 test('metadata symlinks, hardlinks and owner-writable directories cannot authorize a run', async t => {
     const f = fixture(t);
     fs.renameSync(f.file, `${f.root}/foreign.json`); fs.symlinkSync(`${f.root}/foreign.json`, f.file);

@@ -9,7 +9,7 @@ import { assertBoxWorkspacePath } from './box-workspace.mjs';
 import { collectSecrets, createRedactor, findSecretLeaks } from './security.mjs';
 import { redactTraceText, findTraceCredentialResidue } from './redacted-trace.mjs';
 import { buildResidentRunProgram, processRuntimeFence } from './robowork-run-evidence.mjs';
-import { buildControllerProducerProgram } from './robowork-process-evidence.mjs';
+import { buildControllerProducerProgram, buildControllerProducerCensusProgram } from './robowork-process-evidence.mjs';
 import { buildBoxProcReadProgram, residentProcReadBridge } from './robowork-proc-evidence.mjs';
 
 export const ROBOTEAM_BASE = '/base-agent-additional-server/roboTeamAgent/3001';
@@ -856,12 +856,21 @@ export async function residentNativeProcessIdentity(evidence, runtime, native, d
             contractFiles: binding.contractFiles, contractHashes: binding.codeHashes, robotId: native.robotId, cwd })]);
     const metadata = await read();
     assert.deepEqual(metadata.codeHashes, binding.codeHashes);
+    const controllerCensusCommand = ['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', runtime.containerId,
+        '/usr/local/bin/node', '--input-type=module', '--eval', buildControllerProducerCensusProgram(1, {
+            cwd, codeRoot: selection.codeRoot, workflowCodeRoot: selection.workflowCodeRoot,
+            scriptSha256: binding.controllerHashes['server/robot-task.mjs'],
+        })];
+    const controllerCensus = await run(controllerCensusCommand);
+    assertNativeProcessCensus(controllerCensus, { cwd, ...selection });
+    assert.ok(controllerCensus.every(row => row.kind === 'producer-pending'), 'Controller census cannot assert native authority.');
     const retained = selection.retainedProofs || [];
     assert.ok(Array.isArray(retained) && retained.length <= 512);
     for (const proof of retained) assert.ok(retainedResidentProofs.has(proof), 'Continuity requires the original in-memory verified proof, never project or JSON authority.');
     assert.equal(new Set(retained.map(proof => proof.runId)).size, retained.length);
     const { residentBinding: _binding, retainedProofs: _retained, ...selected } = selection;
-    const nativeSelection = { ...selected, residentRecords: metadata.records, serviceSha256: binding.codeHashes['server/main.mjs'] };
+    const nativeSelection = { ...selected, residentRecords: metadata.records.filter(record => record.state !== 'starting'),
+        serviceSha256: binding.codeHashes['server/main.mjs'] };
     const controllerProofs = new Map();
     const controllerCommands = new Map();
     for (const record of metadata.records) {
@@ -929,6 +938,7 @@ export async function residentNativeProcessIdentity(evidence, runtime, native, d
     for (const [runId, command] of controllerCommands) {
         assert.deepEqual(await run(command), controllerProofs.get(runId), 'Exact controller producer changed before native proof settlement.');
     }
+    assert.deepEqual(await run(controllerCensusCommand), controllerCensus, 'Controller pending-wrapper census changed during native proof settlement.');
     fence();
     const finish = row => {
         const record = metadata.records.find(value => value.runId === row.runId);
@@ -948,7 +958,19 @@ export async function residentNativeProcessIdentity(evidence, runtime, native, d
         return sealResidentProof({ ...row, controller: controllerProofs.get(row.runId), residentRecord: record,
             controllerRuntime: binding.controller, executionRuntime: binding.execution });
     };
-    if (selection.kind === 'census') return identity.map(finish);
+    if (selection.kind === 'census') {
+        const pending = controllerCensus.filter(row => ![...controllerProofs].some(([runId, proof]) => {
+            const record = metadata.records.find(value => value.runId === runId);
+            return row.cwd === record.cwd && row.sessionId === record.sessionId
+                && ['pid', 'ppid', 'startToken', 'pidNamespace', 'script'].every(key => row[key] === proof.producer[key]);
+        }));
+        const starting = metadata.records.filter(record => record.state === 'starting').map(record => ({
+            kind: 'resident-pending', runId: record.runId, robotId: record.robotId, cwd: record.cwd,
+            sessionId: record.sessionId, turnId: record.turnId, ownerPrincipal: record.ownerPrincipal,
+        }));
+        assert.ok(identity.length + pending.length + starting.length <= 512, 'Bounded combined resident census exceeded.');
+        return [...identity.map(finish), ...pending, ...starting];
+    }
     return finish(identity);
 }
 

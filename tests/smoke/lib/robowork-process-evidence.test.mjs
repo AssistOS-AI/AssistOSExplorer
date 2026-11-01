@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { collectControllerProducer, buildControllerProducerProgram } from './robowork-process-evidence.mjs';
+import { collectControllerProducer, buildControllerProducerProgram, collectControllerProducerCensus,
+    buildControllerProducerCensusProgram } from './robowork-process-evidence.mjs';
 import { spawnSync } from 'node:child_process';
 
 function fixture() {
@@ -48,8 +49,44 @@ function fixture() {
         },
     };
     context.read = (initPid = 10) => collectControllerProducer(initPid, record, options, io);
+    context.census = () => collectControllerProducerCensus(10, { ...options, cwd }, io);
     return context;
 }
+
+test('independent controller census retains an exact source-verified wrapper without any resident run inventory', async () => {
+    const f = fixture();
+    f.rows.get(60).argv = ['node', '/code/server/robot-task.mjs', '--cwd', f.record.cwd, '--session-id', 'pending', '--control-stdin'];
+    const rows = await f.census();
+    assert.equal(rows.length, 1); assert.equal(rows[0].kind, 'producer-pending');
+    assert.equal(rows[0].pid, 60); assert.equal(rows[0].sessionId, 'pending');
+    for (const key of ['runId', 'turnId', 'ownerPrincipal', 'native', 'ala', 'sha256']) assert.equal(key in rows[0], false);
+    f.rows.delete(60); assert.deepEqual(await f.census(), []);
+});
+
+test('independent controller census refuses source/interpreter/ancestry drift and malformed or unknown wrapper advertisements', async () => {
+    for (const mutate of [
+        f => { f.source = Buffer.from('foreign source'); },
+        f => { f.rows.get(60).executable = '/bin/sh'; },
+        f => { f.rows.get(60).ppid = 1; },
+        f => { f.rows.get(60).argv[1] = '/foreign/robot-task.mjs'; },
+        f => { f.rows.get(60).argv.push('--turn-id', 'invented'); },
+        f => { f.rows.get(60).argv.push('--cwd', '/foreign'); },
+        f => { f.rows.get(60).argv[6] = '--control-stdin=true'; },
+        f => { f.hook = file => { if (file.includes('/root/code/')) f.rows.get(60).start = 'reused'; }; },
+    ]) {
+        const f = fixture();
+        f.rows.get(60).argv = ['node', '/code/server/robot-task.mjs', '--cwd', f.record.cwd, '--session-id', 'pending', '--control-stdin'];
+        mutate(f); await assert.rejects(f.census());
+    }
+});
+
+test('serialized independent controller census is self-contained and missing context cannot emit empty success', () => {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-'], {
+        input: buildControllerProducerCensusProgram(0, {}), encoding: 'utf8', timeout: 5000,
+    });
+    assert.equal(result.status, 1); assert.equal(result.stdout, '');
+    assert.equal(result.stderr.trim(), 'Invalid exact controller-producer census');
+});
 
 test('controller proof links trusted run ID to exact process incarnation, canonical script and init ancestry', async () => {
     const f = fixture(), proof = await f.read();
