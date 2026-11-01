@@ -157,7 +157,7 @@ export class EnvironmentManager {
         for (const channel of channels) mount(channel.source, channel.target, false);
         if (soul) mount(soul.source, soul.target, true);
         // Masks come after writable binds, including when cwd is the workspace root.
-        for (const name of ['.data', '.ploinky']) launch.push('--tmpfs', `${path.join(workspace, name)}:ro,size=64k,mode=0555,nosuid,nodev,noexec`);
+        for (const name of ['.data', '.ploinky']) launch.push('--tmpfs', `${path.join(workspace, name)}:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`);
         try {
             await fs.lstat(path.join(workspace, '.env'));
             mount('/dev/null', path.join(workspace, '.env'), true);

@@ -10,12 +10,12 @@ const shellTools = { path: '/data/tool-cache/shell-generation', binPath: '/data/
 const base = { robot: { id: 'robot-a', name: 'Robot' }, mode: 'browser', dataDir: '/data', workspaceRoot: '/workspace', images: { browser: 'browser', desktop: 'desktop' }, toolsPath: '/data/tool-cache/browser', shellTools };
 
 for (const mode of ['browser', 'desktop']) for (const cwd of ['/home/robot-a', '/workspace', '/workspace/project']) {
-    test(`${mode} launch limits home and retains bounded read-only hidden paths at ${cwd}`, () => {
+    test(`${mode} launch limits home and retains bounded read-only hidden paths without copy-up at ${cwd}`, () => {
         const { args } = buildRobotRunArgs({ ...base, mode, cwd, maskEnv: true });
         for (const grant of ['/data/robots/robot-a/home:/config', '/data/robots/robot-a/home:/home/robot-a', '/data/robots/robot-a/run/soul:/workspace/roboteam-soul']) assert.ok(args.includes(grant));
         for (const hidden of ['.data', '.ploinky']) {
             const masks = args.filter((value, index) => args[index - 1] === '--tmpfs' && value.startsWith(`/workspace/${hidden}:`));
-            assert.deepEqual(masks, [`/workspace/${hidden}:ro,size=64k,mode=0555,nosuid,nodev,noexec`]);
+            assert.deepEqual(masks, [`/workspace/${hidden}:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`]);
             assert.ok(args.indexOf(masks[0]) > args.lastIndexOf(`${cwd}:${cwd}:rw`));
         }
         assert.ok(args.includes('/dev/null:/workspace/.env:ro'));

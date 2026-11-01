@@ -156,7 +156,7 @@ test('each step builds a fresh disposable image container with only its mapped r
     assert.ok(args.includes('/skills/one:/workspace/roboteam-skill-0:ro'));
     for (const hidden of ['.data', '.ploinky']) {
         const masks = args.filter((value, index) => args[index - 1] === '--tmpfs' && value.startsWith(`${options.workspaceRoot}/${hidden}:`));
-        assert.deepEqual(masks, [`${options.workspaceRoot}/${hidden}:ro,size=64k,mode=0555,nosuid,nodev,noexec`]);
+        assert.deepEqual(masks, [`${options.workspaceRoot}/${hidden}:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`]);
         assert.ok(args.indexOf(masks[0]) > args.indexOf(`${options.workspaceRoot}:${options.workspaceRoot}:rw`));
     }
     assert.ok(args.includes(`/dev/null:${options.workspaceRoot}/.env:ro`));
