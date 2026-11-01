@@ -26,7 +26,15 @@ const CONTRACT_FILES = Object.freeze([
     'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/execution/alaTranscript.mjs', 'copilot/src/lib/execution/alaSkillMounts.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs',
 ]);
 
-export { CONTRACT_FILES as LIVE_SKILLS_CONTRACT_FILES };
+const WORK_CONTRACT_FILES = Object.freeze([
+    'server/soul-gateway-service.mjs', 'server/soul-gateway-opencode.mjs',
+    'server/soul-gateway-connection.mjs', 'server/agent-model-config.mjs', 'server/robot-shell.mjs',
+]);
+export const LIVE_SKILLS_CONTRACT_FILES = Object.freeze(CONTRACT_FILES.filter(file => !WORK_CONTRACT_FILES.includes(file)));
+export const LIVE_SKILLS_CONTRACTS = Object.freeze({
+    roboTeamAgent: LIVE_SKILLS_CONTRACT_FILES,
+    roboWorkAgent: WORK_CONTRACT_FILES,
+});
 
 function command(args, input = '') {
     return new Promise((resolve, reject) => {
@@ -57,7 +65,8 @@ function command(args, input = '') {
 export function program(fn, args) {
     const helpers = (fn === readLiveSkillsSnapshot ? `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\n` : '')
         + ([readLiveSkillsSnapshot, operateLiveSkillsFixture].includes(fn) ? `const inspectSessionSkillLinks = ${inspectSessionSkillLinks.toString()};\n` : '');
-    return `${helpers}(${fn.toString()})(${JSON.stringify(args)}).catch(() => { console.error('Invalid read-only runtime evidence'); process.exitCode = 1; });\n`;
+    const output = fn === readLiveSkillsCodeHashes ? '.then(value => console.log(JSON.stringify(value)))' : '';
+    return `${helpers}(${fn.toString()})(${JSON.stringify(args)})${output}.catch(() => { console.error('Invalid read-only runtime evidence'); process.exitCode = 1; });\n`;
 }
 
 export function normalizeLiveSkillsImageId(value) {
@@ -482,18 +491,20 @@ function rejectOuterRuntimeShadows(outer, hostWorkspace, protectedSources, agent
 }
 
 // The Box mounts the workspace at its own host path. Besides the exact same-path root, no outer mount may
-// overlap the verified RoboTeam source or any of its ancestors.
-function validateOuterWorkspaceBinding(outer, hostWorkspace, repositorySource, realpathSync) {
+// overlap the selected runtime's verified source or any of its ancestors.
+function validateOuterWorkspaceBinding(outer, hostWorkspace, repositorySource, realpathSync, agentName) {
     const root = assertBoxWorkspacePath(hostWorkspace);
     // Exact root proof: the Box's own PLOINKY_WORKSPACE_ROOT, cwd and one writable same-path bind.
     assert.equal(inspectBoxWorkspace(outer).source, root, 'The live Box runs another workspace than the selected host workspace.');
     validateWorkspaceSourceMount(outer.Mounts, root, { realpathSync });
-    rejectShadows(outer.Mounts, [`${repositorySource}/roboTeamAgent`], outer.Mounts.filter(item => item.Destination === root), { subject: SUBJECT });
+    rejectShadows(outer.Mounts, [`${repositorySource}/${agentName}`], outer.Mounts.filter(item => item.Destination === root), { subject: SUBJECT });
 }
 
 export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL, verifierPath, agentName = 'roboTeamAgent' }, {
     collectRelease = collectCopilotReleaseEvidence, runCommand = command, fsApi = fs,
 } = {}) {
+    assert.ok(Object.hasOwn(LIVE_SKILLS_CONTRACTS, agentName), 'Invalid evidence owner.');
+    const contractFiles = LIVE_SKILLS_CONTRACTS[agentName];
     assert.ok(env.SMOKE_PLOINKY_BOX_CONTAINER, 'Set the exact SMOKE_PLOINKY_BOX_CONTAINER name.');
     assert.ok(env.SMOKE_BOX_BASE_URL, 'Set SMOKE_BOX_BASE_URL to the selected host Box loopback origin.');
     assert.ok(env.SMOKE_WORKSPACE_ROOT && path.isAbsolute(env.SMOKE_WORKSPACE_ROOT), 'Set an absolute SMOKE_WORKSPACE_ROOT on the selected host.');
@@ -524,23 +535,36 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
     const agentLibAlias = typeof libRelative === 'string' && libRelative !== 'image' ? path.posix.join(hostWorkspace, libRelative) : null;
     assert.ok(agentLibAlias === null || (agentLibAlias.startsWith(`${hostWorkspace}/`) && path.posix.normalize(agentLibAlias) === agentLibAlias),
         'The AgentLib source must lie inside the admitted root.');
-    const codeHashes = Object.fromEntries(CONTRACT_FILES.map(file => [file, liveSkillsHash(fsApi.readFileSync(path.join(hostRepository, 'roboTeamAgent', file)))]));
+    const codeHashes = Object.fromEntries(contractFiles.map(file => [file, liveSkillsHash(fsApi.readFileSync(path.join(hostRepository, agentName, file)))]));
     let initialRuntime;
+    let executionSourceReader, executionSources;
     async function binding(fixtureWorkspace = null, fixtureRepository = null) {
         const [outer] = await runCommand(['inspect', box.containerId]);
         assert.equal(outer.Id, box.containerId);
         assert.equal(outer.State.Running, true);
         assert.equal(new Date(outer.State.StartedAt).toISOString(), new Date(box.startedAt).toISOString());
         assert.equal(normalizeLiveSkillsImageId(outer.Image), normalizeLiveSkillsImageId(box.imageId));
-        validateOuterWorkspaceBinding(outer, hostWorkspace, expectedRepository, fsApi.realpathSync);
+        validateOuterWorkspaceBinding(outer, hostWorkspace, expectedRepository, fsApi.realpathSync, agentName);
         const runtime = validateLiveSkillsRuntimeBinding(await runCommand(['exec', '-i', '--user', 'podman', box.containerId,
             'node', '--input-type=module', '-'], program(readRegistryAndRuntime, { workspaceRoot: hostWorkspace, agentName })), expectedRepository,
         { workspaceRoot: hostWorkspace, fixtureWorkspace, fixtureRepository, alaSource: alaRoot, fsApi, agentName });
         rejectOuterRuntimeShadows(outer, hostWorkspace, [...liveSkillsProtectedSources(runtime, expectedRepository, hostWorkspace, agentName), alaRoot,
             ...(fixtureWorkspace ? [fixtureWorkspace] : []), ...(fixtureRepository ? [fixtureRepository] : [])], agentLibAlias);
-        if (initialRuntime) assert.deepEqual(runtime, initialRuntime, 'RoboTeam runtime was replaced, restarted or remounted during the test.');
+        if (initialRuntime) assert.deepEqual(runtime, initialRuntime, 'Agent runtime was replaced, restarted or remounted during the test.');
         else initialRuntime = runtime;
+        const observedHashes = await runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
+            'node', '--input-type=module', '-'], program(readLiveSkillsCodeHashes, { expectedRepository, contractFiles, agentName }));
+        assert.deepEqual(observedHashes, codeHashes, 'Running agent source differs from the verified checkout.');
+        if (executionSourceReader) {
+            executionSources = await executionSourceReader.finish();
+            assert.notEqual(runtime.containerId, executionSources.runtime.containerId, 'Source owners must be different exact runtime containers.');
+        }
         return runtime;
+    }
+    if (agentName === 'roboTeamAgent') {
+        executionSourceReader = await createLiveSkillsRuntimeReader({ env, baseURL, verifierPath, agentName: 'roboWorkAgent' },
+            { collectRelease, runCommand, fsApi });
+        assert.ok(sameCopilotReleaseGeneration(release, executionSourceReader.release), 'Runtime source owners belong to different release/Box generations.');
     }
     await binding();
     return {
@@ -551,10 +575,12 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
             assert.ok(['prepare', 'seed-defaults', 'remove-links', 'remove-folders'].includes(action));
             assert.equal(fixture.workspace, liveSkillsWorkspace(hostWorkspace, fixture.folder));
             const runtime = await binding(fixture.workspace, fixture.repositoryRoot);
-            return runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
+            const result = await runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
                 'node', '--input-type=module', '-'], program(operateLiveSkillsFixture, {
                 action, fixture, workspaceRoot: hostWorkspace, expectedRepository, contractHashes: codeHashes,
             }));
+            await binding(fixture.workspace, fixture.repositoryRoot);
+            return result;
         },
         async capture({ sessionId, fixture }) {
             assert.equal(agentName, 'roboTeamAgent', 'Conversation evidence belongs to the controller.');
@@ -564,20 +590,22 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
             const runtime = await binding(fixture.workspace, fixture.repositoryRoot);
             const snapshot = await runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
                 'node', '--input-type=module', '-'], program(readLiveSkillsSnapshot, {
-                sessionId, folder: fixture.folder, skillNames: [fixture.control.name, fixture.probe.name, fixture.added.name], contractFiles: CONTRACT_FILES,
+                sessionId, folder: fixture.folder, skillNames: [fixture.control.name, fixture.probe.name, fixture.added.name], contractFiles,
                 expectedRepository, workspaceRoot: hostWorkspace, robotId: fixture.robotId, robotName: fixture.robotName,
                 repositoryName: fixture.repositoryName, repositoryRoot: fixture.repositoryRoot, expectedAla,
             }));
             assert.equal(snapshot.workspaceRoot, hostWorkspace, 'The runtime capture used a different workspace root.');
             assert.deepEqual(snapshot.codeHashes, codeHashes, 'Running Copilot source differs from the verified checkout.');
             assert.deepEqual(snapshot.alaBinding, expectedAla, 'Runtime ALA evidence does not match selected source.');
+            await binding(fixture.workspace, fixture.repositoryRoot);
             return snapshot;
         },
         async finish() {
             await binding();
             const after = await collect();
             assert.ok(sameCopilotReleaseGeneration(release, after), 'The release/Box generation changed during the live skill mutations.');
-            return { release: after, runtime: initialRuntime, contractHashes: codeHashes, alaBinding: expectedAla };
+            return { release: after, runtime: initialRuntime, contractHashes: codeHashes, alaBinding: expectedAla,
+                ...(executionSources ? { executionSources } : {}) };
         },
     };
 }
