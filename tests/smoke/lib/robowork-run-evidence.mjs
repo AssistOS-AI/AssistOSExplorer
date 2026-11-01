@@ -6,7 +6,7 @@ import { readLiveSkillsCodeHashes, createLiveSkillsRuntimeReader } from './copil
 import { requireAgentEvidence, inspectNestedContainer } from './webtty-runtime-evidence.mjs';
 
 export const ROBO_WORK_CONTRACT_FILES = Object.freeze([
-    'server/main.mjs', 'server/caller.mjs', 'server/run-manager.mjs', 'server/launch.mjs', 'server/run-channels.mjs',
+    'server/main.mjs', 'server/caller.mjs', 'server/run-manager.mjs', 'server/launch.mjs', 'server/run-channels.mjs', 'server/robot-manager.mjs',
 ]);
 
 export function processRuntimeFence(inspected) {
@@ -60,11 +60,11 @@ export async function readResidentRunRecords(options, { fsApi, codeRoot = '/code
     assert.deepEqual(hashes, contractHashes, 'RoboWork source differs from the frozen candidate.');
     const same = (first, second) => ['dev', 'ino', 'uid', 'gid', 'mode'].every(key => first[key] === second[key]);
     const directories = [];
-    const directory = name => {
+    const directory = (name, track = true) => {
         assert.equal(fs.realpathSync(name), name, 'Private evidence directory contains a symlink.');
         const stat = fs.lstatSync(name, { bigint: true });
         assert.ok(stat.isDirectory() && (stat.mode & 0o022n) === 0n, 'Private evidence directory is writable by another owner.');
-        directories.push({ name, stat });
+        if (track) directories.push({ name, stat });
         return stat;
     };
     const owner = directory(dataRoot).uid;
@@ -74,8 +74,22 @@ export async function readResidentRunRecords(options, { fsApi, codeRoot = '/code
     const records = [], pinned = [];
     for (const entry of names) {
         assert.ok(entry.isDirectory() && !entry.isSymbolicLink() && /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u.test(entry.name), 'Invalid resident run directory.');
-        const parent = path.join(root, entry.name); assert.equal(directory(parent).uid, owner);
+        const parent = path.join(root, entry.name);
         const file = path.join(parent, 'meta.json');
+        // RobotManager.models owns short-lived helpers here. They are not
+        // resident runs and may disappear while unrelated evidence is read.
+        if (/^models-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(entry.name) && !fs.existsSync(file)) {
+            try {
+                assert.equal(directory(parent, false).uid, owner);
+                for (const helper of fs.readdirSync(parent, { withFileTypes: true })) {
+                    assert.ok(helper.name === 'launch.sh' && helper.isFile() && !helper.isSymbolicLink(), 'Invalid model-discovery helper directory.');
+                    const stat = fs.lstatSync(path.join(parent, helper.name), { bigint: true });
+                    assert.ok(stat.uid === owner && stat.nlink === 1n && (stat.mode & 0o777n) === 0o700n);
+                }
+            } catch (error) { if (error.code !== 'ENOENT') throw error; }
+            continue;
+        }
+        assert.equal(directory(parent).uid, owner);
         assert.equal(fs.realpathSync(file), file);
         const before = fs.lstatSync(file, { bigint: true });
         assert.ok(before.isFile() && before.nlink === 1n && before.uid === owner && (before.mode & 0o777n) === 0o600n

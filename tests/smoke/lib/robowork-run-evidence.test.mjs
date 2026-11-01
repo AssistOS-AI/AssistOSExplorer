@@ -62,6 +62,14 @@ test('resident metadata requires exact identity, session, turn, owner and live p
     }
 });
 
+test('model-discovery helper directories do not become resident runs and missing native metadata still fails', async t => {
+    const f = fixture(t), helper = path.join(f.runs, `models-${randomUUID()}`);
+    fs.mkdirSync(helper, { mode: 0o700 }); fs.writeFileSync(path.join(helper, 'launch.sh'), '#!/bin/sh\n', { mode: 0o700 });
+    assert.equal((await f.read()).records.length, 1);
+    fs.writeFileSync(path.join(helper, 'unexpected'), 'not a model helper'); await assert.rejects(f.read());
+    fs.rmSync(helper, { recursive: true }); fs.unlinkSync(f.file); await assert.rejects(f.read());
+});
+
 test('metadata symlinks, hardlinks and owner-writable directories cannot authorize a run', async t => {
     const f = fixture(t);
     fs.renameSync(f.file, `${f.root}/foreign.json`); fs.symlinkSync(`${f.root}/foreign.json`, f.file);
