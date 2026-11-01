@@ -39,24 +39,32 @@ function within(root, value) {
 }
 
 function privateData(manifest) {
-    return Boolean(manifest.runtime?.resources?.persistentStorage)
-        || Object.entries(manifest.volumes || {}).some(([source, target]) =>
-            /(?:^|\/)\.data\/\.private(?:\/|$)/u.test(source)
-            || /(?:^|\/)\.data\/\.private(?:\/|$)/u.test(String(target)));
+    return Object.entries(manifest.volumes || {}).some(([source, target]) =>
+        /(?:^|\/)\.data\/\.private(?:\/|$)/u.test(source)
+        || /(?:^|\/)\.data\/\.private(?:\/|$)/u.test(String(target)));
 }
 
 // Only the selected manifest's image is reused. Live agent containers never participate.
 export class EnvironmentManager {
     constructor({ loadMarketplace = defaultMarketplace, readManifest = async file => JSON.parse(await fs.readFile(file, 'utf8')),
-        ensureImage, execFileImpl = execute, spawnImpl = spawn, podmanCommand = 'podman', ttlMs = 15000, now = Date.now } = {}) {
+        ensureImage, imageExists, execFileImpl = execute, spawnImpl = spawn, podmanCommand = 'podman', ttlMs = 15000, now = Date.now } = {}) {
         Object.assign(this, { loadMarketplace, readManifest, execFileImpl, spawnImpl, podmanCommand, ttlMs, now });
+        this.imageExists = imageExists || (async image => {
+            try {
+                await this.execFileImpl(this.podmanCommand, ['image', 'exists', image]);
+                return true;
+            } catch { return false; }
+        });
         this.ensureImage = ensureImage || (async image => {
-            await this.execFileImpl(this.podmanCommand, ['pull', image], { timeout: 120000, maxBuffer: 1024 * 1024 });
+            if (!await this.imageExists(image)) {
+                await this.execFileImpl(this.podmanCommand, ['pull', image], { maxBuffer: 1024 * 1024 });
+            }
             const result = await this.execFileImpl(this.podmanCommand, ['image', 'inspect', '--format', '{{json .Config.Env}}', image], { timeout: 15000 });
             const variables = JSON.parse(result.stdout || '[]') || [];
             return { path: variables.find(value => value.startsWith('PATH='))?.slice(5) || DEFAULT_PATH };
         });
         this.cached = null;
+        this.pullFailures = new Map();
     }
 
     async _entries() {
@@ -78,13 +86,14 @@ export class EnvironmentManager {
             }
             if (privateData(manifest)) continue;
             const image = manifest.container;
-            let reason = '', imageInfo = {};
+            let reason = '';
             if (typeof image !== 'string' || !image.trim()) reason = 'image unavailable';
             else if (/[{}$\s]/u.test(image) || image.startsWith('-')) reason = 'templated or invalid image';
             else {
-                try { imageInfo = await this.ensureImage(image) || {}; } catch { reason = 'image cannot be pulled'; }
+                const exists = await this.imageExists(image);
+                if (!exists && this.pullFailures.has(image)) reason = this.pullFailures.get(image);
             }
-            entries.push({ ...base, available: !reason, reason, image, imagePath: imageInfo.path || DEFAULT_PATH });
+            entries.push({ ...base, available: !reason, reason, image });
         }
         return entries.sort((a, b) => Number(b.available) - Number(a.available) || a.ref.localeCompare(b.ref));
     }
@@ -96,18 +105,34 @@ export class EnvironmentManager {
         return this.cached.value.map(({ image, imagePath, ...entry }) => ({ ...entry }));
     }
 
-    async require(ref) {
+    async require(ref, { retry = false } = {}) {
         if (!isEnvironmentRef(ref)) throw failure('ENVIRONMENT_INVALID', 'Invalid agent environment', 400);
         const entry = (await this._entries()).find(item => item.ref === ref);
         if (!entry) throw failure('ENVIRONMENT_UNAVAILABLE', 'Agent environment is not enabled in global mode');
-        if (!entry.available) throw failure('ENVIRONMENT_UNAVAILABLE', `Agent environment unavailable: ${entry.reason}`);
+        if (!entry.available && !(retry && entry.reason === 'image cannot be pulled')) {
+            throw failure('ENVIRONMENT_UNAVAILABLE', `Agent environment unavailable: ${entry.reason}`);
+        }
         return { ...entry };
+    }
+
+    // Only an actual selected step prepares an image. Discovery and profile resolution stay read-only.
+    async prepare(ref) {
+        const entry = await this.require(ref, { retry: true });
+        let imageInfo;
+        try { imageInfo = await this.ensureImage(entry.image) || {}; } catch {
+            this.pullFailures.set(entry.image, 'image cannot be pulled');
+            this.cached = null;
+            throw failure('ENVIRONMENT_UNAVAILABLE', 'Agent environment unavailable: image cannot be pulled');
+        }
+        this.pullFailures.delete(entry.image);
+        this.cached = null;
+        return { ...entry, available: true, reason: '', imagePath: imageInfo.path || DEFAULT_PATH };
     }
 
     async buildLaunch({ environment, runId, robotId, home, workspaceRoot, cwd, toolCache, ala, bwrap,
         channels = [], soul, folders = [], args = [], env = {}, tty = false }) {
         if (!ID.test(robotId) || typeof runId !== 'string' || !runId) throw failure('ENVIRONMENT_INVALID', 'Invalid environment run identity', 400);
-        const entry = await this.require(environment);
+        const entry = await this.prepare(environment);
         const workspace = await fs.realpath(absolute(workspaceRoot));
         const directory = await fs.realpath(absolute(cwd));
         if (!within(workspace, directory) || ['.data', '.ploinky'].some(name => within(path.join(workspace, name), directory))) {

@@ -15,9 +15,10 @@ function fixture(options = {}) {
         readManifest: async file => {
             if (file.includes('templated')) return { container: 'image:{{VERSION}}' };
             if (file.includes('privateAgent')) return { container: 'image:private', volumes: { '.data/.private/owner': '/data' } };
-            if (file.includes('dpuAgent')) return { container: 'image:private', runtime: { resources: { persistentStorage: { key: 'dpu-data' } } } };
+            if (file.includes('dpuAgent')) return { container: 'image:dpu-node', runtime: { resources: { persistentStorage: { key: 'dpu-data', containerPath: '/dpu-data' } } } };
             return { container: file.includes('unpullable') ? 'image:missing' : 'image:node' };
         },
+        imageExists: async () => false,
         ensureImage: async image => {
             pulled.push(image);
             if (image === 'image:missing') throw new Error('registry credentials must not escape');
@@ -30,15 +31,19 @@ test('discovery resolves image manifests, excludes private owners and reports un
     const { manager, pulled } = fixture();
     const list = await manager.list();
     assert.deepEqual(list.map(({ ref, available, reason }) => [ref, available, reason]), [
+        ['AchillesIDE/dpuAgent', true, ''],
         ['AchillesIDE/gitAgent', true, ''],
+        ['AchillesIDE/unpullable', true, ''],
         ['AchillesIDE/templated', false, 'templated or invalid image'],
-        ['AchillesIDE/unpullable', false, 'image cannot be pulled'],
     ]);
     assert.deepEqual(Object.keys(list[0]).sort(), ['about', 'available', 'key', 'name', 'reason', 'ref', 'repo']);
     assert.equal(Buffer.from(list[0].key, 'base64url').toString(), list[0].ref);
-    assert.deepEqual(pulled, ['image:node', 'image:missing']);
+    assert.deepEqual(pulled, []);
     assert.equal((await manager.require('AchillesIDE/gitAgent')).image, 'image:node');
-    for (const ref of ['AchillesIDE/templated', 'AchillesIDE/unpullable', 'AchillesIDE/privateAgent', 'AchillesIDE/absent']) {
+    assert.deepEqual(pulled, []);
+    assert.equal((await manager.prepare('AchillesIDE/gitAgent')).image, 'image:node');
+    assert.deepEqual(pulled, ['image:node']);
+    for (const ref of ['AchillesIDE/templated', 'AchillesIDE/privateAgent', 'AchillesIDE/absent']) {
         await assert.rejects(manager.require(ref), { code: 'ENVIRONMENT_UNAVAILABLE' });
     }
     for (const ref of ['', '../agent', 'gitAgent', 'a/b/c', null]) {
@@ -58,17 +63,57 @@ test('choosing an environment refreshes state and a manifest failure stays a saf
     assert.ok((await fixture({ readManifest: async () => null }).manager.list()).every(entry => entry.reason === 'manifest unavailable'));
 });
 
-test('default image preparation pulls and inspects PATH without using target container state', async () => {
+test('only selected image preparation pulls without a time cap and inspects PATH', async () => {
     const calls = [];
-    const { manager } = fixture({ ensureImage: undefined, execFileImpl: async (...args) => {
+    const { manager } = fixture({ ensureImage: undefined, imageExists: undefined, execFileImpl: async (...args) => {
         calls.push(args);
+        if (args[1][1] === 'exists') throw Object.assign(new Error('not downloaded'), { code: 1 });
         return { stdout: '["PATH=/custom/node/bin:/usr/bin","PLOINKY_AGENT_SECRET=never-forward"]' };
     } });
-    const entry = await manager.require('AchillesIDE/gitAgent');
+    await manager.list();
+    await manager.require('AchillesIDE/gitAgent');
+    assert.ok(calls.every(([, args]) => args[0] === 'image' && args[1] === 'exists'));
+    calls.length = 0;
+    const entry = await manager.prepare('AchillesIDE/gitAgent');
     assert.equal(entry.imagePath, '/custom/node/bin:/usr/bin');
-    assert.deepEqual(calls[0].slice(0, 2), ['podman', ['pull', 'image:node']]);
-    assert.deepEqual(calls[1].slice(0, 2), ['podman', ['image', 'inspect', '--format', '{{json .Config.Env}}', 'image:node']]);
+    const pulls = calls.filter(([, args]) => args[0] === 'pull');
+    assert.equal(pulls.length, 1);
+    assert.deepEqual(pulls[0].slice(0, 2), ['podman', ['pull', 'image:node']]);
+    assert.equal('timeout' in pulls[0][2], false);
+    assert.deepEqual(calls.at(-1).slice(0, 2), ['podman', ['image', 'inspect', '--format', '{{json .Config.Env}}', 'image:node']]);
     assert.equal(JSON.stringify(entry).includes('never-forward'), false);
+});
+
+test('an already cached chosen image is inspected without a pull', async () => {
+    const calls = [];
+    const { manager } = fixture({ ensureImage: undefined, imageExists: undefined, execFileImpl: async (...args) => {
+        calls.push(args);
+        return { stdout: '[]' };
+    } });
+    await manager.prepare('AchillesIDE/dpuAgent');
+    assert.equal(calls.some(([, args]) => args[0] === 'pull'), false);
+    assert.deepEqual(calls.at(-1)[1], ['image', 'inspect', '--format', '{{json .Config.Env}}', 'image:dpu-node']);
+});
+
+test('a failed selected pull is cached as its reason and only an explicit step retries it', async () => {
+    let fail = true;
+    const pulls = [];
+    const { manager } = fixture({ ensureImage: async image => {
+        pulls.push(image);
+        if (fail) throw new Error('credentials must stay private');
+        return { path: '/image/bin' };
+    } });
+    await assert.rejects(manager.prepare('AchillesIDE/unpullable'), { code: 'ENVIRONMENT_UNAVAILABLE' });
+    const list = await manager.list();
+    assert.equal(list.find(entry => entry.ref === 'AchillesIDE/unpullable').reason, 'image cannot be pulled');
+    assert.equal(list.find(entry => entry.ref === 'AchillesIDE/gitAgent').available, true);
+    await assert.rejects(manager.require('AchillesIDE/unpullable'), /image cannot be pulled/u);
+    assert.deepEqual(pulls, ['image:missing']);
+    assert.equal(JSON.stringify(list).includes('credentials'), false);
+    fail = false;
+    assert.equal((await manager.prepare('AchillesIDE/unpullable')).available, true);
+    assert.deepEqual(pulls, ['image:missing', 'image:missing']);
+    assert.equal((await manager.list()).find(entry => entry.ref === 'AchillesIDE/unpullable').available, true);
 });
 
 async function launchFixture(t) {
