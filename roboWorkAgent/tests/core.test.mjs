@@ -85,6 +85,8 @@ test('read accepts interface wait values but never holds more than 100 ms plus s
     const start = performance.now();
     await manager.read({ runId: input.runId, after: 0, waitMs: 5000 });
     assert.ok(performance.now() - start < 1000);
+    await manager.close();
+    assert.equal(manager.get(input.runId).meta.state, 'interrupted');
 });
 
 test('log cap stops a noisy process and persists the cap outcome', async t => {

@@ -219,8 +219,9 @@ export class RunManager {
         if (run.finishing) return run.finishing;
         run.finishing = (async () => {
             clearTimeout(run.killTimer); await run.queue;
-            run.meta.state = signal === 'SERVICE_RESTART' ? 'interrupted' : 'exited';
-            run.meta.exit = { code, signal: signal || null }; run.meta.endedAt = new Date(this.now()).toISOString();
+            const interrupted = run.interrupting || signal === 'SERVICE_RESTART';
+            run.meta.state = interrupted ? 'interrupted' : 'exited';
+            run.meta.exit = { code, signal: interrupted ? 'SERVICE_RESTART' : signal || null }; run.meta.endedAt = new Date(this.now()).toISOString();
             await this.persist(run); this.events.emit(run.meta.runId); await run.channels?.close();
         })();
         return run.finishing;
@@ -309,7 +310,7 @@ export class RunManager {
         this.closed = true;
         await Promise.allSettled([...this.starting.values()]);
         const active = [...this.runs.values()].filter(run => live(run.meta.state));
-        for (const run of active) this.signal(run, 'SIGTERM');
+        for (const run of active) { run.interrupting = true; this.signal(run, 'SIGTERM'); }
         await Promise.all(active.map(run => run.stopQueue));
         if (active.length) await sleep(500);
         for (const run of active) {
