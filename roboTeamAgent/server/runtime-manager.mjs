@@ -1,36 +1,21 @@
 import { createHumanInputChannel } from './human-input-channel.mjs';
 import { registerProject, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
 import { requireWorkspaceRoot } from './workspace-root.mjs';
-import { workspaceDataPath } from './workspace-paths.mjs';
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs/promises';
-import http from 'node:http';
-import net from 'node:net';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { ToolCache } from './tool-cache.mjs';
 import { AgentEnvironments } from './agent-environments.mjs';
-import { RuntimeBundle } from './runtime-bundle.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
-import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE } from './constants.mjs';
-import { prepareRobotShell } from './robot-shell.mjs';
-import { prepareDesktopLaunchers } from './desktop-launchers.mjs';
+import { DATA_DIR } from './constants.mjs';
 import { DESKTOP_TASK_INSTRUCTIONS } from '../copilot/src/lib/prompts.mjs';
 import { emailInstructions, robotEmailAddress } from './robot-email.mjs';
-import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
-import { robotCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
-import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
-import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
-import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
-import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
-import { NFT_COMMAND, NSENTER_COMMAND, writeContainerFirewallRules } from './proxy-pool/container-firewall.mjs';
+import { robotCodingAgents } from './coding-agents.mjs';
+import { RoboWorkClient } from './run-client.mjs';
 
-const execFileAsync = promisify(execFile);
-const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
 const GUI_MODES = new Set(['desktop', 'browser']);
 const ALA_FAILURE_DETAIL_LIMIT = 4096;
 const TASK_LOG_TAIL_LIMIT = 1024 * 1024;
@@ -39,15 +24,6 @@ const ALA_EVENT_PREFIX = '@@ALA_EVENT@@';
 const OWNER_PRINCIPAL = /^user:.+/u;
 const TRANSCRIPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const MESSAGE_TIMEOUT_MS = 35000;
-const ROBOT_AGENT_STATE_DIRECTORIES = Object.freeze([
-    '.codex',
-    '.config/opencode',
-    '.cache/opencode',
-    '.local/share/opencode',
-    '.local/state/opencode',
-    '.pi/agent',
-]);
-
 function appendTail(previous, chunk, limit) {
     const next = `${previous}${chunk}`;
     return next.length > limit ? next.slice(-limit) : next;
@@ -107,158 +83,24 @@ function normalizeBasePath(value) {
 }
 
 function robotSessionUrl(publicBasePath, robotId) {
-    return `${normalizeBasePath(publicBasePath)}api/robots/${robotId}/session/`;
-}
-
-function portIsOpen(port) {
-    return new Promise((resolve) => {
-        const socket = net.connect({ host: '127.0.0.1', port });
-        const finish = (value) => { socket.destroy(); resolve(value); };
-        socket.setTimeout(250).once('timeout', () => finish(false));
-        socket.once('connect', () => finish(true)).once('error', () => finish(false));
-    });
-}
-
-async function waitForPort(port, timeoutMs = 90000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-        if (await portIsOpen(port)) return;
-        await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    throw new Error(`service on loopback port ${port} did not become ready`);
-}
-
-function httpServiceIsReady(port, requestPath) {
-    return new Promise((resolve) => {
-        let settled = false;
-        const finish = (value) => {
-            if (settled) return;
-            settled = true;
-            resolve(value);
-        };
-        const request = http.get({ host: '127.0.0.1', port, path: requestPath }, (response) => {
-            response.resume();
-            finish(true);
-        });
-        request.setTimeout(500, () => { request.destroy(); finish(false); });
-        request.once('error', () => finish(false));
-    });
-}
-
-async function waitForHttpService(port, requestPath, timeoutMs = 90000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-        if (await httpServiceIsReady(port, requestPath)) return;
-        await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    throw new Error(`HTTP service on loopback port ${port} did not become ready`);
-}
-
-function mappedPort(output) {
-    const match = String(output || '').trim().match(/:(\d+)$/u);
-    if (!match) throw new Error('could not resolve nested container port');
-    return Number(match[1]);
-}
-
-function chromiumLanguageFlag(lang) {
-    return lang && lang !== 'en-US' ? ` --lang=${lang}` : '';
-}
-
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, proxy = null, workspaceRoot = requireWorkspaceRoot(), homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
-    if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
-    if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
-    if (proxy && (!Number.isInteger(proxy.relayPort) || proxy.relayPort < 1 || proxy.relayPort > 65535 || !path.isAbsolute(String(proxy.policyFile || '')))) {
-        throw new Error('proxy needs a relay port and an absolute policy file');
-    }
-    const robotRoot = path.join(path.resolve(dataDir), 'robots', robot.id);
-    const containerName = `roboteam-${mode}-${robot.id}`;
-    const subfolder = robotSessionUrl(publicBasePath, robot.id);
-    // A proxied Browser container is only created here; its firewall is loaded before it starts.
-    const firewalled = Boolean(proxy) && mode === 'browser';
-    return {
-        containerName,
-        image: images[mode],
-        subfolder,
-        firewalled,
-        args: [
-            ...(firewalled ? ['create'] : ['run', '-d']), '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777',
-            // With a proxy, the container's loopback proxy port reaches the robot's relay on the outer
-            // loopback, and nothing else of the outer loopback.
-            '--network', proxy ? `pasta:-T,${CONTAINER_PROXY_PORT}:${proxy.relayPort}` : 'pasta',
-            '--name', containerName, '--label', MANAGED_LABEL,
-            '--label', `io.assistos.roboteam.robot-id=${robot.id}`,
-            '--label', `io.assistos.roboteam.mode=${mode}`,
-            '-p', '127.0.0.1::3000', '-p', '127.0.0.1::8100',
-            '-e', 'PUID=0', '-e', 'PGID=0', '-e', `TZ=${timezone}`,
-            ...(locale ? ['-e', `LC_ALL=${locale.locale}`, '-e', `LANG=${locale.locale}`, '-e', `LANGUAGE=${locale.lang}`] : []),
-            '-e', `SUBFOLDER=${subfolder}`, '-e', `TITLE=${robot.name}`,
-            '-e', `ROBOTEAM_WORKING_DIRECTORY=${cwd}`,
-            '-e', 'START_DOCKER=false', '-e', 'DISABLE_IPV6=true', '-e', 'PELORUS=true',
-            ...(mode === 'browser' ? ['-e', `CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility${chromiumLanguageFlag(locale?.lang)}`] : []),
-            ...(shellTools ? [
-                '-e', `PATH=${shellTools.binPath}:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
-                '-e', 'CODEX_HOME=/config/.codex',
-                '-e', 'HOME=/config',
-                '-e', 'XDG_CONFIG_HOME=/config/.config', '-e', 'XDG_CACHE_HOME=/config/.cache',
-                '-e', 'XDG_DATA_HOME=/config/.local/share', '-e', 'XDG_STATE_HOME=/config/.local/state',
-                '-e', 'PI_CODING_AGENT_DIR=/config/.pi/agent',
-                '-e', 'CLAUDE_CONFIG_DIR=/config/.claude',
-            ] : []),
-            '-v', `${homePath}:/config`,
-            // The opened folder may be the workspace root itself. Mounting the
-            // same path twice (read-only parent plus writable cwd) conflicts, so
-            // keep only the writable grant in that case.
-            ...(path.resolve(workspaceRoot) === path.resolve(cwd)
-                ? ['-v', `${cwd}:${cwd}:rw`]
-                : ['-v', `${workspaceRoot}:${workspaceRoot}:ro`, '-v', `${cwd}:${cwd}:rw`]),
-            '-w', cwd,
-            '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
-            ...(proxy ? ['-v', `${proxy.policyFile}:${CHROMIUM_POLICY_TARGET}:ro`] : []),
-            ...(shellTools ? [
-                '-v', `${shellTools.path}:${path.dirname(shellTools.binPath)}:ro`,
-                ...Object.values(shellTools.agents).flatMap(agent => ['-v', `${agent.path}:${agent.path}:ro`]),
-            ] : []),
-            images[mode],
-        ],
-    };
+    return `/base-agent-additional-server/roboWorkAgent/3001/api/robots/${robotId}/session/`;
 }
 
 export class RuntimeManager {
     constructor(options = {}) {
         this.dataDir = path.resolve(options.dataDir || DATA_DIR);
         this.publicBasePath = normalizeBasePath(options.publicBasePath);
-        this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
-        this.nsenterCommand = options.nsenterCommand || NSENTER_COMMAND;
-        this.nftCommand = options.nftCommand || NFT_COMMAND;
         this.alaCommand = resolveAlaCommand(options.alaCommand);
         this.workspaceRoot = path.resolve(options.workspaceRoot ?? requireWorkspaceRoot());
         this.hostWorkspaceRoot = options.hostWorkspaceRoot ? path.resolve(options.hostWorkspaceRoot) : null;
-        this.maxActive = Math.max(1, Math.min(32, Number(options.maxActive) || MAX_ACTIVE_GUI_ROBOTS));
-        this.images = {
-            desktop: options.desktopImage || DESKTOP_IMAGE,
-            browser: options.browserImage || BROWSER_IMAGE,
-        };
-        this.timezone = options.timezone || TIMEZONE;
-        this.proxyPool = options.proxyPool || null;
-        this.proxyPolicyDir = options.proxyPolicyDir || path.join(this.dataDir, 'proxy-pool');
-        this.proxySettings = options.proxySettings || new ProxySettings({ file: path.join(this.proxyPolicyDir, 'settings.json') });
-        this.createRelay = options.createRelay || ((upstream) => new ProxyRelay(upstream, {
-            log: (line) => console.warn(`[roboTeamAgent] proxy relay: ${line}`),
-        }));
-        this.execFileImpl = options.execFileImpl || execFileAsync;
         this.spawnImpl = options.spawnImpl || spawn;
-        this.toolCache = options.toolCache || new ToolCache({
-            dataDir: this.dataDir,
-            root: options.toolCacheRoot,
-            refreshIntervalMs: options.toolRefreshIntervalMs,
-            podmanCommand: this.podmanCommand,
-            desktopImage: this.images.desktop,
-            browserImage: this.images.browser,
-        });
-        // Terminal workflow phases may run in another global-mode Ploinky agent's container.
-        this.agentEnvironments = options.agentEnvironments || new AgentEnvironments();
-        this.runtimeBundle = options.runtimeBundle || new RuntimeBundle({ toolCache: this.toolCache,
-            workspaceRoot: this.workspaceRoot, alaEntry: this.alaCommand });
+        this.roboWork = options.roboWork || new RoboWorkClient();
+        this.robotStore = options.robotStore || null;
+        this.proxySettings = {
+            useProxy: async () => (await this.roboWork.call('proxy_assignments', { robotIds: [] })).useProxy,
+            setUseProxy: async useProxy => (await this.roboWork.call('proxy_settings_set', { useProxy })).useProxy,
+        };
+        this.agentEnvironments = options.agentEnvironments || new AgentEnvironments({ call: this.roboWork.call.bind(this.roboWork) });
         this.sessions = new Map();
         this.tasks = new Map();
         this.latestTask = new Map();
@@ -270,7 +112,6 @@ export class RuntimeManager {
         this.messageWaiters = new Map();
         this.deletedRobots = new Set();
         this.skillsets = options.skillsets || null;
-        this.soulGateway = options.soulGateway || createSoulGatewayService();
         this.seedChain = new Map();
         // Optional observational hook used by RoboFlow. It never changes task
         // storage or semantics; it only forwards progress and lifecycle events.
@@ -298,6 +139,11 @@ export class RuntimeManager {
 
     setTaskObserver(observer) {
         this.taskObserver = typeof observer === 'function' ? observer : null;
+        for (const task of this.tasks.values()) if (task.attachRun) {
+            this._emitTaskEvent({ kind: 'admitted', robotId: task.robotId, robotName: task.robotName || task.robotId, taskId: task.taskId,
+                type: task.type, state: task.state, cwd: task.request.cwd, ownerPrincipal: task.request.ownerPrincipal || null,
+                workflowRunId: task.request.workflowRunId || null, workflowInstanceId: task.request.workflowInstanceId || null });
+        }
     }
 
     _emitTaskEvent(event) {
@@ -327,97 +173,42 @@ export class RuntimeManager {
         return { cwd: task.request.cwd, sessionId: task.alaSessionId, assistantMessageId: task.transcriptRef.assistantMessageId };
     }
 
-    // Shell and Soul Gateway socket preparation, then (unless `seed` is false) the plugin seed.
-    // `prepare` lets the caller wait for the shared plugin template (one npm install per OpenCode
-    // version, coalesced across robots); without it only a ready template is used. Either way a
-    // missing template leaves OpenCode to install its own dependency as before.
-    async prepareOpenCode(robotId, { prepare = false, seed = true } = {}) {
-        if (!/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) throw new Error('Invalid robot ID.');
-        const home = path.join(this.dataDir, 'robots', robotId, 'home');
-        // The template wait (possibly an npm install) stays outside the per-robot lock so that a
-        // delete never waits for it.
-        const template = seed ? await this.openCodePluginTemplate({ prepare }) : null;
-        await this._withRobotFiles(robotId, async () => {
-            if (this.deletedRobots.has(robotId)) throw new Error('robot was deleted');
-            await prepareRobotShell(home);
-            if (seed) await this._copySeed(robotId, home, template);
-        });
-        if (!this.deletedRobots.has(robotId)) await this.soulGateway.prepare(home);
+    async prepareOpenCode(robotId, { seed = true } = {}) {
+        const robot = await this.robotStore?.get(robotId);
+        return this.roboWork.call('robot_ensure', { robotId, name: robot?.name || robotId,
+            codingAgents: robotCodingAgents(robot || {}), seed });
     }
 
-    // One writer per robot home at a time, and deleteRobot waits for it: a seed or shell
-    // preparation never overlaps the removal of the robot's folder.
-    _withRobotFiles(robotId, operation) {
-        const previous = this.seedChain.get(robotId) || Promise.resolve();
-        const current = previous.catch(() => {}).then(operation);
-        this.seedChain.set(robotId, current);
-        return current.finally(() => { if (this.seedChain.get(robotId) === current) this.seedChain.delete(robotId); });
-    }
-
-    async _copySeed(robotId, home, template) {
-        const seeded = await seedOpenCodePlugin(home, template, { isCancelled: () => this.deletedRobots.has(robotId) });
-        if (seeded.status === 'failed') console.warn(`[roboTeamAgent] OpenCode plugin seeding failed for ${robotId}: ${seeded.error}`);
-        return seeded;
-    }
-
-    // A background seed and a task start on the same robot do not copy the template twice: the
-    // second finds the home current.
-    async seedOpenCode(robotId, { prepare = false } = {}) {
-        const home = path.join(this.dataDir, 'robots', robotId, 'home');
-        const template = await this.openCodePluginTemplate({ prepare });
-        return this._withRobotFiles(robotId, async () => this.deletedRobots.has(robotId)
-            ? { status: 'unavailable' } : this._copySeed(robotId, home, template));
-    }
-
-    // Robot creation answers first; the copy (seconds) finishes in the background, and a task that
-    // starts sooner waits for it through the same chain.
     seedOpenCodeInBackground(robot) {
-        if (!robotCodingAgents(robot).includes('opencode')) return;
-        this.seedOpenCode(robot.id, { prepare: true }).catch(error => {
-            console.warn(`[roboTeamAgent] OpenCode seeding failed for ${robot.id}: ${error?.message || error}`);
-        });
-    }
-
-    async openCodePluginTemplate({ prepare = false } = {}) {
-        try {
-            const tools = prepare ? { agents: await this.toolCache.prepareCodingAgents?.(['opencode']) }
-                : await this.toolCache.peekShellTools?.();
-            const version = openCodeVersion(tools);
-            if (!version) return null;
-            return (prepare ? await this.toolCache.prepareOpenCodePlugin?.(version)
-                : await this.toolCache.peekOpenCodePlugin?.(version)) ?? null;
-        } catch (error) {
-            console.warn(`[roboTeamAgent] OpenCode plugin template unavailable: ${error?.message || error}`);
-            return null;
-        }
-    }
-
-    // After startup preparation: install the template once and seed every OpenCode robot,
-    // so no first turn or catalog call waits for OpenCode's dependency installation.
-    async warmOpenCodePlugins(robots) {
-        for (const robot of robots) {
-            if (!robotCodingAgents(robot).includes('opencode')) continue;
-            await this.prepareOpenCode(robot.id, { prepare: true }).catch(error => {
-                console.warn(`[roboTeamAgent] OpenCode preparation failed for ${robot.id}: ${error?.message || error}`);
-            });
-        }
-    }
-
-    async _podman(args, timeout = 120000) {
-        return this.execFileImpl(this.podmanCommand, args, { timeout, maxBuffer: 8 * 1024 * 1024, env: process.env });
+        void this.roboWork.call('robot_ensure', { robotId: robot.id, name: robot.name,
+            codingAgents: robotCodingAgents(robot) }).catch(error => console.warn(error.message));
     }
 
     async initialize() {
-        await this.execFileImpl('/usr/local/bin/roboteam-podman-init', [], {
-            timeout: 30000,
-            maxBuffer: 8 * 1024 * 1024,
-            env: process.env,
-        });
-        await this._podman(['info'], 30000);
-        const result = await this._podman(['ps', '-a', '--filter', `label=${MANAGED_LABEL}`, '--format', 'json']).catch(() => ({ stdout: '[]' }));
-        for (const record of JSON.parse(result.stdout || '[]')) {
-            const id = String(record?.Id || record?.ID || '').trim();
-            if (id) await this._podman(['rm', '-f', id]).catch(() => {});
+        const { robots } = await this.roboWork.call('robot_status', {});
+        for (const robot of robots || []) {
+            if (robot.gui?.state === 'running') this.sessions.set(robot.id, { robotId: robot.id, ...robot.gui });
+        }
+        const runs = await this.roboWork.call('run_list', {});
+        for (const run of runs) {
+            if (!['starting', 'running'].includes(run.state) || run.tag?.kind !== 'task') continue;
+            const robot = await this.robotStore?.get(run.robotId);
+            if (!robot || !run.tag.taskId || !run.tag.request) continue;
+            const request = { ...run.tag.request, runtimeTaskId: run.tag.taskId,
+                alaSessionId: run.tag.sessionId, resumeSession: true,
+                ...(run.tag.ownerPrincipal ? { ownerPrincipal: run.tag.ownerPrincipal } : {}) };
+            const task = this._newTask(robot, run.tag.type, request);
+            task.attachRun = run.runId;
+            task.runId = run.runId;
+            task.robotName = robot.name;
+            task.startedAt = run.startedAt;
+        }
+    }
+
+    resumeAttachedTasks() {
+        for (const task of this.tasks.values()) {
+            if (!task.attachRun || task.state !== 'queued') continue;
+            void this.robotStore.get(task.robotId).then(robot => this._runTask(robot, task));
         }
     }
 
@@ -441,6 +232,8 @@ export class RuntimeManager {
         }
         const root = await fs.realpath(this.workspaceRoot);
         if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) throw new Error('cwd must stay inside the enabled Ploinky workspace');
+        const relative = path.relative(root, candidate);
+        if (['.data', '.ploinky'].includes(relative.split(path.sep)[0])) throw new Error('cwd is reserved controller storage');
         if (!(await fs.stat(candidate)).isDirectory()) throw new Error('cwd must reference a directory');
         return candidate;
     }
@@ -461,88 +254,16 @@ export class RuntimeManager {
 
     async ensureContainer(robot, mode, cwdValue, options = {}) {
         return this._serialize(robot.id, async () => {
-            const defaultCwd = path.join(this.dataDir, 'robots', robot.id);
-            if (!cwdValue) await fs.mkdir(defaultCwd, { recursive: true });
-            const cwd = cwdValue ? await this.resolveCwd(cwdValue) : await workspaceDataPath(defaultCwd, this.workspaceRoot);
-            await fs.mkdir(cwd, { recursive: true });
-            const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
-            await this._prepareRobotAgentState(originalHome);
-            await this.prepareOpenCode(robot.id, { prepare: robotCodingAgents(robot).includes('opencode') });
-            const robotHome = await workspaceDataPath(originalHome, this.workspaceRoot);
-            await this._prepareRobotAgentState(robotHome);
-            await prepareRobotShell(robotHome);
-            const existing = this.sessions.get(robot.id);
-            const codingAgents = robotCodingAgents(robot);
-            const codingAgentsKey = codingAgents.join(',');
-            // Null for a direct connection (Use Proxy off, no proxyAgent, or no usable proxy in its pool);
-            // throws only while the pool is active and has nothing free. The lease carries its exit-address locale.
-            const lease = this.proxyPool && await this.proxySettings.useProxy() ? await this.proxyPool.lease(robot.id, robot.name) : null;
-            const upstream = lease?.upstream || null;
-            const proxyKey = upstream ? `${upstream.id}@${upstream.host}:${upstream.port}` : '';
-            const locale = upstream ? lease.locale : null;
-            const localeKey = locale ? `${locale.timezone}|${locale.locale}` : '';
-            if (existing) {
-                if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
-                if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey && existing.proxyKey === proxyKey && existing.localeKey === localeKey) return existing;
-                const activeTask = this.activeTaskStatus(robot.id);
-                const activeStates = ['queued', 'starting', 'running', 'pausing'];
-                if (activeTask && activeTask.taskId !== options.taskId && activeStates.includes(activeTask.state)) {
-                    throw new Error(`robot has an active ${activeTask.type} task; its container cwd cannot be changed`);
-                }
-                existing.state = 'stopping';
-                await this._podman(['rm', '-f', existing.containerName], 30000).catch(() => {});
-                await this._closeRelay(existing);
-                this.sessions.delete(robot.id);
+            const active = this.activeTaskStatus(robot.id);
+            if (active && active.taskId !== options.taskId && ['starting', 'running'].includes(active.state)) {
+                throw new Error('Stop the active task before changing its workstation');
             }
-            if (this.sessions.size >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
-            const [tools, shellTools] = await Promise.all([
-                this.toolCache.prepareMode(mode),
-                this.toolCache.prepareShellTools(),
-            ]);
-            await prepareRobotShell(robotHome, { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
-            if (mode === 'desktop') await prepareDesktopLaunchers(robotHome);
-            const policyFile = upstream ? await writeChromiumProxyPolicy(this.proxyPolicyDir) : null;
-            const firewallFile = upstream && mode === 'browser' ? await writeContainerFirewallRules(this.proxyPolicyDir) : null;
-            const relay = upstream ? this.createRelay(upstream) : null;
-            const proxy = relay ? { relayPort: await relay.listen(), policyFile } : null;
-            const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: locale?.timezone || this.timezone, locale, cwd, toolsPath: tools.path, shellTools, proxy });
-            const session = { robotId: robot.id, mode, cwd, codingAgentsKey, proxyKey, localeKey, relay, proxyId: upstream?.id || null, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
-            this.sessions.set(robot.id, session);
-            try {
-                await this._podman(plan.args, 10 * 60 * 1000);
-                if (plan.firewalled) await this._startFirewalled(plan.containerName, firewallFile);
-                session.sessionPort = mappedPort((await this._podman(['port', plan.containerName, '3000/tcp'])).stdout);
-                session.mcpPort = mappedPort((await this._podman(['port', plan.containerName, '8100/tcp'])).stdout);
-                await Promise.all([
-                    waitForPort(session.sessionPort),
-                    waitForHttpService(session.mcpPort, mode === 'desktop' ? '/health' : '/mcp'),
-                ]);
-                session.state = 'running';
-                return session;
-            } catch (error) {
-                await this._podman(['rm', '-f', plan.containerName]).catch(() => {});
-                await this._closeRelay(session);
-                this.sessions.delete(robot.id);
-                throw error;
-            }
+            const cwd = cwdValue ? await this.resolveCwd(cwdValue) : undefined;
+            const session = await this.roboWork.call('gui_ensure', { robotId: robot.id, mode,
+                ...(cwd ? { cwd } : {}), codingAgents: robotCodingAgents(robot), allowReplace: Boolean(options.taskId) });
+            this.sessions.set(robot.id, { robotId: robot.id, ...session });
+            return session;
         });
-    }
-
-    // Initializing the container creates its network namespace without running anything in it, so
-    // the rules are in place before the container's first packet. A failure removes the container.
-    async _startFirewalled(containerName, rulesFile) {
-        await this._podman(['init', containerName]);
-        const namespace = (await this._podman(['inspect', '--format', '{{.NetworkSettings.SandboxKey}}', containerName])).stdout.trim();
-        if (!path.isAbsolute(namespace)) throw new Error('could not resolve the container network namespace');
-        await this.execFileImpl(this.nsenterCommand, [`--net=${namespace}`, this.nftCommand, '-f', rulesFile], { timeout: 30000, maxBuffer: 1024 * 1024, env: process.env });
-        await this._podman(['start', containerName]);
-    }
-
-    async _closeRelay(session) {
-        const relay = session?.relay;
-        if (!relay) return;
-        session.relay = null;
-        await relay.close().catch(() => {});
     }
 
     async openDesktop(robot, cwd) {
@@ -614,14 +335,6 @@ export class RuntimeManager {
         return this._enqueueTask(robot, type, request);
     }
 
-    async _prepareRobotAgentState(robotHome) {
-        await Promise.all(ROBOT_AGENT_STATE_DIRECTORIES.map(async (relativePath) => {
-            const directory = path.join(robotHome, relativePath);
-            await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-            await fs.chmod(directory, 0o700);
-        }));
-    }
-
     async _drainTaskQueue(robot) {
         if (this.shuttingDown || this.activeTasks.has(robot.id) || this.manualControl.has(robot.id)) return;
         const queue = this.taskQueues.get(robot.id) || [];
@@ -660,7 +373,7 @@ export class RuntimeManager {
             task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
             if (task.logTail.length < previousLength + String(chunk).length) task.logTruncated = true;
             task.logSeq += 1;
-            this._emitTaskEvent({ kind: 'progress', robotId: robot.id, taskId: task.taskId, chunk: String(chunk), outputKind: output.outputKind, outputComplete: output.outputComplete === true, outputId: output.outputId });
+            this._emitTaskEvent({ kind: 'progress', robotId: robot.id, taskId: task.taskId, chunk: String(chunk), outputKind: output.outputKind, outputComplete: output.outputComplete === true, outputId: output.outputId, replayed: output.replayed === true });
         };
         try {
             task.state = 'starting';
@@ -681,37 +394,21 @@ export class RuntimeManager {
                 throw new Error(`Coding agent ${requestedAgent} is not enabled for this robot`);
             }
             const codingAgent = requestedAgent;
-            const codingAgentsPromise = this.toolCache.prepareCodingAgents(codingAgent === 'auto' ? selectedAgents : [codingAgent]);
-            let mcpAddress = null;
             if (GUI_MODES.has(task.type)) {
-                const [, session] = await Promise.all([
-                    codingAgentsPromise,
-                    this.ensureContainer(robot, task.type, cwd, { taskId: task.taskId }),
-                ]);
-                mcpAddress = `${task.type}=http://127.0.0.1:${session.mcpPort}/mcp`;
-            } else {
-                await codingAgentsPromise;
+                const session = await this.ensureContainer(robot, task.type, cwd, { taskId: task.taskId });
+                task.sessionUrl = session.sessionUrl;
             }
             if (task.cancelRequested) throw new Error('task was paused');
-            await fs.mkdir(cwd, { recursive: true });
-            const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
-            await this._prepareRobotAgentState(originalHome);
-            await this.prepareOpenCode(robot.id, { prepare: (codingAgent === 'auto' ? selectedAgents : [codingAgent]).includes('opencode') });
-            const robotHome = await workspaceDataPath(originalHome, this.workspaceRoot);
-            await this._prepareRobotAgentState(robotHome);
-            await prepareRobotShell(robotHome);
+            await this.roboWork.call('robot_ensure', { robotId: robot.id, name: robot.name, codingAgents: selectedAgents });
             await this._saveTask(task);
-            if (task.cancelRequested) throw new Error('task was paused');
-            const args = ['--home', robotHome, '--cwd', cwd];
-            // A terminal task with an agent environment runs ALA in that agent's container on its own
-            // Node.js; the static bwrap and ALA come from the tool cache, visible there at the same path.
+            const args = ['--cwd', cwd];
             const environment = task.type === 'simple' && task.request.environment ? task.request.environment : null;
-            let runtimeTools = null;
             if (environment) {
                 await this.agentEnvironments.require(environment);
-                runtimeTools = await this.runtimeBundle.prepare();
                 args.push('--environment', environment);
             }
+            if (GUI_MODES.has(task.type)) args.push('--gui', task.type);
+            if (task.attachRun) args.push('--attach-run', task.attachRun);
             if (codingAgent !== 'auto') args.push('--ca', codingAgent);
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
@@ -732,30 +429,20 @@ export class RuntimeManager {
             if (task.request.effort) args.push('--effort', task.request.effort);
             const requestedMcp = Array.isArray(task.request.mcpServers)
                 ? task.request.mcpServers.join(',') : String(task.request.mcpServers || '');
-            const mcpServers = [requestedMcp, mcpAddress].filter(Boolean).join(',');
+            const mcpServers = requestedMcp;
             if (mcpServers) args.push('--MCPServers', mcpServers);
             task.state = 'running';
             this._emitTaskEvent({ kind: 'state', robotId: robot.id, taskId: task.taskId, state: 'running' });
-            const codingAgents = await codingAgentsPromise;
-            const childEnv = {
-                ...codingAgentEnvironment(codingAgents, process.env, this.toolCache.root),
-                ALA_EVENT_STREAM: '1',
-            };
+            await Promise.resolve();
+            const childEnv = { ...process.env, ALA_EVENT_STREAM: '1',
+                ROBOTEAM_TASK_TAG: JSON.stringify({ taskId: task.taskId, type: task.type, robotName: robot.name,
+                    request: task.request, ownerPrincipal: task.request.ownerPrincipal || null }) };
             delete childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
-            for (const name of ['ROBOTEAM_RUNTIME_BWRAP', 'ROBOTEAM_RUNTIME_ALA', 'ROBOTEAM_CHANNEL_DIR']) delete childEnv[name];
-            if (runtimeTools) {
-                // Callback channels live under /data so the other container reaches their sockets.
-                const channelDir = path.join(this.dataDir, 'rt');
-                await fs.mkdir(channelDir, { recursive: true, mode: 0o700 });
-                Object.assign(childEnv, { ROBOTEAM_RUNTIME_BWRAP: runtimeTools.bwrap.bin,
-                    ROBOTEAM_RUNTIME_ALA: runtimeTools.ala.entry, ROBOTEAM_CHANNEL_DIR: channelDir });
-            }
             if (task.request.allowsHumanInput) {
                 if (!this.requestHumanInput) throw new Error('Workflow human-input handler is unavailable');
                 humanInputChannel = await createHumanInputChannel({
                     request: input => this.requestHumanInput(task.taskId, input),
                     stop: () => this.stopTask(robot, task.type, task.taskId),
-                    ...(runtimeTools ? { baseDir: childEnv.ROBOTEAM_CHANNEL_DIR } : {}),
                 });
                 childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY = humanInputChannel.directory;
             }
@@ -782,6 +469,7 @@ export class RuntimeManager {
                 else task.result += resultDecoder.write(chunk);
             });
             const progressParser = createAlaProgressParser(appendProgress, (event) => {
+                if (event.type === 'run-started' && typeof event.runId === 'string') task.runId = event.runId;
                 if (event.type === 'task-failed' && typeof event.message === 'string') forcedFailure ||= new Error(event.message);
                 if (event.type === 'skill-catalog') task.skillExecution = { revision: event.revision, policyVersion: event.policyVersion };
                 // Only the identifiers of the first turn are kept, never the event body.
@@ -921,13 +609,19 @@ export class RuntimeManager {
                 }
                 const neverStarted = internal.state === 'queued';
                 internal.cancelRequested = true;
-                internal.state = 'paused'; internal.completedAt = new Date().toISOString(); internal.child?.kill('SIGTERM');
+                internal.state = 'paused'; internal.completedAt = new Date().toISOString(); this._stopTaskChild(internal);
                 // A queued attempt never reaches its run's terminal report.
                 if (neverStarted) this._emitTaskTerminal(internal, { state: 'paused', result: internal.result, error: internal.error });
             }
             operation.state = 'completed'; operation.completedAt = new Date().toISOString();
         });
         return { taskId: operation.taskId, state: operation.state };
+    }
+
+    _stopTaskChild(task) {
+        if (task.runId) void this.roboWork.call('run_stop', { runId: task.runId, signal: 'SIGTERM' }).catch(() => {});
+        if (task.child?.stdin?.write) task.child.stdin.write(JSON.stringify({ type: 'stop' }) + '\n');
+        else task.child?.kill('SIGINT');
     }
 
     takeControl(robot, taskId) {
@@ -941,6 +635,7 @@ export class RuntimeManager {
         if (!/^[0-9a-f-]{36}$/u.test(String(taskId))) throw new Error('Invalid task id.');
         let internal = this.tasks.get(taskId);
         let owner = internal?.request?.ownerPrincipal;
+        if (internal?.attachRun && ['queued', 'starting', 'running'].includes(internal.state)) return { taskId: internal.taskId, state: internal.state, runId: internal.attachRun };
         if (!internal) {
             const file = findProjectRecord(this, 'task', taskId);
             if (!file) throw new Error('Task execution record is unavailable in registered projects.');
@@ -1001,19 +696,14 @@ export class RuntimeManager {
             if (session.mode !== mode) throw new Error(`robot slot is occupied by its ${session.mode} container`);
             const active = this.activeTaskStatus(robotId);
             if (active && active.type === mode && ['queued', 'starting', 'running'].includes(active.state)) throw new Error(`stop the ${mode} task before its container`);
-            session.state = 'stopping';
-            await this._podman(['rm', '-f', session.containerName], 30000).catch(() => {});
-            await this._closeRelay(session);
+            await this.roboWork.call('gui_stop', { robotId, mode });
             this.sessions.delete(robotId);
             return { state: 'stopped' };
         });
     }
 
     async logs(robotId, tail = 200) {
-        const session = this.sessions.get(robotId);
-        if (!session) return '';
-        const result = await this._podman(['logs', '--tail', String(Math.max(1, Math.min(1000, Number(tail) || 200))), session.containerName], 30000);
-        return `${result.stdout || ''}${result.stderr || ''}`.slice(-256 * 1024);
+        return (await this.roboWork.call('gui_logs', { robotId, tail })).logs;
     }
 
     async deleteRobot(robotId, remove) {
@@ -1023,15 +713,8 @@ export class RuntimeManager {
         // A seed or shell preparation in flight finishes (or aborts) before the folder is removed;
         // anything queued afterwards sees deletedRobots and does nothing.
         await this.seedChain.get(robotId)?.catch(() => {});
-        try { await remove(); }
+        try { await this.roboWork.call('robot_delete', { robotId }); await remove(); }
         catch (error) { this.deletedRobots.delete(robotId); throw error; }
-        await this.soulGateway.remove(path.join(this.dataDir, 'robots', robotId, 'home'));
-        // Never throws; a lease left behind by an unreachable proxyAgent is released when the dashboard next lists proxies.
-        void this.proxyPool?.release(robotId);
-        // Server-only model-list cache for this robot (never inside the robot's mounted folder).
-        if (/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) {
-            await fs.rm(path.join(this.dataDir, 'server-state', 'model-catalog', robotId), { recursive: true, force: true }).catch(() => {});
-        }
         this.manualControl.delete(robotId);
         this.taskQueues.delete(robotId);
         this.latestTask.delete(robotId);
@@ -1040,18 +723,11 @@ export class RuntimeManager {
 
     async stopAll() {
         this.shuttingDown = true;
-        for (const task of this.tasks.values()) {
-            if (!['queued', 'starting', 'running'].includes(task.state)) continue;
-            const neverStarted = task.state === 'queued';
-            task.cancelRequested = true;
-            task.state = 'paused';
-            task.completedAt = new Date().toISOString();
-            task.child?.kill('SIGTERM');
-            if (neverStarted) this._emitTaskTerminal(task, { state: 'paused', result: task.result, error: task.error });
-        }
-        await Promise.allSettled(Array.from(this.sessions.values()).map((session) => this.stopContainer(session.robotId, session.mode)));
-        await this.soulGateway.close();
+        for (const task of this.tasks.values()) task.child?.stdin?.write(JSON.stringify({ type: 'detach' }) + '\n');
+        // Wrapper processes may exit. Native runs and GUI resources belong to
+        // RoboWork and remain alive across this controller restart.
     }
+
 }
 
-export const runtimeManagerInternals = { alaFailureMessage, createAlaProgressParser, httpServiceIsReady, normalizeBasePath, robotSessionUrl, MANAGED_LABEL };
+export const runtimeManagerInternals = { alaFailureMessage, createAlaProgressParser, normalizeBasePath, robotSessionUrl };

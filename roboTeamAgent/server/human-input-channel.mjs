@@ -4,6 +4,27 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+export async function relayLocalHumanInput(directory, callback) {
+    if (callback.path !== '/require-human-input') throw new Error('Invalid human-input callback');
+    const { token } = JSON.parse(await fs.readFile(path.join(directory, 'context.json'), 'utf8'));
+    return new Promise((resolve, reject) => {
+        const req = http.request({ socketPath: path.join(directory, 'request.sock'), method: 'POST', path: callback.path,
+            headers: { 'content-type': 'application/json', 'x-task-capability': token } }, res => {
+            let body = '';
+            res.setEncoding('utf8'); res.on('data', chunk => { body += chunk; });
+            res.once('end', () => {
+                try {
+                    const result = JSON.parse(body);
+                    if (res.statusCode !== 200) throw new Error(result.error || 'Human-input request failed');
+                    resolve(result);
+                } catch (error) { reject(error); }
+            });
+        });
+        req.once('error', reject);
+        req.end(JSON.stringify(callback.body));
+    });
+}
+
 // Private HTTP callback from one native execution into its owning RoboTeam process.
 // It grants no access to the public HTTP API or to other workflow executions.
 // `baseDir` places the socket where another container can reach it (a robot phase in another agent).

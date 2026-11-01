@@ -27,7 +27,7 @@ const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 const TASK_ID_RE = /^task_[0-9a-f]{24}$/;
 const METADATA_VERSION = 2;
 const STATUSES = ['pending', 'completed', 'failed', 'interrupted'];
-const METADATA_FIELDS = ['skillPolicyRef', 'legacySkillSelection', 'skillSelection', 'skillExecution', 'previousSkillExecution', 'modelOverride'];
+const METADATA_FIELDS = ['skillPolicyRef', 'legacySkillSelection', 'skillSelection', 'skillExecution', 'previousSkillExecution', 'modelOverride', 'remoteRun'];
 
 function assertRegularFileOrMissing(filePath) {
     try {
@@ -398,7 +398,8 @@ export class ConversationSessionStore {
         };
         const engine = normalizeEngine({
             type: 'ala', version: 1, sessionId,
-            home: canonicalDirectory(home), cwd: canonicalDirectory(cwd), backend, ...(robotId ? { robotId } : {}),
+            home: robotId && home === `/home/${robotId}` ? home : canonicalDirectory(home),
+            cwd: canonicalDirectory(cwd), backend, ...(robotId ? { robotId } : {}),
         }, assertSessionId(sessionId));
         return this.#updateMetadata(sessionId, (metadata) => {
             if (metadata.engine) {

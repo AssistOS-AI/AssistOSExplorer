@@ -71,9 +71,7 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
         if (!target) {
             // Sources hidden by the skills overlay or private-data mask need a
             // separate sandbox path. Other links retain their canonical paths.
-            target = inside(projectSkills, source) || inside(path.join(cwd, '.claude', 'skills'), source)
-                || inside(path.join(cwd, '.roboteam'), source)
-                ? `/workspace/roboteam-skill-${sources.size}` : source;
+            target = `/workspace/roboteam-skill-${sources.size}`;
             sources.set(source, target);
             mounts.push({ source, target, expose: true });
         }

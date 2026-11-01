@@ -1,82 +1,62 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { sendTaskEvent } from './taskEventClient.mjs';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 
 const MAX_BYTES = 1024 * 1024;
-const TARGETS = {
-    'launch-gpt-researcher': 'GPTResearcher',
-};
+const TARGETS = { 'launch-workflow': 'roboTeamAgent', 'list-workflows': 'roboTeamAgent', 'launch-gpt-researcher': 'GPTResearcher' };
 
-export async function createSkillInvocation({ skillName, input, contextDirectory = '/workspace/ploinky-runtime', sdk } = {}) {
+export async function createSkillInvocation({ skillName, input, contextDirectory = '/workspace/ploinky-runtime' } = {}) {
     if (typeof input !== 'string') throw new TypeError('Skill input must be a string.');
-    let setup;
-    let standalone = false;
-    try { setup = JSON.parse(await fs.readFile(path.join(contextDirectory, 'context.json'), 'utf8')); }
-    catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-        standalone = true;
-        // Direct script use inside a Ploinky agent needs no AchillesCLI service.
-        setup = { version: 1, env: {}, workingDir: process.cwd() };
-    }
-    if ((!standalone && setup.version !== 2) || !path.isAbsolute(setup.workingDir)) throw new Error('Invalid Ploinky task context.');
-    for (const [name, value] of Object.entries(setup.env || {})) {
-        if (!name.startsWith('PLOINKY_') || /MASTER|PRIVATE_SECRET|SUBJECT|PASSWORD/i.test(name) || typeof value !== 'string') {
-            throw new Error('Invalid SDK environment field.');
-        }
-        process.env[name] = value;
-    }
-    const receipt = async event => {
-        if (standalone) return;
-        try { await sendTaskEvent(path.join(contextDirectory, 'tasks.sock'), setup.eventToken, event); }
-        catch (cause) {
-            throw new Error(`Task ${event.task.taskId} already started, but its notification failed. Do not launch it again.`, { cause });
-        }
-    };
-    const clients = new Map();
-    let module = sdk;
-    let removeObserver;
-    const load = async () => {
-        if (!module) module = await import(standalone ? '/Agent/client/AgentMcpClient.mjs'
-            : pathToFileURL(path.join(contextDirectory, 'sdk/client/AgentMcpClient.mjs')).href);
-        if (!removeObserver) removeObserver = module.setAgentTaskObserver(async (task) => {
-            await receipt({ type: 'task-started', task: {
-                agentName: task.agentName, taskId: task.taskId, toolName: task.toolName,
-                arguments: task.arguments, metadata: task.metadata,
-            } });
-            return { detached: true };
+    const setup = JSON.parse(await fs.readFile(path.join(contextDirectory, 'context.json'), 'utf8'));
+    if (!path.isAbsolute(setup.workingDir) || typeof setup.token !== 'string') throw new Error('Invalid task callback context.');
+    const request = (pathname, body) => new Promise((resolve, reject) => {
+        const req = http.request({ socketPath: path.join(contextDirectory, 'request.sock'), path: pathname, method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-task-capability': setup.token } }, res => {
+            let text = '';
+            res.setEncoding('utf8');
+            res.on('data', chunk => { text += chunk; if (Buffer.byteLength(text) > MAX_BYTES) req.destroy(new Error('Callback response is too large')); });
+            res.once('end', () => {
+                try {
+                    const value = JSON.parse(text);
+                    if (res.statusCode < 200 || res.statusCode >= 300) throw new Error(value.error || 'Task callback refused');
+                    resolve(value);
+                } catch (error) { reject(error); }
+            });
         });
-        return module;
-    };
-    const clientFor = async (agent) => {
-        if (!clients.has(agent)) clients.set(agent, (await load()).createAgentClient(agent, {
-            userDelegationToken: setup.userDelegationToken || '',
-        }));
-        return clients.get(agent);
-    };
+        req.setTimeout(120000, () => req.destroy(new Error('Task callback timed out')));
+        req.once('error', reject);
+        req.end(JSON.stringify(body));
+    });
     const target = TARGETS[skillName];
+    const launched = new Map();
+    const callAgentTool = async (agent, tool, payload) => {
+        const result = await request('/agent-call', { agent, tool, payload });
+        const taskId = result?.metadata?.taskId || result?.result?.metadata?.taskId;
+        if (taskId) launched.set(taskId, { agentName: agent, taskId, toolName: tool, arguments: payload, metadata: result.metadata || {} });
+        return result;
+    };
+    const ensureAgentRunning = ref => request('/ensure-agent', { ref });
+    const getTaskStatus = taskId => request('/task-status', { agent: target, taskId });
     const context = { workingDir: setup.workingDir, agentName: target,
-        webchatResources: setup.resources || [], webchatPaths: setup.paths || [],
-        webchatOrigin: setup.origin || {} };
-    const callAgentTool = async (agent, tool, payload) => (await clientFor(agent)).callToolWithoutWait(tool, payload);
-    const ensureAgentRunning = async (ref) => (await clientFor(target || ref.split('/').at(-1))).ensureAgentRunning(ref);
-    const getTaskStatus = async (id) => (await clientFor(target)).getTaskStatus(id);
+        webchatResources: setup.resources || [], webchatPaths: setup.paths || [], webchatOrigin: setup.origin || {} };
     return {
         promptText: input, workingDir: setup.workingDir, context,
         resources: context.webchatResources, paths: context.webchatPaths, origin: context.webchatOrigin,
-        hasInvocationToken: false, hasUserDelegationToken: Boolean(setup.userDelegationToken),
+        hasInvocationToken: false, hasUserDelegationToken: false,
         callAgentTool, ensureAgentRunning, getTaskStatus,
-        agentClient: {
-            callToolWithoutWait: (tool, payload) => callAgentTool(target, tool, payload),
-            ensureAgentRunning, getTaskStatus,
+        async publishLiveSession(taskId, liveSession) {
+            const task = launched.get(taskId);
+            if (!task) throw new Error('Unknown launched task.');
+            await request('/task-started', { task: { ...task, metadata: { ...task.metadata, liveSession } } });
         },
+        agentClient: { callToolWithoutWait: (tool, payload) => callAgentTool(target, tool, payload), ensureAgentRunning, getTaskStatus },
         bashExecutor: async (params = {}) => {
             const result = await executeProcess({ command: params.command, args: params.args || [], cwd: process.cwd() });
             return { success: result.success, output: result.stdout.trim(), stderr: result.stderr.trim(),
                 error: result.error || null, exitCode: result.status, signal: result.signal, timedOut: result.timedOut };
         },
-        async close() { removeObserver?.(); },
+        async close() {},
     };
 }
 

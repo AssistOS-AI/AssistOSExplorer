@@ -6,6 +6,9 @@ import { errorFields, logDiagnostic } from '../copilot/src/lib/storage/copilotDi
 
 let releaseUsage;
 let diagnosticsDir = process.cwd();
+// Service/container shutdown detaches this controller. Explicit UI Stop and
+// Ctrl-C still reach the engine cancellation path.
+process.prependOnceListener('SIGTERM', () => process.exit(0));
 // Diagnostics only. The monitor observes uncaught exceptions and unhandled rejections without
 // handling them, so the process still crashes or exits exactly as it did before.
 {

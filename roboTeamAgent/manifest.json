@@ -1,13 +1,11 @@
 {
   "container": "docker.io/assistos/roboteam-agent:runtime",
-  "about": "Manages persistent robots and starts authenticated browser or Linux desktop containers with nested Podman.",
-  "containerSecurity": {
-    "nestedPodman": true
-  },
+  "about": "Manages robot conversations, tasks, workflows and Copilot through the RoboWork runtime.",
   "agent": "exec sh /code/scripts/startAgent.sh",
   "cli": "node /code/server/robot-cli.mjs",
   "enable": [
-    "soul-gateway no-wait"
+    "soul-gateway no-wait",
+    "roboWorkAgent global no-wait"
   ],
   "webchat": {
     "auth": "static",
@@ -25,20 +23,13 @@
       "successThreshold": 1
     }
   },
-  "webtty": {
-    "homeProfiles": {
-      "version": 1,
-      "resolve": "/base-agent-additional-server/roboTeamAgent/3001/api/terminal-profiles/resolve"
-    }
-  },
   "routerAccess": {
     "httpRoutes": [
       {
         "path": "/base-agent-additional-server/roboTeamAgent/3001/*",
         "access": "authenticated"
       }
-    ],
-    "agentExec": true
+    ]
   },
   "volumes": {
     ".data/roboTeamAgent": "/data"
@@ -49,13 +40,7 @@
         "7000:7000",
         "3001:3001"
       ],
-      "install": "sh /code/scripts/install.sh",
-      "env": [
-        "ROBOTEAM_CODEX_VERSION",
-        "ROBOTEAM_OPENCODE_VERSION",
-        "ROBOTEAM_PI_VERSION",
-        "ROBOTEAM_CLAUDE_VERSION"
-      ]
+      "install": "sh /code/scripts/install.sh"
     }
   },
   "link-install": [

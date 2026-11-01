@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { resolveAlaCommand } from '../../server/ala-command.mjs';
-import { createOpenCodeModelCache } from '../../server/opencode-model-cache.mjs';
+import { createOpenCodeModelCache } from '../../../roboWorkAgent/server/opencode-model-cache.mjs';
 
 // The engine reads the ALA transcript module while it loads, so these tests need an ALA
 // checkout (the container mount, a sibling AdvancedLanguageAgent, or ACHILLES_ALA_COMMAND).

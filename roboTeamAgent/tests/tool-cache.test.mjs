@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { ToolCache, toolCacheInternals } from '../server/tool-cache.mjs';
+import { ToolCache, toolCacheInternals } from '../../roboWorkAgent/server/tool-cache.mjs';
 
 async function writeExecutable(filePath) {
     await fs.mkdir(path.dirname(filePath), { recursive: true });

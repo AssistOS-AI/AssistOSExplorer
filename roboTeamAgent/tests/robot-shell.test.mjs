@@ -5,8 +5,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { RobotStore } from '../server/robot-store.mjs';
-import { prepareRobotShell } from '../server/robot-shell.mjs';
-import { ToolCache } from '../server/tool-cache.mjs';
+import { prepareRobotShell } from '../../roboWorkAgent/server/robot-shell.mjs';
+import { ToolCache } from '../../roboWorkAgent/server/tool-cache.mjs';
 
 test('new robots have shell configuration, repeated preparation preserves user configuration', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-shell-'));

@@ -1,16 +1,13 @@
 import { nativeEnvironment } from './alaEnvironment.mjs';
-import { createTaskFailureChannel } from '../../../../server/task-failure-channel.mjs';
-import { spawnAlaInAgent } from './alaRemote.mjs';
+import { RoboWorkClient, spawnRoboWorkRun } from '../../../../server/run-client.mjs';
+import { targetPath } from './alaRemote.mjs';
 import { buildNativePrompt, buildTaskPrompt } from '../prompts.mjs';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { resolveAlaInstallation } from './alaInstallation.mjs';
 import { alaSkillMountArguments } from './alaSkillMounts.mjs';
-import { alaSessionsRoot, readAlaSession } from './alaTranscript.mjs';
+import { readAlaSession } from './alaTranscript.mjs';
 import * as workspaceSettings from '../config/achillesSettings.mjs';
 import { acquireExecutionLease } from '../storage/workspaceStateLock.mjs';
 import { errorFields, logDiagnostic } from '../storage/copilotDiagnostics.mjs';
@@ -24,36 +21,6 @@ import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
 const BACKENDS = ['codex', 'opencode', 'pi', 'claude'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
 const MAX_OUTPUT = 16 * 1024 * 1024;
-
-async function modelConfigPath(home) {
-    const directory = path.join(home, '.ala');
-    const file = path.join(directory, 'config.json');
-    for (const [entryPath, kind] of [[directory, 'isDirectory'], [file, 'isFile']]) {
-        try {
-            const entry = await fs.lstat(entryPath);
-            if (entry.isSymbolicLink() || !entry[kind]()) throw new Error('Unsafe ALA model configuration path.');
-        } catch (error) {
-            if (error.code !== 'ENOENT') throw error;
-        }
-    }
-    return file;
-}
-
-// The ALA home holds ALA's configuration and the coding agents' own state. It
-// is the robot home under RoboTeam and the user's home for a standalone CLI.
-// Conversations are not stored there; they live in the working folder.
-async function executionHome(env) {
-    const configured = String(env.ACHILLES_ALA_HOME || '').trim();
-    const directory = configured || os.homedir();
-    let home;
-    try {
-        home = await fs.realpath(directory);
-        if (!(await fs.stat(home)).isDirectory()) throw new Error('not a directory');
-    } catch (cause) {
-        throw new Error('ALA setup error: ACHILLES_ALA_HOME must be an existing administrator-provisioned dedicated native home.', { cause });
-    }
-    return home;
-}
 
 // Returns the backend to resume, or false when the conversation has no native
 // continuation yet. The continuation is the last one in ALA's transcript.
@@ -96,11 +63,11 @@ function liveTitle(text) {
 }
 
 export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settings = workspaceSettings,
-    interactions, backgroundTasks, installation, execution = {}, webchatLogsBase = '', modelCache = null, livePublisher = null } = {}) {
+    interactions, backgroundTasks, installation, execution = {}, webchatLogsBase = '', modelCache = null, livePublisher = null,
+    roboWork = new RoboWorkClient() } = {}) {
     if (!sessionStore || !skillCatalog) throw new TypeError('ALA requires a session store and Anthropic skill catalog.');
     const active = new Set();
     let closed = false;
-    const installed = installation ? Promise.resolve(installation) : resolveAlaInstallation();
 
     async function configuration(sessionId, env) {
         const session = sessionStore.loadSession(sessionId);
@@ -112,19 +79,20 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         // One persistent native home per robot. The robot home is mounted
         // writable and used directly, so credentials and native sessions never
         // diverge across a per-project copy.
-        const home = await executionHome(env);
-        const resumeBackend = validateNativeSession(session, home, cwd);
+        const robotId = execution.robotId || env.ROBOTEAM_COPILOT_ROBOT_ID;
+        if (!robotId) throw new Error('A RoboTeam robot is required for execution.');
+        const native = await roboWork.call('robot_config', { robotId });
+        const home = native.homeTarget;
+        const resumeBackend = session.remoteRun ? session.engine?.backend : validateNativeSession(session, home, cwd);
         const stored = settings.readAchillesSettings?.(cwd) || {};
         const permissionMode = execution.permissions || settings.getPermissionMode?.(cwd) || stored.permissionMode || 'full-access';
         if (!['ask-for-approval', 'full-access'].includes(permissionMode)) throw new Error('Invalid native permission mode.');
-        const api = await installed;
         // The robot's coding agent, models and efforts live in ALA's config in
         // the robot home; ALA reads it itself, RoboTeam reads it to know the backend.
-        const native = api.loadConfig ? await api.loadConfig(await modelConfigPath(home)) : { models: {}, efforts: {} };
         const models = { ...native.models };
         const efforts = { ...native.efforts };
         const envSnapshot = nativeEnvironment(env, home);
-        const agents = await api.discoverCodingAgents({ env: envSnapshot });
+        const agents = native.agents || [];
         const isInstalled = (name) => agents.some((entry) => entry.name === name && entry.available);
         // A native session resumes only on its own agent; the robot may no longer enable it.
         if (resumeBackend && !isInstalled(resumeBackend)) {
@@ -155,26 +123,23 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN, PI_BIN or CLAUDE_BIN and authenticate it in the dedicated ALA home.`);
         }
         return { cwd, home, workspaceRoot, session, resume: Boolean(resumeBackend), backend,
-            requestedBackend: resumeBackend ? null : requestedBackend, models, efforts, permissionMode, api, agents, env: envSnapshot };
+            requestedBackend: resumeBackend ? null : requestedBackend, models, efforts, permissionMode, agents, robotId, env: envSnapshot };
     }
 
     async function selectTaskEffort(config, signal) {
         if (execution.effort === undefined || !config.models[config.backend]) return;
-        const service = config.api.createCodingAgentService({ agents: config.agents, workspace: config.cwd,
-            cwd: config.cwd, home: config.home, env: config.env, models: config.models });
-        try {
-            const models = await service.listModels(config.backend, {
-                signal: AbortSignal.any([signal, AbortSignal.timeout(90000)]), details: true,
-            });
+        signal.throwIfAborted();
+        {
+            const { models } = await roboWork.call('robot_models', { robotId: config.robotId, agent: config.backend, cwd: config.cwd }, { timeoutMs: 90000 });
             const model = models.find(entry => typeof entry !== 'string' && entry.id === config.models[config.backend]);
             if (model?.efforts?.includes(execution.effort)) {
                 config.efforts[config.backend] = execution.effort;
                 config.taskEffortApplied = true;
             }
-        } finally { await service.close(); }
+        }
     }
 
-    async function executeTurn({ sessionId, turnId = randomUUID(), prompt, skillName, context = {}, signal, onEvent, onControl } = {}) {
+    async function executeTurn({ sessionId, turnId = randomUUID(), prompt, skillName, context = {}, signal, onEvent, onControl, attach = null } = {}) {
         const responseStarted = performance.now();
         if (closed) throw new Error('ALA engine is closed.');
         if (typeof prompt !== 'string') throw new TypeError('The turn prompt must be text.');
@@ -246,7 +211,15 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const selected = selectedSkillName ? skills.find((skill) => skill.name === selectedSkillName) : null;
             if (selectedSkillName && !selected) throw new Error(`Skill "${selectedSkillName}" is missing or disabled.`);
             controller.signal.throwIfAborted();
-            turn = await sessionStore.beginTurn({ sessionId, turnId, text: sanitize(context.rawText || prompt),
+            const savedRun = attach || config.session.remoteRun;
+            if (savedRun) {
+                const runs = await roboWork.call('run_list', { robotId: config.robotId });
+                const trusted = runs.find(run => run.runId === savedRun.runId && run.robotId === config.robotId
+                    && run.tag?.sessionId === sessionId && run.tag?.turnId === savedRun.turnId);
+                if (!trusted) throw new Error('The saved run is not owned by this conversation.');
+                turnId = savedRun.turnId;
+                turn = { turnId, userMessageId: savedRun.userMessageId, assistantMessageId: savedRun.assistantMessageId };
+            } else turn = await sessionStore.beginTurn({ sessionId, turnId, text: sanitize(context.rawText || prompt),
                 attachments: sanitize(context.attachments || []), references: sanitize(context.references || []) });
             phase('turn.begun');
             // The run and its transcript link exist before ALA starts, so a
@@ -264,9 +237,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 origin: structuredClone(context.origin || context.webchatOrigin || {}) };
             // A turn that runs in another agent's container keeps its callback sockets under /data, which that
             // container sees through the workspace.
-            const channelDir = execution.environment ? env.ROBOTEAM_CHANNEL_DIR : '';
-            if (execution.environment && !channelDir) throw new Error('Agent environment execution requires ROBOTEAM_CHANNEL_DIR.');
-            scriptContext = await createPloinkyTaskContext({ context: captured, ...(channelDir ? { baseDir: channelDir } : {}),
+            scriptContext = await createPloinkyTaskContext({ context: captured,
                 env, onTask: (task) => backgroundTasks?.observeScriptTask(task, captured) });
             let nativePrompt = buildNativePrompt({ prompt, resume: config.resume,
                 selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });
@@ -274,16 +245,9 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             await sessionStore.bindEngine(sessionId, { home, cwd, backend, robotId: execution.robotId });
             // ALA reads defaults from the robot home. Only explicit session or
             // task overrides are passed as arguments; no derived config is written.
-            const args = ['--home', home, '--cwd', cwd, '--session-id', sessionId,
-                '--turn-id', turnId, '--control-stdin', '--permissions', permissionMode,
-                '--ignore', path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)];
-            if (config.session.modelOverride || execution.model || config.taskEffortApplied) {
-                args.push('--model', config.models[backend], '--effort', config.efforts[backend] || 'default');
-            }
-            if (config.requestedBackend) args.push('--ca', config.requestedBackend);
+            const folders = [];
             // The workspace is mounted read-only at its canonical path; the writable
             // cwd is the --cwd grant. ALA mounts exactly what it is given.
-            if (config.workspaceRoot !== cwd) args.push('--folder', config.workspaceRoot);
             if (snapshot.skillsDirectory) {
                 const claude = path.join(cwd, '.claude');
                 const claudeStat = await fs.lstat(claude).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
@@ -292,44 +256,67 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                     && await fs.realpath(claude) !== await fs.realpath(path.join(cwd, '.agents'))) {
                     throw new Error('Project .claude symlink must point to .agents for session skills.');
                 }
-                args.push(...alaSkillMountArguments({ snapshot, workspaceRoot: config.workspaceRoot, cwd,
-                    includeClaude: !claudeStat?.isSymbolicLink() }));
+                const skillArgs = alaSkillMountArguments({ snapshot, workspaceRoot: config.workspaceRoot, cwd,
+                    includeClaude: !claudeStat?.isSymbolicLink() });
+                for (let i = 0; i < skillArgs.length;) {
+                    i++;
+                    const source = await targetPath(skillArgs[i++], config.workspaceRoot);
+                    const folder = { source };
+                    if (skillArgs[i] === 'at' || skillArgs[i] === 'as') folder[skillArgs[i++] === 'at' ? 'at' : 'alias'] = skillArgs[i++];
+                    if (skillArgs[i] === 'expose') { folder.expose = true; i++; }
+                    folders.push(folder);
+                }
             }
-            args.push('--folder', scriptContext.directory, 'as', 'ploinky-runtime');
-            if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) args.push('--folder', env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, 'as', 'roboflow-human-input');
+            const channels = [{ name: 'ploinky-runtime', context: scriptContext.context }];
+            if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) channels.push({ name: 'human-input', context: {} });
             const failureSkill = skills.find(skill => skill.name === 'report-task-blocked');
             if (execution.workflowExecution && failureSkill) {
-                args.push('--folder', failureSkill.skillDir, 'as', 'report-task-blocked');
+                folders.push({ source: await targetPath(failureSkill.skillDir, config.workspaceRoot), alias: 'report-task-blocked' });
                 nativePrompt += '\n\nRead /workspace/report-task-blocked/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan.';
-                failureChannel = await createTaskFailureChannel({ ...(channelDir ? { baseDir: channelDir } : {}), request: async ({ message }) => {
+                channels.push({ name: 'task-failure', context: {} });
+                failureChannel = { close: async () => {}, request: async ({ message }) => {
                     if (!forcedFailure) {
                         forcedFailure = new Error(sanitize(message));
                         try { await emit({ type: 'task-failed', message: forcedFailure.message }); }
                         finally { controller.abort(forcedFailure); }
                     }
                     return {};
-                } });
-                args.push('--folder', failureChannel.directory, 'as', 'roboteam-task-failure');
+                } };
             }
-
-            if (config.resume) args.push('--resume-session');
-            if (execution.mcpServers) args.push('--MCPServers', execution.mcpServers);
-
-            const isNode = /\.(?:mjs|cjs|js)$/i.test(api.entryPath);
             await emit({ type: 'progress', reason: 'Starting ALA' });
-            const alaEnv = { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '', ALA_SESSIONS: alaSessionsRoot(cwd) };
-            child = execution.environment
-                // A terminal workflow phase with an agent environment: ALA runs in that agent's container.
-                ? await spawnAlaInAgent({ environment: execution.environment, args, cwd, env: { ...alaEnv,
-                    ROBOTEAM_RUNTIME_BWRAP: env.ROBOTEAM_RUNTIME_BWRAP,
-                    ROBOTEAM_RUNTIME_ALA: env.ROBOTEAM_RUNTIME_ALA } })
-                : spawn(isNode ? process.execPath : api.entryPath, isNode ? [api.entryPath, ...args] : args, {
-                    cwd, env: alaEnv, shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
-                });
+            const remoteRun = savedRun || { runId: randomUUID(), turnId, userMessageId: turn.userMessageId, assistantMessageId: turn.assistantMessageId };
+            await sessionStore.updateSession(sessionId, session => { session.remoteRun = remoteRun; });
+            await emit({ type: 'run-started', runId: remoteRun.runId });
+            const runTag = { kind: env.ROBOTEAM_TASK_TAG ? 'task' : 'copilot', sessionId, turnId,
+                ...(env.ROBOTEAM_TASK_TAG ? JSON.parse(env.ROBOTEAM_TASK_TAG) : {}),
+                ...(context.liveOwner?.principal ? { ownerPrincipal: context.liveOwner.principal } : {}) };
+            child = await spawnRoboWorkRun({ client: roboWork, attach: Boolean(savedRun), input: {
+                runId: remoteRun.runId, robotId: config.robotId, cwd,
+                ala: { sessionId, turnId, permissions: permissionMode, ca: backend, resume: config.resume,
+                    ...(config.session.modelOverride || execution.model || config.taskEffortApplied
+                        ? { model: config.models[backend], effort: config.efforts[backend] || 'default' } : {}),
+                    workflowExecution: Boolean(execution.workflowExecution),
+                    ...(execution.mcpServers ? { mcpServers: execution.mcpServers } : {}) },
+                folders, ignore: [path.resolve(cwd, ACHILLES_PRIVATE_DIRECTORY_NAME)], channels,
+                ...(execution.gui ? { gui: execution.gui } : {}),
+                ...(execution.environment ? { environment: execution.environment } : {}), tag: runTag,
+            }, onCallback: async callback => {
+                if (callback.channel === 'ploinky-runtime') return scriptContext.dispatch(callback);
+                if (callback.channel === 'human-input' && env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) {
+                    const { relayLocalHumanInput } = await import('../../../../server/human-input-channel.mjs');
+                    return relayLocalHumanInput(env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, callback);
+                }
+                if (callback.channel === 'task-failure' && failureChannel && callback.path === '/report-task-blocked') {
+                    const message = callback.body?.message;
+                    if (typeof message !== 'string' || !message.trim() || message.length > 8000) throw new Error('Invalid failure message');
+                    return failureChannel.request({ message: message.trim() });
+                }
+                throw new Error('Callback is not permitted');
+            } });
             phase('child.spawned', { childPid: child.pid ?? null });
             // The turn prompt is the first control record: ALA starts the coding
             // agent with `prompt` and records `displayText` as the user's message.
-            child.stdin.write(`${JSON.stringify({ type: 'prompt', prompt: sanitize(nativePrompt),
+            if (!savedRun) child.stdin.write(`${JSON.stringify({ type: 'prompt', prompt: sanitize(nativePrompt),
                 displayText: sanitize(context.rawText || prompt) })}\n`);
             // Control records follow the prompt. Live Sessions messages use the
             // same writer, with the control request id as the ALA message id.
@@ -370,6 +357,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             }
             const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, outputText,
                 { durationMs: Math.max(0, Math.round(performance.now() - responseStarted)), thinkingUrl });
+            await sessionStore.updateSession(sessionId, session => { delete session.remoteRun; });
             phase('completeTurn.done');
             liveResult = { status: 'finished', code: 0 };
             return { outputText: finalText, session: completed, turnId, userMessageId: turn.userMessageId,
@@ -386,6 +374,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                     { status: cancelled ? 'interrupted' : 'failed', durationMs: Math.max(0, Math.round(performance.now() - responseStarted)) });
                 error.turnId = turnId;
                 error.assistantMessageId = turn.assistantMessageId;
+                await sessionStore.updateSession(sessionId, session => { delete session.remoteRun; });
             }
             throw error;
         } finally {
@@ -489,6 +478,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             }
             let event;
             try { event = JSON.parse(value.slice(EVENT_PREFIX.length)); } catch { fail(new Error('Malformed mandatory ALA event JSON.')); return; }
+            if (child.remote?.replayed) event.replayed = true;
             queued = queued.then(() => handle(event)).catch(fail);
         };
         controller.signal.addEventListener('abort', stop, { once: true });
@@ -566,14 +556,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 controller.signal.throwIfAborted();
                 // OpenCode takes seconds to start, so its list is reused while every input it
                 // derives from is unchanged; any failure to establish that lists as before.
-                const probe = modelCache && config.backend === 'opencode'
-                    ? await modelCache.probe(config, controller.signal).catch(() => null) : null;
                 const selection = { model: config.models[config.backend] || null, effort: config.efforts[config.backend] || null };
-                if (probe?.models) return { backend: config.backend, models: probe.models, ...selection };
-                service = config.api.createCodingAgentService({ agents: config.agents, workspace: config.cwd,
-                    cwd: config.cwd, home: config.home, env: config.env, models: config.models });
-                const models = await service.listModels(config.backend, { signal: controller.signal, details: true });
-                if (probe) await modelCache.store(probe, models).catch(() => {});
+                const { models } = await roboWork.call('robot_models', { robotId: config.robotId, agent: config.backend, cwd: config.cwd }, { timeoutMs: 90000 });
                 return { backend: config.backend, models, ...selection };
             } finally {
                 signal?.removeEventListener('abort', abort);
