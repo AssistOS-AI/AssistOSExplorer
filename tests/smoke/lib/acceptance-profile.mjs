@@ -7,6 +7,14 @@ import { foreignAccount } from './live-sessions.mjs';
 
 export const acceptanceLedger = JSON.parse(fs.readFileSync(new URL('../acceptance-ledger.json', import.meta.url), 'utf8'));
 const enabled = value => /^(1|true|yes|on)$/i.test(String(value || '').trim());
+const plannedProfiles = [
+    { flag: 'SMOKE_ROBOWORK_RESTART', spec: 'specs/08-robowork-restart.spec.mjs', coverage: 'planned-robowork-ra7', residentEvidence: true,
+        titles: ['RoboWork restart pauses live flows, clears native census and resumes execution'] },
+    { flag: 'SMOKE_ROBOWORK_FEATURES', spec: 'specs/09-robowork-features.spec.mjs', coverage: 'planned-robowork-features', residentEvidence: false,
+        titles: ['E1 robot dashboard create import delete admin gates and MCP passthrough',
+            'E2 coding agent configuration models effort logins and OpenCode gateway turn',
+            'E7 workflow CRUD controls generation human input and schedule run-now'] },
+];
 
 function optionValue(args, name) {
     if (args.filter(value => value === name || value.startsWith(`${name}=`)).length > 1) {
@@ -60,17 +68,18 @@ function accountInputs(env, secondary = false) {
 }
 
 export function validateAcceptanceProfile(args, env = process.env, options = {}) {
-    const roboworkRestart = enabled(env.SMOKE_ROBOWORK_RESTART);
-    const restartSpec = 'specs/08-robowork-restart.spec.mjs';
-    if (roboworkRestart && (args.filter(value => value.includes('.spec.mjs')).length !== 1 || !args.includes(restartSpec))) {
-        throw new Error('RoboWork RA7 requires its own explicit one-test profile.');
+    const profiles = plannedProfiles.filter(profile => enabled(env[profile.flag]));
+    if (profiles.length > 1) throw new Error('Planned RoboWork acceptance profiles require separate invocations.');
+    const planned = profiles[0];
+    if (planned && (args.filter(value => value.includes('.spec.mjs')).length !== 1 || !args.includes(planned.spec))) {
+        throw new Error('Planned RoboWork acceptance requires its own explicit complete profile.');
     }
-    const selection = selectAcceptanceCases(args, roboworkRestart ? { ...options, ledger: { identities: [{
-        identity: '08-robowork-restart.spec.mjs::RoboWork restart pauses live flows, clears native census and resumes execution',
-        title: 'RoboWork restart pauses live flows, clears native census and resumes execution',
-        selection: { spec: restartSpec }, cohort: 'robowork-acceptance-ra7',
-        requiredFlags: { SMOKE_ROBOWORK_RESTART: '1' }, privateInputNamesOrCategories: [],
-    }] } } : options);
+    const selection = selectAcceptanceCases(args, planned ? { ...options, ledger: { identities: planned.titles.map(title => ({
+        identity: `${path.posix.basename(planned.spec)}::${title}`, title,
+        selection: { spec: planned.spec }, cohort: planned.coverage,
+        requiredFlags: { [planned.flag]: '1', SMOKE_ROBOWORK_MODEL_SETUP: '1' }, privateInputNamesOrCategories: [],
+    })) } } : options);
+    if (planned && selection.cases.length !== planned.titles.length) throw new Error('Planned RoboWork acceptance forbids pruning its fixed identities.');
     for (const name of ['--config', '-c', '--output', '--reporter', '--update-snapshots', '-u', '--update-source-method']) {
         if (args.some(value => value.split('=')[0] === name)) {
             throw new Error(`Explorer smoke gates forbid Playwright output override '${name}'; all artifacts must remain under SMOKE_ARTIFACT_DIR.`);
@@ -79,7 +88,7 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
     const listing = args.includes('--list');
     const box = (!listing && selection.specs.length === 0) || enabled(env.SMOKE_ACCEPTANCE)
         || env.SMOKE_DEPLOYMENT_MODE === 'box' || Boolean(env.SMOKE_PLOINKY_BOX_CONTAINER)
-        || roboworkRestart
+        || Boolean(planned)
         || selection.cases.some(entry => ['fresh-webtty', 'fresh-live-sessions', 'official-release', 'supporting-61'].includes(entry.cohort));
     const separateScreen = enabled(env.SMOKE_WEBMEET_SCREEN) && !enabled(env.SMOKE_ACCEPTANCE)
         && selection.specs.length === 1 && selection.specs[0] === 'specs/30-webmeet-room-chat.spec.mjs';
@@ -106,14 +115,14 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
         }
     }
     const liveSessions = selection.cases.some(entry => entry.cohort === 'fresh-live-sessions');
-    const residentEvidence = liveSessions || roboworkRestart;
+    const residentEvidence = liveSessions || planned?.residentEvidence;
     if (liveSessions && selection.cases.filter(entry => entry.cohort === 'fresh-live-sessions').length !== 2) {
         throw new Error('Fresh Live Sessions acceptance requires both complete feature identities; a pruned cohort cannot pass.');
     }
     if (liveSessions && !listing && (selection.specs.length !== 1 || selection.cases.length !== 2)) {
         throw new Error('Fresh Live Sessions acceptance requires its own separate two-test cohort.');
     }
-    const dualAccounts = roboworkRestart || selection.cases.some(entry => entry.title === 'two Explorer accounts can join one room and exchange chat'
+    const dualAccounts = Boolean(planned) || selection.cases.some(entry => entry.title === 'two Explorer accounts can join one room and exchange chat'
         || entry.cohort === 'fresh-webtty' || entry.cohort === 'fresh-live-sessions' || entry.cohort === 'supporting-61');
     const guestOnly = selection.cases.length > 0 && selection.cases.every(entry => entry.cohort === 'supporting-15');
     const accounts = { enabled: acceptance && !guestOnly, secondary: dualAccounts, primaryAdmin: true,
@@ -155,7 +164,7 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
     }
     const separateQa = enabled(env.SMOKE_QA_ACCEPTANCE);
     return Object.freeze({ ...selection, box, listing, acceptance, accounts, ledgerCoverage: !separateScreen && !separateQa,
-        coverage: roboworkRestart ? 'planned-robowork-ra7'
+        coverage: planned ? planned.coverage
             : separateQa ? 'separate-qa-profile-no-local-box-acceptance'
             : separateScreen ? 'separate-screen-profile-no-ledger-acceptance' : 'selected-ledger-identities',
         imageAgePolicy: 'common-explicit-pins; common-image-age-disabled; generation<=30m; additional-profile-age-checks-retained',

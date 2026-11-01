@@ -82,7 +82,7 @@ test('ledger retains all 44 historical identities, 24 required cases and two Liv
 
 test('planned RA7 is an explicit separate profile with strict live evidence and unchanged standard identities', () => {
     const args = ['--project=chromium', '--workers=1', '--retries=0', 'specs/08-robowork-restart.spec.mjs'];
-    const env = { ...liveEnv, SMOKE_ROBOWORK_RESTART: '1' };
+    const env = { ...liveEnv, SMOKE_ROBOWORK_RESTART: '1', SMOKE_ROBOWORK_MODEL_SETUP: '1' };
     const profile = validateAcceptanceProfile(args, env);
     assert.equal(profile.cases.length, 1);
     assert.equal(profile.coverage, 'planned-robowork-ra7');
@@ -98,6 +98,23 @@ test('planned RA7 is an explicit separate profile with strict live evidence and 
     }
     assert.equal(acceptanceLedger.identities.length, 46);
     assert.equal(validateAcceptanceProfile(liveArgs, liveEnv).cases.length, 2);
+});
+
+test('planned feature profile preserves exactly E1 E2 E7 and requires model setup plus the ordinary user', () => {
+    const args = ['--project=chromium', '--workers=1', '--retries=0', 'specs/09-robowork-features.spec.mjs'];
+    const env = { ...baseEnv, SMOKE_ROBOWORK_FEATURES: '1', SMOKE_ROBOWORK_MODEL_SETUP: '1' };
+    const options = { exists: () => true };
+    const profile = validateAcceptanceProfile(args, env, options);
+    assert.equal(profile.cases.length, 3); assert.equal(profile.coverage, 'planned-robowork-features');
+    assert.equal(profile.accounts.secondary, true); assert.equal(profile.box, true);
+    assert.deepEqual(profile.cases.map(entry => entry.title.slice(0, 2)), ['E1', 'E2', 'E7']);
+    assertLedgerResults(profile.cases, profile.cases.map(record), { terminal: true });
+    for (const key of ['SMOKE_ROBOWORK_MODEL_SETUP', 'SMOKE_SECONDARY_ACCOUNT_PASSWORD']) {
+        const missing = { ...env }; delete missing[key]; assert.throws(() => validateAcceptanceProfile(args, missing, options));
+    }
+    assert.throws(() => validateAcceptanceProfile([...args, '--grep', '^E1'], env, options), /forbids pruning/u);
+    assert.throws(() => validateAcceptanceProfile(args, { ...env, SMOKE_ROBOWORK_RESTART: '1' }, options), /separate invocations/u);
+    assert.equal(acceptanceLedger.identities.length, 46);
 });
 
 test('missing image pins, profile flags and private sign-in inputs fail before collectors', () => {
