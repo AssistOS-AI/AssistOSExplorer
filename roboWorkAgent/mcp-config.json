@@ -186,12 +186,78 @@
           "type": "string"
         },
         "ala": {
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string",
+              "optional": true
+            },
+            "permissions": {
+              "type": "string",
+              "enum": [
+                "full-access",
+                "ask-for-approval"
+              ],
+              "optional": true
+            },
+            "model": {
+              "type": "string",
+              "optional": true
+            },
+            "effort": {
+              "type": "string",
+              "optional": true
+            },
+            "ca": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "codex",
+                "opencode",
+                "pi",
+                "claude"
+              ],
+              "optional": true
+            },
+            "resume": {
+              "type": "boolean",
+              "optional": true
+            },
+            "workflowExecution": {
+              "type": "boolean",
+              "optional": true
+            },
+            "mcpServers": {
+              "type": "any",
+              "description": "Existing MCP server string or array; retained for ALA validation.",
+              "optional": true
+            }
+          }
         },
         "folders": {
           "type": "array",
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "alias": {
+                "type": "string",
+                "optional": true
+              },
+              "at": {
+                "type": "string",
+                "optional": true
+              },
+              "expose": {
+                "type": "boolean",
+                "optional": true
+              }
+            }
           }
         },
         "ignore": {
@@ -203,19 +269,56 @@
         "channels": {
           "type": "array",
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "enum": [
+                  "ploinky-runtime",
+                  "human-input",
+                  "task-failure"
+                ]
+              },
+              "alias": {
+                "type": "string",
+                "optional": true
+              },
+              "context": {
+                "type": "object",
+                "additionalProperties": true,
+                "optional": true
+              }
+            }
           }
         },
         "gui": {
           "type": "object",
-          "optional": true
+          "optional": true,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "browser",
+                "desktop"
+              ]
+            },
+            "cwd": {
+              "type": "string",
+              "optional": true
+            },
+            "allowReplace": {
+              "type": "boolean",
+              "optional": true
+            }
+          }
         },
         "environment": {
           "type": "string",
           "optional": true
         },
         "tag": {
-          "type": "object"
+          "type": "object",
+          "additionalProperties": true
         }
       }
     },
@@ -278,7 +381,21 @@
         },
         "reply": {
           "type": "object",
-          "optional": true
+          "optional": true,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "status": {
+              "type": "number",
+              "optional": true
+            },
+            "body": {
+              "type": "any",
+              "description": "Opaque JSON callback response, including object, array, scalar or null.",
+              "optional": true
+            }
+          }
         }
       }
     },
