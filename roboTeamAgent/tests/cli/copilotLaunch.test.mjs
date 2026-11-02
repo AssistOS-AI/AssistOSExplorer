@@ -41,7 +41,7 @@ describe('Copilot launch extensions', () => {
             selectedFsPath: '/workspace/project',
             workspaceRoot: '/workspace/project'
         });
-        assert.equal(url, '/webchat?agent=roboTeamAgent&robot=default&workspace-dir=achilles-cli%2Fdefault');
+        assert.equal(url, '/webchat?agent=roboTeamAgent&robot=default&workspace-dir=.');
     });
 
     it('adds generic launch-extension query parameters and workspace-relative directory', () => {
@@ -108,7 +108,7 @@ describe('Copilot launch extensions', () => {
         const params = new URLSearchParams(url.slice('/webchat?'.length));
         assert.equal(params.get('agent'), 'roboTeamAgent');
         assert.equal(params.get('robot'), 'default');
-        assert.equal(params.get('workspace-dir'), 'achilles-cli/default');
+        assert.equal(params.get('workspace-dir'), '.');
         assert.equal(params.has('dir'), false);
     });
 
