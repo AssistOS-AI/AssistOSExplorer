@@ -19,7 +19,7 @@ test('launch-workflow takes only a workflow name and an optional prompt', () => 
 test('launch-workflow accepts executionType only for the default workflow', async () => {
     const calls = [], agentClient = { ensureAgentRunning: async () => {}, callToolWithoutWait: async (tool, args) => { calls.push(args); return {}; } };
     const run = (request) => launchWorkflow({ promptText: JSON.stringify(request), workingDir: '/workspace', agentClient });
-    assert.match(await run({ workflow: 'default', prompt: 'Check UI', executionType: 'browser' }), /workflow started/i);
+    assert.match(await run({ workflow: 'default', prompt: 'Check UI', executionType: 'browser' }), /workflow requested/i);
     assert.equal(calls[0].executionType, 'browser');
     assert.match(await run({ workflow: 'code-development', prompt: 'Add OAuth', executionType: 'terminal' }), /only for the default workflow/);
     assert.match(await run({ workflow: 'default', prompt: 'Do it', executionType: 'gui' }), /must be one of/);
@@ -42,7 +42,7 @@ test('launch-workflow returns immediately and runs default in a terminal', async
             async ensureAgentRunning() {},
         },
     };
-    assert.match(await launchWorkflow(invocation), /workflow started/i);
+    assert.match(await launchWorkflow(invocation), /workflow requested/i);
     assert.equal(waited, false);
     assert.deepEqual(calls, [['roboflow_start_flow', { workflowTypeId: 'default', executionType: 'terminal', objective: 'Do it', folder: '/workspace' }]]);
 });
@@ -71,7 +71,7 @@ test('launch-workflow may inherit a saved prompt but never invents generic work'
     const calls = [], agentClient = { ensureAgentRunning: async () => {}, callToolWithoutWait: async (tool, args) => { calls.push(args); return {}; } };
     for (const objective of [undefined, 'Changed scope']) {
         const result = await launchWorkflow({ promptText: JSON.stringify({ workflow: 'daily-report', prompt: objective }), workingDir: '/workspace', agentClient });
-        assert.match(result, /workflow started/i);
+        assert.match(result, /workflow requested/i);
     }
     assert.equal(Object.hasOwn(calls[0], 'objective'), false); assert.equal(calls[1].objective, 'Changed scope');
     assert.equal(calls[0].folder, '/workspace');

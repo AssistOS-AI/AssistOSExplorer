@@ -21,10 +21,10 @@ Pass the workflow name and an optional prompt through `--input`, either as JSON 
 `executionType` is optional and is used only with the `default` workflow: `terminal` (the default when omitted), `desktop` or `browser`. Every other workflow rejects it, because its tasks decide their own execution modes. There are no other fields; the flow runs in the conversation folder.
 
 ## Output Format
-Starts the flow and returns immediately; it never waits for the flow to finish. The run keeps running as a background task in the conversation. That task carries the link to the flow page, which opens in the WebChat side panel and shows the graph, the phases and their live logs.
+Requests the flow and returns immediately; it never waits for the flow to finish. The request is a background task in the conversation. Its task card shows the progress and carries the link to the flow page, which opens in the WebChat side panel and shows the graph, the phases and their live logs. If RoboFlow refuses the workflow, the task card shows why and nothing has started.
 
 ## Constraints
-- Use only a workflow name returned by list-workflows; never invent one. Prefer `default` when nothing more specific fits.
+- Use only a workflow name returned by list-workflows; never invent one. Prefer `default` only when this conversation's robot is the robot named `default`; any other robot chooses a workflow it can run alone.
 - Pass the user's request as a self-contained prompt when it specifies work or changes the saved workflow's scope. The workflow team does not see this conversation. Omit the prompt only when the user wants to run the selected workflow unchanged using its saved default. `default` and `code-development` require a prompt; do not invent work for them.
 - Set `executionType` only for `default`, and only when the task needs a graphical desktop or a browser; otherwise omit it. Never set it for any other workflow. Never choose robots, skillsets or graph transitions.
 - A workflow whose tasks need any other robot is refused with a message and nothing starts. Tell the user that it has to be started from the RoboTeam screen, or choose a workflow this robot can run on its own.
@@ -33,4 +33,4 @@ Starts the flow and returns immediately; it never waits for the flow to finish. 
 ## Example
 1. list-workflows lists `default` — Standard development.
 2. `{"workflow":"default","prompt":"Summarize the repository README into a new file"}` starts the flow.
-3. The tool acknowledges that the flow started and returns; the link to the flow page lives on the background task.
+3. The tool acknowledges that the flow was requested and returns; the progress, or the refusal, and the link to the flow page live on the background task.

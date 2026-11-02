@@ -70,7 +70,7 @@ async function harness(t) {
     const rawTools = [];
     const launchReply = await action({ promptText: JSON.stringify({ action: 'start', workflowTypeId: fixture.workflowId, objective: delegationObjective(fixture), folder: fixture.workspace }),
         workingDir: fixture.workspace, agentClient: { async callToolWithoutWait(tool, input) { rawTools.push({ tool, input }); assert.equal(tool, 'roboflow_start_flow'); return service.startFlow(input); } } });
-    assert.match(launchReply, /workflow started/); assert.equal(rawTools.length, 1); assert.ok(dispatched);
+    assert.match(launchReply, /workflow requested/); assert.equal(rawTools.length, 1); assert.ok(dispatched);
     const flow = (await service.store.list())[0], instance = flow.instances[0];
     const runtime = { taskId: instance.runtimeTaskId, robotId: fixture.robotId, type: dispatched.type, state: 'running', request: dispatched.request,
         alaSessionId: dispatched.request.alaSessionId, createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), result: '', logTail: '' };

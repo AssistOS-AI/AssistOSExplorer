@@ -1007,3 +1007,44 @@ test('a workflow a robot started may use only that robot, checked for every task
     const stored = await f.service.store.get(own.id);
     assert.equal(stored.restrictToRobot, 'default-id');
 });
+
+// The random pick favours the last matching robot, so only the constraint can keep a task on the restricted one.
+test('a constrained flow keeps its robot in a later phase, a redispatched paused phase and its child workflows', async t => {
+    const f = await fixture(t, { random: () => 0.99 });
+    const source = '/workspace/skills';
+    const repo = { name: 'local', source, skills: [{ name: 'one' }, { name: 'two' }], definitions: [{ name: 'S1', skills: ['one'] }, { name: 'S2', skills: ['two'] }] };
+    f.robots[0].skillsets = [repo]; f.robots[0].disabledSkillsets = ['local-set-2'];
+    f.robots[1].skillsets = [repo]; f.robots[1].disabledSkillsets = ['local-set-1'];
+    const owners = () => f.started.map(item => item.robot.id);
+    const unconstrained = await f.service.createWorkflow({ ...graph(), id: 'chain', tasks: [task('a'), task('b')], edges: [edge('a', 'b')] }).then(() => f.service.startFlow({ workflowTypeId: 'chain', objective: 'Work' }));
+    assert.deepEqual(owners(), ['worker-id'], 'without the constraint the pick favours the other robot');
+    await f.service.pauseFlow(unconstrained.id);
+    // A later phase.
+    const chain = await f.service.startFlow({ workflowTypeId: 'chain', objective: 'Work', restrictToRobot: 'default-id' });
+    await f.finish(1, 'A');
+    assert.deepEqual(owners().slice(1), ['default-id', 'default-id']);
+    // A paused phase that had not started is dispatched again.
+    await f.service.pauseFlow(chain.id);
+    const paused = await f.service.startFlow({ workflowTypeId: 'chain', objective: 'Work', restrictToRobot: 'default-id' });
+    await f.service.pauseFlow(paused.id);
+    const before = f.started.length;
+    await f.service.resumeFlow(paused.id);
+    assert.deepEqual(owners().slice(before), ['default-id']);
+    // Child workflows inherit the constraint, and one that needs the other robot is refused before any child exists.
+    await f.service.createWorkflow({ id: 'child', name: 'Child', description: 'Child workflow', entryTaskId: 'one', tasks: [task('one')], edges: [] });
+    await f.service.createWorkflow({ id: 'other', name: 'Other', description: 'Needs the worker', entryTaskId: 'one', tasks: [task('one', { skillsets: [canonicalSkillset(source, 'S2')] })], edges: [] });
+    await f.service.createWorkflow({ id: 'parent', name: 'Parent', description: 'Parent workflow', entryTaskId: 'creator', tasks: [task('creator', { creator: true }), task('end')],
+        edges: [{ id: 'delegate', sourceTaskId: 'creator', targetTaskId: 'run-workflows' }, { id: 'after', sourceTaskId: 'run-workflows', targetTaskId: 'end' }] });
+    const plan = id => `${humanReport('Delegate.')}\n\n# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n# workflow\n${id}\n# prompt\nGo`;
+    const parent = await f.service.startFlow({ workflowTypeId: 'parent', objective: 'Work', restrictToRobot: 'default-id' });
+    const creatorIndex = f.started.length - 1;
+    await f.finish(creatorIndex, plan('child'));
+    const [childId] = (await f.service.getFlow(parent.id)).instances[0].childFlowIds;
+    assert.equal((await f.service.getFlow(childId)).restrictToRobot, 'default-id');
+    assert.equal(f.started.at(-1).robot.id, 'default-id');
+    const refused = await f.service.startFlow({ workflowTypeId: 'parent', objective: 'Work', restrictToRobot: 'default-id' });
+    await f.finish(f.started.length - 1, plan('other'));
+    const failed = await f.service.getFlow(refused.id);
+    assert.equal(failed.status, 'failed'); assert.match(failed.error, /can only use that robot/u);
+    assert.equal(failed.instances[0].childFlowIds, undefined);
+});
