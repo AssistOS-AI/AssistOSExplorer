@@ -105,7 +105,7 @@ test('housekeeping, empty and control submissions cannot establish a model turn 
         text, attachments: [], presentation: { visible } });
     for (const body of [envelope('/tasks', false), envelope('/tasks'), envelope('hidden prompt', false),
         null, '', '  \n', envelope(''), envelope('  '), envelope(null),
-        envelope('/model'), envelope('/session new'), envelope('/exec echo fixture'),
+        envelope('/model'), envelope('/session new'), envelope('/execute fixture'),
         '{', 'null', '{}', '\x1b', envelope('\x1b'),
         JSON.stringify({ __webchatControl: 1, action: 'stop' }),
         JSON.stringify({ __webchatMessage: 1, __webchatControl: 1, text: 'stop' })]) {
@@ -114,6 +114,35 @@ test('housekeeping, empty and control submissions cannot establish a model turn 
         await assert.rejects(fixture.finish(), /at least one accepted Copilot input/u);
         assert.equal(JSON.parse(fixture.attachments[0].value.body).attempts.length, 0);
         assert.equal(fixture.detached(), true);
+    }
+});
+
+test('/exec skill submissions require and retain their own actual model route', async () => {
+    const body = JSON.stringify({ __webchatMessage: 1, version: 1,
+        text: '/exec aku-memory {"action":"create","title":"fixture"}', presentation: { visible: true } });
+    const fixture = await routeFixture();
+    fixture.submit(204, body); fixture.state();
+    await fixture.finish();
+    const receipt = JSON.parse(fixture.attachments[0].value.body);
+    assert.equal(receipt.attempts.length, 1);
+    assert.equal(receipt.attempts[0].accepted, true);
+    assert.equal(receipt.attempts[0].routes.length, 1);
+    assert.ok(!JSON.stringify(receipt).includes('aku-memory'));
+    const missing = await routeFixture();
+    missing.state(); missing.submit(204, body);
+    await assert.rejects(missing.finish(), /no actual post-submission/u);
+});
+
+test('a model-selection response after intervening non-model input cannot prove the preceding model submission', async () => {
+    for (const command of ['/model', '/tasks']) {
+        const fixture = await routeFixture();
+        fixture.submit();
+        fixture.submit(204, JSON.stringify({ __webchatMessage: 1, text: command, presentation: { visible: false } }));
+        fixture.state();
+        await assert.rejects(fixture.finish(), /no actual post-submission/u);
+        const receipt = JSON.parse(fixture.attachments[0].value.body);
+        assert.equal(receipt.attempts.length, 1);
+        assert.equal(receipt.attempts[0].routes.length, 0);
     }
 });
 

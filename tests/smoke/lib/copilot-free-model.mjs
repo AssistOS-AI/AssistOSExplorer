@@ -54,14 +54,15 @@ export async function configureFreeCopilotRobots(page) {
 function isModelSubmission(request) {
     // Browser network.js serializes every composer submission as this envelope.
     // Router admission also accepts empty bodies and hidden /tasks refreshes;
-    // neither proves a turn. Slash commands use executeRuntimeCommand instead
-    // of the ordinary model executeTurn path in webchatRuntime.mjs.
+    // neither proves a turn. Match webchatRuntime.mjs startsTurn, including
+    // /exec, whose executeSkill callback calls engine.executeTurn.
     try {
         const message = JSON.parse(request.postData() || '');
         if (!message?.__webchatMessage || message.__webchatControl
             || message.presentation?.visible === false || typeof message.text !== 'string') return false;
         const text = message.text.trim();
-        return Boolean(text) && !text.startsWith('/') && !/[\x00-\x08\x0e-\x1f\x7f]/u.test(text);
+        const startsTurn = !text.startsWith('/') || /^\/exec(?:\s|$)/u.test(text);
+        return Boolean(text) && startsTurn && !/[\x00-\x08\x0e-\x1f\x7f]/u.test(text);
     } catch {
         return false;
     }
@@ -88,7 +89,15 @@ export async function observeFreeCopilotRoutes(context, testInfo, { attempts = [
             const submitted = request => {
                 const url = new URL(request.url());
                 if (url.pathname !== '/webchat/input' || request.method() !== 'POST'
-                    || url.searchParams.get('agent') !== 'roboTeamAgent' || !isModelSubmission(request)) return;
+                    || url.searchParams.get('agent') !== 'roboTeamAgent') return;
+                if (!isModelSubmission(request)) {
+                    // Selection commands can emit runtime-state too. After an
+                    // intervening input on this same connection, a later event
+                    // cannot establish the preceding turn's causal route proof.
+                    if (current && current.origin === url.origin && current.tabId === url.searchParams.get('tabId')
+                        && current.pageInstanceId === url.searchParams.get('pageInstanceId')) current = null;
+                    return;
+                }
                 current = { attempt: attempts.length + 1, origin: url.origin, tabId: url.searchParams.get('tabId'),
                     pageInstanceId: url.searchParams.get('pageInstanceId'), accepted: false, routes: [] };
                 if (!current.tabId || !current.pageInstanceId || url.origin !== new URL(page.url()).origin) {
