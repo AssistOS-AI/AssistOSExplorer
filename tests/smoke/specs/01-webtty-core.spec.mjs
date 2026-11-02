@@ -545,7 +545,11 @@ async function selectTerminalTarget(chooserState, predicate, terminals) {
       const sawPreparing = preparing.waitFor({ state: 'visible', timeout: smokeConfig.timeouts.navigation }).then(() => null);
       sawPreparing.catch(() => {});
       createResponse = await Promise.race([createPromise, sawPreparing]);
-      if (createResponse) break;
+      if (createResponse) {
+        // Close without acknowledging: a real event in the window stays actionable.
+        closePageDiagnosticsCheckpoint(chooserState.page, checkpoint);
+        break;
+      }
       // The first Open of a non-default environment answers 409 TERMINAL_PREPARING, closes its tab and asks to retry.
       expect(Date.now(), 'the environment must finish preparing in time').toBeLessThan(deadline);
       const rejected = await conflict;
@@ -605,7 +609,8 @@ async function openRobotTerminal(chooserState, terminals, testInfo, name, { home
   const diagnostics = attachPageDiagnostics(terminal.terminalPage, testInfo, name);
   await waitForConnectedTerminal(terminal.terminalPage);
   if (homeId) {
-    // T5: the shell runs in the chosen environment's image with the robot's own home.
+    // The non-default environment opened with the robot's own `/home/<robot>` and reported this image name; T5's
+    // claim that the image is the chosen environment's is not checked here.
     const probe = await browserMutation(terminal.terminalPage, `/webtty/sessions/${encodeURIComponent(terminal.session.id)}/input`, {
       body: { data: ". /etc/os-release; printf '__WEBTTY_ROBOT_HOME__%s__ __WEBTTY_ROBOT_IMAGE__%s__\\n' \"$HOME\" \"$PRETTY_NAME\"\r" },
     });

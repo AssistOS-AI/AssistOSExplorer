@@ -81,10 +81,11 @@ export async function collectControllerProducer(initPid, record, options, io = n
     }
     const chain = [producer], seen = new Set([producer.pid]); let cursor = producer;
     while (cursor.ppid !== initPid) {
-        // A producer WebChat execs into the container has ppid 0. Accept that only for the producer itself, in the
-        // init's pid namespace; the exact executable, script path and sha256 are asserted above and below. This no
-        // longer proves the producer was started by the container's init.
-        if (cursor === producer && cursor.ppid === 0) { assert.equal(producer.pidNamespace, init.pidNamespace); break; }
+        // A copilot producer WebChat execs into the container has ppid 0. Accept that only for a copilot producer
+        // itself, in the init's pid namespace; the executable (matched by pattern, node/nodejs/bun), script path and
+        // sha256 are asserted above and below. This no longer proves the producer was started by the container's
+        // init. Task and --attach-run producers keep the descent proof.
+        if (record.kind === 'copilot' && cursor === producer && cursor.ppid === 0) { assert.equal(producer.pidNamespace, init.pidNamespace); break; }
         assert.ok(cursor.ppid > 1 && !seen.has(cursor.ppid) && chain.length < 256, 'Producer is not a descendant of the exact RoboTeam init.');
         cursor = identity(cursor.ppid); assert.equal(cursor.pidNamespace, init.pidNamespace);
         seen.add(cursor.pid); chain.push(cursor);

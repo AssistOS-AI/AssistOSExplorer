@@ -85,3 +85,12 @@ test('wrong native container, wrong controller, different run and stale controll
         f => { f.identity.runId = 'another-run'; }, f => { f.record.turnId = 'another-turn'; },
     ]) { const f = fixture(); mutate(f); await assert.rejects(f.read()); }
 });
+
+test('a copilot producer with ppid 0 is accepted; a task, a two-row chain and a wrong parent are not', async () => {
+    const ok = fixture(); ok.producer.producerAncestry[0].ppid = 0; await ok.read();
+    const task = fixture(); task.task(); task.producer.producerAncestry[0].ppid = 0; await assert.rejects(task.read());
+    const chain = fixture(); chain.producer.producerAncestry = [{ ...chain.producer.producerAncestry[0], ppid: 9 },
+        { pid: 9, ppid: 0, startToken: '90', pidNamespace: 'pid:[222]' }];
+    await assert.rejects(chain.read());
+    const wrong = fixture(); wrong.producer.producerAncestry[0].ppid = 5; await assert.rejects(wrong.read());
+});

@@ -98,3 +98,14 @@ test('the producer accepts --flag=value once, rejects duplicates, and a ppid 0 p
         f => { f.rows.get(40).ppid = 80; },
     ]) { const f = fixture(); f.rows.get(40).ppid = 0; mutate(f); await assert.rejects(f.read()); }
 });
+
+test('only a copilot producer may have ppid 0; task and attach producers keep the descent proof', async () => {
+    const taskArgs = f => ['node', '/code/server/robot-task.mjs', '--cwd', f.record.cwd, '--session-id', f.record.sessionId, '--control-stdin'];
+    const task = fixture(); task.record.kind = 'task'; task.rows.get(40).argv = taskArgs(task);
+    assert.equal((await task.read()).producer.pid, 40);
+    task.rows.get(40).ppid = 0; await assert.rejects(task.read());
+    const attach = fixture(); attach.record.kind = 'task'; attach.options.attach = true;
+    attach.rows.get(40).argv = [...taskArgs(attach), '--attach-run', attach.record.runId];
+    assert.equal((await attach.read()).producer.pid, 40);
+    attach.rows.get(40).ppid = 0; await assert.rejects(attach.read());
+});

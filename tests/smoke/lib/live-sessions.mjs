@@ -908,7 +908,9 @@ export async function residentNativeProcessIdentity(evidence, runtime, native, d
             assert.equal(row.pidNamespace, proof.containerInit.pidNamespace);
             assert.equal(index ? proof.producerAncestry[index - 1].ppid : proof.producer.pid, row.pid);
         }
-        assert.equal(proof.producerAncestry.at(-1).ppid, proof.containerInit.pid);
+        // A copilot producer exec'd into the container by WebChat has ppid 0; tasks keep the descent proof.
+        const top = proof.producerAncestry.at(-1).ppid;
+        if (!(record.kind === 'copilot' && proof.producerAncestry.length === 1 && top === 0)) assert.equal(top, proof.containerInit.pid);
         controllerProofs.set(record.runId, proof);
     }
     // The source and native process roots live in RoboWork's user namespace.
