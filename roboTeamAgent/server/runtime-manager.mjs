@@ -24,6 +24,7 @@ const ALA_EVENT_PREFIX = '@@ALA_EVENT@@';
 const OWNER_PRINCIPAL = /^user:.+/u;
 const TRANSCRIPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const MESSAGE_TIMEOUT_MS = 35000;
+const PREDECESSOR_TIMEOUT_MS = 35000;
 function appendTail(previous, chunk, limit) {
     const next = `${previous}${chunk}`;
     return next.length > limit ? next.slice(-limit) : next;
@@ -87,6 +88,8 @@ function robotSessionUrl(publicBasePath, robotId) {
 }
 
 export class RuntimeManager {
+    #taskExecutions = new Map();
+
     constructor(options = {}) {
         this.dataDir = path.resolve(options.dataDir || DATA_DIR);
         this.publicBasePath = normalizeBasePath(options.publicBasePath);
@@ -388,9 +391,36 @@ export class RuntimeManager {
         return this.manualControl.has(robotId) || [...this.tasks.values()].some(task => task.robotId === robotId && GUI_MODES.has(task.type) && ['queued', 'starting', 'running', 'pausing'].includes(task.state));
     }
 
+    async _waitForPredecessors(execution, predecessors) {
+        if (execution.task.cancelRequested || this.shuttingDown) throw new Error('task was paused');
+        if (!predecessors.length) return;
+        let timer;
+        const cancelled = new Promise((resolve, reject) => {
+            execution.cancelWait = () => reject(new Error('task was paused'));
+        });
+        try {
+            await Promise.race([
+                Promise.all(predecessors.map(record => record.completion)),
+                cancelled,
+                new Promise((resolve, reject) => {
+                    timer = setTimeout(() => reject(new Error('Previous conversation execution has not finished stopping.')), PREDECESSOR_TIMEOUT_MS);
+                }),
+            ]);
+        } finally {
+            clearTimeout(timer);
+            execution.cancelWait = null;
+        }
+    }
+
     async _runTask(robot, task) {
         if (task.cancelRequested || task.state !== 'queued') return;
-        let humanInputChannel, forcedFailure;
+        const predecessors = [...this.#taskExecutions.values()].filter(record => record.robotId === robot.id
+            && record.alaSessionId === task.alaSessionId);
+        let complete;
+        const execution = { task, robotId: robot.id, alaSessionId: task.alaSessionId,
+            completion: new Promise(resolve => { complete = resolve; }), cancelWait: null };
+        this.#taskExecutions.set(task.taskId, execution);
+        let humanInputChannel, forcedFailure, producerClosed;
         const appendProgress = (chunk, output = {}) => {
             const previousLength = task.logTail.length;
             task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
@@ -402,6 +432,8 @@ export class RuntimeManager {
             task.state = 'starting';
             task.startedAt = new Date().toISOString();
             this._emitTaskEvent({ kind: 'state', robotId: robot.id, taskId: task.taskId, state: 'starting' });
+            await this._waitForPredecessors(execution, predecessors);
+            if (task.cancelRequested || this.shuttingDown || this.deletedRobots.has(robot.id)) throw new Error('task was paused');
             const cwd = await this.resolveCwd(task.request.cwd);
             task.request.cwd = registerProject(this, cwd);
             if (task.cancelRequested) throw new Error('task was paused');
@@ -477,6 +509,11 @@ export class RuntimeManager {
             if (task.cancelRequested) throw new Error('task was paused');
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
                 '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+            // An error event is not proof that a possible producer has exited.
+            // Observe close before any child setup can fail, and retain ownership
+            // through both that close and the controller's final cleanup.
+            producerClosed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+            const producerError = new Promise(resolve => child.once('error', error => resolve({ error })));
             task.child = child;
             child.stdin?.on('error', () => {});
             // The task prompt is the first control record. The copilot engine adds
@@ -520,18 +557,14 @@ export class RuntimeManager {
                 }
             });
             child.stderr?.on('data', (chunk) => progressParser.push(chunk));
-            await new Promise((resolve, reject) => {
-                child.once('error', reject);
-                child.once('close', (code, signal) => {
-                    progressParser.finish();
-                    task.result += resultDecoder.end();
-                    if (forcedFailure) return reject(forcedFailure);
-                    if (task.resultOverflow) return reject(new Error('Final response exceeds the 1 MiB limit'));
-                    if (code === 130) task.state = 'paused';
-                    if (code === 0) resolve();
-                    else reject(new Error(alaFailureMessage(signal || code, `${task.logTail}${task.result}`)));
-                });
-            });
+            const exit = await Promise.race([producerClosed, producerError]);
+            if (exit.error) throw exit.error;
+            progressParser.finish();
+            task.result += resultDecoder.end();
+            if (forcedFailure) throw forcedFailure;
+            if (task.resultOverflow) throw new Error('Final response exceeds the 1 MiB limit');
+            if (exit.code === 130) task.state = 'paused';
+            if (exit.code !== 0) throw new Error(alaFailureMessage(exit.signal || exit.code, `${task.logTail}${task.result}`));
             if (!task.cancelRequested) task.state = 'completed';
             task.completedAt = new Date().toISOString();
         } catch (error) {
@@ -540,6 +573,7 @@ export class RuntimeManager {
                 task.state = 'failed'; task.error = String(error?.message || error); task.completedAt = new Date().toISOString();
             }
         } finally {
+            await producerClosed;
             await humanInputChannel?.close().catch(() => {});
             task.child = null;
             task.controlReady = false;
@@ -557,6 +591,8 @@ export class RuntimeManager {
                     ...(forcedFailure ? { forcedFailure: true } : {}),
                 });
             }
+            if (this.#taskExecutions.get(task.taskId) === execution) this.#taskExecutions.delete(task.taskId);
+            complete();
         }
     }
 
@@ -634,6 +670,7 @@ export class RuntimeManager {
                 }
                 const neverStarted = internal.state === 'queued';
                 internal.cancelRequested = true;
+                this.#taskExecutions.get(internal.taskId)?.cancelWait?.();
                 internal.state = 'paused'; internal.completedAt = new Date().toISOString(); this._stopTaskChild(internal);
                 // A queued attempt never reaches its run's terminal report.
                 if (neverStarted) this._emitTaskTerminal(internal, { state: 'paused', result: internal.result, error: internal.error });
@@ -694,6 +731,18 @@ export class RuntimeManager {
             delete internal.request.skillSelection;
             await this._saveTask(internal);
         }
+        // Policy and human-input checks can yield to another Continue. Keep
+        // the final admission checks and enqueue in one synchronous segment.
+        if (internal.robotId !== robot.id || !['paused', 'completed', 'failed'].includes(internal.state)
+            || (this.tasks.has(taskId) && this.tasks.get(taskId) !== internal)) throw new Error('Robot has no matching task to continue.');
+        if ([...this.tasks.values()].some(task => task.robotId === robot.id
+            && task.alaSessionId === internal.alaSessionId && ['queued', 'starting', 'running'].includes(task.state))) {
+            throw new Error('This conversation already has an active execution.');
+        }
+        if (this.deletedRobots.has(robot.id)) throw new Error('robot was deleted');
+        if (this.manualControl.has(robot.id) && this.manualControl.get(robot.id) !== taskId) {
+            throw new Error('Resume the task currently under manual control before continuing another task.');
+        }
         const { runtimeTaskId: previousTaskId, workflowInstanceId: previousPhase, ownerPrincipal: storedOwner, ...inherited } = internal.request;
         const resumed = this._enqueueTask(robot, internal.type, {
             ...inherited,
@@ -733,7 +782,9 @@ export class RuntimeManager {
 
     async deleteRobot(robotId, remove) {
         if (this.pending.has(robotId) || this.sessions.has(robotId) || this.activeTasks.has(robotId)
-            || this.hasUnfinishedTasks(robotId)) throw new Error('stop the robot and its queued tasks before deleting it');
+            || this.hasUnfinishedTasks(robotId)
+            || [...this.#taskExecutions.values()].some(record => record.robotId === robotId
+                && this.tasks.get(record.task.taskId) === record.task)) throw new Error('stop the robot and its queued tasks before deleting it');
         this.deletedRobots.add(robotId);
         // A seed or shell preparation in flight finishes (or aborts) before the folder is removed;
         // anything queued afterwards sees deletedRobots and does nothing.
@@ -748,6 +799,13 @@ export class RuntimeManager {
 
     async stopAll() {
         this.shuttingDown = true;
+        for (const execution of this.#taskExecutions.values()) {
+            if (!execution.cancelWait) continue;
+            execution.task.cancelRequested = true;
+            execution.task.state = 'paused';
+            execution.task.completedAt = new Date().toISOString();
+            execution.cancelWait();
+        }
         for (const task of this.tasks.values()) task.child?.stdin?.write(JSON.stringify({ type: 'detach' }) + '\n');
         // Wrapper processes may exit. Native runs and GUI resources belong to
         // RoboWork and remain alive across this controller restart.
