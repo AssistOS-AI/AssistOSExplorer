@@ -98,7 +98,6 @@ export class RobotPaths {
                 const protectedRoot = await fs.realpath(requestedRoot).catch(() => requestedRoot);
                 if (within(protectedRoot, resolved)) throw fail(code, 'Working directory is protected');
             }
-            if (path.relative(root, resolved).split(path.sep).includes('.roboteam')) throw fail(code, 'Directory is private project data');
         }
         if (kind !== 'cwd') {
             // Registered repository sources live below .ploinky/repos/<name>; nothing else in .ploinky is for a robot.
@@ -108,6 +107,14 @@ export class RobotPaths {
         }
         // RoboTeam sends canonical paths, so a difference here is a path swapped since it resolved it.
         if (resolved !== value) throw fail(code, 'A canonical directory path is required');
+        return resolved;
+    }
+
+    // A terminal, Browser or Desktop opens in the folder itself. The private project data inside it is hidden by a mask, which
+    // cannot cover the directory a session starts in. A run is different: RoboTeam starts one in a folder it prepared there.
+    async interactiveCwd(value) {
+        const resolved = await this.grant(value, 'cwd');
+        if (resolved.split(path.sep).includes('.roboteam')) throw fail('CWD_REFUSED', 'Directory is private project data');
         return resolved;
     }
 

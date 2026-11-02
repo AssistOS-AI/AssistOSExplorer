@@ -268,6 +268,14 @@ test('delete cleans a robot with a bad label, keeps the active check and reports
     assert.deepEqual(homeCalls, []);
 });
 
+test('a run may start in the folder RoboTeam prepares inside private project data, which a terminal or session may not open', async t => {
+    const { paths } = await fixture(t);
+    const generation = path.join(paths.workspaceRoot, '.roboteam', 'roboflow-generation');
+    await fs.mkdir(generation, { recursive: true });
+    assert.equal(await paths.grant(generation, 'cwd'), await fs.realpath(generation));
+    await assert.rejects(paths.interactiveCwd(generation), { code: 'CWD_REFUSED', message: /private project data/u });
+});
+
 test('registry creation requests lightweight setup without replacing its stored default record', async t => {
     const { paths } = await fixture(t);
     const calls = [];

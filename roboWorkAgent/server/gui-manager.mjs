@@ -132,7 +132,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             ] : []),
             '-v', `${homePath}:/config`, '-v', `${homePath}:${homeTarget}`,
             '-v', `${soulPath}:/workspace/roboteam-soul`,
-            // Other robots' conversations live in the folder's private data; a session needs nothing from it.
+            // The folder's private data holds records RoboTeam acts on; a session needs nothing from it.
             ...(cwd === homeTarget ? [] : ['-v', `${cwdSource}:${cwd}:rw`, '--tmpfs', `${cwd}/.roboteam:ro,size=4k,mode=0555,notmpcopyup`]),
             '-w', cwd,
             '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
@@ -206,7 +206,7 @@ export class GuiManager {
     async resolveCwd(robotId, value) {
         const homeTarget = `/home/${robotId}`;
         if (!value || value === homeTarget) return homeTarget;
-        const candidate = await this.paths.grant(value, 'cwd');
+        const candidate = await this.paths.interactiveCwd(value);
         await assertPrivateDirectory(candidate, 'CWD_REFUSED');
         return candidate;
     }

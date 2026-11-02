@@ -43,7 +43,7 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
         || descriptor.stub.dev !== stat.dev || descriptor.stub.ino !== stat.ino
         || selectedStat.dev !== stat.dev || selectedStat.ino !== stat.ino) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
     const directory = await fs.realpath(cwd);
-    descriptor.cwd = directory === stub || directory === selectedHome ? null : await paths.grant(directory, 'cwd');
+    descriptor.cwd = directory === stub || directory === selectedHome ? null : await paths.interactiveCwd(directory);
     descriptor.cwdIdentity = descriptor.cwd ? await paths.identity(descriptor.cwd, 'cwd') : null;
     return { descriptor, paths };
 }
