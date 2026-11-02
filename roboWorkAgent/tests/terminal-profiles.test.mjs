@@ -250,7 +250,7 @@ test('a terminal cannot start inside private project data', async t => {
     for (const directory of [inside, path.dirname(inside)]) await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, f.stub, directory), { code: 'CWD_REFUSED', message: /private project data/u });
 });
 
-test('an environment terminal in a project folder starts with the mount check for that folder', async t => {
+test('an environment terminal in a project folder starts with the identity recorded for that folder', async t => {
     const f = await fixture(t);
     await prepareReady(f.api, 'robot-a.YWdlbnQ');
     const project = path.join(f.paths.workspaceRoot, 'project');

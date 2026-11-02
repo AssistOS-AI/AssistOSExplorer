@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 import { MOUNT_REFUSED_EXIT } from './environment.mjs';
-import { assertPrivateDirectory, directoryIdentity, fail, pinDirectory, within } from './robot-paths.mjs';
+import { RobotPaths, assertPrivateDirectory, directoryIdentity, fail, pinDirectory } from './robot-paths.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
@@ -152,6 +152,7 @@ export class GuiManager {
     constructor(options = {}) {
         this.dataDir = path.resolve(options.dataDir || '/data');
         this.workspaceRoot = path.resolve(options.workspaceRoot || process.env.PLOINKY_WORKSPACE_ROOT || '/workspace');
+        this.paths = new RobotPaths({ dataDir: this.dataDir, workspaceRoot: this.workspaceRoot });
         this.publicBasePath = normalizeBasePath(options.publicBasePath || '/base-agent-additional-server/roboWorkAgent/3001/');
         this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
         this.execFileImpl = options.execFileImpl || execFileAsync;
@@ -205,17 +206,7 @@ export class GuiManager {
     async resolveCwd(robotId, value) {
         const homeTarget = `/home/${robotId}`;
         if (!value || value === homeTarget) return homeTarget;
-        if (typeof value !== 'string' || !path.isAbsolute(value)) throw fail('CWD_REFUSED', 'An absolute directory is required');
-        const candidate = await fs.realpath(value).catch(() => { throw fail('CWD_REFUSED', 'Directory is unavailable'); });
-        const root = await fs.realpath(this.workspaceRoot);
-        if (candidate === root) throw fail('CWD_REFUSED', 'The workspace root is not available to a robot');
-        if (!within(root, candidate)) throw fail('CWD_REFUSED', 'Directory is outside the workspace');
-        const parts = path.relative(root, candidate).split(path.sep);
-        if (['.data', '.ploinky'].includes(parts[0])) throw fail('CWD_REFUSED', 'Directory is protected workspace state');
-        if (parts.includes('.roboteam')) throw fail('CWD_REFUSED', 'Directory is private project data');
-        // RoboTeam sends canonical paths, so a difference here is a path swapped since it resolved it.
-        if (candidate !== value) throw fail('CWD_REFUSED', 'A canonical directory path is required');
-        if (!(await fs.stat(candidate)).isDirectory()) throw fail('CWD_REFUSED', 'A directory is required');
+        const candidate = await this.paths.grant(value, 'cwd');
         await assertPrivateDirectory(candidate, 'CWD_REFUSED');
         return candidate;
     }

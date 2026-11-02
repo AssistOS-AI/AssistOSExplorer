@@ -206,8 +206,8 @@ export class RunManager {
                 const bundle = await this.runtimeBundle.prepare({ signal });
                 check();
                 launch = await this.environment.buildLaunch({ environment: input.environment, runId: input.runId, robotId: input.robotId,
-                    home: this.paths.home(input.robotId), workspaceRoot: this.paths.workspaceRoot, cwd, cwdIdentity,
-                    toolCache: { source: this.toolCache.root, target: this.toolCache.root },
+                    home: this.paths.home(input.robotId), cwd, cwdIdentity,
+                    toolCache: this.toolCache.root,
                     ala: { source: bundle.ala.path, target: '/opt/robowork-ala', entry: '/opt/robowork-ala/bin/ala.mjs' },
                     bwrap: { source: bundle.bwrap.bin, target: '/opt/robowork-bwrap' },
                     channels: mounts, soul,

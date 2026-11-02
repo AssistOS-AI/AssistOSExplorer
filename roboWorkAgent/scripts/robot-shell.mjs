@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { isatty } from 'node:tty';
-import { RobotPaths, homeTarget, within, fail } from '../server/robot-paths.mjs';
+import { RobotPaths, homeTarget, fail } from '../server/robot-paths.mjs';
 import { parseTerminalProfile, terminalDirectory } from '../server/terminal-profiles.mjs';
 import { buildPrivateLaunch } from '../server/launch.mjs';
 import { nativeEnvironment } from '../server/native-environment.mjs';
@@ -43,20 +43,9 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
         || descriptor.stub.dev !== stat.dev || descriptor.stub.ino !== stat.ino
         || selectedStat.dev !== stat.dev || selectedStat.ino !== stat.ino) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
     const directory = await fs.realpath(cwd);
-    descriptor.cwd = directory === stub || directory === selectedHome ? null : await publicDirectory(paths, directory);
+    descriptor.cwd = directory === stub || directory === selectedHome ? null : await paths.grant(directory, 'cwd');
     descriptor.cwdIdentity = descriptor.cwd ? await paths.identity(descriptor.cwd, 'cwd') : null;
     return { descriptor, paths };
-}
-
-export async function publicDirectory(paths, directory) {
-    const actual = await fs.realpath(directory);
-    if (!within(paths.workspaceRoot, actual)) throw fail('CWD_REFUSED', 'Terminal directory is outside the workspace');
-    // The workspace root holds every project and is never visible to a robot.
-    if (actual === paths.workspaceRoot || actual === await fs.realpath(paths.workspaceRoot)) throw fail('CWD_REFUSED', 'Terminal directory is the workspace root');
-    await paths.grant(actual, 'cwd');
-    // Other robots' conversations live there, and a mask cannot hide the directory a shell starts in.
-    if (actual.split(path.sep).includes('.roboteam')) throw fail('CWD_REFUSED', 'Terminal directory is private project data');
-    return actual;
 }
 
 export async function buildShellSandbox(descriptor, { loadSandbox = async entry => import(pathToFileURL(path.join(path.dirname(path.dirname(entry)), 'src/coding-agents/sandbox.mjs')).href) } = {}) {
@@ -91,8 +80,8 @@ export async function buildTerminalLaunch(descriptor, paths, { environment = new
     if (descriptor.environment) {
         const entry = await environment.require(descriptor.environment, { retry: true });
         const launch = await environment.buildLaunch({ environment: entry.ref, runId: 'terminal-' + randomUUID(), robotId: descriptor.id,
-            home: paths.home(descriptor.id), workspaceRoot: paths.workspaceRoot, cwd: descriptor.cwd, cwdIdentity: descriptor.cwdIdentity,
-            toolCache: { source: descriptor.cacheRoot, target: descriptor.cacheRoot },
+            home: paths.home(descriptor.id), cwd: descriptor.cwd, cwdIdentity: descriptor.cwdIdentity,
+            toolCache: descriptor.cacheRoot,
             ala: { source: codeRoot, target: '/opt/robowork-terminal', entry: '/opt/robowork-terminal/scripts/robot-shell.mjs' },
             bwrap: { source: descriptor.bwrap, target: '/opt/robowork-bwrap' },
             soul: { source: paths.soul(descriptor.id), target: '/workspace/roboteam-soul' },

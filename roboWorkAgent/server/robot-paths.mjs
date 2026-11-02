@@ -86,22 +86,25 @@ export class RobotPaths {
         catch { throw fail(code, 'Directory is unavailable'); }
         if (!(await fs.stat(resolved)).isDirectory()) throw fail(code, 'A directory is required');
         // The root holds every project; a robot receives a folder below it.
-        if (resolved === await fs.realpath(this.workspaceRoot).catch(() => this.workspaceRoot)) throw fail(code, 'The workspace root is not available to a robot');
+        const root = await fs.realpath(this.workspaceRoot).catch(() => this.workspaceRoot);
+        if (resolved === root) throw fail(code, 'The workspace root is not available to a robot');
+        if (kind === 'cwd' && !within(root, resolved)) throw fail(code, 'Directory is outside the workspace');
         for (const requestedRoot of [this.dataDir, '/data', this.privateRoot]) {
             const protectedRoot = await fs.realpath(requestedRoot).catch(() => requestedRoot);
             if (within(protectedRoot, resolved) || within(resolved, protectedRoot)) throw fail(code, 'Directory contains protected storage');
         }
         if (kind === 'cwd') {
             for (const requestedRoot of [path.join(this.workspaceRoot, '.data'), path.join(this.workspaceRoot, '.ploinky')]) {
-                const root = await fs.realpath(requestedRoot).catch(() => requestedRoot);
-                if (within(root, resolved)) throw fail(code, 'Working directory is protected');
+                const protectedRoot = await fs.realpath(requestedRoot).catch(() => requestedRoot);
+                if (within(protectedRoot, resolved)) throw fail(code, 'Working directory is protected');
             }
+            if (path.relative(root, resolved).split(path.sep).includes('.roboteam')) throw fail(code, 'Directory is private project data');
         }
         if (kind !== 'cwd') {
             // Registered repository sources live below .ploinky/repos/<name>; nothing else in .ploinky is for a robot.
-            const root = await fs.realpath(path.join(this.workspaceRoot, '.ploinky')).catch(() => path.join(this.workspaceRoot, '.ploinky'));
-            const parts = path.relative(root, resolved).split(path.sep);
-            if (within(root, resolved) && !(parts[0] === 'repos' && parts.length >= 2)) throw fail(code, 'Directory is protected workspace state');
+            const ploinky = await fs.realpath(path.join(this.workspaceRoot, '.ploinky')).catch(() => path.join(this.workspaceRoot, '.ploinky'));
+            const parts = path.relative(ploinky, resolved).split(path.sep);
+            if (within(ploinky, resolved) && !(parts[0] === 'repos' && parts.length >= 2)) throw fail(code, 'Directory is protected workspace state');
         }
         // RoboTeam sends canonical paths, so a difference here is a path swapped since it resolved it.
         if (resolved !== value) throw fail(code, 'A canonical directory path is required');

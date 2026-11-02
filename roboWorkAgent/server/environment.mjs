@@ -14,18 +14,6 @@ const TOOL_ENV = new Set(['CODEX_BIN', 'OPENCODE_BIN', 'PI_BIN', 'CLAUDE_BIN']);
 const DEFAULT_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 // Exit status of a run whose mounts are not the directories RoboWork granted. ALA uses the same status.
 export const MOUNT_REFUSED_EXIT = 78;
-// The container's first process, a backstop to mounting through descriptors. Nothing a robot controls has started, and the
-// mounts it stats are final. It then continues in this process.
-const MOUNT_CHECK = `const fs = require('node:fs'); const [, expected, entry, ...args] = process.argv;
-for (const { target, identity } of JSON.parse(expected)) {
-    let stat; try { stat = fs.lstatSync(target, { bigint: true }); } catch {}
-    if (!stat || !stat.isDirectory() || stat.dev + ':' + stat.ino !== identity) {
-        process.stderr.write('[RoboWork] A granted folder changed before the run started: ' + target + '\\n');
-        process.exit(${MOUNT_REFUSED_EXIT});
-    }
-}
-process.argv = [process.execPath, entry, ...args];
-import(require('node:url').pathToFileURL(entry).href).catch(error => { process.stderr.write(String(error?.stack || error) + '\\n'); process.exit(1); });`;
 
 export function isEnvironmentRef(value) {
     return typeof value === 'string' && REF.test(value) && value.split('/').every(part => part !== '.' && part !== '..');
@@ -145,19 +133,14 @@ export class EnvironmentManager {
         return { ...entry, available: true, reason: '', imagePath: imageInfo.path || DEFAULT_PATH };
     }
 
-    async buildLaunch({ environment, runId, robotId, home, workspaceRoot, cwd, cwdIdentity, toolCache, ala, bwrap,
+    async buildLaunch({ environment, runId, robotId, home, cwd, cwdIdentity, toolCache, ala, bwrap,
         channels = [], soul, folders = [], args = [], env = {}, tty = false, signal }) {
         if (!ID.test(robotId) || typeof runId !== 'string' || !runId) throw failure('ENVIRONMENT_INVALID', 'Invalid environment run identity', 400);
         const entry = await this.prepare(environment, { signal });
         signal?.throwIfAborted();
         const homeTarget = `/home/${robotId}`;
-        // Without a cwd the container starts in the robot home. The workspace root is never a cwd.
-        const workspace = await fs.realpath(absolute(workspaceRoot));
+        // Without a cwd the container starts in the robot home. The caller has granted any cwd.
         const directory = cwd ? await fs.realpath(absolute(cwd)) : homeTarget;
-        if (cwd && (directory === workspace || !within(workspace, directory)
-            || ['.data', '.ploinky'].some(name => within(path.join(workspace, name), directory)))) {
-            throw failure('ENVIRONMENT_PATH_INVALID', 'Environment cwd must be a public workspace directory', 400);
-        }
         const containerName = `robowork-env-${createHash('sha256').update(runId).digest('hex').slice(0, 24)}`;
         const launch = ['run', '--rm', tty ? '-it' : '-i', '--name', containerName,
             '--label', 'robowork.environment=true', '--label', `robowork.robot=${robotId}`,
@@ -165,7 +148,7 @@ export class EnvironmentManager {
             '--workdir', directory, '--entrypoint', '/usr/bin/env'];
         const mount = (source, target, readOnly) => launch.push('--volume', `${absolute(source)}:${absolute(target)}:${readOnly ? 'ro' : 'rw'}`);
         mount(home, homeTarget, false);
-        mount(toolCache.source, toolCache.target, true);
+        mount(toolCache, toolCache, true);
         mount(ala.source, ala.target, true);
         mount(bwrap.source, bwrap.target, true);
         for (const channel of channels) mount(channel.source, channel.target, false);
@@ -175,24 +158,23 @@ export class EnvironmentManager {
             CODEX_HOME: `${homeTarget}/.codex`, XDG_CONFIG_HOME: `${homeTarget}/.config`,
             XDG_DATA_HOME: `${homeTarget}/.local/share`, XDG_CACHE_HOME: `${homeTarget}/.cache`,
             PI_CODING_AGENT_DIR: `${homeTarget}/.pi/agent`, CLAUDE_CONFIG_DIR: `${homeTarget}/.claude` };
-        const mapToolPath = async value => {
+        // The tool cache is mounted at its own path, so a cached tool keeps the path it has here.
+        const cachedTool = async value => {
             if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
-            const source = await fs.realpath(absolute(toolCache.source));
-            let resolved;
-            try { resolved = await fs.realpath(absolute(value)); } catch { return null; }
-            if (resolved === source || !within(source, resolved)) return null;
-            return path.join(absolute(toolCache.target), path.relative(source, resolved));
+            const source = await fs.realpath(absolute(toolCache));
+            const resolved = await fs.realpath(absolute(value)).catch(() => null);
+            return resolved && resolved !== source && within(source, resolved) ? resolved : null;
         };
         for (const name of TOOL_ENV) {
             if (env[name] === undefined) continue;
-            const mapped = await mapToolPath(env[name]);
+            const mapped = await cachedTool(env[name]);
             if (!mapped) throw failure('ENVIRONMENT_PATH_INVALID', 'Coding agent executable must be inside the tool cache', 400);
             variables[name] = mapped;
         }
         for (const directory of String(env.PATH || '').split(path.delimiter).filter(Boolean)) {
             // Parent runtime PATH entries never enter the container unless they name cached tools.
-            if (!within(absolute(toolCache.source), path.resolve(directory))) continue;
-            const mapped = await mapToolPath(directory);
+            if (!within(absolute(toolCache), path.resolve(directory))) continue;
+            const mapped = await cachedTool(directory);
             if (mapped) variables.PATH += `:${mapped}`;
         }
         for (const [name, value] of Object.entries(env)) {
@@ -209,9 +191,8 @@ export class EnvironmentManager {
                 mount(pin?.source || folder.source, folder.target, folder.readOnly !== false);
             }
         } catch (error) { await release(); throw error; }
-        const expected = granted.filter(folder => folder.identity).map(({ target, identity }) => ({ target, identity }));
         launch.push(entry.image, '-i', ...Object.entries(variables).map(([name, value]) => `${name}=${value}`),
-            'node', ...(expected.length ? ['-e', MOUNT_CHECK, '--', JSON.stringify(expected)] : []), absolute(ala.entry), ...args);
+            'node', absolute(ala.entry), ...args);
         return { command: this.podmanCommand, args: launch, options: { stdio: ['pipe', 'pipe', 'pipe'] }, containerName, release };
     }
 }

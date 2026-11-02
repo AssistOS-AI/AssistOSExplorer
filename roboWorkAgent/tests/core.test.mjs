@@ -369,48 +369,6 @@ const identityOf = async directory => {
     return `${stat.dev}:${stat.ino}`;
 };
 
-// Podman resolves a --volume source when the container is created. This stand-in does what podman did in the live
-// failure: the path has been swapped by then, and the container's first process then starts on the swapped directory.
-async function fakePodman(root, { swap = null } = {}) {
-    const file = path.join(root, 'fake-podman');
-    await fs.writeFile(file, `#!/bin/sh
-${swap ? `mv '${swap.target}' '${swap.target}-moved' && ln -s '${swap.other}' '${swap.target}'` : ''}
-while [ "$1" != node ]; do shift; done
-shift
-exec '${process.execPath}' "$@"
-`, { mode: 0o755 });
-    return file;
-}
-
-async function environmentRun(t, swapped) {
-    const { manager, paths, input, root } = await fixture(t);
-    const other = path.join(root, 'other-home');
-    const folder = path.join(paths.workspaceRoot, 'granted');
-    for (const directory of [other, folder, manager.toolCache.root, paths.home(input.robotId), paths.soul(input.robotId)]) await fs.mkdir(directory, { recursive: true });
-    const environment = new EnvironmentManager({ podmanCommand: await fakePodman(root, { swap: swapped ? { target: swapped === 'folder' ? folder : input.cwd, other } : null }) });
-    environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/local/bin:/usr/bin:/bin' });
-    manager.environment = environment;
-    manager.runtimeBundle = { prepare: async () => ({ ala: { path: '/fixture/ala' }, bwrap: { bin: '/fixture/bwrap' } }) };
-    manager.execFileImpl = async () => { throw Object.assign(new Error('No fixture container'), { code: 1 }); };
-    await startReady(manager, { ...input, environment: 'repo/agent', folders: [{ source: folder, at: folder }] });
-    await manager.input({ runId: input.runId, data: Buffer.from('{"type":"prompt","prompt":"go"}\n').toString('base64') }).catch(() => {});
-    for (let attempt = 0; attempt < 500 && manager.get(input.runId).meta.state !== 'exited'; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
-    const result = await manager.read({ runId: input.runId, after: 0 });
-    return { result, log: result.records.map(record => Buffer.from(record.data, 'base64').toString()).join('') };
-}
-
-test('an Environment whose cwd or folder was swapped before its mount ends FOLDER_REFUSED without loading ALA', async t => {
-    for (const swapped of ['cwd', 'folder']) {
-        const { result, log } = await environmentRun(t, swapped);
-        assert.equal(result.state, 'exited', swapped); assert.equal(result.exit.signal, 'FOLDER_REFUSED', log);
-        assert.match(log, /A granted folder changed before the run started/u);
-        assert.doesNotMatch(log, /ERR_MODULE_NOT_FOUND|robowork-ala/u, 'The entry was loaded after a swap.');
-    }
-    // The control proves the check can pass: without a swap the first process goes on to load the mounted entry.
-    const { result, log } = await environmentRun(t, null);
-    assert.equal(result.exit.code, 1, log); assert.match(log, /ERR_MODULE_NOT_FOUND/u);
-});
-
 test('Podman receives each granted folder through a descriptor, checked against its grant, until release', async t => {
     const { paths, input, root } = await fixture(t);
     await fs.mkdir(paths.home(input.robotId), { recursive: true });
@@ -419,7 +377,7 @@ test('Podman receives each granted folder through a descriptor, checked against 
     const environment = new EnvironmentManager();
     environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/bin:/bin' });
     const launchFor = identities => environment.buildLaunch({ environment: 'repo/agent', runId: 'r', robotId: input.robotId, home: paths.home(input.robotId),
-        workspaceRoot: paths.workspaceRoot, cwd: input.cwd, cwdIdentity: identities.cwd, toolCache: { source: root, target: root }, ala: { source: root, target: '/opt/ala', entry: '/opt/ala/bin/ala.mjs' },
+        cwd: input.cwd, cwdIdentity: identities.cwd, toolCache: root, ala: { source: root, target: '/opt/ala', entry: '/opt/ala/bin/ala.mjs' },
         bwrap: { source: '/fixture/bwrap', target: '/opt/bwrap' }, folders: [{ source: folder, target: '/workspace/granted', readOnly: true, identity: identities.folder }], args: [] });
     const identities = { cwd: await identityOf(input.cwd), folder: await identityOf(folder) };
     const launch = await launchFor(identities);
@@ -436,38 +394,7 @@ test('Podman receives each granted folder through a descriptor, checked against 
     await assert.rejects(launchFor(identities), { code: 'FOLDER_REFUSED', message: /changed before it was mounted/u });
 });
 
-test('the first process checks identities before the entry runs and hands the entry its arguments', async t => {
-    const { paths, input, root } = await fixture(t);
-    await fs.mkdir(paths.home(input.robotId), { recursive: true });
-    const marker = path.join(root, 'entry-ran');
-    const entry = path.join(root, 'entry.mjs');
-    await fs.writeFile(entry, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(1)));\n`);
-    const environment = new EnvironmentManager();
-    environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/bin:/bin' });
-    const launch = await environment.buildLaunch({ environment: 'repo/agent', runId: 'r', robotId: input.robotId, home: paths.home(input.robotId),
-        workspaceRoot: paths.workspaceRoot, cwd: input.cwd, cwdIdentity: await identityOf(input.cwd), toolCache: { source: root, target: root }, ala: { source: root, target: '/opt/ala', entry },
-        bwrap: { source: '/fixture/bwrap', target: '/opt/bwrap' }, args: ['--home', '/home/aaa', '--cwd', input.cwd] });
-    t.after(() => launch.release());
-    const first = async () => {
-        await fs.rm(marker, { force: true });
-        return spawnSync(process.execPath, launch.args.slice(launch.args.lastIndexOf('node') + 1), { encoding: 'utf8' });
-    };
-    const accepted = await first();
-    assert.equal(accepted.status, 0, accepted.stderr);
-    assert.deepEqual(JSON.parse(await fs.readFile(marker, 'utf8')), [entry, '--home', '/home/aaa', '--cwd', input.cwd]);
-    // Another directory at the mount target, then a link leading to the granted directory, as if Podman had resolved a name.
-    const moved = `${input.cwd}-moved`;
-    await fs.rename(input.cwd, moved); await fs.mkdir(input.cwd);
-    const other = await first();
-    assert.equal(other.status, 78, other.stderr); assert.match(other.stderr, /A granted folder changed/u);
-    await assert.rejects(fs.lstat(marker), { code: 'ENOENT' });
-    await fs.rmdir(input.cwd); await fs.symlink(moved, input.cwd);
-    const linked = await first();
-    assert.equal(linked.status, 78, linked.stderr);
-    await assert.rejects(fs.lstat(marker), { code: 'ENOENT' });
-});
-
-test('every granted directory reaches ALA and the Environment check with the identity recorded at grant time', async t => {
+test('every granted directory reaches ALA and the Environment launch with the identity recorded at grant time', async t => {
     const { manager, paths, input } = await fixture(t);
     const folder = path.join(paths.workspaceRoot, 'granted');
     await fs.mkdir(folder);

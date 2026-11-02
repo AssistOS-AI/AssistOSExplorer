@@ -128,7 +128,7 @@ async function launchFixture(t) {
     const cwd = path.join(workspaceRoot, 'project');
     return { environment: 'AchillesIDE/gitAgent', runId: 'run-1', robotId: 'robot-one',
         workspaceRoot, cwd, home: path.join(root, 'private/robot-one/home'),
-        toolCache: { source: '/data/tool-cache', target: '/data/tool-cache' },
+        toolCache: '/data/tool-cache',
         ala: { source: '/Agent/linked/AdvancedLanguageAgent', target: '/opt/ala', entry: '/opt/ala/bin/ala.mjs' },
         bwrap: { source: '/data/tool-cache/bwrap/bin/bwrap', target: '/opt/bwrap' },
         channels: [{ source: '/data/runs/run-1/channels/human-input', target: '/workspace/human-input' }],
@@ -178,13 +178,9 @@ test('each step builds a fresh disposable image container with only its mapped r
     assert.equal(other.args[2], '-it');
 });
 
-test('builder rejects private cwd, symlink escapes and invalid mount vectors before spawn', async t => {
+test('builder starts in the robot home without a cwd and rejects invalid mount vectors before spawn', async t => {
     const options = await launchFixture(t);
     const { manager } = fixture();
-    await fs.symlink(path.dirname(options.workspaceRoot), path.join(options.workspaceRoot, 'escape'));
-    for (const cwd of [options.workspaceRoot, path.join(options.workspaceRoot, '.data'), path.join(options.workspaceRoot, 'escape')]) {
-        await assert.rejects(manager.buildLaunch({ ...options, cwd }), { code: 'ENVIRONMENT_PATH_INVALID' });
-    }
     // Without a cwd the container starts in the robot home and mounts no workspace folder.
     const homeOnly = (await manager.buildLaunch({ ...options, cwd: null })).args;
     assert.equal(homeOnly[homeOnly.indexOf('--workdir') + 1], '/home/robot-one');
@@ -193,7 +189,7 @@ test('builder rejects private cwd, symlink escapes and invalid mount vectors bef
     await assert.rejects(manager.buildLaunch({ ...options, robotId: '../robot' }), { code: 'ENVIRONMENT_INVALID' });
 });
 
-test('cached executables and PATH are translated while executable symlink escapes are refused', async t => {
+test('cached executables and PATH keep their cached path while executable symlink escapes are refused', async t => {
     const options = await launchFixture(t);
     const source = path.join(path.dirname(options.workspaceRoot), 'cache');
     await fs.mkdir(path.join(source, 'generation/bin'), { recursive: true });
@@ -201,11 +197,11 @@ test('cached executables and PATH are translated while executable symlink escape
     await fs.symlink('generation', path.join(source, 'selected'));
     await fs.symlink('/usr/bin/env', path.join(source, 'escape'));
     const { manager } = fixture();
-    const configured = { ...options, toolCache: { source, target: '/data/tool-cache' },
+    const configured = { ...options, toolCache: source,
         env: { CODEX_BIN: path.join(source, 'selected/bin/codex'), PATH: `/usr/bin:${source}/selected/bin`, ALA_EVENT_STREAM: '1' } };
     const launch = await manager.buildLaunch(configured);
-    assert.ok(launch.args.includes('CODEX_BIN=/data/tool-cache/generation/bin/codex'));
-    assert.ok(launch.args.includes('PATH=/image/bin:/usr/bin:/data/tool-cache/generation/bin'));
+    assert.ok(launch.args.includes(`CODEX_BIN=${source}/generation/bin/codex`));
+    assert.ok(launch.args.includes(`PATH=/image/bin:/usr/bin:${source}/generation/bin`));
     assert.ok(launch.args.includes('ALA_SANDBOX_HOME=/home/robot-one'));
     assert.ok(launch.args.includes('ALA_EVENT_STREAM=1'));
     assert.ok(launch.args.includes('XDG_CONFIG_HOME=/home/robot-one/.config'));
