@@ -83,13 +83,6 @@ export class RobotManager {
             const record = await this.require(input.robotId);
             const codingAgents = normalizeCodingAgents(input.codingAgents);
             if (input.codingAgent !== undefined && !codingAgents.includes(input.codingAgent)) throw fail('INVALID_INPUT', 'Invalid coding agent');
-            if (input.effort) {
-                const selected = input.codingAgent || codingAgents[0];
-                const result = await this.models({ robotId: input.robotId, agent: selected });
-                const config = await this.config(input);
-                const model = input.model || config.models?.[selected];
-                if (!result.models.some(entry => entry.id === model && entry.efforts?.includes(input.effort))) throw fail('INVALID_INPUT', 'The model does not advertise this effort');
-            }
             const result = await this.homeOperation(input.robotId, 'config_set', input);
             await this.write({ ...record, codingAgents });
             return result;
