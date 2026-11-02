@@ -644,6 +644,63 @@ test('I10 cleanup requires every exact record/process/ExecID/session absence and
     }
 });
 
+test('I10 TTY diagnostics separate fd path and controlling TTY without changing acceptance', async () => {
+    const source = await fs.readFile(new URL('./controller/native-terminal.mjs', import.meta.url), 'utf8');
+    const start = source.indexOf('async function processProof('), end = source.indexOf('\nexport function assertNativeCleanup', start);
+    const observe = vm.runInNewContext(`(${source.slice(start, end).trim()})`);
+    for (const inputCase of [
+        { link: '/dev/pts/3', ttyNumber: 42, same: true },
+        { link: '/dev/pts/3', ttyNumber: 0, same: true },
+        { link: '/dev/pts/3 (deleted)', ttyNumber: 42, same: true },
+        { link: '/dev/null', ttyNumber: 42, same: false },
+        { link: '/dev/pts/3', ttyNumber: 42, same: false },
+        { link: '/dev/pts/3', ttyNumber: 42, same: null },
+    ]) {
+        const { expected, observed } = nativeIdentityFixture();
+        const argument = 'unit-argument', code = 'unit-code', executable = '/usr/bin/node';
+        const stat = pid => { const fields = Array(20).fill('0');
+            Object.assign(fields, { 0: 'S', 1: pid === 10 ? '20' : '1', 3: '20', 4: String(inputCase.ttyNumber), 19: pid === 10 ? '100' : '200' });
+            return `${pid} (node) ${fields.join(' ')}`;
+        };
+        const fakeFs = {
+            readdirSync: () => ['10', '20'],
+            readFileSync(file) {
+                if (file.endsWith('/stat')) return stat(Number(file.split('/')[2]));
+                if (file.endsWith('/cmdline')) return file === '/proc/10/cmdline' ? [executable, '-e', code, argument, ''].join('\0') : 'anchor\0';
+                if (file.endsWith('/status')) return 'NSpid:\t1000\t10\n';
+                if (file.endsWith('/environ')) return `HOME=/home/${expected.attacker}\0`;
+                throw Error('Unexpected synthetic read');
+            },
+            realpathSync: file => file.endsWith('/exe') ? executable : expected.project,
+            readlinkSync: file => file.endsWith('/fd/0') ? inputCase.link : file === '/proc/self/ns/pid' ? 'pid:[99]' : 'pid:[100]',
+            statSync(file) {
+                if (!file.endsWith('/fd/0')) return { dev: 7, ino: 8 };
+                if (file === '/proc/20/fd/0' && inputCase.same === null) throw Object.assign(new Error('private read error'), { code: 'EACCES' });
+                return { dev: 1, ino: file === '/proc/20/fd/0' && inputCase.same === false ? 9 : 2, rdev: 3, isCharacterDevice: () => true };
+            },
+        };
+        const runtime = { config: { rw: 'unit-rw' }, async node(_id, body, input) {
+            let result;
+            vm.runInNewContext(body, { fs: fakeFs, input, console: { log(value) { result = JSON.parse(value); } } });
+            return result;
+        } };
+        const result = await observe(runtime, { ...expected, executable, argument, code,
+            anchor: { innerPid: 20, innerStartToken: 'linux-proc:200', innerSessionId: 20 } });
+        assert.equal(result.ttyPathMatches, /^\/dev\/pts\/[0-9]+$/u.test(inputCase.link));
+        assert.equal(result.ttyControlling, inputCase.ttyNumber !== 0);
+        assert.equal(result.ttyLinkDeletedSuffix, inputCase.link.endsWith(' (deleted)'));
+        assert.equal(result.ttySameAsReceipt, inputCase.same);
+        assert.equal(result.ttyReceiptReadError, inputCase.same === null ? 'TTY_FD_UNAVAILABLE' : null);
+        const oldPredicate = /^\/dev\/pts\/[0-9]+$/u.test(inputCase.link) && inputCase.ttyNumber !== 0;
+        assert.equal(result.ttyMatches, oldPredicate);
+        const nativeObserved = { ...observed, pid: 10, startToken: '100' };
+        if (oldPredicate) assertNativeObservation(nativeObserved, expected, result);
+        else assert.throws(() => assertNativeObservation(nativeObserved, expected, result), /strictly equal/u);
+        assert.ok(!JSON.stringify(result).includes(inputCase.link), 'TTY path must not be returned');
+        assert.ok(!JSON.stringify(result).includes('private read error'));
+    }
+});
+
 test('I10 browser requests use a fresh launch document, bounded signals and fail closed on aborts', async () => {
     for (const abortedRequest of [null, 'auth', 'input', 'failure-exit', 'live-list', 'launch-response', 'primary-assertion', 'unknown-primary']) {
         const { target, expected, record, observed, proof } = nativeIdentityFixture();
@@ -655,6 +712,8 @@ test('I10 browser requests use a fresh launch document, bounded signals and fail
             evidence: { message: privateText, headers: { authorization: privateText }, nativeTerminal: { argv: privateText } } });
         if (abortedRequest === 'unknown-primary') { injectedPrimary.name = privateText; injectedPrimary.code = privateText; }
         observed.environment = privateText; proof.argv = privateText;
+        Object.assign(proof, { ttyPathMatches: true, ttyControlling: false, ttyLinkDeletedSuffix: false,
+            ttySameAsReceipt: null, ttyReceiptReadError: 'TTY_FD_UNAVAILABLE' });
         const runtime = { config: { rw: target.containerId, workspace: '/task', victim: expected.victim,
             explorer: { storageState: '/unit/private-state' } },
         auth: { origin: 'http://127.0.0.1', principalHash: 'unit-principal' },
@@ -736,6 +795,9 @@ test('I10 browser requests use a fresh launch document, bounded signals and fail
                 assert.equal(diagnostic.cleanupConfirmed, true); assert.equal(diagnostic.created, true);
                 assert.equal(diagnostic.sessionRequestObserved, true); assert.equal(diagnostic.sessionResponseStatus, 201);
                 assert.equal(diagnostic.observed.homeMatches, true); assert.equal(diagnostic.native.receiptAncestor, true);
+                assert.equal(diagnostic.native.ttyPathMatches, true); assert.equal(diagnostic.native.ttyControlling, false);
+                assert.equal(diagnostic.native.ttyLinkDeletedSuffix, false); assert.equal(diagnostic.native.ttySameAsReceipt, null);
+                assert.equal(diagnostic.native.ttyReceiptReadError, 'TTY_FD_UNAVAILABLE');
                 assert.ok(!JSON.stringify(error.evidence).includes(privateText));
                 assert.ok(!JSON.stringify(error.evidence).includes(launch));
                 assert.ok(calls.includes('failure-exit')); assert.ok(calls.includes('live-list'));
