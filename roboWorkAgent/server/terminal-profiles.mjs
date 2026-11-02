@@ -38,6 +38,14 @@ export async function ensureTerminalStub(paths, id, { empty = true } = {}) {
     return directory;
 }
 
+// Removes the stub folder and the prepared descriptors of a deleted robot.
+export async function removeTerminalState(paths, id) {
+    robotId(id);
+    await fs.rm(path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal', id), { recursive: true, force: true });
+    const stateRoot = path.join(paths.dataDir, 'server-state', 'terminal');
+    for (const name of await fs.readdir(stateRoot).catch(() => [])) if (name.startsWith(id + '.')) await fs.rm(path.join(stateRoot, name), { force: true });
+}
+
 export function createTerminalProfiles({ paths, robots, toolCache, homeOperation, environment, runtimeBundle }) {
     const stubRoot = path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal');
     const stateRoot = path.join(paths.dataDir, 'server-state', 'terminal');

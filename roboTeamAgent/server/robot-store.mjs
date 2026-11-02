@@ -285,19 +285,21 @@ export class RobotStore {
         });
     }
 
-    // Also checked before RoboWork destroys anything, so a refusal leaves the robot whole.
+    // Checked again before RoboWork removes the home, so the common case is refused early. A CLI user who opens the robot
+    // between this check and the removal is not prevented.
     async assertDeletable(robotId) {
         const root = this.robotPath(robotId);
         const names = await fs.readdir(root).catch((error) => { if (error.code !== 'ENOENT') throw error; return []; });
         for (const name of names) {
             if (!/^\.cli-[a-f0-9-]+\.json$/.test(name)) continue;
-            const { owner } = await readRegistryOwner(path.join(root, name));
-            if (owner.boot !== (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim()) continue;
             try {
+                const { owner } = await readRegistryOwner(path.join(root, name));
+                if (owner.boot !== (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim()) continue;
                 if (await processStart(owner.pid) === owner.start) {
                     throw Object.assign(new Error('close the robot chat and stop its CLI tasks before deleting it'), { code: 'ROBOT_BUSY', statusCode: 409 });
                 }
             } catch (error) {
+                // The owner file of a CLI user who closed meanwhile, or a process that has exited, is gone.
                 if (error.code !== 'ENOENT') throw error;
             }
         }

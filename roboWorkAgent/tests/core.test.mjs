@@ -236,6 +236,38 @@ test('full robot ensure still prepares native tools and plugin templates before 
     assert.equal(calls[2][3].binPath, tools.binPath);
 });
 
+test('delete cleans a robot with a bad label, keeps the active check and reports an unknown robot only when its directory is absent', async t => {
+    const { paths } = await fixture(t);
+    const put = async (file, text = 'x') => { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, text); };
+    const stubs = path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal');
+    const state = path.join(paths.dataDir, 'server-state');
+    await put(path.join(paths.robot('aaa'), 'label'), '{ not json');
+    await put(path.join(paths.home('aaa'), 'credentials'));
+    await put(path.join(stubs, 'aaa', 'placeholder'));
+    await put(path.join(stubs, 'bbb', 'placeholder'));
+    for (const name of ['aaa.default.json', 'aaa.env.json', 'bbb.default.json']) await put(path.join(state, 'terminal', name));
+    await put(path.join(state, 'model-catalog', 'aaa', 'opencode.json'));
+    await put(path.join(state, 'model-catalog', 'bbb', 'opencode.json'));
+    const homeCalls = [];
+    const robots = new RobotManager({ paths, toolCache: {}, soulGateway: { remove: async () => {} },
+        homeOperation: async (id, operation, input) => { homeCalls.push(operation); return homeOperation(operation, input, paths.home(id)); } });
+    robots.runs = { list: () => [{ state: 'running' }] };
+    await assert.rejects(robots.delete({ robotId: 'aaa' }), { code: 'ROBOT_ACTIVE' });
+    assert.deepEqual(homeCalls, []);
+    robots.runs = { list: () => [] };
+    assert.deepEqual(await robots.delete({ robotId: 'aaa' }), { deleted: true });
+    await assert.rejects(fs.lstat(paths.robot('aaa')), { code: 'ENOENT' });
+    for (const gone of [path.join(stubs, 'aaa'), path.join(state, 'terminal', 'aaa.default.json'), path.join(state, 'terminal', 'aaa.env.json'),
+        path.join(state, 'model-catalog', 'aaa')]) await assert.rejects(fs.lstat(gone), { code: 'ENOENT' });
+    for (const kept of [path.join(stubs, 'bbb'), path.join(state, 'terminal', 'bbb.default.json'), path.join(state, 'model-catalog', 'bbb')]) await fs.lstat(kept);
+    await assert.rejects(robots.delete({ robotId: 'aaa' }), { code: 'UNKNOWN_ROBOT' });
+    // A robot directory that never got a home is still removed.
+    await put(path.join(paths.robot('ccc'), 'label'), 'null');
+    homeCalls.length = 0;
+    assert.deepEqual(await robots.delete({ robotId: 'ccc' }), { deleted: true });
+    assert.deepEqual(homeCalls, []);
+});
+
 test('registry creation requests lightweight setup without replacing its stored default record', async t => {
     const { paths } = await fixture(t);
     const calls = [];

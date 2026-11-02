@@ -34,6 +34,21 @@ test('concurrent CLI users do not serialize execution but prevent deletion until
     });
 });
 
+test('a CLI owner file released while the scan runs does not refuse a delete', async (t) => {
+    await withStore(async (store) => {
+        const root = store.robotPath('worker-a1b2c3');
+        await fs.mkdir(root, { recursive: true });
+        const file = path.join(root, '.cli-0123abcd-0123.json');
+        await fs.writeFile(file, '{}');
+        const open = fs.open;
+        t.mock.method(fs, 'open', async (target, ...rest) => {
+            if (target === file) throw Object.assign(new Error('released'), { code: 'ENOENT' });
+            return open.call(fs, target, ...rest);
+        });
+        await store.assertDeletable('worker-a1b2c3');
+    });
+});
+
 test('creates a persistent workspace robot and exposes it in the shared listing', async () => {
     await withStore(async (store, dataDir) => {
         const robot = await store.create({ name: 'Research Analyst' });

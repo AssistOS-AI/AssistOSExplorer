@@ -5,13 +5,15 @@ import { fileURLToPath } from 'node:url';
 import { normalizeCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
 import { fail, robotId, homeTarget } from './robot-paths.mjs';
 import { buildPrivateLaunch, capturePrivateLaunch } from './launch.mjs';
-import { ensureTerminalStub } from './terminal-profiles.mjs';
+import { ensureTerminalStub, removeTerminalState } from './terminal-profiles.mjs';
 
 async function realDirectory(directory) {
     await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
     const entry = await fs.lstat(directory);
     if (!entry.isDirectory() || entry.isSymbolicLink()) throw fail('UNSAFE_STORAGE', 'Robot storage is unsafe', 500);
 }
+
+const present = file => fs.lstat(file).then(() => true, error => { if (error.code !== 'ENOENT') throw error; return false; });
 
 export class RobotManager {
     constructor({ paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch = capturePrivateLaunch }) {
@@ -133,14 +135,20 @@ export class RobotManager {
 
     async delete({ robotId: id }) {
         return this.serialized(id, async () => {
-            await this.require(id);
+            // The label may be missing or corrupt, so the robot directory decides whether the robot exists. A repeat delete finds nothing to remove.
+            if (!await present(this.paths.robot(id))) throw fail('UNKNOWN_ROBOT', 'Unknown robotId', 404);
             if (this.runs?.list({ robotId: id }).some(run => ['starting', 'running', 'stopping'].includes(run.state))
                 || this.gui && (await this.gui.status(id)).state !== 'stopped') throw fail('ROBOT_ACTIVE', 'Stop robot activity before deleting it', 409);
-            if (this.gui) await this.gui.releaseProxy({ robotId: id });
+            // A lease that cannot be released for a robot without a label is pruned by the next proxy listing.
+            if (this.gui) await this.gui.releaseProxy({ robotId: id }).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; });
             await this.soulGateway.remove(this.paths.soul(id));
-            await this.homeOperation(id, 'delete', {});
-            // Remove the empty mount root without traversing any new robot-written entries.
-            await fs.rmdir(this.paths.home(id));
+            if (await present(this.paths.home(id))) {
+                await this.homeOperation(id, 'delete', {});
+                // Remove the empty mount root without traversing any new robot-written entries.
+                await fs.rmdir(this.paths.home(id));
+            }
+            await fs.rm(path.join(this.paths.dataDir, 'server-state', 'model-catalog', id), { recursive: true, force: true });
+            await removeTerminalState(this.paths, id);
             await fs.rm(this.paths.robot(id), { recursive: true, force: true });
             return { deleted: true };
         });
