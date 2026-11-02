@@ -6,6 +6,8 @@ const TOOLS = new Map([
     ['roboTeamAgent', new Set(['roboflow_start_flow', 'roboflow_list_workflows'])],
     ['GPTResearcher', new Set(['start_research'])],
 ]);
+// The payload field that names a folder. The relay sets it to the run's own working folder, so a robot cannot start work elsewhere.
+const FOLDER_FIELD = { roboflow_start_flow: 'folder', start_research: 'workingDir' };
 const REFS = new Set(['AchillesIDE/roboTeamAgent', 'legacy-agents/GPTResearcher', 'legacy-agents/searchAgent']);
 const refused = () => Object.assign(new Error('Task callback is not permitted'), { statusCode: 403 });
 
@@ -26,12 +28,15 @@ export async function createPloinkyTaskContext({ context, env = process.env, onT
             if (!body || typeof body !== 'object' || Array.isArray(body)) throw refused();
             if (path === '/agent-call') {
                 if (!TOOLS.get(body.agent)?.has(body.tool)) throw refused();
+                const given = body.payload ?? {};
+                if (!given || typeof given !== 'object' || Array.isArray(given)) throw refused();
+                const payload = FOLDER_FIELD[body.tool] ? { ...given, [FOLDER_FIELD[body.tool]]: context.workingDir } : given;
                 const result = await runWithSkillRuntimeOrigin(context, async () =>
-                    (await clientFor(body.agent)).callToolWithoutWait(body.tool, body.payload || {}));
+                    (await clientFor(body.agent)).callToolWithoutWait(body.tool, payload));
                 const taskId = result?.metadata?.taskId || result?.result?.metadata?.taskId;
                 if (taskId) {
                     const task = { agentName: body.agent, taskId, toolName: body.tool,
-                        arguments: body.payload || {}, metadata: result.metadata || {} };
+                        arguments: payload, metadata: result.metadata || {} };
                     launched.set(task.taskId, task);
                     await onTask?.(sanitize(task));
                 }
