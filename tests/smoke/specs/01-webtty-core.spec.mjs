@@ -200,14 +200,16 @@ async function browserMutation(page, pathname, { method = 'POST', body, refreshP
 }
 
 function expectedHttpFailureDiagnostics(pathname, { method = 'POST', status } = {}) {
-  if (status !== 404) throw new Error('the WebTTY negative diagnostic proof only permits exact 404 responses');
+  // The only 409 allowed is the robot environment's first-Open preparation answer on its prepare route (T5).
+  const preparing = status === 409 && method === 'POST' && /\/api\/terminal-profiles\/[^/]+\/prepare$/.test(pathname);
+  if (status !== 404 && !preparing) throw new Error('the WebTTY negative diagnostic proof only permits exact 404 responses');
   const url = new URL(pathname, smokeConfig.baseURL).toString();
   return [
     diagnosticEventSignature({ kind: 'response', type: 'error', status, url, method }),
     diagnosticEventSignature({
       kind: 'console',
       type: 'error',
-      text: 'Failed to load resource: the server responded with a status of 404 (Not Found)',
+      text: `Failed to load resource: the server responded with a status of ${status} (${status === 409 ? 'Conflict' : 'Not Found'})`,
       location: { url },
     }),
   ];
@@ -514,24 +516,49 @@ async function selectTerminalTarget(chooserState, predicate, terminals) {
   );
   if (selectedButton) await expect(selectedButton).toHaveCount(1);
   const { context } = chooserState;
-  const popupPromise = context.waitForEvent('page', { timeout: smokeConfig.timeouts.navigation });
-  const navigationPromise = context.waitForEvent('request', {
-    predicate: isWebttyNavigation,
-    timeout: smokeConfig.timeouts.navigation,
-  });
-  const createPromise = context.waitForEvent('response', {
-    predicate: isSessionCreation,
-    timeout: smokeConfig.timeouts.navigation,
-  });
+  // Waiters that lose to a retry must not surface as unhandled rejections.
+  const arm = () => {
+    const waiters = {
+      popupPromise: context.waitForEvent('page', { timeout: smokeConfig.timeouts.navigation }),
+      navigationPromise: context.waitForEvent('request', { predicate: isWebttyNavigation, timeout: smokeConfig.timeouts.navigation }),
+      createPromise: context.waitForEvent('response', { predicate: isSessionCreation, timeout: smokeConfig.timeouts.navigation }),
+    };
+    for (const waiter of Object.values(waiters)) waiter.catch(() => {});
+    return waiters;
+  };
+  let { popupPromise, navigationPromise, createPromise } = arm();
+  let createResponse;
   if (selectedButton) {
     // A row only selects the target; Open prepares the robot, reserves the tab and starts the terminal.
     await selectedButton.click();
     await expect(selectedButton).toHaveAttribute('aria-pressed', 'true');
-    await chooserState.chooser.getByRole('button', { name: 'Open', exact: true }).click();
+    const open = chooserState.chooser.getByRole('button', { name: 'Open', exact: true });
+    const preparing = chooserState.chooser.locator('#terminalTargetWarning').filter({ hasText: 'is preparing' });
+    const deadline = Date.now() + smokeConfig.timeouts.relay;
+    for (;;) {
+      const conflict = chooserState.page.waitForResponse((response) => (
+        response.request().method() === 'POST' && response.status() === 409 && /\/prepare$/.test(new URL(response.url()).pathname)
+      ), { timeout: smokeConfig.timeouts.navigation });
+      conflict.catch(() => {});
+      const checkpoint = checkpointPageDiagnostics(chooserState.page, 'environment preparing');
+      await open.click();
+      const sawPreparing = preparing.waitFor({ state: 'visible', timeout: smokeConfig.timeouts.navigation }).then(() => null);
+      sawPreparing.catch(() => {});
+      createResponse = await Promise.race([createPromise, sawPreparing]);
+      if (createResponse) break;
+      // The first Open of a non-default environment answers 409 TERMINAL_PREPARING, closes its tab and asks to retry.
+      expect(Date.now(), 'the environment must finish preparing in time').toBeLessThan(deadline);
+      const rejected = await conflict;
+      await chooserState.page.waitForTimeout(2_000);
+      acknowledgeExactPageDiagnostics(chooserState.page, checkpoint, expectedHttpFailureDiagnostics(
+        new URL(rejected.url()).pathname, { status: 409 },
+      ));
+      ({ popupPromise, navigationPromise, createPromise } = arm());
+    }
   } else {
     await (await context.newPage()).goto(new URL(`/webtty/#launch=${selectedTarget.launch}`, smokeConfig.baseURL).toString());
+    createResponse = await createPromise;
   }
-  const createResponse = await createPromise;
   // Register the shell for DELETE cleanup before any later wait or assertion can fail; shells survive detach.
   // A 201 body is registered by its raw session id first; the strict shape checks run afterwards.
   const createStatus = createResponse.status();
@@ -560,7 +587,7 @@ async function openTerminalFromExplorer(page, directoryPath, predicate = (target
 
 // T5: with a robot chosen the chooser lists only RoboWork's row and Box is not launchable. Open the row in the default
 // environment after one Refresh, then open it again in a non-default environment.
-async function openRobotTerminal(chooserState, terminals, testInfo, name) {
+async function openRobotTerminal(chooserState, terminals, testInfo, name, { homeId = '' } = {}) {
   const { page } = chooserState;
   const { profile } = chooserState.discovery;
   const terminal = await selectTerminalTarget(
@@ -574,6 +601,19 @@ async function openRobotTerminal(chooserState, terminals, testInfo, name) {
   expect(terminal.navigationRequest.headers().referer, 'the terminal navigation must not disclose the Explorer URL').toBeUndefined();
   const diagnostics = attachPageDiagnostics(terminal.terminalPage, testInfo, name);
   await waitForConnectedTerminal(terminal.terminalPage);
+  if (homeId) {
+    // T5: the shell runs in the chosen environment's image with the robot's own home.
+    const probe = await browserMutation(terminal.terminalPage, `/webtty/sessions/${encodeURIComponent(terminal.session.id)}/input`, {
+      body: { data: ". /etc/os-release; printf '__WEBTTY_ROBOT_HOME__%s__ __WEBTTY_ROBOT_IMAGE__%s__\\n' \"$HOME\" \"$PRETTY_NAME\"\r" },
+    });
+    expect(probe).toMatchObject({ status: 200, payload: { ok: true } });
+    const rows = terminal.terminalPage.locator('#terminal .xterm-rows');
+    await expect.poll(() => rows.innerText(), { timeout: smokeConfig.timeouts.navigation })
+      .toContain(`__WEBTTY_ROBOT_HOME__/home/${homeId}__`);
+    const image = /__WEBTTY_ROBOT_IMAGE__([^%\r\n]+?)__/.exec(await rows.innerText())?.[1] || '';
+    expect(image, 'the environment image must identify itself').not.toBe('');
+    await testInfo.attach(`${name}-image.txt`, { body: image, contentType: 'text/plain' });
+  }
   expect(diagnostics.actionableEvents()).toEqual([]);
   diagnostics.pause();
   await closeTerminal(terminal);
@@ -620,7 +660,9 @@ async function exerciseRobotChooser(page, directoryPath, terminals, testInfo) {
   second.discovery = await readTargetDiscovery(await discovered, relative, { profiled: true });
   expect(second.discovery.profile.id.endsWith(`.${other}`)).toBe(true);
   await assertChooserRows(second.chooser, second.discovery);
-  await openRobotTerminal(second, terminals, testInfo, 'webtty-robot-environment-terminal');
+  await openRobotTerminal(second, terminals, testInfo, 'webtty-robot-environment-terminal', {
+    homeId: second.discovery.profile.id.slice(0, -(other.length + 1)),
+  });
 }
 
 async function refreshTerminalChooser(chooserState, expectedDirectory) {
@@ -1007,6 +1049,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
         payload: { ok: false, error: 'browser_origin_required' },
       });
 
+      // First, so a long environment preparation cannot expire the plain launches used below.
+      await exerciseRobotChooser(page, fixture.nestedDirectoryPath, terminals, testInfo);
       const firstChooser = await openPlainTerminalDiscovery(page, fixture.nestedDirectoryPath);
       const expectedBoxTarget = {
         kind: 'box',
@@ -1023,7 +1067,6 @@ test.describe('Ploinky core WebTTY release gate', () => {
         target.label === isolatedMonitor.agentName
         && target.detail === `${isolatedMonitor.repoName}/${isolatedMonitor.agentName}`
       ))).toBe(false);
-      await exerciseRobotChooser(page, fixture.nestedDirectoryPath, terminals, testInfo);
 
       const ownedAgentLaunch = firstChooser.discovery.targets.find((target) => (
         target.kind === 'agent'
