@@ -644,22 +644,39 @@ test('I10 cleanup requires every exact record/process/ExecID/session absence and
     }
 });
 
-test('I10 TTY diagnostics separate fd path and controlling TTY without changing acceptance', async () => {
+test('I10 TTY proof requires stable receipt device identity and matching nonzero controlling TTY', async () => {
     const source = await fs.readFile(new URL('./controller/native-terminal.mjs', import.meta.url), 'utf8');
     const start = source.indexOf('async function processProof('), end = source.indexOf('\nexport function assertNativeCleanup', start);
     const observe = vm.runInNewContext(`(${source.slice(start, end).trim()})`);
     for (const inputCase of [
         { link: '/dev/pts/3', ttyNumber: 42, same: true },
+        { link: '/namespace/tty/3', ttyNumber: 42, same: true },
         { link: '/dev/pts/3', ttyNumber: 0, same: true },
         { link: '/dev/pts/3 (deleted)', ttyNumber: 42, same: true },
         { link: '/dev/null', ttyNumber: 42, same: false },
         { link: '/dev/pts/3', ttyNumber: 42, same: false },
         { link: '/dev/pts/3', ttyNumber: 42, same: null },
+        { link: '/dev/pts/3', ttyNumber: 42, same: null, fdError: '10' },
+        { link: '/dev/pts/3', ttyNumber: 42, same: true, anchorTty: 0 },
+        { link: '/dev/pts/3', ttyNumber: 42, same: true, anchorTty: 43 },
+        ...['dev', 'rdev'].map(mismatch => ({ link: '/dev/pts/3', ttyNumber: 42, same: false, mismatch })),
+        ...['10', '20'].map(noncharacter => ({ link: '/dev/pts/3', ttyNumber: 42, same: false, noncharacter })),
+        ...['10', '20'].map(replacedFd => ({ link: '/dev/pts/3', ttyNumber: 42, same: false, replacedFd })),
+        ...['10', '20'].map(changedBirth => ({ link: '/dev/pts/3', ttyNumber: 42, same: null, changedBirth })),
+        ...['10', '20'].map(changedNamespace => ({ link: '/dev/pts/3', ttyNumber: 42, same: null, changedNamespace })),
+        ...['10', '20'].map(changedTty => ({ link: '/dev/pts/3', ttyNumber: 42, same: null, changedTty })),
+        { link: '/dev/pts/3', ttyNumber: 42, same: null, anchorReused: true },
     ]) {
         const { expected, observed } = nativeIdentityFixture();
         const argument = 'unit-argument', code = 'unit-code', executable = '/usr/bin/node';
+        const statReads = new Map(), fdReads = new Map(), namespaceReads = new Map();
         const stat = pid => { const fields = Array(20).fill('0');
-            Object.assign(fields, { 0: 'S', 1: pid === 10 ? '20' : '1', 3: '20', 4: String(inputCase.ttyNumber), 19: pid === 10 ? '100' : '200' });
+            const reads = (statReads.get(pid) || 0) + 1; statReads.set(pid, reads);
+            Object.assign(fields, { 0: 'S', 1: pid === 10 ? '20' : '1', 3: '20',
+                4: String(pid === 20 ? inputCase.anchorTty ?? inputCase.ttyNumber : inputCase.ttyNumber),
+                19: pid === 10 ? '100' : '200' });
+            if (inputCase.changedBirth === String(pid) && reads > 1 || inputCase.anchorReused && pid === 20) fields[19] = '999';
+            if (inputCase.changedTty === String(pid) && reads > 1) fields[4] = '43';
             return `${pid} (node) ${fields.join(' ')}`;
         };
         const fakeFs = {
@@ -672,11 +689,23 @@ test('I10 TTY diagnostics separate fd path and controlling TTY without changing 
                 throw Error('Unexpected synthetic read');
             },
             realpathSync: file => file.endsWith('/exe') ? executable : expected.project,
-            readlinkSync: file => file.endsWith('/fd/0') ? inputCase.link : file === '/proc/self/ns/pid' ? 'pid:[99]' : 'pid:[100]',
+            readlinkSync(file) {
+                if (file.endsWith('/fd/0')) return inputCase.link;
+                if (file === '/proc/self/ns/pid') return 'pid:[99]';
+                const pid = file.split('/')[2], reads = (namespaceReads.get(pid) || 0) + 1; namespaceReads.set(pid, reads);
+                return inputCase.changedNamespace === pid && reads > 1 ? 'pid:[101]' : 'pid:[100]';
+            },
             statSync(file) {
                 if (!file.endsWith('/fd/0')) return { dev: 7, ino: 8 };
-                if (file === '/proc/20/fd/0' && inputCase.same === null) throw Object.assign(new Error('private read error'), { code: 'EACCES' });
-                return { dev: 1, ino: file === '/proc/20/fd/0' && inputCase.same === false ? 9 : 2, rdev: 3, isCharacterDevice: () => true };
+                if (file === `/proc/${inputCase.fdError || '20'}/fd/0` && inputCase.same === null && !inputCase.changedBirth
+                    && !inputCase.changedNamespace && !inputCase.changedTty && !inputCase.anchorReused)
+                    throw Object.assign(new Error('private read error'), { code: 'EACCES' });
+                const pid = file.split('/')[2], reads = (fdReads.get(pid) || 0) + 1; fdReads.set(pid, reads);
+                const fd = { dev: 1n, ino: 2n, rdev: 3n, isCharacterDevice: () => inputCase.noncharacter !== pid };
+                if (inputCase.replacedFd === pid && reads > 1) fd.ino = 9n;
+                else if (pid === '20' && inputCase.same === false && !inputCase.replacedFd && !inputCase.noncharacter)
+                    fd[inputCase.mismatch || 'ino'] = 9n;
+                return fd;
             },
         };
         const runtime = { config: { rw: 'unit-rw' }, async node(_id, body, input) {
@@ -684,17 +713,21 @@ test('I10 TTY diagnostics separate fd path and controlling TTY without changing 
             vm.runInNewContext(body, { fs: fakeFs, input, console: { log(value) { result = JSON.parse(value); } } });
             return result;
         } };
-        const result = await observe(runtime, { ...expected, executable, argument, code,
+        const operation = observe(runtime, { ...expected, executable, argument, code,
             anchor: { innerPid: 20, innerStartToken: 'linux-proc:200', innerSessionId: 20 } });
+        if (inputCase.changedBirth === '10') { await assert.rejects(operation, /Native identity changed/u); continue; }
+        const result = await operation;
         assert.equal(result.ttyPathMatches, /^\/dev\/pts\/[0-9]+$/u.test(inputCase.link));
         assert.equal(result.ttyControlling, inputCase.ttyNumber !== 0);
         assert.equal(result.ttyLinkDeletedSuffix, inputCase.link.endsWith(' (deleted)'));
         assert.equal(result.ttySameAsReceipt, inputCase.same);
-        assert.equal(result.ttyReceiptReadError, inputCase.same === null ? 'TTY_FD_UNAVAILABLE' : null);
-        const oldPredicate = /^\/dev\/pts\/[0-9]+$/u.test(inputCase.link) && inputCase.ttyNumber !== 0;
-        assert.equal(result.ttyMatches, oldPredicate);
+        const readError = inputCase.anchorReused ? null : inputCase.changedBirth === '20' || inputCase.changedNamespace === '20' || inputCase.changedTty === '20'
+            ? 'TTY_ANCHOR_CHANGED' : inputCase.changedNamespace === '10' || inputCase.changedTty === '10' ? 'TTY_NATIVE_CHANGED' : inputCase.same === null ? 'TTY_FD_UNAVAILABLE' : null;
+        assert.equal(result.ttyReceiptReadError, readError);
+        const matches = inputCase.same === true && inputCase.ttyNumber !== 0 && (inputCase.anchorTty ?? inputCase.ttyNumber) === inputCase.ttyNumber;
+        assert.equal(result.ttyMatches, matches);
         const nativeObserved = { ...observed, pid: 10, startToken: '100' };
-        if (oldPredicate) assertNativeObservation(nativeObserved, expected, result);
+        if (matches) assertNativeObservation(nativeObserved, expected, result);
         else assert.throws(() => assertNativeObservation(nativeObserved, expected, result), /strictly equal/u);
         assert.ok(!JSON.stringify(result).includes(inputCase.link), 'TTY path must not be returned');
         assert.ok(!JSON.stringify(result).includes('private read error'));
