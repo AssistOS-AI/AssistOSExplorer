@@ -177,12 +177,13 @@ test('the container starts with the working folder check and only then becomes /
 
 test('a session mounts through a descriptor held until the container starts and reports a swap as CWD_REFUSED', async t => {
     const planned = [];
-    let swap = async () => {}, holding = null;
+    let swap = async () => {}, holding = null, plantAtRun = null;
     const { manager, workspaceRoot } = await fixture(t, {
         prepareRobot: async () => { await swap(); },
         waitForSession: async () => { throw new Error('session did not become ready'); },
         execFileImpl: async (command, args) => {
             planned.push(args);
+            if (args[0] === 'run' && plantAtRun) { await plantAtRun(); throw new Error('mounting a tmpfs over .roboteam failed'); }
             if (args[0] === 'run') holding = fstatSync(Number(/fd\/(\d+):/u.exec(args[args.findIndex(value => value.endsWith(`:${project}:rw`))])[1]), { bigint: true });
             return { stdout: args[0] === 'port' ? '127.0.0.1:4567' : args[0] === 'inspect' ? '78\n' : '', stderr: '' };
         },
@@ -208,6 +209,14 @@ test('a session mounts through a descriptor held until the container starts and 
     await assert.rejects(manager.ensureReady({ robotId: 'robot-a', mode: 'desktop', cwd: project }), { code: 'CWD_REFUSED', message: /\.roboteam is not a real directory/u });
     assert.equal(manager.status('robot-a').error.message, "The working folder's .roboteam is not a real directory");
     assert.equal(planned.filter(args => args[0] === 'run').length, 0);
+    await fs.rm(path.join(project, '.roboteam'));
+    // Planted right as Podman creates the container: the failed status carries the reason, not a raw Podman error.
+    await manager.stop({ robotId: 'robot-a' });
+    swap = async () => {};
+    plantAtRun = async () => { await fs.symlink(other, path.join(project, '.roboteam')); };
+    await assert.rejects(manager.ensureReady({ robotId: 'robot-a', mode: 'desktop', cwd: project }), { code: 'CWD_REFUSED' });
+    assert.deepEqual(manager.status('robot-a').error, { code: 'CWD_REFUSED', message: "The working folder's .roboteam is not a real directory", statusCode: 400 });
+    plantAtRun = null;
     await fs.rm(path.join(project, '.roboteam'));
     // A swap during preparation is refused before Podman is asked for anything.
     planned.length = 0;

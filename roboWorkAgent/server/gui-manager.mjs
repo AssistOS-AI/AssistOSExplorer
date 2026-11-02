@@ -334,7 +334,9 @@ export class GuiManager {
             session.state = 'running';
             return this._result(session);
         } catch (error) {
-            const failure = started && await this._refusedCwd(session) ? fail('CWD_REFUSED', 'The working folder changed before the session started') : error;
+            // A .roboteam planted while the container is created fails the mount; the status names that reason.
+            const planted = cwdIdentity && !started ? await assertPrivateDirectory(cwd, 'CWD_REFUSED').then(() => null, refusal => refusal) : null;
+            const failure = planted || (started && await this._refusedCwd(session) ? fail('CWD_REFUSED', 'The working folder changed before the session started') : error);
             try { await this._remove(session); }
             finally {
                 session.state = 'failed'; session.error = failure;
