@@ -9,6 +9,7 @@ test('the workspace copilot answers plain requests directly and uses workflows o
     assert.ok(answerAt >= 0, 'direct answering is stated');
     assert.ok(workflowAt > answerAt, 'workflow use comes after the direct-answer rule');
     assert.match(WORKSPACE_COPILOT_PROMPT, /do not list or launch workflows for them/u);
+    assert.match(WORKSPACE_COPILOT_PROMPT, /question about which workflows exist or can be run is answered with list-workflows, not a launch/u);
     assert.match(WORKSPACE_COPILOT_PROMPT, /Only when the user asks for work that needs a workflow/u);
     assert.match(WORKSPACE_COPILOT_PROMPT, /Never invent workflow IDs/u);
 });
