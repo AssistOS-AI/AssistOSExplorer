@@ -563,7 +563,10 @@ async function selectTerminalTarget(chooserState, predicate, terminals) {
   // A 201 body is registered by its raw session id first; the strict shape checks run afterwards.
   const createStatus = createResponse.status();
   const createPayload = createStatus === 201 ? await createResponse.json().catch(() => null) : null;
-  if (createStatus !== 201) expect(createStatus).toBe(201);
+  if (createStatus !== 201) {
+    const failureBody = await createResponse.json().then((body) => JSON.stringify(body), () => '(not JSON)');
+    expect(createStatus, `terminal creation failed: status ${createStatus}, body ${failureBody}`).toBe(201);
+  }
   return registerCreatedTerminal(terminals, createPayload, async (terminal) => {
     terminal.session = assertSessionCreation(createPayload, { profiled: chooserState.profiled });
     // The server issues a view with each created session; its stream is only served for that view.
