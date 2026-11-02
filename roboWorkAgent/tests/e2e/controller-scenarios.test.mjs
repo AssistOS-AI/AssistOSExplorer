@@ -10,6 +10,7 @@ import { validateConfig, assertBox, assertVictimUnchanged, assertRefused, assert
 import { BASELINE_REVISION, BASELINE_METHOD, BASELINE_DIRECTORIES, baselineSymlinkControl } from './controller/baseline-control.mjs';
 import { runVerifiedScenario, dualHome, manifests, grantRefusals, symlinkHelpers, safeDelete, workspaceStorage } from './controller-scenarios.mjs';
 import { explorerProtectedListing } from './controller/explorer-api.mjs';
+import { ControllerRuntime } from './controller/runtime.mjs';
 import { FREE_MODEL } from './controller/robots.mjs';
 import { assertAdminToken, cookieHeader, privateJson, openControllerSession } from './controller/auth-session.mjs';
 
@@ -322,4 +323,19 @@ test('standalone CLI missing prerequisites exits nonzero without success sentine
         assert.doesNotMatch(error.stderr, /ROBOWORK_CONTROLLER_PROBE_V1/u);
         return true;
     });
+});
+
+test('source proof rejects a wrong revision, a dirty checkout and runtime bytes that differ', async () => {
+    const runtime = new ControllerRuntime(config());
+    runtime.command = async () => 'c'.repeat(40);
+    await assert.rejects(runtime.verifyRevision('/task/rt', 'b'.repeat(40)), /Wrong source revision/u);
+    runtime.command = async (_command, args) => args.includes('rev-parse') ? 'b'.repeat(40) : ' M source.mjs';
+    await assert.rejects(runtime.verifyRevision('/task/rt', 'b'.repeat(40)), /Dirty source revision/u);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'controller-source-'));
+    try {
+        await fs.writeFile(path.join(root, 'source.mjs'), 'expected');
+        runtime.command = async () => 'source.mjs\0';
+        runtime.node = async (_id, _body, input) => input.files.map(([file, kind]) => [file, kind, hash]);
+        await assert.rejects(runtime.verifyFiles({ root, subdir: '', runtimePath: '/code' }, runtime.config.rt), /Runtime source differs/u);
+    } finally { await fs.rm(root, { recursive: true }); }
 });

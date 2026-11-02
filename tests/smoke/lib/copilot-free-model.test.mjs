@@ -76,3 +76,9 @@ test('missing actual event, wrong tab, fallback, wrong backend and rejected inpu
         assert.equal(fixture.detached(), true);
     }
 });
+
+test('a model test with zero accepted submissions fails even when an initial route event exists', async () => {
+    const fixture = await routeFixture(); fixture.state();
+    await assert.rejects(fixture.finish(), /at least one accepted Copilot input/u);
+    assert.equal(fixture.detached(), true);
+});

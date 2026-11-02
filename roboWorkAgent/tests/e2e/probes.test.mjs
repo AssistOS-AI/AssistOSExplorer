@@ -43,8 +43,12 @@ test('masks probe fails on a sibling entry and without its control file', async 
 });
 
 test('fd probe fails on an inherited descriptor', async () => {
-    const standard = 'lr-x------ 1 root root 64 Oct 1 00:00 0 -> /dev/null\n';
-    await assert.rejects(runIsolationProbe({ ...options, probe: 'fds' }, { run: async () => ({ stdout: standard + 'lr-x------ 1 root root 64 Oct 1 00:00 9 -> /data/robots/robot-b/home/marker-B\n' }) }));
+    // Four links, so only the descriptor checks can make this fail, not the count.
+    const line = (fd, target) => `lr-x------ 1 root root 64 Oct 1 00:00 ${fd} -> ${target}\n`;
+    const inventory = line(0, '/dev/null') + line(1, 'pipe:[123]') + line(2, 'pipe:[124]');
+    await runIsolationProbe({ ...options, probe: 'fds' }, { run: async () => ({ stdout: inventory }) });
+    await assert.rejects(runIsolationProbe({ ...options, probe: 'fds' }, { run: async () => ({ stdout: inventory + line(9, '/data/robots/robot-b/home/marker-B') }) }));
+    await assert.rejects(runIsolationProbe({ ...options, probe: 'fds' }, { run: async () => ({ stdout: inventory + line(9, 'socket:[555]') }) }), /Unexpected inherited descriptor/u);
 });
 
 test('persistence fails on changed bytes or a symlink', () => {
@@ -66,5 +70,5 @@ test('persistence fails on changed bytes or a symlink', () => {
 test('a failed probe prints no success sentinel', () => {
     const script = fileURLToPath(new URL('./isolation.mjs', import.meta.url));
     const result = spawnSync(process.execPath, [script, '--probe', 'symlink', '--robot', 'robot-a', '--victim', 'robot-b', '--workspace', '/fixture'], { encoding: 'utf8' });
-    assert.equal(result.status, 1); assert.equal(result.stdout, '');
+    assert.equal(result.status, 1); assert.equal(result.stdout, ''); assert.match(result.stderr, /controller acceptance/u);
 });

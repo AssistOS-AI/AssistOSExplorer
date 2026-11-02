@@ -102,4 +102,10 @@ test('a continued task takes its folder and skill policy from where its record s
     await resume();
     assert.deepEqual(policies, [id]);
     assert.equal(started[0].cwd, project);
+    // A link to the folder passes the comparison, so the canonical folder replaces it before anything resolves it again.
+    const link = path.join(project, 'link');
+    await fs.symlink(project, link);
+    await fs.writeFile(record, JSON.stringify({ ...saved, request: { ...saved.request, cwd: link } }));
+    await resume();
+    assert.equal(started[1].cwd, project);
 });

@@ -704,10 +704,12 @@ export class RuntimeManager {
             if (internal.taskId !== taskId) throw new Error('Task execution record identity mismatch.');
             // The record sits in .roboteam/tasks/<id>/executions below the folder the task ran in. A robot can write it, so the
             // folder it names is never taken from it.
-            const holding = path.resolve(file, '../../../../..');
-            if (await fs.realpath(String(internal.request?.cwd || '')).catch(() => null) !== await fs.realpath(holding).catch(() => holding)) {
+            const holding = await fs.realpath(path.resolve(file, '../../../../..')).catch(() => null);
+            if (!holding || await fs.realpath(String(internal.request?.cwd || '')).catch(() => null) !== holding) {
                 throw new Error('This task belongs to another folder. Open it there, or start a new task.');
             }
+            // The saved path may be a link that is changed later; the canonical folder replaces it.
+            internal.request.cwd = holding;
             if (['starting', 'running'].includes(internal.state)) internal.state = 'paused';
             owner = this._boundOwner(internal);
         }
