@@ -199,6 +199,7 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
     const baseline = await records(runtime);
     let browser, context, page, sessionId, receipt, native, result, primary, stubOwner,
         created = false, launched = false, cleanup;
+    let stage = 'administrator-check', primaryStage, sessionRequestObserved = false, sessionRequestFailed = false, sessionResponseStatus = null;
     const state = await privateJson(runtime.config.explorer.storageState);
     try {
         browser = await chromium.launch({ headless: true });
@@ -208,6 +209,7 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
         const auth = await page.evaluate(async () => { const r=await fetch('/auth/token', {signal:AbortSignal.timeout(30000)}); return {status:r.status,body:await r.json()}; });
         assert.equal(auth.status, 200);
         assert.equal(assertAdminToken(auth.body), runtime.auth.principalHash, 'Browser and controller principals differ.');
+        stage = 'profile-discovery';
         const selected = await page.evaluate(async ({ profile, project, attacker }) => {
             const api=await import('/base-agent-additional-server/roboTeamAgent/3001/terminal.js');
             const prepared=await api.prepareRobotTerminal(profile);
@@ -219,11 +221,20 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
             const stub=path.join(input.workspace,'.data/roboWorkAgent/terminal',input.attacker),st=fs.lstatSync(stub);
             if(!st.isDirectory()||st.isSymbolicLink()||st.uid!==process.getuid()||fs.readdirSync(stub).length) throw Error('Unsafe prepared stub');
             console.log(JSON.stringify({dev:st.dev,ino:st.ino}));`, { workspace: runtime.config.workspace, attacker });
+        // The bootstrap consumes #launch only when a document loads. Navigating
+        // the administrator page to its own fragment would create no session.
+        stage = 'fresh-terminal-document';
+        page = await context.newPage(); page.setDefaultTimeout(30000);
+        const isCreation = request => new URL(request.url()).pathname === '/webtty/sessions' && request.method() === 'POST';
+        page.on('request', request => { if (isCreation(request)) sessionRequestObserved = true; });
+        page.on('requestfailed', request => { if (isCreation(request)) sessionRequestFailed = true; });
         const responsePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/webtty/sessions'
             && response.request().method() === 'POST');
+        stage = 'terminal-launch';
         launched = true;
         await page.goto(new URL(selected, runtime.auth.origin).href);
         const response = await responsePromise;
+        sessionResponseStatus = response.status();
         created = response.status() === 201;
         const payload = await response.json();
         sessionId = ID.test(payload?.session?.id || '') ? payload.session.id : null;
@@ -235,12 +246,14 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
         assert.equal(payload.session.target?.access, 'rw');
         assert.equal(payload.session.target?.cwdDisplay, project);
         assert.equal(response.request().postDataJSON().launch, selected.split('=')[1], '201 response belongs to a different launch.');
+        stage = 'native-receipt';
         const newRecords = (await records(runtime)).filter(entry => !baseline.some(old => old.name === entry.name));
         assert.equal(newRecords.length, 1, 'Launch receipt is missing or ambiguous.');
         receipt = newRecords[0];
         assertNativeReceipt(receipt.record, target, profile, project);
         assert.equal(receipt.record.agentStartup.profile.label, payload.session.profileLabel);
         assert.equal(payload.session.profileLabel, runtime.probes.owned.get(attacker).name);
+        stage = 'native-control';
         const input = async data => {
             const reply=await page.evaluate(async ({id,data}) => {const r=await fetch('/webtty/sessions/'+id+'/input',{
                 method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({data}),signal:AbortSignal.timeout(30000)});return {status:r.status,body:await r.json()};}, { id: sessionId, data });
@@ -271,16 +284,18 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
         assert.equal(await page.locator('#message').textContent(), 'Terminal closed: terminal_clean.');
         result = { nonce, sessionId, target, profile, commandHash: sha256(command), codeHash: sha256(code),
             markerHash: sha256(receipt.record.marker), native, denial: observed.denial, exitCode: 0 };
-    } catch (error) { primary = error; }
+    } catch (error) { primary = error; primaryStage = stage; }
     finally {
         try {
             // Exit through the owned session even when receipt readiness failed.
             // Never force DELETE or erase a quarantined recovery record.
             if (sessionId && page && !result) {
+                stage = 'normal-exit';
                 await page.evaluate(async ({id,release}) => {await fetch('/webtty/sessions/'+id+'/input',{
                     method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({data:release+'\rexit 1\r'}),signal:AbortSignal.timeout(30000)});}, { id: sessionId, release });
             }
             if (launched) {
+                stage = 'cleanup-proof';
                 assert.ok(sessionId && receipt, 'Owned launch cleanup identity is incomplete; retain fixture.');
                 for (let attempt=0;attempt<40;attempt++) {
                     try { cleanup=await cleanupProof(runtime,baseline,receipt,native,attacker,stubOwner); break; }
@@ -295,7 +310,8 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
         } catch (error) {
             primary = Object.assign(new Error('Native terminal cleanup is unproven; retain owned robot and project.'), {
                 code: 'CONTROLLER_CLEANUP_FAILED', evidence: { nativeTerminal: { cleanupConfirmed: false, attacker, project, sessionId,
-                    created, receiptName: receipt?.name, target, primaryFailureCode: primary?.code || primary?.name, failureCode: error.code || error.name } },
+                    created, receiptName: receipt?.name, target, stage, primaryStage, sessionRequestObserved, sessionRequestFailed, sessionResponseStatus,
+                    primaryFailureCode: primary?.code || primary?.name, failureCode: error.code || error.name } },
             });
             runtime.retainedNativeTerminal = primary.evidence.nativeTerminal;
         }

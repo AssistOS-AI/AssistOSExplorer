@@ -644,8 +644,8 @@ test('I10 cleanup requires every exact record/process/ExecID/session absence and
     }
 });
 
-test('I10 browser requests receive fixed timeout signals and aborts fail with cleanup or retained ownership', async () => {
-    for (const abortedRequest of ['auth', 'input', 'failure-exit', 'live-list']) {
+test('I10 browser requests use a fresh launch document, bounded signals and fail closed on aborts', async () => {
+    for (const abortedRequest of [null, 'auth', 'input', 'failure-exit', 'live-list', 'launch-response']) {
         const { target, expected, record, observed, proof } = nativeIdentityFixture();
         const calls = [], signals = new Map(); let recordReads = 0;
         const owner = { name: 'owned-name' }; record.agentStartup.profile.label = owner.name;
@@ -656,21 +656,35 @@ test('I10 browser requests receive fixed timeout signals and aborts fail with cl
         probes: { owned: new Map([[expected.attacker, owner]]) }, registry: {},
         async verify() { return { unitIdentity: true }; },
         async node(_id, body) { return body.includes('process.execPath') ? '/usr/bin/node' : { dev: 1, ino: 2 }; } };
-        const page = { setDefaultTimeout(ms) { assert.equal(ms, 30000); }, async goto() {},
+        let pages = 0, launchPage, waiterPage;
+        const makePage = () => {
+            const number = ++pages; let documentUrl = 'about:blank';
+            const listeners = new Map();
+            return { on(event, listener) { listeners.set(event, listener); }, setDefaultTimeout(ms) { assert.equal(ms, 30000); }, async goto(url) {
+                if (url.includes('#launch=')) {
+                    assert.notEqual(documentUrl, runtime.auth.origin + '/webtty/', 'Same-document hash navigation cannot rerun the WebTTY bootstrap');
+                    launchPage = number;
+                    listeners.get('request')?.({ url: () => runtime.auth.origin + '/webtty/sessions', method: () => 'POST' });
+                }
+                documentUrl = url;
+            },
             async evaluate(callback, argument) {
                 // Profile import/discovery is separately owned by the normal
                 // client. Every fetch callback below executes unchanged in VM.
                 if (callback.toString().includes('await import(')) return `/webtty/#launch=${launch}`;
                 return callback(argument);
             },
-            async waitForResponse() { return { status: () => 201, request: () => ({ postDataJSON: () => ({ launch }) }),
+            async waitForResponse() { waiterPage = number;
+                if (abortedRequest === 'launch-response') throw Object.assign(new Error('unit response deadline'), { name: 'TimeoutError' });
+                return { status: () => 201, request: () => ({ postDataJSON: () => ({ launch }) }),
                 async json() { return { ok: true, session: { id: sessionId, role: 'owner', profileLabel: owner.name,
                     target: { kind: 'agent', detail: 'AchillesIDE/roboWorkAgent', access: 'rw', cwdDisplay: expected.project } } }; } }; },
             async waitForFunction() {},
             locator(selector) { return { async textContent() { return selector === '#message' ? 'Terminal closed: terminal_clean.'
                 : `I10_NATIVE_${expected.nonce} ${Buffer.from(JSON.stringify(observed)).toString('base64')} I10_EXIT_${expected.nonce} 0`; } }; },
+            };
         };
-        const context = { async newPage() { return page; }, async close() { calls.push('close-context'); } };
+        const context = { async newPage() { return makePage(); }, async close() { calls.push('close-context'); } };
         const browser = { async newContext() { return context; }, async close() { calls.push('close-browser'); } };
         let uuid = 0;
         const execute = vm.runInNewContext(`(${nativeSymlinkControl.toString()})`, {
@@ -700,17 +714,27 @@ test('I10 browser requests receive fixed timeout signals and aborts fail with cl
                 return { status: 200, async json() { return kind === 'auth' ? {} : { ok: true, sessions: [] }; } };
             },
         });
-        await assert.rejects(execute(runtime, { attacker: expected.attacker, project: expected.project,
-            victim: { markerHash: hash, markerLength: 1 } }), error => {
+        const operation = execute(runtime, { attacker: expected.attacker, project: expected.project,
+            victim: { markerHash: hash, markerLength: 1 } });
+        if (abortedRequest === null) {
+            assert.equal((await operation).exitCode, 0);
+            assert.equal(pages, 2); assert.equal(launchPage, 2); assert.equal(waiterPage, launchPage);
+        } else await assert.rejects(operation, error => {
             if (abortedRequest === 'auth' || abortedRequest === 'input') assert.equal(error.name, 'TimeoutError', `${abortedRequest}: ${error.message}`);
             else {
                 assert.equal(error.code, 'CONTROLLER_CLEANUP_FAILED');
                 assert.equal(error.evidence.nativeTerminal.cleanupConfirmed, false);
-                assert.equal(runtime.retainedNativeTerminal.sessionId, sessionId);
+                if (abortedRequest === 'launch-response') {
+                    assert.equal(error.evidence.nativeTerminal.primaryStage, 'terminal-launch');
+                    assert.equal(error.evidence.nativeTerminal.sessionRequestObserved, true);
+                    assert.equal(error.evidence.nativeTerminal.sessionRequestFailed, false);
+                    assert.equal(error.evidence.nativeTerminal.sessionResponseStatus, null);
+                    assert.ok(!JSON.stringify(error.evidence).includes(launch), 'Failure evidence must not contain the launch ticket');
+                } else assert.equal(runtime.retainedNativeTerminal.sessionId, sessionId);
             }
             return true;
         });
-        assert.ok(calls.includes(abortedRequest));
+        if (abortedRequest !== null && abortedRequest !== 'launch-response') assert.ok(calls.includes(abortedRequest));
         if (abortedRequest === 'input') assert.ok(calls.includes('failure-exit'), 'Input abort must attempt normal owned-session exit');
         assert.deepEqual(calls.slice(-2), ['close-context', 'close-browser']);
     }
