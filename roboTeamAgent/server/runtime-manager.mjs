@@ -115,7 +115,6 @@ export class RuntimeManager {
         this.messageWaiters = new Map();
         this.deletedRobots = new Set();
         this.skillsets = options.skillsets || null;
-        this.seedChain = new Map();
         // Optional observational hook used by RoboFlow. It never changes task
         // storage or semantics; it only forwards progress and lifecycle events.
         this.taskObserver = typeof options.taskObserver === 'function' ? options.taskObserver : null;
@@ -263,8 +262,6 @@ export class RuntimeManager {
         const queueDepth = (this.taskQueues.get(robotId) || []).filter((id) => this.tasks.get(id)?.state === 'queued').length;
         return session ? { state: session.state, mode: session.mode, startedAt: session.startedAt, sessionUrl: session.sessionUrl, task, queueDepth } : { state: 'stopped', task, queueDepth };
     }
-
-    activePort(robotId) { return this.sessions.get(robotId)?.sessionPort || null; }
 
     hasUnfinishedTasks(robotId) {
         return Array.from(this.tasks.values()).some((task) => task.robotId === robotId
@@ -788,9 +785,6 @@ export class RuntimeManager {
                 && this.tasks.get(record.task.taskId) === record.task)) throw new Error('stop the robot and its queued tasks before deleting it');
         await this.robotStore?.assertDeletable?.(robotId);
         this.deletedRobots.add(robotId);
-        // A seed or shell preparation in flight finishes (or aborts) before the folder is removed;
-        // anything queued afterwards sees deletedRobots and does nothing.
-        await this.seedChain.get(robotId)?.catch(() => {});
         try {
             // An earlier delete may have finished in RoboWork and been refused here.
             await this.roboWork.call('robot_delete', { robotId }).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; });
