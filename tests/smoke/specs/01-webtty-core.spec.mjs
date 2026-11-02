@@ -372,12 +372,18 @@ async function waitForConnectedTerminal(page) {
 }
 
 // Every row of the chooser: launchable rows keep their launch, the others show why they are disabled.
+// A robot with environments shows its environment choice and only the RoboWork terminal of its provider; every other
+// discovery row is not listed. The chooser lists the whole discovery for a robot without environments.
 async function assertChooserRows(chooser, discovery) {
-  const unavailableTargets = discovery.unavailableTargets || [];
-  await expect(chooser.locator('.terminal-target-button')).toHaveCount(
-    discovery.targets.length + unavailableTargets.length,
-  );
-  for (const target of discovery.targets) {
+  const environmentView = Boolean(discovery.profile) && await chooser.locator('#terminalTargetEnvironment').isVisible();
+  const listed = (rows) => (environmentView
+    ? rows.filter((row) => row.kind === 'agent' && row.detail === `AchillesIDE/${discovery.profile.provider}`)
+    : rows);
+  const targets = listed(discovery.targets);
+  const unavailableTargets = listed(discovery.unavailableTargets || []);
+  await expect(chooser.locator('.terminal-target-button')).toHaveCount(targets.length + unavailableTargets.length);
+  if (environmentView) expect(targets.length + unavailableTargets.length, 'the robot provider needs a terminal row').toBeGreaterThan(0);
+  for (const target of targets) {
     const targetButton = chooser.locator(`.terminal-target-button[data-launch="${target.launch}"]`);
     await expect(targetButton).toHaveCount(1);
     await expect(targetButton).toHaveAttribute('data-launch', target.launch);
@@ -422,7 +428,28 @@ async function chooseTerminalRobot(chooserState, expectedDirectory) {
   chooserState.discovery = await readTargetDiscovery(await profiledResponse, expectedDirectory.replace(/^\/+/, ''), { profiled: true });
   chooserState.profiled = true;
   await assertChooserRows(chooser, chooserState.discovery);
+  await assertEnvironmentsReachable(chooserState, expectedDirectory);
   return chooserState.discovery;
+}
+
+// Each environment of a robot keeps its terminal reachable: choosing it discovers again for that environment's profile
+// and lists the same strict rows. The first environment is restored so later steps use the current discovery.
+async function assertEnvironmentsReachable(chooserState, expectedDirectory) {
+  const { chooser, page } = chooserState;
+  const select = chooser.locator('#terminalTargetEnvironment');
+  if (!(await select.isVisible())) return;
+  const original = await select.inputValue();
+  const keys = await select.locator('option:not([disabled])').evaluateAll((options) => options.map((option) => option.value));
+  expect(keys, 'the selected environment must be one of the enabled environments').toContain(original);
+  const others = keys.filter((key) => key !== original);
+  for (const key of others.length ? [...others, original] : []) {
+    const responsePromise = page.waitForResponse(isTargetDiscovery, { timeout: smokeConfig.timeouts.navigation });
+    await select.selectOption(key);
+    const discovery = await readTargetDiscovery(await responsePromise, expectedDirectory.replace(/^\/+/, ''), { profiled: true });
+    expect(discovery.profile.id.endsWith(`.${key}`), 'the discovery is for the chosen environment').toBe(true);
+    chooserState.discovery = discovery;
+    await assertChooserRows(chooser, discovery);
+  }
 }
 
 async function openTerminalChooser(page, directoryPath) {
