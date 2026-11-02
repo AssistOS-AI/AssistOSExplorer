@@ -33,6 +33,10 @@ const REVIEWED = [
     ['.github/workflows/deploy-explorer-qa.yml', /git (?:clone --no-checkout https:\/\/github\.com\/AssistOS-AI\/ploinky\.git |-C )"\$RUNTIME_DIR"/, 8, 'PRE_BOX'],
     ['.github/workflows/deploy-explorer-qa.yml', /^git clone --single-branch --branch "\$ALA_BRANCH" "\$ALA_URL" "\$ALA_DIR"$/, 1, 'PRE_BOX'],
     ['.github/workflows/deploy-explorer-qa.yml', /^git -C "\$WORK_DIR\/\.ploinky\/repos\/\$repository_name" /, 5, 'IN_BOX'],
+    // The Ploinky workflows' checkout lies outside the workspace, and a Box mounts it read-only.
+    ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^for tool in git node curl podman flock; do$/, 1, 'prerequisite presence check'],
+    ['.github/workflows/deploy-explorer-qa-ploinky.yml', /git ls-remote --symref "\$PLOINKY_URL" HEAD|^git clone --quiet --branch "\$BRANCH" "\$PLOINKY_URL" "\$CHECKOUT"$|git -C "\$CHECKOUT" /, 7, 'BOOTSTRAP_OUTSIDE_BOX'],
+    ['.github/workflows/destroy-explorer-qa-ploinky.yml', /git ls-remote --symref "\$PLOINKY_URL" HEAD|^git clone --quiet --branch "\$BRANCH" "\$PLOINKY_URL" "\$CHECKOUT"$|git -C "\$CHECKOUT" /, 7, 'BOOTSTRAP_OUTSIDE_BOX'],
     ['.github/scripts/rollback-explorer-qa.mjs', /./, 7, 'IN_SANDBOX'],
     ['.github/scripts/rollback-explorer-qa.mjs', /'--entrypoint=\/usr\/bin\/git', image,/, 1, 'sandbox container entrypoint'],
     ['.github/scripts/update-explorer-qa.mjs', /operation: `git-\$\{args\[0\]\}`/, 1, 'failure label of a sandboxed command'],

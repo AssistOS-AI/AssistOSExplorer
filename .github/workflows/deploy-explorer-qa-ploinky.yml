@@ -1,0 +1,1089 @@
+name: Deploy Explorer QA Box (Ploinky commands)
+
+# The same target as deploy-explorer-qa.yml, driven through Ploinky commands, with the differences listed in
+# docs/deploy-explorer-qa.md. The host work outside Ploinky is the bootstrap it cannot do for itself: the
+# pinned Node, the Ploinky checkout and the empty workspace directory.
+
+on:
+  workflow_dispatch:
+    inputs:
+      recreate_box:
+        description: 'Destroy and recreate the Box, keeping the data. Needed to pick up a new Box image, which no Ploinky command can detect.'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: deploy-explorer-qa
+  cancel-in-progress: false
+
+env:
+  SSH_USER: 'admin'
+  SSH_HOST: '45.136.70.141'
+  SSH_ED25519_FINGERPRINT: 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'
+  WORKSPACE: 'explorerQaWorkspace'
+  ROUTER_PORT: '8097'
+  PUBLIC_HOST: 'explorer-qa.axiologic.dev'
+  PUBLIC_URL: 'https://explorer-qa.axiologic.dev'
+  CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'
+  CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: '091c4096-d1c8-4dbc-bb12-0c6357431d96'
+  CLOUDFLARE_TUNNEL_SECRET_HANDLE: 'publication/explorer-qa-tunnel'
+  CLOUDFLARE_API_SECRET_HANDLE: 'publication/explorer-qa-api'
+  MEDIA_PUBLIC_IPV4: '45.136.70.141'
+  SOUL_GATEWAY_WORKSPACE: 'soulGateway'
+  SOUL_GATEWAY_ROUTER_PORT: '8080'
+
+jobs:
+  deploy:
+    name: Deploy Explorer QA through Ploinky commands
+    runs-on: ubuntu-latest
+    # A fresh installation or a recreated Box runs start, update and start, and each may take 30 minutes.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the workflow tests
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up the test runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Test these workflows
+        run: node --test tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs
+
+      - name: Validate GitHub configuration
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_KEY:-}" ]; then
+            echo "::error::Missing required repository secret EXPLORER_QA_SSH_KEY"
+            exit 1
+          fi
+          if [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
+            echo "::error::EXPLORER_QA_SSH_USER and EXPLORER_QA_SSH_HOST must be configured"
+            exit 1
+          fi
+          if [ "$SSH_HOST" != '45.136.70.141' ] || [ "$SSH_USER" != 'admin' ] ||
+            [ "$WORKSPACE" != 'explorerQaWorkspace' ]; then
+            echo "::error::Explorer QA target identity is not the pinned admin@45.136.70.141/explorerQaWorkspace target"
+            exit 1
+          fi
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::Missing required repository secret EXPLORER_QA_CLOUDFLARE_API_TOKEN"
+            exit 1
+          fi
+          if [[ "$CLOUDFLARE_API_TOKEN" == cfk_* ]]; then
+            echo "::error::EXPLORER_QA_CLOUDFLARE_API_TOKEN is a Global API Key; Ploinky requires a scoped Account or User API Token used as a Bearer token"
+            exit 1
+          fi
+          if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ ]] ||
+            [[ ! "$CLOUDFLARE_ZONE_ID" =~ ^[a-f0-9]{32}$ ]]; then
+            echo "::error::Explorer QA Cloudflare account or zone variables are missing or malformed"
+            exit 1
+          fi
+          if [ "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" != '091c4096-d1c8-4dbc-bb12-0c6357431d96' ]; then
+            echo "::error::Protected shared tunnel identity is not pinned"
+            exit 1
+          fi
+          if [[ ! "$CLOUDFLARE_TUNNEL_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$ ]]; then
+            echo "::error::Explorer QA managed Cloudflare tunnel name is malformed"
+            exit 1
+          fi
+          case "${WORKSPACE:-}" in
+            ''|.|..|*[!A-Za-z0-9._-]*)
+              echo "::error::Invalid workspace name '${WORKSPACE:-}' (allowed: A-Za-z0-9._-)"
+              exit 1
+              ;;
+          esac
+          if [ "$WORKSPACE" = "$SOUL_GATEWAY_WORKSPACE" ]; then
+            echo "::error::Refusing to deploy into the production Soul Gateway workspace"
+            exit 1
+          fi
+          case "${ROUTER_PORT:-}" in
+            ''|*[!0-9]*)
+              echo "::error::Invalid router port '${ROUTER_PORT:-}'"
+              exit 1
+              ;;
+          esac
+          if [ "$ROUTER_PORT" -lt 1 ] || [ "$ROUTER_PORT" -gt 65535 ]; then
+            echo "::error::Router port must be between 1 and 65535"
+            exit 1
+          fi
+          case "$ROUTER_PORT" in
+            8042|8043|8080|8085|8317|8318)
+              echo "::error::Refusing to use protected proxies-host port ${ROUTER_PORT}"
+              exit 1
+              ;;
+          esac
+          if [ "$PUBLIC_URL" != "https://$PUBLIC_HOST" ]; then
+            echo "::error::PUBLIC_URL and PUBLIC_HOST must identify the fixed Explorer QA hostname"
+            exit 1
+          fi
+          TUNNEL_LIST_RESPONSE="$(mktemp /tmp/explorer_qa_tunnel_list.XXXXXX)"
+          DNS_RESPONSE="$(mktemp /tmp/explorer_qa_dns.XXXXXX)"
+          SHARED_TUNNEL_RESPONSE="$(mktemp /tmp/explorer_qa_shared_tunnel.XXXXXX)"
+          SHARED_CONFIG_RESPONSE="$(mktemp /tmp/explorer_qa_shared_config.XXXXXX)"
+          trap 'rm -f "$TUNNEL_LIST_RESPONSE" "$DNS_RESPONSE" "$SHARED_TUNNEL_RESPONSE" "$SHARED_CONFIG_RESPONSE"' EXIT
+          curl -fsS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --get \
+            --data-urlencode 'is_deleted=false' \
+            --data-urlencode "name=$CLOUDFLARE_TUNNEL_NAME" \
+            --data-urlencode 'per_page=100' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel" \
+            > "$TUNNEL_LIST_RESPONSE"
+          curl -fsS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --get \
+            --data-urlencode "name=$PUBLIC_HOST" \
+            --data-urlencode 'per_page=100' \
+            "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records" \
+            > "$DNS_RESPONSE"
+          curl -fsS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" \
+            > "$SHARED_TUNNEL_RESPONSE"
+          curl -fsS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID/configurations" \
+            > "$SHARED_CONFIG_RESPONSE"
+
+          node --input-type=module - \
+            "$TUNNEL_LIST_RESPONSE" \
+            "$DNS_RESPONSE" \
+            "$SHARED_TUNNEL_RESPONSE" \
+            "$SHARED_CONFIG_RESPONSE" \
+            "$RUNNER_TEMP/explorer_qa_protected_cloudflare_before.json" <<'NODE'
+          import crypto from 'node:crypto';
+          import fs from 'node:fs';
+
+          const [listPath, dnsPath, sharedTunnelPath, sharedConfigPath, snapshotPath] = process.argv.slice(2);
+          const accountId = String(process.env.CLOUDFLARE_ACCOUNT_ID || '');
+          const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || '');
+          const sharedTunnelId = String(process.env.CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID || '');
+          const publicHost = String(process.env.PUBLIC_HOST || '');
+          const parse = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
+          const requireSuccess = (payload, label) => {
+            if (payload?.success !== true) throw new Error(`${label} inventory failed`);
+            return payload.result;
+          };
+          const stable = (value) => {
+            if (Array.isArray(value)) return value.map(stable);
+            if (!value || typeof value !== 'object') return value;
+            return Object.fromEntries(Object.entries(value)
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([key, child]) => [key, stable(child)]));
+          };
+          const digest = (value) => `sha256:${crypto.createHash('sha256')
+            .update(JSON.stringify(stable(value))).digest('hex')}`;
+          const api = async (pathname) => {
+            const response = await fetch(`https://api.cloudflare.com/client/v4${pathname}`, {
+              headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` },
+              redirect: 'error',
+            });
+            const payload = await response.json().catch(() => null);
+            if (!response.ok || payload?.success !== true) throw new Error('protected Cloudflare inventory failed');
+            return payload.result;
+          };
+
+          const named = requireSuccess(parse(listPath), 'named tunnel');
+          if (!Array.isArray(named) || named.length > 1
+            || named.some((entry) => entry?.id === sharedTunnelId)) {
+            throw new Error('active explorer-qa tunnel inventory is ambiguous or aliases the protected shared tunnel');
+          }
+          const records = requireSuccess(parse(dnsPath), 'Explorer QA DNS');
+          if (!Array.isArray(records) || records.length > 1) {
+            throw new Error('Explorer QA DNS is ambiguous or points outside the selected tunnel');
+          }
+          if (named.length === 0 && records.length !== 0) {
+            throw new Error('Explorer QA DNS exists without the authorized dedicated tunnel');
+          }
+          if (named.length === 1) {
+            const tunnelId = String(named[0]?.id || '');
+            if (!/^[a-f0-9-]{36}$/.test(tunnelId) || named[0]?.name !== tunnelName
+              || named[0]?.deleted_at != null
+              || (named[0]?.account_tag != null && named[0]?.account_tag !== accountId)) {
+              throw new Error('selected dedicated Explorer QA tunnel identity is invalid');
+            }
+            const detail = await api(`/accounts/${accountId}/cfd_tunnel/${tunnelId}`);
+            const config = await api(`/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`);
+            if (detail?.id !== tunnelId || detail?.name !== tunnelName || detail?.deleted_at != null) {
+              throw new Error('dedicated Explorer QA tunnel detail changed during inventory');
+            }
+            const ingress = config?.config?.ingress ?? config?.ingress ?? [];
+            if (!Array.isArray(ingress) || ingress.length > 2) {
+              throw new Error('dedicated Explorer QA tunnel is shared or has ambiguous ingress');
+            }
+            if (ingress.length) {
+              const catchAll = ingress.at(-1);
+              if (catchAll?.hostname != null || catchAll?.service !== 'http_status:404') {
+                throw new Error('dedicated Explorer QA tunnel lacks the terminal 404 ingress');
+              }
+            }
+            if (ingress.length === 2
+              && (ingress[0]?.hostname !== publicHost
+                || ingress[0]?.service !== 'http://127.0.0.1:8080')) {
+              throw new Error('dedicated Explorer QA tunnel contains unrelated or incorrect ingress');
+            }
+            const expectedTarget = `${tunnelId}.cfargotunnel.com`;
+            if (records.length === 1 && (records[0]?.name !== publicHost
+              || records[0]?.type !== 'CNAME'
+              || records[0]?.content !== expectedTarget
+              || records[0]?.proxied !== true)) {
+              throw new Error('Explorer QA DNS points outside the dedicated tunnel');
+            }
+            fs.appendFileSync(process.env.GITHUB_ENV, `CLOUDFLARE_TUNNEL_ID=${tunnelId}\n`);
+          }
+
+          const sharedDetail = requireSuccess(parse(sharedTunnelPath), 'protected shared tunnel detail');
+          const sharedConfig = requireSuccess(parse(sharedConfigPath), 'protected shared tunnel configuration');
+          if (sharedDetail?.id !== sharedTunnelId || sharedDetail?.name !== 'proxies'
+            || sharedDetail?.deleted_at != null
+            || (sharedDetail?.account_tag != null && sharedDetail.account_tag !== accountId)) {
+            throw new Error('protected proxies tunnel identity changed');
+          }
+          const sharedIngress = sharedConfig?.config?.ingress;
+          const expectedIngress = [
+            ['antigravity.axiologic.dev', 'http://localhost:8001'],
+            ['proxy.axiologic.dev', 'http://localhost:8318'],
+            ['soul.axiologic.dev', 'http://localhost:8042'],
+            ['search.axiologic.dev', 'http://localhost:8043'],
+            ['kiro.axiologic.dev', 'http://localhost:8000'],
+            ['explorer-qa.axiologic.dev', 'http://localhost:8097'],
+            ['office-qa.axiologic.dev', 'http://localhost:8082'],
+          ];
+          if (!Array.isArray(sharedIngress) || sharedIngress.length !== 8
+            || expectedIngress.some(([hostname, service], index) => (
+              sharedIngress[index]?.hostname !== hostname || sharedIngress[index]?.service !== service
+            ))
+            || sharedIngress.at(-1)?.hostname != null
+            || sharedIngress.at(-1)?.service !== 'http_status:404') {
+            throw new Error('protected proxies ingress topology is not the authorized immutable baseline');
+          }
+          const protectedDns = [];
+          for (let page = 1; ; page += 1) {
+            if (page > 100) throw new Error('protected DNS inventory exceeded the fail-closed page bound');
+            const query = new URLSearchParams({ page: String(page), per_page: '100' });
+            const result = await api(`/zones/${process.env.CLOUDFLARE_ZONE_ID}/dns_records?${query}`);
+            if (!Array.isArray(result)) throw new Error('protected DNS inventory is malformed');
+            protectedDns.push(...result.filter((record) => record?.name !== publicHost));
+            if (result.length < 100) break;
+          }
+          protectedDns.sort((left, right) => String(left?.id || '').localeCompare(String(right?.id || '')));
+          const snapshot = {
+            tunnel: { id: sharedDetail.id, name: sharedDetail.name, accountTag: sharedDetail.account_tag || accountId },
+            ingress: sharedIngress,
+            dns: protectedDns,
+          };
+          fs.writeFileSync(snapshotPath, `${JSON.stringify(stable(snapshot))}\n`, { mode: 0o600, flag: 'wx' });
+          const protectedDigest = digest(snapshot);
+          fs.appendFileSync(process.env.GITHUB_ENV, `PROTECTED_CLOUDFLARE_DIGEST=${protectedDigest}\n`);
+          console.log(`Validated protected proxies topology ${protectedDigest} and a safe dedicated Explorer QA tunnel slot.`);
+          NODE
+
+          HOST_KEY_CANDIDATE="$RUNNER_TEMP/explorer_qa_known_hosts"
+          ssh-keyscan -T 10 -t ed25519 "$SSH_HOST" > "$HOST_KEY_CANDIDATE"
+          HOST_KEY_FINGERPRINT="$({ ssh-keygen -lf "$HOST_KEY_CANDIDATE" -E sha256 || true; } | awk '{print $2}' | sort -u)"
+          if [ "$HOST_KEY_FINGERPRINT" != "$SSH_ED25519_FINGERPRINT" ]; then
+            echo "::error::Explorer QA ED25519 host fingerprint did not match the pinned identity"
+            exit 1
+          fi
+          chmod 600 "$HOST_KEY_CANDIDATE"
+          echo "Validated the pinned Explorer QA SSH host identity."
+
+      - name: Prepare SSH key
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          install -m 600 "$RUNNER_TEMP/explorer_qa_known_hosts" ~/.ssh/explorer_qa_known_hosts
+
+      - name: Bootstrap the host and deploy through Ploinky commands
+        env:
+          RECREATE_BOX: ${{ inputs.recreate_box }}
+          QA_USERPERSISTO_GOOGLE_CLIENT_ID: ${{ vars.EXPLORER_QA_USERPERSISTO_GOOGLE_CLIENT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          case "$RECREATE_BOX" in
+            true|false) ;;
+            *) echo "::error::recreate_box must be true or false"; exit 1 ;;
+          esac
+
+          TUNNEL_LIST_RESPONSE=''
+          TUNNEL_MUTATION_RESPONSE=''
+          TUNNEL_TOKEN_RESPONSE=''
+          TUNNEL_DETAIL_RESPONSE=''
+          TUNNEL_CONFIG_RESPONSE=''
+          TUNNEL_DNS_RESPONSE=''
+          cleanup_local_files() {
+            for target in \
+              "$TUNNEL_LIST_RESPONSE" \
+              "$TUNNEL_MUTATION_RESPONSE" \
+              "$TUNNEL_TOKEN_RESPONSE" \
+              "$TUNNEL_DETAIL_RESPONSE" \
+              "$TUNNEL_CONFIG_RESPONSE" \
+              "$TUNNEL_DNS_RESPONSE"; do
+              if [ -n "$target" ]; then rm -f "$target"; fi
+            done
+          }
+          trap cleanup_local_files EXIT
+
+          TUNNEL_LIST_RESPONSE="$(mktemp /tmp/explorer_qa_provision_list.XXXXXX)"
+          TUNNEL_MUTATION_RESPONSE="$(mktemp /tmp/explorer_qa_provision_mutation.XXXXXX)"
+          TUNNEL_TOKEN_RESPONSE="$(mktemp /tmp/explorer_qa_provision_token.XXXXXX)"
+          TUNNEL_DETAIL_RESPONSE="$(mktemp /tmp/explorer_qa_provision_detail.XXXXXX)"
+          TUNNEL_CONFIG_RESPONSE="$(mktemp /tmp/explorer_qa_provision_config.XXXXXX)"
+          TUNNEL_DNS_RESPONSE="$(mktemp /tmp/explorer_qa_provision_dns.XXXXXX)"
+          curl -fsS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --get \
+            --data-urlencode 'is_deleted=false' \
+            --data-urlencode "name=$CLOUDFLARE_TUNNEL_NAME" \
+            --data-urlencode 'per_page=100' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel" \
+            > "$TUNNEL_LIST_RESPONSE"
+          CLOUDFLARE_TUNNEL_ID="$(
+            node --input-type=module - "$TUNNEL_LIST_RESPONSE" <<'NODE'
+          import fs from 'node:fs';
+
+          const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const tunnels = payload?.success === true ? payload.result : null;
+          if (!Array.isArray(tunnels) || tunnels.length > 1) {
+            throw new Error('dedicated Explorer QA tunnel inventory is ambiguous');
+          }
+          if (tunnels.length === 1 && (tunnels[0]?.name !== process.env.CLOUDFLARE_TUNNEL_NAME
+            || tunnels[0]?.deleted_at != null)) {
+            throw new Error('dedicated Explorer QA tunnel identity changed');
+          }
+          process.stdout.write(String(tunnels[0]?.id || ''));
+          NODE
+          )"
+          CLOUDFLARE_TUNNEL_CREATED='false'
+          if [ -z "$CLOUDFLARE_TUNNEL_ID" ]; then
+            curl -fsS \
+              -X POST \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H 'Content-Type: application/json' \
+              --data '{"name":"explorer-qa","config_src":"cloudflare"}' \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel" \
+              > "$TUNNEL_MUTATION_RESPONSE"
+            CLOUDFLARE_TUNNEL_ID="$(
+              node --input-type=module - "$TUNNEL_MUTATION_RESPONSE" <<'NODE'
+          import fs from 'node:fs';
+
+          const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const tunnel = payload?.success === true ? payload.result : null;
+          if (!tunnel || tunnel.name !== 'explorer-qa' || tunnel.deleted_at != null) {
+            throw new Error('Cloudflare did not create the exact dedicated Explorer QA tunnel');
+          }
+          process.stdout.write(String(tunnel.id || ''));
+          NODE
+            )"
+            CLOUDFLARE_TUNNEL_CREATED='true'
+          fi
+          if [[ ! "$CLOUDFLARE_TUNNEL_ID" =~ ^[a-f0-9-]{36}$ ]] ||
+            [ "$CLOUDFLARE_TUNNEL_ID" = "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" ]; then
+            echo "::error::Dedicated Explorer QA tunnel identity is malformed or aliases the protected shared tunnel"
+            exit 1
+          fi
+          export CLOUDFLARE_TUNNEL_ID CLOUDFLARE_TUNNEL_CREATED
+          {
+            printf 'CLOUDFLARE_TUNNEL_ID=%s\n' "$CLOUDFLARE_TUNNEL_ID"
+            printf 'CLOUDFLARE_TUNNEL_CREATED=%s\n' "$CLOUDFLARE_TUNNEL_CREATED"
+          } >> "$GITHUB_ENV"
+          curl -fsS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --get \
+            --data-urlencode 'is_deleted=false' \
+            --data-urlencode "name=$CLOUDFLARE_TUNNEL_NAME" \
+            --data-urlencode 'per_page=100' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel" \
+            > "$TUNNEL_LIST_RESPONSE"
+          curl -fsS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$CLOUDFLARE_TUNNEL_ID" \
+            > "$TUNNEL_DETAIL_RESPONSE"
+          curl -fsS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$CLOUDFLARE_TUNNEL_ID/configurations" \
+            > "$TUNNEL_CONFIG_RESPONSE"
+          curl -fsS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --get \
+            --data-urlencode "name=$PUBLIC_HOST" \
+            --data-urlencode 'per_page=100' \
+            "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records" \
+            > "$TUNNEL_DNS_RESPONSE"
+          node --input-type=module - \
+            "$TUNNEL_LIST_RESPONSE" \
+            "$TUNNEL_DETAIL_RESPONSE" \
+            "$TUNNEL_CONFIG_RESPONSE" \
+            "$TUNNEL_DNS_RESPONSE" \
+            "$CLOUDFLARE_TUNNEL_ID" \
+            "$CLOUDFLARE_TUNNEL_CREATED" <<'NODE'
+          import fs from 'node:fs';
+
+          const [listPath, detailPath, configPath, dnsPath, selectedId, created] = process.argv.slice(2);
+          const parseResult = (file, label) => {
+            const payload = JSON.parse(fs.readFileSync(file, 'utf8'));
+            if (payload?.success !== true) throw new Error(`${label} inventory failed`);
+            return payload.result;
+          };
+          const named = parseResult(listPath, 'dedicated tunnel list');
+          const detail = parseResult(detailPath, 'dedicated tunnel detail');
+          const config = parseResult(configPath, 'dedicated tunnel configuration');
+          const records = parseResult(dnsPath, 'dedicated tunnel DNS');
+          if (!['true', 'false'].includes(created)
+            || !Array.isArray(named) || named.length !== 1 || named[0]?.id !== selectedId
+            || detail?.id !== selectedId || detail?.name !== 'explorer-qa'
+            || detail?.deleted_at != null
+            || (detail?.account_tag != null && detail.account_tag !== process.env.CLOUDFLARE_ACCOUNT_ID)) {
+            throw new Error('dedicated Explorer QA tunnel create/reuse did not converge to one exact identity');
+          }
+          const ingress = config?.config?.ingress ?? config?.ingress ?? [];
+          if (!Array.isArray(ingress) || ingress.length > 2) {
+            throw new Error('dedicated Explorer QA tunnel has shared or ambiguous ingress');
+          }
+          if (ingress.length) {
+            if (ingress.at(-1)?.hostname != null || ingress.at(-1)?.service !== 'http_status:404') {
+              throw new Error('dedicated Explorer QA tunnel lacks the terminal 404 ingress');
+            }
+          }
+          if (ingress.length === 2
+            && (ingress[0]?.hostname !== process.env.PUBLIC_HOST
+              || ingress[0]?.service !== 'http://127.0.0.1:8080')) {
+            throw new Error('dedicated Explorer QA tunnel contains an unrelated route');
+          }
+          if (!Array.isArray(records) || records.length > 1) {
+            throw new Error('Explorer QA DNS is ambiguous');
+          }
+          const expectedTarget = `${selectedId}.cfargotunnel.com`;
+          if (records.length === 1 && (records[0]?.type !== 'CNAME'
+            || records[0]?.name !== process.env.PUBLIC_HOST
+            || records[0]?.content !== expectedTarget
+            || records[0]?.proxied !== true)) {
+            throw new Error('Explorer QA DNS does not target the selected dedicated tunnel');
+          }
+          if (created === 'true' && (ingress.length > 1 || records.length !== 0)) {
+            throw new Error('new dedicated tunnel was not empty at its create/reuse boundary');
+          }
+          NODE
+          curl -fsS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$CLOUDFLARE_TUNNEL_ID/token" \
+            > "$TUNNEL_TOKEN_RESPONSE"
+          CLOUDFLARE_TUNNEL_TOKEN="$(
+            node --input-type=module - "$TUNNEL_TOKEN_RESPONSE" "$CLOUDFLARE_TUNNEL_ID" <<'NODE'
+          import fs from 'node:fs';
+
+          const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const expectedTunnel = process.argv[3];
+          const token = payload?.success === true ? String(payload.result || '').trim() : '';
+          if (!token) throw new Error('Cloudflare returned no dedicated connector credential');
+          let claims = null;
+          for (const candidate of [token, ...token.split('.')]) {
+            try {
+              const decoded = JSON.parse(Buffer.from(candidate, 'base64url').toString('utf8'));
+              const account = String(decoded?.a || decoded?.accountId || '');
+              const tunnel = String(decoded?.t || decoded?.tunnelId || '');
+              if (account && tunnel) { claims = { account, tunnel }; break; }
+            } catch { }
+          }
+          if (!claims || claims.account !== process.env.CLOUDFLARE_ACCOUNT_ID
+            || claims.tunnel !== expectedTunnel) {
+            throw new Error('connector token claims do not match the dedicated Explorer QA tunnel/account');
+          }
+          process.stdout.write(token);
+          NODE
+          )"
+          if [ "$CLOUDFLARE_TUNNEL_TOKEN" = "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Cloudflare management and connector authorities must be separate credentials"
+            exit 1
+          fi
+          echo "::add-mask::$CLOUDFLARE_TUNNEL_TOKEN"
+          export CLOUDFLARE_TUNNEL_TOKEN
+          rm -f \
+            "$TUNNEL_LIST_RESPONSE" \
+            "$TUNNEL_MUTATION_RESPONSE" \
+            "$TUNNEL_TOKEN_RESPONSE" \
+            "$TUNNEL_DETAIL_RESPONSE" \
+            "$TUNNEL_CONFIG_RESPONSE" \
+            "$TUNNEL_DNS_RESPONSE"
+          TUNNEL_LIST_RESPONSE=''
+          TUNNEL_MUTATION_RESPONSE=''
+          TUNNEL_TOKEN_RESPONSE=''
+          TUNNEL_DETAIL_RESPONSE=''
+          TUNNEL_CONFIG_RESPONSE=''
+          TUNNEL_DNS_RESPONSE=''
+          echo "[deploy-qa] Dedicated Explorer QA tunnel id=$CLOUDFLARE_TUNNEL_ID created=$CLOUDFLARE_TUNNEL_CREATED."
+
+          SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "${SSH_USER}@${SSH_HOST}")
+          LOCK=/home/admin/.qa-deployment-operation.lock
+          WORK_DIR="/home/admin/$WORKSPACE"
+          PLOINKY_BIN=/home/admin/.qa-deployment-tools/ploinky/bin/ploinky
+
+          echo '[deploy-qa] Bootstrapping the pinned Node, the Ploinky checkout and the workspace directory...'
+          BOOTSTRAP_LOG="$RUNNER_TEMP/explorer-qa-bootstrap.log"
+          "${SSH[@]}" "flock -n -E 75 --close '$LOCK' bash -s" <<'REMOTE' | tee "$BOOTSTRAP_LOG"
+          set -euo pipefail
+          if [ "$(id -un)" != 'admin' ] || [ "$HOME" != '/home/admin' ]; then
+            echo '[qa] ERROR: the remote identity is not the pinned admin account.'
+            exit 1
+          fi
+          WORK_DIR=/home/admin/explorerQaWorkspace
+          if [ -L "$WORK_DIR" ] || { [ -e "$WORK_DIR" ] && [ ! -d "$WORK_DIR" ]; }; then
+            echo "[qa] ERROR: the workspace path is not a real directory: $WORK_DIR"
+            exit 1
+          fi
+          # The older workflows park the router access policy and an install marker here, and only they
+          # restore them. Running over that state would silently lose the policy.
+          STATE_DIR=/home/admin/.qa-deployment-state
+          if [ -e "$STATE_DIR" ] && [ -n "$(ls -A "$STATE_DIR")" ]; then
+            echo "[qa] ERROR: $STATE_DIR holds state from deploy-explorer-qa.yml. Dispatch that workflow to finish it first."
+            exit 1
+          fi
+          for tool in git node curl podman flock; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "[qa] ERROR: missing required host tool '$tool'."
+              exit 1
+            fi
+          done
+          # BEGIN QA isolated Node runtime
+          install_qa_node() (
+            set -euo pipefail
+            umask 077
+            case "$(uname -m)" in
+              x86_64)
+                QA_NODE_ARCH=x64
+                QA_NODE_SHA=14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647
+                ;;
+              aarch64|arm64)
+                QA_NODE_ARCH=arm64
+                QA_NODE_SHA=01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc
+                ;;
+              *) echo '[deploy-qa] Unsupported QA Node architecture.' >&2; exit 1 ;;
+            esac
+            QA_TOOLS_ROOT=/home/admin/.qa-deployment-tools
+            QA_NODE_DIST="node-v24.19.0-linux-$QA_NODE_ARCH"
+            QA_NODE_TARGET="$QA_TOOLS_ROOT/$QA_NODE_DIST"
+            QA_NODE_ARCHIVE="$QA_TOOLS_ROOT/$QA_NODE_DIST.tar.xz"
+            node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_DIST" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [root, distribution] = process.argv.slice(2);
+          assert.equal(root, '/home/admin/.qa-deployment-tools');
+          assert(/^node-v24\.19\.0-linux-(x64|arm64)$/.test(distribution));
+          if (!fs.existsSync(root)) fs.mkdirSync(root, { mode: 0o700 });
+          for (const [file, directory, privateMode] of [
+              [root, true, true],
+              [path.join(root, `${distribution}.tar.xz`), false, true],
+              [path.join(root, distribution), true, false],
+              [path.join(root, distribution, 'bin/node'), false, false],
+          ]) {
+              let stat;
+              try { stat = fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+              assert(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile()), 'Unsafe QA Node path');
+              assert.equal(fs.realpathSync(file), file, 'QA Node path traverses a symlink');
+              assert.equal(stat.uid, process.getuid(), 'QA Node path has a different owner');
+              assert.equal(stat.mode & (privateMode ? 0o077 : 0o022), 0, 'Unsafe QA Node permissions');
+              if (!directory) assert.equal(stat.nlink, 1, 'QA Node file has multiple links');
+          }
+          NODE
+            QA_NODE_STAGE="$(mktemp -d "$QA_TOOLS_ROOT/.node-install-XXXXXXXX")"
+            cleanup_qa_node_stage() {
+              node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_STAGE" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [root, stage] = process.argv.slice(2);
+          assert.equal(root, '/home/admin/.qa-deployment-tools');
+          assert.equal(path.dirname(stage), root);
+          assert(/^\.node-install-[A-Za-z0-9]{8}$/.test(path.basename(stage)));
+          const stat = fs.lstatSync(stage);
+          assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid());
+          assert.equal(fs.realpathSync(stage), stage);
+          fs.rmSync(stage, { recursive: true });
+          NODE
+            }
+            trap cleanup_qa_node_stage EXIT
+            if [ ! -f "$QA_NODE_ARCHIVE" ]; then
+              curl -fsS --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 \
+                --max-filesize 104857600 \
+                "https://nodejs.org/dist/v24.19.0/$QA_NODE_DIST.tar.xz" -o "$QA_NODE_STAGE/archive.tar.xz"
+              printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_STAGE/archive.tar.xz" | timeout 30 sha256sum -c - >/dev/null
+              mv -T "$QA_NODE_STAGE/archive.tar.xz" "$QA_NODE_ARCHIVE"
+            fi
+            printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_ARCHIVE" | timeout 30 sha256sum -c - >/dev/null
+            if [ ! -e "$QA_NODE_TARGET" ]; then
+              timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" -C "$QA_NODE_STAGE"
+              mv -T "$QA_NODE_STAGE/$QA_NODE_DIST" "$QA_NODE_TARGET"
+            fi
+            # Validate an existing binary against the pinned archive too; a
+            # version string or cached marker alone is not integrity evidence.
+            timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" \
+              -C "$QA_NODE_STAGE" "$QA_NODE_DIST/bin/node"
+            timeout 30 cmp -s "$QA_NODE_STAGE/$QA_NODE_DIST/bin/node" "$QA_NODE_TARGET/bin/node"
+            [ "$(timeout 10 "$QA_NODE_TARGET/bin/node" --version)" = 'v24.19.0' ]
+            printf '%s\n' "$QA_NODE_TARGET"
+          )
+          QA_NODE_HOME="$(install_qa_node)"
+          export PATH="$QA_NODE_HOME/bin:$PATH"
+          # END QA isolated Node runtime
+          # Ploinky cannot install itself, so this bootstrap is the one Git use on the host. The checkout lies
+          # outside the workspace: a Box mounts it read-only and cannot write its hooks or configuration.
+          PLOINKY_URL=https://github.com/AssistOS-AI/ploinky.git
+          CHECKOUT=/home/admin/.qa-deployment-tools/ploinky
+          BRANCH="$(git ls-remote --symref "$PLOINKY_URL" HEAD | awk '$1 == "ref:" && $3 == "HEAD" { sub("refs/heads/", "", $2); print $2 }')"
+          [[ "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]
+          if [ -L "$CHECKOUT" ]; then
+            echo "[qa] ERROR: the Ploinky checkout path must not be a symlink: $CHECKOUT"
+            exit 1
+          fi
+          if [ ! -e "$CHECKOUT" ]; then
+            git clone --quiet --branch "$BRANCH" "$PLOINKY_URL" "$CHECKOUT"
+          fi
+          if [ "$(git -C "$CHECKOUT" remote get-url origin)" != "$PLOINKY_URL" ]; then
+            echo "[qa] ERROR: unexpected Ploinky checkout origin."
+            exit 1
+          fi
+          git -C "$CHECKOUT" fetch --quiet origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+          git -C "$CHECKOUT" checkout --quiet "$BRANCH"
+          git -C "$CHECKOUT" merge --quiet --ff-only "origin/$BRANCH"
+          echo "[qa] Ploinky $(git -C "$CHECKOUT" rev-parse --short HEAD) on $BRANCH."
+          mkdir -p "$WORK_DIR"
+          chmod 700 "$WORK_DIR"
+          # The one read of the workspace: a kept publication cannot follow a replaced tunnel.
+          if [ -e "$WORK_DIR/.ploinky/edge-desired.json" ]; then echo 'QA_KEPT_PUBLICATION=true'; fi
+          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME"
+          REMOTE
+          QA_NODE_HOME="$(sed -n 's/^QA_NODE_HOME=//p' "$BOOTSTRAP_LOG" | tail -n 1)"
+          if [[ ! "$QA_NODE_HOME" =~ ^/home/admin/\.qa-deployment-tools/node-v24\.19\.0-linux-(x64|arm64)$ ]]; then
+            echo "::error::The bootstrap did not report the pinned Node."
+            exit 1
+          fi
+
+          REMOTE_ENV="cd '$WORK_DIR' && export PATH='$QA_NODE_HOME/bin':\"\$PATH\" PLOINKY_WORKSPACE_ROOT='$WORK_DIR'"
+          # Every argument below is a fixed word. A secret only ever reaches a command through ssh stdin.
+          ploinky_locked() {
+            local status=0
+            "${SSH[@]}" "$REMOTE_ENV && exec flock -n -E 75 --close '$LOCK' '$PLOINKY_BIN' $*" || status=$?
+            if [ "$status" -eq 75 ]; then
+              echo "::error::Another Explorer QA operation holds the host lock."
+            fi
+            return "$status"
+          }
+          ploinky_read() {
+            "${SSH[@]}" "$REMOTE_ENV && exec '$PLOINKY_BIN' $*"
+          }
+          unrelated_containers() {
+            "${SSH[@]}" "set -o pipefail; podman ps -a --format '{{.ID}} {{.Names}}' | { grep -v ' ploinky-box-explorerqaworkspace-7a31ab7775eb$' || true; } | sort"
+          }
+          soul_healthy() {
+            "${SSH[@]}" "curl -sf 'http://127.0.0.1:${SOUL_GATEWAY_ROUTER_PORT}/base-agent-additional-server/soul-gateway/7000/healthz/' >/dev/null"
+          }
+
+          SOUL_UP_BEFORE=0
+          if soul_healthy; then SOUL_UP_BEFORE=1; fi
+          UNRELATED_BEFORE="$(unrelated_containers)"
+
+          # The graph this deploy owns. An operator may enable more agents; those need not be ready, but a
+          # failed one still fails the run.
+          GRAPH_RUNTIMES='explorer gitAgent userPersistoAgent emailAgent dpuAgent roboTeamAgent soul-gateway workspaceMonitorAgent local-llm'
+          # Prints "agent state" for the runtime block of `ploinky status`, whose repository block also has badges.
+          runtime_states() {
+            awk '/^Agent runtimes:/ { on = 1; next }
+              on && match($0, /\[[a-z-]+\] \[[a-z-]+\]/) { split(substr($0, RSTART, RLENGTH), word, /[][ ]+/); state = word[2]; next }
+              on && state != "" && /agent:/ { for (i = 1; i <= NF; i++) if ($i == "agent:") print $(i + 1), state; state = "" }'
+          }
+          # `ploinky status` overlays each detached runtime's semantic readiness on its state. Waiting also
+          # lets the detached launches settle before the next start or update.
+          wait_ready() {
+            local streak=0 states agent complete
+            for _ in $(seq 1 180); do
+              states="$(ploinky_read status | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)" || states=''
+              if grep -q ' failed$' <<< "$states"; then
+                printf '%s\n' "$states"
+                echo "::error::A runtime reported failed readiness."
+                return 1
+              fi
+              complete=1
+              for agent in $GRAPH_RUNTIMES; do
+                grep -qx "$agent running" <<< "$states" || complete=0
+              done
+              if [ "$complete" = 1 ]; then
+                streak=$((streak + 1))
+                if [ "$streak" -ge 3 ]; then
+                  printf '%s\n' "$states"
+                  return 0
+                fi
+              else
+                streak=0
+              fi
+              sleep 10
+            done
+            printf '%s\n' "$states"
+            echo "::error::Timed out waiting for the graph runtimes to stay ready."
+            return 1
+          }
+
+          if [ "${CLOUDFLARE_TUNNEL_CREATED:-}" = true ] && grep -qx 'QA_KEPT_PUBLICATION=true' "$BOOTSTRAP_LOG"; then
+            echo "::error::The dedicated tunnel was missing and a new one was created, but the workspace keeps a publication naming the old one. Dispatch destroy-explorer-qa-ploinky.yml with delete_data ticked, or use deploy-explorer-qa.yml."
+            exit 1
+          fi
+          if ! STATUS_OUTPUT="$(ploinky_read status)"; then
+            printf '%s\n' "$STATUS_OUTPUT"
+            echo "::error::Status failed. A Box from deploy-explorer-qa.yml is refused from this checkout: dispatch destroy-explorer-qa-ploinky.yml with delete_data unchecked, then deploy again."
+            exit 1
+          fi
+          BOX_STATE=present
+          if [[ "$STATUS_OUTPUT" == *'Ploinky Box: absent'* ]]; then BOX_STATE=absent; fi
+          echo "[deploy-qa] Box before this run: $BOX_STATE; recreate requested: $RECREATE_BOX."
+          if [ "$BOX_STATE" = present ] && [ "$RECREATE_BOX" = true ]; then
+            ploinky_locked destroy
+            BOX_STATE=absent
+          fi
+          # `update` does not start a stopped graph, so anything short of a running one starts first.
+          GRAPH_UP=true
+          STATUS_STATES="$(printf '%s\n' "$STATUS_OUTPUT" | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"
+          for agent in $GRAPH_RUNTIMES; do
+            grep -qx "$agent running" <<< "$STATUS_STATES" || GRAPH_UP=false
+          done
+          if [ "$GRAPH_UP" = false ]; then
+            # `ploinky var` needs a Box, and only `start` accepts the port; a Box created by `var` would take
+            # 8080, which Soul Gateway owns on this host. So the first start runs before the values are set.
+            # A fresh workspace has no publication yet; kept data republishes its kept tunnel.
+            ploinky_locked --port "$ROUTER_PORT" start explorer
+            wait_ready
+          fi
+
+          printf '%s' "$CLOUDFLARE_API_TOKEN" | ploinky_locked var "$CLOUDFLARE_API_SECRET_HANDLE" --stdin
+          printf '%s' "$CLOUDFLARE_TUNNEL_TOKEN" | ploinky_locked var "$CLOUDFLARE_TUNNEL_SECRET_HANDLE" --stdin
+          unset CLOUDFLARE_TUNNEL_TOKEN
+
+          SAVED_ORIGINS="$(ploinky_read echo USERPERSISTO_ALLOWED_REDIRECT_ORIGINS | sed -n 's/^USERPERSISTO_ALLOWED_REDIRECT_ORIGINS=//p' | tail -n 1)"
+          ALLOWED_ORIGINS="$(node --input-type=module - "$SAVED_ORIGINS" "$PUBLIC_URL" <<'NODE'
+          const origins = [...process.argv[2].split(','), process.argv[3]].map((value) => value.trim()).filter(Boolean);
+          const allowed = [...new Set(origins.map((value) => {
+            const url = new URL(value);
+            if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password
+              || url.pathname !== '/' || url.search || url.hash) {
+              throw new Error('invalid saved UserPersisto redirect origin');
+            }
+            return url.origin;
+          }))].sort();
+          process.stdout.write(allowed.join(','));
+          NODE
+          )"
+          USERPERSISTO_SERVICE="$PUBLIC_URL/base-agent-additional-server/userPersistoAgent/7000/service"
+          printf '%s' "$USERPERSISTO_SERVICE/oidc" | ploinky_locked var USERPERSISTO_OIDC_ISSUER --stdin
+          printf '%s' "$ALLOWED_ORIGINS" | ploinky_locked var USERPERSISTO_ALLOWED_REDIRECT_ORIGINS --stdin
+          # A public callback disables the distributed localhost-only Google fallback. Without a
+          # supplied or saved client, Google stays off.
+          printf '%s' "$USERPERSISTO_SERVICE/auth/google/callback" | ploinky_locked var USERPERSISTO_GOOGLE_REDIRECT_URI --stdin
+          if [ -n "${QA_USERPERSISTO_GOOGLE_CLIENT_ID:-}" ]; then
+            if [[ ! "$QA_USERPERSISTO_GOOGLE_CLIENT_ID" =~ ^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$ ]]; then
+              echo "::error::EXPLORER_QA_USERPERSISTO_GOOGLE_CLIENT_ID must be a Google Web application client ID"
+              exit 1
+            fi
+            printf '%s' "$QA_USERPERSISTO_GOOGLE_CLIENT_ID" | ploinky_locked var USERPERSISTO_GOOGLE_CLIENT_ID --stdin
+          fi
+
+          # Start never fetches a checkout that exists, so kept sources move forward here. This fast-forwards
+          # every managed source and restarts the graph when it runs; a dirty or diverged source fails the
+          # run and is left untouched.
+          ploinky_locked update
+          wait_ready
+
+          # Handles only: this document never holds a secret value.
+          EDGE_DOCUMENT="$(node --input-type=module <<'NODE'
+          const { PUBLIC_HOST, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID, CLOUDFLARE_TUNNEL_ID,
+            CLOUDFLARE_TUNNEL_SECRET_HANDLE, CLOUDFLARE_API_SECRET_HANDLE, MEDIA_PUBLIC_IPV4 } = process.env;
+          process.stdout.write(JSON.stringify({
+            hosts: {
+              [PUBLIC_HOST]: {
+                agent: 'AchillesIDE/explorer',
+                routerSurfaces: ['browser-auth', 'agent-mcp', 'user-admin', 'workspace-assets', 'blob-transfer',
+                  'marketplace-ui', 'webchat', 'webtty'],
+              },
+            },
+            cloudflare: {
+              accountId: CLOUDFLARE_ACCOUNT_ID,
+              zoneId: CLOUDFLARE_ZONE_ID,
+              tunnelId: CLOUDFLARE_TUNNEL_ID,
+              tunnelTokenSecret: CLOUDFLARE_TUNNEL_SECRET_HANDLE,
+              apiTokenSecret: CLOUDFLARE_API_SECRET_HANDLE,
+            },
+            media: { publicIPv4: MEDIA_PUBLIC_IPV4, addressMode: 'direct' },
+          }));
+          NODE
+          )"
+          printf '%s\n' "$EDGE_DOCUMENT" | ploinky_locked edge set -
+
+          echo '[deploy-qa] Starting Explorer with the publication...'
+          ploinky_locked --port "$ROUTER_PORT" start explorer
+
+          wait_ready
+
+          if ! "${SSH[@]}" "curl -s -o /dev/null --max-time 15 'http://127.0.0.1:${ROUTER_PORT}/'"; then
+            echo "::error::The Box Router did not answer on loopback port $ROUTER_PORT."
+            exit 1
+          fi
+          if [ "$SOUL_UP_BEFORE" = 1 ] && ! soul_healthy; then
+            echo "::error::Protected Soul Gateway became unhealthy during the deployment."
+            exit 1
+          fi
+          if [ "$UNRELATED_BEFORE" != "$(unrelated_containers)" ]; then
+            echo "::error::An unrelated host container changed during the deployment."
+            exit 1
+          fi
+          echo '[deploy-qa] Explorer QA Box is ready.'
+
+      - name: Verify public URL
+        run: |
+          set -euo pipefail
+          echo "[deploy-qa] Verifying the exact public Explorer login application..."
+          RESPONSE_FILE="$RUNNER_TEMP/explorer-qa-response.txt"
+          HEADER_FILE="$RUNNER_TEMP/explorer-qa-headers.txt"
+          MISMATCH_RESPONSE_FILE="$RUNNER_TEMP/explorer-qa-mismatch-response.txt"
+          MISMATCH_HEADER_FILE="$RUNNER_TEMP/explorer-qa-mismatch-headers.txt"
+          for attempt in $(seq 1 60); do
+            code="$(
+              curl -sS --max-time 15 \
+                -D "$HEADER_FILE" \
+                -o "$RESPONSE_FILE" \
+                -w '%{http_code}' \
+                "${PUBLIC_URL%/}/auth/login?agent=explorer" || true
+            )"
+            mismatch_code="$(
+              curl -sS --max-time 15 \
+                -D "$MISMATCH_HEADER_FILE" \
+                -o "$MISMATCH_RESPONSE_FILE" \
+                -w '%{http_code}' \
+                "${PUBLIC_URL%/}/auth/login?agent=dpuAgent" || true
+            )"
+            if { [ "$code" = "303" ] || [ "$code" = "200" ]; } && [ "$mismatch_code" = "400" ] && node --input-type=module - \
+              "$RESPONSE_FILE" \
+              "$HEADER_FILE" \
+              "$MISMATCH_RESPONSE_FILE" \
+              "$MISMATCH_HEADER_FILE" <<'NODE'
+          import fs from 'node:fs';
+
+          const body = fs.readFileSync(process.argv[2], 'utf8');
+          const headers = fs.readFileSync(process.argv[3], 'utf8');
+          const mismatchBody = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
+          const mismatchHeaders = fs.readFileSync(process.argv[5], 'utf8').toLowerCase();
+          // BEGIN QA public email-first verification
+          const publicUrl = 'https://explorer-qa.axiologic.dev';
+          if (/EDGE_GENERATION_INACTIVE|cloudflare tunnel error|error code: 1033/i.test(body)) process.exit(1);
+          // Current Routers answer with a 303 to the provider; older ones served
+          // a Continue with Single Sign-On page that redirected from script.
+          const location = headers.match(/^location:[ \t]*(\S+)[ \t]*\r?$/mi)?.[1];
+          const redirect = body.match(/window\.location\.replace\(("(?:[^"\\]|\\.)*")\)/);
+          if ((!location && (!/Continue with Single Sign-On/.test(body) || !redirect))
+            || /<input[^>]+type=["']password["']/i.test(body)) process.exit(1);
+          const login = new URL(location || JSON.parse(redirect[1]), publicUrl);
+          const service = '/base-agent-additional-server/userPersistoAgent/7000/service';
+          if (login.origin !== publicUrl || login.username || login.password || login.hash
+            || login.pathname !== `${service}/auth/` || !login.searchParams.get('requestId')
+            || !login.searchParams.get('state')) process.exit(1);
+          if (mismatchBody?.ok !== false || mismatchBody?.error !== 'auth_route_context_mismatch') process.exit(1);
+          if (!/^cf-ray:/mi.test(headers) || !/^cf-ray:/mi.test(mismatchHeaders)) process.exit(1);
+          const get = async url => {
+            try {
+              const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(15000) });
+              if (!response.ok || !response.headers.get('cf-ray')) throw new Error();
+              return response;
+            } catch {
+              throw new Error('QA identity endpoint is not ready through the public edge');
+            }
+          };
+          const wizard = await (await get(login.href)).text();
+          if (!/id=["']auth_content["']/.test(wizard) || !/<script[^>]+src=["']main\.js["']/.test(wizard)
+            || /<input[^>]+type=["']password["']/i.test(wizard)) process.exit(1);
+          const setup = await (await get(`${publicUrl}${service}/auth/setup`)).json();
+          if (setup.ok !== true || typeof setup.setupComplete !== 'boolean' || typeof setup.registration !== 'boolean'
+            || typeof setup.methods !== 'object' || setup.methods === null) process.exit(1);
+          const issuer = `${publicUrl}${service}/oidc`;
+          const discovery = await (await get(`${issuer}/.well-known/openid-configuration`)).json();
+          if (discovery.issuer !== issuer || !discovery.code_challenge_methods_supported?.includes('S256')) process.exit(1);
+          for (const key of ['authorization_endpoint', 'token_endpoint', 'jwks_uri', 'userinfo_endpoint']) {
+            const endpoint = new URL(discovery[key]);
+            if (endpoint.origin !== publicUrl || endpoint.username || endpoint.password || endpoint.search || endpoint.hash
+              || !endpoint.pathname.startsWith(`${service}/oidc/`)) process.exit(1);
+          }
+          console.log('[deploy-qa] UserPersisto readiness:', JSON.stringify({
+            setupComplete: setup.setupComplete,
+            registration: setup.registration,
+            methods: Object.fromEntries(['password', 'emailCode', 'passkey', 'totp', 'google'].map(name => [name, setup.methods[name] === true])),
+          }));
+          // END QA public email-first verification
+          NODE
+            then
+              echo "[deploy-qa] Public edge verified the host-bound SSO login, email-first wizard, OIDC issuer, and rejected a mismatched agent selector."
+              break
+            fi
+            if [ "$attempt" = "60" ]; then
+              echo "::error::Exact public Explorer application did not become ready; last HTTP codes: ${code:-none}/${mismatch_code:-none}"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Verify dedicated connector and protected Cloudflare topology
+        if: always()
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          SNAPSHOT_FILE="$RUNNER_TEMP/explorer_qa_protected_cloudflare_before.json"
+          if [ ! -f "$SNAPSHOT_FILE" ]; then
+            echo "[deploy-qa] No protected Cloudflare preflight snapshot exists; no Cloudflare mutation was authorized."
+            exit 0
+          fi
+          node --input-type=module - "$SNAPSHOT_FILE" <<'NODE'
+          import crypto from 'node:crypto';
+          import fs from 'node:fs';
+
+          const before = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const accountId = String(process.env.CLOUDFLARE_ACCOUNT_ID || '');
+          const zoneId = String(process.env.CLOUDFLARE_ZONE_ID || '');
+          const protectedTunnelId = String(process.env.CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID || '');
+          const dedicatedTunnelId = String(process.env.CLOUDFLARE_TUNNEL_ID || '');
+          const stable = (value) => {
+            if (Array.isArray(value)) return value.map(stable);
+            if (!value || typeof value !== 'object') return value;
+            return Object.fromEntries(Object.entries(value)
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([key, child]) => [key, stable(child)]));
+          };
+          const digest = (value) => `sha256:${crypto.createHash('sha256')
+            .update(JSON.stringify(stable(value))).digest('hex')}`;
+          const api = async (pathname) => {
+            const response = await fetch(`https://api.cloudflare.com/client/v4${pathname}`, {
+              headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` },
+              redirect: 'error',
+            });
+            const payload = await response.json().catch(() => null);
+            if (!response.ok || payload?.success !== true) throw new Error('Cloudflare post-deploy inventory failed');
+            return payload.result;
+          };
+          const sharedDetail = await api(`/accounts/${accountId}/cfd_tunnel/${protectedTunnelId}`);
+          const sharedConfig = await api(`/accounts/${accountId}/cfd_tunnel/${protectedTunnelId}/configurations`);
+          const protectedDns = [];
+          for (let page = 1; ; page += 1) {
+            if (page > 100) throw new Error('protected DNS inventory exceeded the fail-closed page bound');
+            const query = new URLSearchParams({ page: String(page), per_page: '100' });
+            const records = await api(`/zones/${zoneId}/dns_records?${query}`);
+            if (!Array.isArray(records)) throw new Error('protected DNS inventory is malformed');
+            protectedDns.push(...records.filter((record) => record?.name !== process.env.PUBLIC_HOST));
+            if (records.length < 100) break;
+          }
+          protectedDns.sort((left, right) => String(left?.id || '').localeCompare(String(right?.id || '')));
+          const after = {
+            tunnel: { id: sharedDetail.id, name: sharedDetail.name, accountTag: sharedDetail.account_tag || accountId },
+            ingress: sharedConfig?.config?.ingress,
+            dns: protectedDns,
+          };
+          const beforeJson = JSON.stringify(stable(before));
+          const afterJson = JSON.stringify(stable(after));
+          if (beforeJson !== afterJson || digest(after) !== process.env.PROTECTED_CLOUDFLARE_DIGEST) {
+            throw new Error('protected proxies ingress or unrelated DNS identity changed during Explorer QA deployment');
+          }
+          if (/^[a-f0-9-]{36}$/.test(dedicatedTunnelId)) {
+            const tunnelQuery = new URLSearchParams({ name: 'explorer-qa', is_deleted: 'false', per_page: '100' });
+            const named = await api(`/accounts/${accountId}/cfd_tunnel?${tunnelQuery}`);
+            const detail = await api(`/accounts/${accountId}/cfd_tunnel/${dedicatedTunnelId}`);
+            const config = await api(`/accounts/${accountId}/cfd_tunnel/${dedicatedTunnelId}/configurations`);
+            const dnsQuery = new URLSearchParams({ name: process.env.PUBLIC_HOST, per_page: '100' });
+            const dns = await api(`/zones/${zoneId}/dns_records?${dnsQuery}`);
+            const connections = await api(`/accounts/${accountId}/cfd_tunnel/${dedicatedTunnelId}/connections`);
+            const expectedIngress = [
+              { hostname: process.env.PUBLIC_HOST, service: 'http://127.0.0.1:8080' },
+              { service: 'http_status:404' },
+            ];
+            if (!Array.isArray(named) || named.length !== 1 || named[0]?.id !== dedicatedTunnelId
+              || detail?.id !== dedicatedTunnelId || detail?.name !== 'explorer-qa'
+              || detail?.deleted_at != null
+              || (detail?.account_tag != null && detail.account_tag !== accountId)
+              || JSON.stringify(stable(config?.config?.ingress)) !== JSON.stringify(stable(expectedIngress))) {
+              throw new Error('dedicated Explorer QA tunnel identity or ingress did not converge exactly');
+            }
+            if (!Array.isArray(dns) || dns.length !== 1
+              || dns[0]?.type !== 'CNAME'
+              || dns[0]?.name !== process.env.PUBLIC_HOST
+              || dns[0]?.content !== `${dedicatedTunnelId}.cfargotunnel.com`
+              || dns[0]?.proxied !== true
+              || Number(dns[0]?.ttl) !== 1
+              || !String(dns[0]?.id || '')) {
+              throw new Error('Explorer QA DNS did not converge to the dedicated tunnel');
+            }
+            if (!Array.isArray(connections) || connections.length < 1) {
+              throw new Error('dedicated Explorer QA connector has no active Cloudflare connection');
+            }
+            fs.appendFileSync(process.env.GITHUB_ENV, `EXPLORER_QA_DNS_RECORD_ID=${dns[0].id}\n`);
+            console.log(`Dedicated Explorer QA tunnel id=${dedicatedTunnelId} DNS id=${dns[0].id} connections=${connections.length}.`);
+          }
+          console.log(`Protected proxies ingress and unrelated DNS are unchanged at ${digest(after)}.`);
+          NODE
+
+      - name: Create summary
+        if: always()
+        env:
+          RECREATE_BOX: ${{ inputs.recreate_box }}
+        run: |
+          {
+            echo "## Explorer QA Box Deploy (Ploinky commands)"
+            echo ""
+            echo "- Host: \`${SSH_USER}@${SSH_HOST}\`, workspace \`~/${WORKSPACE}\`"
+            echo "- Router publication: \`127.0.0.1:${ROUTER_PORT}:8080/tcp\`"
+            echo "- Box recreated on request: \`${RECREATE_BOX}\`"
+            echo "- Sources: each managed repository's default branch at deploy time; no Ploinky command reports the deployed commits"
+            printf -- '- Cloudflare tunnel: `%s` `%s`\n' "$CLOUDFLARE_TUNNEL_NAME" "${CLOUDFLARE_TUNNEL_ID:-not-created}"
+            printf -- '- Cloudflare DNS record: `%s`\n' "${EXPLORER_QA_DNS_RECORD_ID:-not-created}"
+            printf -- '- Protected shared tunnel: `%s` unchanged at `%s`\n' \
+              "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" "${PROTECTED_CLOUDFLARE_DIGEST:-not-snapshotted}"
+            echo "- Public URL: \`${PUBLIC_URL}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f \
+            ~/.ssh/deploy_key \
+            ~/.ssh/explorer_qa_known_hosts \
+            "$RUNNER_TEMP/explorer-qa-bootstrap.log" \
+            "$RUNNER_TEMP/explorer-qa-response.txt" \
+            "$RUNNER_TEMP/explorer-qa-headers.txt" \
+            "$RUNNER_TEMP/explorer_qa_protected_cloudflare_before.json"

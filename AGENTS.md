@@ -93,10 +93,12 @@ may trigger tracked GitHub Actions workflows with `gh` and may use direct SSH,
 Ploinky CLI, container, registry, Cloudflare, DNS, or other remote operations
 needed to complete that selected task.
 
-- Supported tracked workflows are exactly `deploy-explorer-qa.yml` (no
+- Supported tracked workflows are `deploy-explorer-qa.yml` (no
   inputs; it selects a fresh install, an in-place update or a rebuild itself)
   and `destroy-explorer-qa.yml` (one `delete_data` checkbox: unchecked keeps
-  the QA data, checked deletes it). Inspect the dispatched revision, inputs,
+  the QA data, checked deletes it), plus `deploy-explorer-qa-ploinky.yml` and
+  `destroy-explorer-qa-ploinky.yml`, which drive the same target through Ploinky
+  commands with the differences that `docs/deploy-explorer-qa.md` lists. Inspect the dispatched revision, inputs,
   exact target, ownership guards, secret prerequisites, and branch/fallback
   behavior before invocation.
 - This repository no longer deploys `skills.axiologic.dev`. Its

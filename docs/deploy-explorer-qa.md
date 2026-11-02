@@ -13,7 +13,7 @@ on 2026-10-20, when its host was reinstalled.
 
 The tracked `deploy-explorer-qa.yml` and `destroy-explorer-qa.yml` workflows are the supported execution channels. Before dispatch, inspect the workflow at the requested revision and verify its exact inputs, target guards, credentials, branch selection, and fallback behavior against the user's requirements. A workflow name or historical successful run is not evidence that its current implementation satisfies those requirements. If an explicit request forbids `--branch-fallback`, do not dispatch a workflow that injects that option; use an authorized direct channel or update and verify the workflow first.
 
-Explorer QA has exactly two tracked workflows. `deploy-explorer-qa.yml` takes no inputs, decides by itself what is needed, and always deploys the head of AssistOSExplorer `main` as resolved at the start of the run. `destroy-explorer-qa.yml` has one input, the `delete_data` checkbox. The former host-storage inspect and cleanup, runtime-verify, recovery and retired-source-absence workflows are gone: the route, the teardown receipts and the readiness checks inside the two workflows replace them, and the deploy test step still runs `tests/smoke/lib/retired-source-absence.test.mjs` on every dispatch. Both workflows share the concurrency group `deploy-explorer-qa` and take the host operation lock, so a destroy never overlaps a deploy.
+Explorer QA has two tracked workflows, described first, and a Ploinky-command alternative to each (see "Ploinky-command workflows"). `deploy-explorer-qa.yml` takes no inputs, decides by itself what is needed, and always deploys the head of AssistOSExplorer `main` as resolved at the start of the run. `destroy-explorer-qa.yml` has one input, the `delete_data` checkbox. The former host-storage inspect and cleanup, runtime-verify, recovery and retired-source-absence workflows are gone: the route, the teardown receipts and the readiness checks inside the two workflows replace them, and the deploy test step still runs `tests/smoke/lib/retired-source-absence.test.mjs` on every dispatch. Both workflows share the concurrency group `deploy-explorer-qa` and take the host operation lock, so a destroy never overlaps a deploy.
 
 The first deploy step pins that commit P. The in-place path keeps the exact pin: its selection and its update compare the remote head with P, because the selection classified P's diff. The Reconcile path (fresh installation and rebuild) accepts the head R it resolves later when R is P or a fast-forward descendant of P, so a teammate's ordinary push during a long run does not abort a rebuild after the old Box was removed. The ancestry is proven on the host from the remote history (a partial clone of the default branch, then `git merge-base --is-ancestor P R`). A rewritten or rewound `main`, a sibling branch head, or any failure of the proof (fetch error, missing commit, a `merge-base` status other than 0) fails closed. Every accepted move is logged as `AssistOSExplorer main moved from P to R (fast-forward, early|late)`. After `ploinky start` the deployed commit of every graph repository must equal the resolved one or be a fast-forward descendant of it, proven inside the Box. Helpers and tests come from the dispatched ref, so a branch can be dispatched to test a workflow change; the run summary records `ref@sha`, the pinned commit, the route and the deployed commit.
 
@@ -194,6 +194,48 @@ BLOCKED with the reproducible command; it is never treated as a pass.
 An inactive managed gateway does not authorize a wider bind, forwarder, direct
 target, or alternate authorization path. Ploinky DS004 Question #8 remains the
 owner of any architecture change needed to activate that lane.
+
+## Ploinky-command workflows
+
+`deploy-explorer-qa-ploinky.yml` and `destroy-explorer-qa-ploinky.yml` target the same host and workspace through Ploinky commands instead of helpers that inspect or change the workspace directly. They share the `deploy-explorer-qa` concurrency group and the host lock with the workflows above. They refuse to run while `/home/admin/.qa-deployment-state` holds anything, because only `deploy-explorer-qa.yml` restores the access policy parked there. Their tunnel checks, DNS checks and public verification are the same runner-side steps.
+
+| Work | Command |
+| --- | --- |
+| Save the publication document | `ploinky edge set -` |
+| Store Cloudflare and UserPersisto values | `ploinky var NAME --stdin`, with values only on SSH stdin |
+| Update the managed sources | `ploinky update`, on every deploy |
+| Start | `ploinky --port 8097 start explorer`, first when the graph is not running and again after the publication is saved |
+| Readiness | `ploinky status`, 9 of 9 runtimes ready three times in a row |
+| Destroy, keeping data | `ploinky destroy` |
+| Destroy, deleting data | `ploinky destroy --delete-data --confirm-workspace /home/admin/explorerQaWorkspace` |
+
+The host work outside Ploinky is the bootstrap it cannot do for itself: the pinned Node, a Ploinky checkout at `/home/admin/.qa-deployment-tools/ploinky` and the workspace directory. The checkout lies outside the workspace because `--delete-data` refuses a checkout inside it and a Box mounts it read-only.
+
+These workflows differ from the two above:
+
+| Difference | Consequence |
+| --- | --- |
+| No selection between an in-place update and a rebuild | Every deploy runs `ploinky update`, which restarts the graph, so a change of Explorer alone is no longer zero-downtime |
+| No Ploinky command detects a new Box image | Tick `recreate_box` to pick one up; it destroys the Box and keeps the data |
+| A graph not running at the start of the run takes start, update, then start | `var` needs a Box and only `start` accepts the port, and `start` does not fetch existing checkouts |
+| No command reports deployed commits or the Box source | The run proves readiness and the public application, not exact sources or the image-owned AgentLib; it does not satisfy a release gate that needs them |
+| `ploinky destroy` has no ordered drain or database shutdown | A keep-data destroy stops nested services less carefully than the quiesce helper |
+| A keep-data destroy leaves the workspace in place | Repositories, regenerated state, enabled agent selections and the publication journal stay |
+| A keep-data destroy keeps the dedicated tunnel and DNS record | The kept journal names that tunnel and the next start must reach it. The hostname answers with a tunnel error until then. Only `delete_data` removes the publication |
+| Neither destroy mode removes the Box image, and there is no capacity admission | Disk use on the shared host is not managed |
+| The unrelated-resource check compares container IDs and names only | Volumes and images of other workspaces are not compared; the Ploinky workspace identity is the protection |
+| The host lock is taken per mutating command | `status` and `echo` take none, and another operation can run between commands; the concurrency group still serializes the workflows |
+| The bootstrap fast-forwards the mounted Ploinky checkout | New CLI code runs against a running Box. If Ploinky then refuses that Box, the status error names the recovery |
+| With no running graph, the first start uses the kept Cloudflare values | A rotated API or connector token, or a tunnel deleted outside these workflows, fails that start after its health wait, because no command stores a value before a Box exists. A replaced tunnel fails early. Recover with `delete_data`, or with the first pair of workflows |
+| Redirect origins come from the saved variable | An origin held only in the UserPersisto policy store is not merged |
+
+Moving between the two pairs:
+
+| Move | Route |
+| --- | --- |
+| A Box from `deploy-explorer-qa.yml` to these workflows | `destroy-explorer-qa-ploinky.yml` with `delete_data` unchecked, then `deploy-explorer-qa-ploinky.yml` |
+| A keep-data destroy from `destroy-explorer-qa.yml` | Its parked state is refused here. Dispatch `deploy-explorer-qa.yml` first, then take the route above |
+| A Box from these workflows to `deploy-explorer-qa.yml` | That deploy refuses this Box, and also refuses kept repositories with no Box, so a keep-data destroy from these workflows does not help. Dispatch `destroy-explorer-qa.yml` with `delete_data` unchecked, then `deploy-explorer-qa.yml`. This route has not been exercised |
 
 ## Destroying QA
 

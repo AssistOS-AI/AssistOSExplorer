@@ -1,0 +1,402 @@
+name: Destroy Explorer QA Box (Ploinky commands)
+
+# The same target as destroy-explorer-qa.yml, driven through `ploinky destroy`, with the differences listed in
+# docs/deploy-explorer-qa.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      delete_data:
+        description: 'Also delete the QA data (.data, workspace documents, encryption identity). Unchecked keeps them for the next deploy.'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: deploy-explorer-qa
+  cancel-in-progress: false
+
+env:
+  SSH_USER: 'admin'
+  SSH_HOST: '45.136.70.141'
+  SSH_ED25519_FINGERPRINT: 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'
+  WORKSPACE: 'explorerQaWorkspace'
+  DELETE_DATA: ${{ inputs.delete_data }}
+  ROUTER_PORT: '8097'
+  PUBLIC_HOST: 'explorer-qa.axiologic.dev'
+  CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'
+  CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: '091c4096-d1c8-4dbc-bb12-0c6357431d96'
+  SOUL_GATEWAY_WORKSPACE: 'soulGateway'
+  SOUL_GATEWAY_ROUTER_PORT: '8080'
+
+jobs:
+  destroy:
+    name: Destroy Explorer QA through Ploinky commands
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the workflow tests
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up the test runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Test these workflows
+        run: node --test tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs
+
+      - name: Validate GitHub configuration
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_KEY:-}" ]; then
+            echo "::error::Missing required repository secret EXPLORER_QA_SSH_KEY"
+            exit 1
+          fi
+          if [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
+            echo "::error::EXPLORER_QA_SSH_USER and EXPLORER_QA_SSH_HOST must be configured"
+            exit 1
+          fi
+          if [ "$SSH_HOST" != '45.136.70.141' ] || [ "$SSH_USER" != 'admin' ] ||
+            [ "$WORKSPACE" != 'explorerQaWorkspace' ]; then
+            echo "::error::Explorer QA destroy target is not the pinned admin@45.136.70.141/explorerQaWorkspace identity"
+            exit 1
+          fi
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::Missing required repository secret EXPLORER_QA_CLOUDFLARE_API_TOKEN"
+            exit 1
+          fi
+          if [[ "$CLOUDFLARE_API_TOKEN" == cfk_* ]]; then
+            echo "::error::EXPLORER_QA_CLOUDFLARE_API_TOKEN is a Global API Key; Ploinky requires a scoped Account or User API Token used as a Bearer token"
+            exit 1
+          fi
+          if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ ]] ||
+            [[ ! "$CLOUDFLARE_ZONE_ID" =~ ^[a-f0-9]{32}$ ]]; then
+            echo "::error::Explorer QA Cloudflare account or zone variables are missing or malformed"
+            exit 1
+          fi
+          if [[ ! "$CLOUDFLARE_TUNNEL_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$ ]]; then
+            echo "::error::Explorer QA managed Cloudflare tunnel name is malformed"
+            exit 1
+          fi
+          case "${WORKSPACE:-}" in
+            ''|.|..|*[!A-Za-z0-9._-]*)
+              echo "::error::Invalid workspace name '${WORKSPACE:-}' (allowed: A-Za-z0-9._-)"
+              exit 1
+              ;;
+          esac
+          if [ "$WORKSPACE" = "$SOUL_GATEWAY_WORKSPACE" ]; then
+            echo "::error::Refusing to destroy the production Soul Gateway workspace"
+            exit 1
+          fi
+          case "${DELETE_DATA:-}" in
+            true|false) ;;
+            *)
+              echo "::error::delete_data must be true or false"
+              exit 1
+              ;;
+          esac
+          if [ "$PUBLIC_HOST" != 'explorer-qa.axiologic.dev' ] ||
+            [ "$CLOUDFLARE_TUNNEL_NAME" != 'explorer-qa' ] ||
+            [ "$ROUTER_PORT" != '8097' ]; then
+            echo "::error::Explorer QA destroy publication identity is not pinned"
+            exit 1
+          fi
+          if [ "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" != '091c4096-d1c8-4dbc-bb12-0c6357431d96' ]; then
+            echo "::error::The protected shared Cloudflare tunnel identity is not pinned"
+            exit 1
+          fi
+          HOST_KEY_CANDIDATE="$RUNNER_TEMP/explorer_qa_known_hosts"
+          ssh-keyscan -T 10 -t ed25519 "$SSH_HOST" > "$HOST_KEY_CANDIDATE"
+          HOST_KEY_FINGERPRINT="$({ ssh-keygen -lf "$HOST_KEY_CANDIDATE" -E sha256 || true; } | awk '{print $2}' | sort -u)"
+          if [ "$HOST_KEY_FINGERPRINT" != "$SSH_ED25519_FINGERPRINT" ]; then
+            echo "::error::Explorer QA ED25519 host fingerprint did not match the pinned identity"
+            exit 1
+          fi
+          chmod 600 "$HOST_KEY_CANDIDATE"
+          echo "Validated the pinned Explorer QA SSH host identity."
+
+      - name: Prepare SSH key
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          install -m 600 "$RUNNER_TEMP/explorer_qa_known_hosts" ~/.ssh/explorer_qa_known_hosts
+
+      - name: Destroy the Box through Ploinky commands
+        run: |
+          set -euo pipefail
+          umask 077
+          SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "${SSH_USER}@${SSH_HOST}")
+          LOCK=/home/admin/.qa-deployment-operation.lock
+          WORK_DIR="/home/admin/$WORKSPACE"
+          PLOINKY_BIN=/home/admin/.qa-deployment-tools/ploinky/bin/ploinky
+
+          PREPARE_LOG="$RUNNER_TEMP/explorer-qa-destroy-prepare.log"
+          "${SSH[@]}" "flock -n -E 75 --close '$LOCK' bash -s" <<'REMOTE' | tee "$PREPARE_LOG"
+          set -euo pipefail
+          if [ "$(id -un)" != 'admin' ] || [ "$HOME" != '/home/admin' ]; then
+            echo '[qa] ERROR: the remote identity is not the pinned admin account.'
+            exit 1
+          fi
+          WORK_DIR=/home/admin/explorerQaWorkspace
+          if [ -L "$WORK_DIR" ] || { [ -e "$WORK_DIR" ] && [ ! -d "$WORK_DIR" ]; }; then
+            echo "[qa] ERROR: the workspace path is not a real directory: $WORK_DIR"
+            exit 1
+          fi
+          # The older workflows park the router access policy and an install marker here, and only they
+          # restore them. Running over that state would silently lose the policy.
+          STATE_DIR=/home/admin/.qa-deployment-state
+          if [ -e "$STATE_DIR" ] && [ -n "$(ls -A "$STATE_DIR")" ]; then
+            echo "[qa] ERROR: $STATE_DIR holds state from deploy-explorer-qa.yml. Dispatch that workflow to finish it first."
+            exit 1
+          fi
+          if [ ! -e "$WORK_DIR" ] || [ -z "$(ls -A "$WORK_DIR")" ]; then
+            echo '[qa] The workspace is already absent or empty.'
+            printf 'QA_NODE_HOME=absent\n'
+            exit 0
+          fi
+          case "$(uname -m)" in
+            x86_64) QA_NODE_ARCH=x64 ;;
+            aarch64|arm64) QA_NODE_ARCH=arm64 ;;
+            *) echo '[qa] ERROR: unsupported architecture.'; exit 1 ;;
+          esac
+          QA_NODE_HOME="/home/admin/.qa-deployment-tools/node-v24.19.0-linux-$QA_NODE_ARCH"
+          # Neither destroy removes this Node, and every deploy installs it.
+          if [ -L "$QA_NODE_HOME/bin/node" ] || [ "$("$QA_NODE_HOME/bin/node" --version 2>/dev/null)" != 'v24.19.0' ]; then
+            echo "[qa] ERROR: the pinned Node is missing at $QA_NODE_HOME. Install it as docs/deploy-explorer-qa.md describes."
+            exit 1
+          fi
+          # Ploinky cannot install itself, so this bootstrap is the one Git use on the host. The checkout lies
+          # outside the workspace: a Box mounts it read-only and cannot write its hooks or configuration.
+          PLOINKY_URL=https://github.com/AssistOS-AI/ploinky.git
+          CHECKOUT=/home/admin/.qa-deployment-tools/ploinky
+          BRANCH="$(git ls-remote --symref "$PLOINKY_URL" HEAD | awk '$1 == "ref:" && $3 == "HEAD" { sub("refs/heads/", "", $2); print $2 }')"
+          [[ "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]
+          if [ -L "$CHECKOUT" ]; then
+            echo "[qa] ERROR: the Ploinky checkout path must not be a symlink: $CHECKOUT"
+            exit 1
+          fi
+          if [ ! -e "$CHECKOUT" ]; then
+            git clone --quiet --branch "$BRANCH" "$PLOINKY_URL" "$CHECKOUT"
+          fi
+          if [ "$(git -C "$CHECKOUT" remote get-url origin)" != "$PLOINKY_URL" ]; then
+            echo "[qa] ERROR: unexpected Ploinky checkout origin."
+            exit 1
+          fi
+          git -C "$CHECKOUT" fetch --quiet origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+          git -C "$CHECKOUT" checkout --quiet "$BRANCH"
+          git -C "$CHECKOUT" merge --quiet --ff-only "origin/$BRANCH"
+          echo "[qa] Ploinky $(git -C "$CHECKOUT" rev-parse --short HEAD) on $BRANCH."
+          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME"
+          REMOTE
+          QA_NODE_HOME="$(sed -n 's/^QA_NODE_HOME=//p' "$PREPARE_LOG" | tail -n 1)"
+          if [ "$QA_NODE_HOME" = absent ]; then
+            echo '[destroy-qa] No workspace data exists on the host.'
+            exit 0
+          fi
+          if [[ ! "$QA_NODE_HOME" =~ ^/home/admin/\.qa-deployment-tools/node-v24\.19\.0-linux-(x64|arm64)$ ]]; then
+            echo "::error::The host did not report the pinned Node."
+            exit 1
+          fi
+
+          REMOTE_ENV="cd '$WORK_DIR' && export PATH='$QA_NODE_HOME/bin':\"\$PATH\" PLOINKY_WORKSPACE_ROOT='$WORK_DIR'"
+          # Every argument below is a fixed word. A secret only ever reaches a command through ssh stdin.
+          ploinky_locked() {
+            local status=0
+            "${SSH[@]}" "$REMOTE_ENV && exec flock -n -E 75 --close '$LOCK' '$PLOINKY_BIN' $*" || status=$?
+            if [ "$status" -eq 75 ]; then
+              echo "::error::Another Explorer QA operation holds the host lock."
+            fi
+            return "$status"
+          }
+          unrelated_containers() {
+            "${SSH[@]}" "set -o pipefail; podman ps -a --format '{{.ID}} {{.Names}}' | { grep -v ' ploinky-box-explorerqaworkspace-7a31ab7775eb$' || true; } | sort"
+          }
+          soul_healthy() {
+            "${SSH[@]}" "curl -sf 'http://127.0.0.1:${SOUL_GATEWAY_ROUTER_PORT}/base-agent-additional-server/soul-gateway/7000/healthz/' >/dev/null"
+          }
+
+          SOUL_UP_BEFORE=0
+          if soul_healthy; then SOUL_UP_BEFORE=1; fi
+          UNRELATED_BEFORE="$(unrelated_containers)"
+          case "$DELETE_DATA" in
+            true) ploinky_locked destroy --delete-data --confirm-workspace "$WORK_DIR" ;;
+            false) ploinky_locked destroy ;;
+            *) echo "::error::delete_data must be true or false"; exit 1 ;;
+          esac
+          if [ "$SOUL_UP_BEFORE" = 1 ] && ! soul_healthy; then
+            echo "::error::Protected Soul Gateway became unhealthy during the teardown."
+            exit 1
+          fi
+          if [ "$UNRELATED_BEFORE" != "$(unrelated_containers)" ]; then
+            echo "::error::An unrelated host container changed during the teardown."
+            exit 1
+          fi
+          echo "[destroy-qa] Teardown finished (delete_data=$DELETE_DATA)."
+
+      - name: Delete the dedicated Cloudflare publication
+        if: success() && inputs.delete_data
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          echo "Removing only the exact dedicated Explorer QA Cloudflare publication..."
+          node --input-type=module <<'NODE'
+          const accountId = String(process.env.CLOUDFLARE_ACCOUNT_ID || '');
+          const zoneId = String(process.env.CLOUDFLARE_ZONE_ID || '');
+          const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || '');
+          const publicHost = String(process.env.PUBLIC_HOST || '');
+          const apiToken = String(process.env.CLOUDFLARE_API_TOKEN || '');
+          const protectedTunnelId = String(process.env.CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID || '');
+          if (!/^[a-f0-9]{32}$/.test(accountId) || !/^[a-f0-9]{32}$/.test(zoneId)
+            || tunnelName !== 'explorer-qa' || publicHost !== 'explorer-qa.axiologic.dev'
+            || !apiToken) {
+            throw new Error('exact Explorer QA Cloudflare identity is not pinned');
+          }
+          if (protectedTunnelId !== '091c4096-d1c8-4dbc-bb12-0c6357431d96') {
+            throw new Error('the protected shared Cloudflare tunnel identity is not pinned');
+          }
+          const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+          const request = async (pathname, { method = 'GET' } = {}) => {
+            const response = await fetch(`https://api.cloudflare.com/client/v4${pathname}`, {
+              method,
+              headers: { Authorization: `Bearer ${apiToken}` },
+              redirect: 'error',
+            });
+            const payload = await response.json().catch(() => null);
+            if (!response.ok || payload?.success !== true) {
+              const codes = Array.isArray(payload?.errors)
+                ? payload.errors.map((entry) => String(entry?.code || 'unknown')).join(',')
+                : 'unknown';
+              throw new Error(`Cloudflare ${method} ${pathname.split('?')[0]} failed (${codes})`);
+            }
+            return payload.result;
+          };
+          const listTunnels = () => request(
+            `/accounts/${accountId}/cfd_tunnel?${new URLSearchParams({
+              name: tunnelName,
+              is_deleted: 'false',
+              per_page: '100',
+            })}`,
+          );
+          const listRecords = () => request(
+            `/zones/${zoneId}/dns_records?${new URLSearchParams({
+              name: publicHost,
+              per_page: '100',
+            })}`,
+          );
+          const tunnels = await listTunnels();
+          const records = await listRecords();
+          if (!Array.isArray(tunnels) || tunnels.length > 1
+            || !Array.isArray(records) || records.length > 1) {
+            throw new Error('Explorer QA Cloudflare inventory is ambiguous');
+          }
+          if (tunnels.length === 0) {
+            if (records.length !== 0) {
+              throw new Error('Explorer QA DNS exists without its exact dedicated tunnel');
+            }
+            process.stdout.write('Exact Explorer QA Cloudflare publication was already absent.\n');
+            process.exit(0);
+          }
+          const tunnel = tunnels[0];
+          const tunnelId = String(tunnel?.id || '');
+          if (!/^[a-f0-9-]{36}$/.test(tunnelId) || tunnel?.name !== tunnelName
+            || tunnel?.deleted_at != null
+            || (tunnel?.account_tag != null && tunnel.account_tag !== accountId)) {
+            throw new Error('Explorer QA dedicated tunnel identity changed');
+          }
+          if (tunnelId === protectedTunnelId) {
+            throw new Error('refusing to delete the protected shared Cloudflare tunnel');
+          }
+          const detail = await request(`/accounts/${accountId}/cfd_tunnel/${tunnelId}`);
+          const configuration = await request(
+            `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`,
+          );
+          if (detail?.id !== tunnelId || detail?.name !== tunnelName || detail?.deleted_at != null) {
+            throw new Error('Explorer QA dedicated tunnel detail changed');
+          }
+          const ingress = configuration?.config?.ingress ?? configuration?.ingress ?? [];
+          if (!Array.isArray(ingress) || ingress.length > 2) {
+            throw new Error('Explorer QA dedicated tunnel contains shared or ambiguous ingress');
+          }
+          if (ingress.length) {
+            const catchAll = ingress.at(-1);
+            if (catchAll?.hostname != null || catchAll?.service !== 'http_status:404') {
+              throw new Error('Explorer QA dedicated tunnel lacks its terminal 404 ingress');
+            }
+          }
+          if (ingress.length === 2
+            && (ingress[0]?.hostname !== publicHost
+              || ingress[0]?.service !== 'http://127.0.0.1:8080')) {
+            throw new Error('Explorer QA dedicated tunnel contains an unrelated route');
+          }
+          const expectedTarget = `${tunnelId}.cfargotunnel.com`;
+          if (records.length === 1 && (records[0]?.name !== publicHost
+            || records[0]?.type !== 'CNAME' || records[0]?.content !== expectedTarget
+            || records[0]?.proxied !== true || !/^[a-f0-9]{32}$/.test(String(records[0]?.id || '')))) {
+            throw new Error('Explorer QA DNS points outside the exact dedicated tunnel');
+          }
+          if (records.length === 1) {
+            await request(`/zones/${zoneId}/dns_records/${records[0].id}`, { method: 'DELETE' });
+          }
+          await request(
+            `/accounts/${accountId}/cfd_tunnel/${tunnelId}/connections`,
+            { method: 'DELETE' },
+          );
+          await request(`/accounts/${accountId}/cfd_tunnel/${tunnelId}`, { method: 'DELETE' });
+          for (let attempt = 0; attempt < 15; attempt += 1) {
+            const [remainingTunnels, remainingRecords] = await Promise.all([listTunnels(), listRecords()]);
+            if (Array.isArray(remainingTunnels) && remainingTunnels.length === 0
+              && Array.isArray(remainingRecords) && remainingRecords.length === 0) {
+              process.stdout.write('Exact Explorer QA Cloudflare publication deletion verified.\n');
+              process.exit(0);
+            }
+            await wait(2000);
+          }
+          throw new Error('Explorer QA Cloudflare publication deletion did not verify');
+          NODE
+
+      - name: Create summary
+        if: success()
+        run: |
+          {
+            echo "## Explorer QA Box Destroy (Ploinky commands)"
+            echo ""
+            echo "- Host: \`${SSH_USER}@${SSH_HOST}\`, workspace \`~/${WORKSPACE}\`"
+            if [ "$DELETE_DATA" = 'true' ]; then
+              echo "- Mode: delete data (only an empty \`.ploinky\` and the \`.ploinky-box\` skeleton remain)"
+              echo "- Dedicated Cloudflare route, DNS record and managed tunnel: removed"
+            else
+              echo "- Mode: keep data (the workspace and everything Ploinky regenerates stay for the next deploy)"
+              echo "- Dedicated Cloudflare tunnel and DNS record: kept for the next deploy, which reconciles the same tunnel; the hostname answers with a tunnel error until then"
+            fi
+            echo "- Outer Box: removed when present; the Box image stays"
+            echo "- Public hostname: \`${PUBLIC_HOST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f \
+            ~/.ssh/deploy_key \
+            ~/.ssh/explorer_qa_known_hosts \
+            "$RUNNER_TEMP/explorer-qa-destroy-prepare.log"
