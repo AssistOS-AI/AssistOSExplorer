@@ -645,11 +645,16 @@ test('I10 cleanup requires every exact record/process/ExecID/session absence and
 });
 
 test('I10 browser requests use a fresh launch document, bounded signals and fail closed on aborts', async () => {
-    for (const abortedRequest of [null, 'auth', 'input', 'failure-exit', 'live-list', 'launch-response']) {
+    for (const abortedRequest of [null, 'auth', 'input', 'failure-exit', 'live-list', 'launch-response', 'primary-assertion', 'unknown-primary']) {
         const { target, expected, record, observed, proof } = nativeIdentityFixture();
         const calls = [], signals = new Map(); let recordReads = 0;
         const owner = { name: 'owned-name' }; record.agentStartup.profile.label = owner.name;
         const sessionId = 's'.repeat(32), launch = 'l'.repeat(32);
+        const privateText = `private-message-ticket-${launch}`;
+        const injectedPrimary = Object.assign(new Error(privateText), { name: 'AssertionError', code: 'ERR_ASSERTION',
+            evidence: { message: privateText, headers: { authorization: privateText }, nativeTerminal: { argv: privateText } } });
+        if (abortedRequest === 'unknown-primary') { injectedPrimary.name = privateText; injectedPrimary.code = privateText; }
+        observed.environment = privateText; proof.argv = privateText;
         const runtime = { config: { rw: target.containerId, workspace: '/task', victim: expected.victim,
             explorer: { storageState: '/unit/private-state' } },
         auth: { origin: 'http://127.0.0.1', principalHash: 'unit-principal' },
@@ -695,7 +700,10 @@ test('I10 browser requests use a fresh launch document, bounded signals and fail
             records: async () => recordReads++ === 0 ? [] : [{ name: 'owned-receipt.json', record }],
             assertNativeReceipt: (value, selected, ...args) => assertNativeReceipt(value, JSON.parse(JSON.stringify(selected)), ...args),
             assertAdminToken: () => 'unit-principal', assertNoMarker() {},
-            processProof: async () => proof, assertNativeObservation,
+            processProof: async () => proof, assertNativeObservation(...args) {
+                assertNativeObservation(...args);
+                if (['primary-assertion', 'unknown-primary'].includes(abortedRequest)) throw injectedPrimary;
+            },
             cleanupProof: async () => ({ recordAbsent: true, processesAbsent: true, execAbsent: true, stubEmpty: true }),
             assertNativeCleanup, delay: async () => {}, quote: value => JSON.stringify(value), sha256,
             AbortSignal: { timeout(ms) { assert.equal(ms, 30000); const controller = new AbortController();
@@ -720,6 +728,20 @@ test('I10 browser requests use a fresh launch document, bounded signals and fail
             assert.equal((await operation).exitCode, 0);
             assert.equal(pages, 2); assert.equal(launchPage, 2); assert.equal(waiterPage, launchPage);
         } else await assert.rejects(operation, error => {
+            if (['primary-assertion', 'unknown-primary'].includes(abortedRequest)) {
+                assert.equal(error, injectedPrimary, 'Successful cleanup must preserve the original primary failure');
+                const diagnostic = error.evidence.nativeTerminal;
+                assert.equal(diagnostic.primaryStage, 'native-assertions');
+                assert.equal(diagnostic.primaryFailureCode, abortedRequest === 'primary-assertion' ? 'ERR_ASSERTION' : 'UNKNOWN_FAILURE');
+                assert.equal(diagnostic.cleanupConfirmed, true); assert.equal(diagnostic.created, true);
+                assert.equal(diagnostic.sessionRequestObserved, true); assert.equal(diagnostic.sessionResponseStatus, 201);
+                assert.equal(diagnostic.observed.homeMatches, true); assert.equal(diagnostic.native.receiptAncestor, true);
+                assert.ok(!JSON.stringify(error.evidence).includes(privateText));
+                assert.ok(!JSON.stringify(error.evidence).includes(launch));
+                assert.ok(calls.includes('failure-exit')); assert.ok(calls.includes('live-list'));
+                assert.equal(runtime.retainedNativeTerminal, undefined);
+                return true;
+            }
             if (abortedRequest === 'auth' || abortedRequest === 'input') assert.equal(error.name, 'TimeoutError', `${abortedRequest}: ${error.message}`);
             else {
                 assert.equal(error.code, 'CONTROLLER_CLEANUP_FAILED');
@@ -734,7 +756,7 @@ test('I10 browser requests use a fresh launch document, bounded signals and fail
             }
             return true;
         });
-        if (abortedRequest !== null && abortedRequest !== 'launch-response') assert.ok(calls.includes(abortedRequest));
+        if (!['launch-response', 'primary-assertion', 'unknown-primary', null].includes(abortedRequest)) assert.ok(calls.includes(abortedRequest));
         if (abortedRequest === 'input') assert.ok(calls.includes('failure-exit'), 'Input abort must attempt normal owned-session exit');
         assert.deepEqual(calls.slice(-2), ['close-context', 'close-browser']);
     }
