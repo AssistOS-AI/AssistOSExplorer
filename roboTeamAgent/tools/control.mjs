@@ -202,6 +202,7 @@ async function main() {
         for (const robot of result.robots || []) {
             for (const repo of robot.repositories || []) {
                 repo.skillsets = (repo.skillsets || []).filter(set => set.enabled !== false);
+                repo.skills = (repo.skills || []).filter(skill => skill.enabled !== false);
             }
         }
     }

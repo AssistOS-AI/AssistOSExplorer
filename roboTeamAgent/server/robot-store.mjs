@@ -199,11 +199,16 @@ export class RobotStore {
         return robots.sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
     }
 
-    async list() {
-        return this._allRobots();
+    // Reads return the live repository view when one is attached; withRobot keeps working on the saved record.
+    async _view(robots) {
+        return this.hydrate ? this.hydrate(robots) : robots;
     }
 
-    async get(robotId) {
+    async list() {
+        return this._view(await this._allRobots());
+    }
+
+    async _saved(robotId) {
         try {
             return await this._readMetadata(robotId);
         } catch (error) {
@@ -212,9 +217,15 @@ export class RobotStore {
         }
     }
 
+    async get(robotId) {
+        const robot = await this._saved(robotId);
+        return robot && (await this._view([robot]))[0];
+    }
+
     async getByName(name) {
         const normalizedName = normalizeName(name);
-        return (await this._allRobots()).find((robot) => robot.name === normalizedName) || null;
+        const robot = (await this._allRobots()).find((item) => item.name === normalizedName);
+        return robot ? (await this._view([robot]))[0] : null;
     }
 
     async ensureDefaultRobot() {
@@ -313,7 +324,7 @@ export class RobotStore {
     async withRobot(robotId, operation) {
         await this.initialize();
         return withRegistryMutation(this.robotsDir, async () => {
-            const robot = await this.get(robotId);
+            const robot = await this._saved(robotId);
             if (!robot) throw new Error('robot not found');
             return operation(robot, async (updated) => {
                 await this._writeMetadata(this.robotPath(robotId), { ...updated, updatedAt: new Date().toISOString() });

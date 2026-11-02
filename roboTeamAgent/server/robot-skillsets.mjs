@@ -4,14 +4,13 @@ import { discoverTaskSkills } from './skill-descriptor.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector } from './copilot-skillset.mjs';
-import { skillsetMDParser } from './skillsetMDParser.mjs';
+import { availableRepositories, availableSkillsets, skillIsActive } from './copilot-skillset.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { SkillPolicies, selectorNames } from './skill-policy.mjs';
 import { LiveSkillCatalog } from './live-skill-catalog.mjs';
 import { readSkillTree, catalogDigest, hashValue } from './skill-files.mjs';
 
-const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const CATALOG_TTL_MS = 2000;
 const UUID = /^[a-f0-9-]{36}$/;
 const invalid = (message) => Object.assign(new Error(message), { statusCode: 400 });
 
@@ -34,11 +33,20 @@ async function treeDigest(root) {
     return hash.digest('hex');
 }
 
-export async function readSkillsetDefinitions(directory, skills) {
-    let source;
-    try { source = await fs.readFile(path.join(directory, 'skillsets.md'), 'utf8'); }
-    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-    return skillsetMDParser(source, skills);
+async function skillDescription(skillPath) {
+    const text = await fs.readFile(path.join(skillPath, 'SKILL.md'), 'utf8').catch(() => '');
+    return text.match(/^description:\s*(.+)$/m)?.[1]?.trim().replace(/^(['"])(.*)\1$/, '$2') || '';
+}
+
+// The live view of a saved robot: everything except the saved names comes from the Ploinky repository listing.
+async function repositoryView(entry, repositories) {
+    const repo = repositories.find(item => item.name === entry.name);
+    const generation = hashValue(entry.name).slice(0, 32).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+    if (!repo || repo.origin === 'remote' || !Array.isArray(repo.skills)) return { name: entry.name, source: '', generation, unavailable: true, active: entry.skills, skills: [], definitions: [] };
+    const source = path.join(repo.source, 'skills');
+    const skills = await Promise.all(repo.skills.map(async name => ({ name, directory: name,
+        description: entry.skills.includes(name) ? await skillDescription(path.join(source, name)) : '' })));
+    return { name: entry.name, source, generation, active: entry.skills, skills, definitions: repo.skillsets || [] };
 }
 
 export class RobotSkillsets {
@@ -47,6 +55,7 @@ export class RobotSkillsets {
         this.repositoriesClient = repositoriesClient;
         this.policies = new SkillPolicies(this);
         this.live = new LiveSkillCatalog(this);
+        robotStore.hydrate = robots => this.hydrate(robots);
     }
 
     async discover(directory) {
@@ -55,101 +64,92 @@ export class RobotSkillsets {
         catch { throw invalid('skillset must contain valid, uniquely named Anthropic SKILL.md descriptors'); }
     }
 
+    async repositories({ fresh = false } = {}) {
+        if (!fresh && this.listing?.expires > Date.now()) return this.listing.repositories;
+        const repositories = (this.repositoriesClient || await repositoryClient()).listRepositories();
+        const listing = { repositories, expires: Date.now() + CATALOG_TTL_MS };
+        this.listing = listing;
+        repositories.catch(() => { if (this.listing === listing) this.listing = null; });
+        return repositories;
+    }
+
+    async hydrate(robots) {
+        const repositories = robots.some(robot => robot.repositories?.length) ? await this.repositories().catch(() => []) : [];
+        return Promise.all(robots.map(async ({ disabledSkillsets, ...robot }) => ({ ...robot, // eslint-disable-line no-unused-vars
+            skillsets: await Promise.all((robot.repositories || []).filter(entry => entry.name !== 'copilot').map(entry => repositoryView(entry, repositories))) })));
+    }
+
+    // A repository is named by Ploinky. The source may be that name, its URL or its checkout path.
+    async resolveRepository(source) {
+        const client = this.repositoriesClient || await repositoryClient();
+        const bareUrl = value => String(value || '').replace(/\.git$/, '');
+        const matches = entry => entry.name === source || entry.source === source || bareUrl(entry.url) === bareUrl(source);
+        let repo = (await client.listRepositories()).find(matches);
+        if ((!repo || repo.origin === 'remote') && !path.isAbsolute(source)) {
+            let url;
+            try { url = new URL(repo?.url || source); } catch { throw invalid('repository is unavailable'); }
+            if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) throw invalid('use a credential-free HTTPS Git URL');
+            repo = (await client.prepareRepository({ url: url.href, name: repo?.name || path.basename(url.pathname).replace(/\.git$/, '') })).find(matches);
+        }
+        if (!repo || repo.origin === 'remote') throw invalid('repository is unavailable');
+        return repo;
+    }
+
     async add(robotId, input) {
-        const name = input.name === undefined ? `repo-${crypto.randomUUID()}` : selectionNames([input.name])[0];
-        if (!NAME.test(name) || name === 'copilot') throw invalid('invalid or reserved skill source name');
-        const description = String(input.description || '').trim();
-        const requestedSource = String(input.source || '').trim();
-        const source = requestedSource;
-        if (!source || source.length > 2048) throw invalid('invalid skillset source or description');
-        const local = await this.skillRoot(await this.resolveLiveRepository(source));
+        const source = String(input.source || '').trim();
+        if (!source || source.length > 2048) throw invalid('invalid repository source');
+        const repo = await this.resolveRepository(source);
+        if (repo.name === 'copilot') throw invalid('copilot is a reserved skill source');
+        if (!['skills', 'mixed'].includes(repo.kind) || !repo.skills?.length) throw invalid('repository has no skills');
+        const local = await fs.realpath(repo.source);
         const workspace = await fs.realpath(this.workspaceRoot);
         if (!local.startsWith(`${workspace}${path.sep}`)) throw invalid('skillset source must be inside the workspace');
         const dataRoot = await fs.realpath(this.robotStore.dataDir);
         if (local === dataRoot || local.startsWith(`${dataRoot}${path.sep}`) || dataRoot.startsWith(`${local}${path.sep}`)) throw invalid('skillset source cannot contain robot private data');
-        await readSkillTree(local, { skipDependencies: true });
-        const records = await this.discover(local);
-        if (!records.length || records.length > 100) throw invalid('skillset must contain 1 to 100 skills');
-        const skills = records.map(skill => ({ name: skill.name, description: skill.description,
-            directory: path.relative(local, skill.directoryPath) }));
-        const definitions = await readSkillsetDefinitions(local, skills);
+        const sets = repo.skillsets || [];
+        const skills = sets.length ? [...new Set(sets.flatMap(set => set.skills))] : repo.skills;
+        this.listing = null;
         return this.robotStore.withRobot(robotId, async (robot, save) => {
-            const available = robot.skillsets || [];
-            if (available.some(set => set.name === name || set.source === local)) throw invalid('repository already exists');
-            if (available.length >= 32) throw invalid('robot allows at most 32 skillsets');
-            const record = { name, description, source: local, revision: null, digest: null,
-                generation: crypto.randomUUID(), skills, definitions };
-            const candidate = { ...robot, skillsets: [...available, record] };
-            const repositories = availableRepositories(candidate);
-            for (const repository of repositories) resolveSkillsetSelector(repositories, availableSkillsets(candidate), repository.name);
-            await save(candidate);
+            const available = robot.repositories || [];
+            if (available.some(entry => entry.name === repo.name)) throw invalid('repository already exists');
+            if (available.length >= 32) throw invalid('robot allows at most 32 repositories');
+            const record = { name: repo.name, skills: [...skills].sort() };
+            await save({ ...robot, repositories: [...available, record] });
             return record;
         });
     }
 
-    async resolveLiveRepository(source) {
-        if (path.isAbsolute(source)) {
-            if (path.dirname(source) === path.join(this.workspaceRoot, '.ploinky', 'repos')) {
-                const client = this.repositoriesClient || await repositoryClient();
-                const repo = (await client.listRepositories()).find(entry => entry.name === path.basename(source));
-                if (!repo || repo.origin === 'remote') throw invalid('repository is unavailable');
-                return fs.realpath(repo.source);
-            }
-            return fs.realpath(source);
-        }
-        const url = new URL(source);
-        if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) throw invalid('use a credential-free HTTPS Git URL');
-        const client = this.repositoriesClient || await repositoryClient();
-        let repositories = await client.listRepositories();
-        const matches = entry => entry.url?.replace(/\.git$/, '') === source.replace(/\.git$/, '');
-        let repo = repositories.find(matches);
-        if (!repo || repo.origin === 'remote') {
-            repositories = await client.prepareRepository({ url: source, name: path.basename(url.pathname).replace(/\.git$/, '') });
-            repo = repositories.find(matches);
-        }
-        if (!repo || repo.origin === 'remote') throw invalid('repository is unavailable');
-        return fs.realpath(repo.source);
-    }
-
-    // A mixed repository (agents plus a root skills/ folder, as Ploinky classifies it) contributes only that
-    // folder: the rest holds agent instructions and agents' own skills. Other sources are read whole, as before;
-    // without the Ploinky repository client the classification is unknown and the source is read whole.
-    async skillRoot(local) {
-        let repositories = [];
-        try { repositories = await (this.repositoriesClient || await repositoryClient()).listRepositories(); }
-        catch { return local; }
-        let mixed = false;
-        for (const entry of repositories || []) {
-            if (entry?.kind !== 'mixed' || !entry.source || entry.origin === 'remote') continue;
-            if (await fs.realpath(entry.source).catch(() => null) === local) { mixed = true; break; }
-        }
-        if (!mixed) return local;
-        const root = path.join(local, 'skills');
-        const stat = await fs.lstat(root).catch(() => null);
-        if (!stat?.isDirectory()) throw invalid('mixed repository has no skills/ folder');
-        return root;
-    }
-
+    // repo/set for a repository that declares skillsets, repo/skill for one that does not.
     async setSkillsetEnabled(robotId, { id, enabled }) {
-        if (typeof id !== 'string' || typeof enabled !== 'boolean') throw invalid('skillset id and boolean enabled are required');
+        if (typeof id !== 'string' || typeof enabled !== 'boolean' || !id.includes('/')) throw invalid('selection id and boolean enabled are required');
+        const separator = id.indexOf('/');
+        const repoName = id.slice(0, separator), member = id.slice(separator + 1);
+        const [view] = await this.hydrate([await this.robotStore.withRobot(robotId, async robot => robot)]);
+        const repo = availableRepositories(view).find(item => item.name === repoName);
+        if (!repo) throw invalid('repository not found');
+        let members;
+        if (repo.definitions?.length) {
+            members = repo.definitions.find(set => set.name === member)?.skills;
+            if (!members) throw invalid('skillset not found; use skillset controls for this repository');
+        } else {
+            if (!repo.skills.some(skill => skill.name === member)) throw invalid('skill not found');
+            members = [member];
+        }
         return this.robotStore.withRobot(robotId, async (robot, save) => {
-            if (!availableSkillsets(robot).some(set => set.id === id)) throw invalid('skillset not found');
-            const disabled = new Set(robot.disabledSkillsets || []);
-            if (enabled) disabled.delete(id);
-            else disabled.add(id);
-            await save({ ...robot, disabledSkillsets: [...disabled] });
+            const saved = robot.repositories || [];
+            const entry = saved.find(item => item.name === repoName);
+            const current = new Set(entry ? entry.skills : repo.skills.map(skill => skill.name));
+            for (const name of members) { if (enabled) current.add(name); else current.delete(name); }
+            const record = { name: repoName, skills: [...current].sort() };
+            await save({ ...robot, repositories: entry ? saved.map(item => item === entry ? record : item) : [...saved, record] });
         });
     }
 
     async remove(robotId, name) {
         if (name === 'copilot') throw invalid('copilot is a reserved skill source');
-        selectionNames([name]);
         return this.robotStore.withRobot(robotId, async (robot, save) => {
-            const record = (robot.skillsets || []).find((set) => set.name === name);
-            if (!record) throw invalid('skillset not found');
-            await save({ ...robot, skillsets: robot.skillsets.filter((set) => set.name !== name) });
-            // Live policies fail if they still require this source; pinned catalogs keep their captured bytes.
-            if (UUID.test(record.generation)) await fs.rm(path.join(this.robotStore.robotPath(robotId), 'skillsets', record.generation), { recursive: true, force: true });
+            if (!(robot.repositories || []).some(entry => entry.name === name)) throw invalid('repository not found');
+            await save({ ...robot, repositories: robot.repositories.filter(entry => entry.name !== name) });
         });
     }
 
@@ -201,6 +201,7 @@ export class RobotSkillsets {
         if (!entry) throw invalid('skill identity is unavailable');
         if (entry.required || entry.readOnly) throw invalid('Required skills are read-only');
         let policy = structuredClone(inventory.policy);
+        delete policy.importedSkillNames;
         policy.excludedSkills = policy.excludedSkills.filter((name) => name !== identity);
         if (!enabled) policy.excludedSkills.push(identity);
         else {
@@ -210,13 +211,12 @@ export class RobotSkillsets {
             if ((entry.state === 'conflict' || entry.state === 'shadowed' || (!policy.selectors.skillSets.includes(entry.source) && !policy.selectors.skillSets.includes(entry.sourceId)))
                 && !policy.selectors.skills.includes(identity)) policy.selectors.skills.push(identity);
             if (!entry.builtin && entry.source !== 'copilot') {
-                const set = robot.skillsets.find((item) => item.name === entry.source);
+                const set = (robot.skillsets || []).find((item) => item.name === entry.source);
                 if (set) policy.bindings[entry.source] = { source: set.source, generation: set.generation };
             }
         }
         // Resolve the proposed selection before committing it. Discovery and hashing
         // stay outside the registry lock; update rechecks the version under the lock.
-        policy = await this.policies.rememberNameExclusions(robot, policy, cwd, inventory.skills);
         const next = await this.inventory(robot, { policy, cwd });
         const saved = await this.policies.update(robot.id, policyId, policyVersion, () => policy);
         return { ...next, policy: saved, policyVersion: saved.policyVersion };
@@ -232,10 +232,9 @@ export class RobotSkillsets {
 }
 
 export function publicSkillsets(robot, { includeDisabled = false } = {}) {
-    const disabled = new Set(robot.disabledSkillsets || []);
-    return availableSkillsets(robot).filter(set => includeDisabled || !disabled.has(set.id)).map(({ id, name, description, repository, skills }) => ({
+    return availableSkillsets(robot).filter(set => includeDisabled || set.enabled).map(({ id, name, description, repository, skills, enabled, partial }) => ({
         id, name, description, repositoryId: repository.name, builtin: Boolean(repository.builtin),
-        ...(includeDisabled ? { enabled: !disabled.has(id) } : {}),
+        ...(includeDisabled ? { enabled, partial } : {}),
         skills: skills.map(skill => skill.name),
     }));
 }
@@ -244,7 +243,7 @@ export function publicRepositories(robot) {
     const sets = publicSkillsets(robot, { includeDisabled: true });
     return availableRepositories(robot).map(repo => ({
         id: repo.name, source: repo.source, builtin: Boolean(repo.builtin),
-        skills: repo.skills.map(({ name, description }) => ({ name, description, id: `${repo.name}/${name}` })),
+        skills: repo.skills.map(({ name, description }) => ({ name, description, id: `${repo.name}/${name}`, enabled: skillIsActive(repo, name) })),
         skillsets: sets.filter(set => set.repositoryId === repo.name),
     }));
 }
@@ -252,6 +251,6 @@ export function publicRepositories(robot) {
 export function individualSkillRepositories(robot) {
     return availableRepositories(robot).filter(repo => !(repo.definitions || []).length).map(repo => ({
         id: repo.name,
-        skills: repo.skills.map(({ name, description }) => ({ name, description })),
+        skills: repo.skills.filter(skill => skillIsActive(repo, skill.name)).map(({ name, description }) => ({ name, description })),
     }));
 }

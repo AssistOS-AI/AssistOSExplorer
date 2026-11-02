@@ -9,6 +9,7 @@ import { RobotSkillsets } from '../server/robot-skillsets.mjs';
 import { recoverPathCatalog } from '../server/legacy-skill-catalog.mjs';
 import { createRobotSkillCatalog } from '../copilot/src/lib/skills/robotSkillCatalog.mjs';
 import { discoverTaskSkills } from '../server/skill-descriptor.mjs';
+import { listedRepository } from './helpers/repository-listing.mjs';
 
 async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'legacy-skill-recovery-')));
@@ -16,14 +17,20 @@ async function fixture(t) {
     const store = new RobotStore({ dataDir: path.join(root, 'private') });
     const robot = await store.create({ name: 'Analyst' });
     const workspaceRoot = path.join(root, 'workspace');
-    const source = path.join(workspaceRoot, 'skills');
+    const previousRoot = process.env.PLOINKY_WORKSPACE_ROOT;
+    process.env.PLOINKY_WORKSPACE_ROOT = workspaceRoot;
+    t.after(() => { if (previousRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = previousRoot; });
+    const repository = path.join(workspaceRoot, 'reports');
+    const source = path.join(repository, 'skills');
     for (const name of ['read-report', 'write-report']) {
         await fs.mkdir(path.join(source, name), { recursive: true });
         await fs.writeFile(path.join(source, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} procedure\n---\nRead helper.txt.\n`);
         await fs.writeFile(path.join(source, name, 'helper.txt'), 'original');
     }
-    const service = new RobotSkillsets({ robotStore: store, workspaceRoot, discoverSkills: discoverTaskSkills });
-    const repo = await service.add(robot.id, { source });
+    const service = new RobotSkillsets({ robotStore: store, workspaceRoot, discoverSkills: discoverTaskSkills,
+        repositoriesClient: { listRepositories: async () => [listedRepository('reports', repository)] } });
+    // A selection saved before repositories were named by Ploinky.
+    const repo = { name: 'reports', generation: crypto.randomUUID(), digest: 'legacy', skills: ['read-report', 'write-report'].map(name => ({ name, directory: name })) };
     const generationDirectory = path.join(store.robotPath(robot.id), 'skillsets', repo.generation);
     const paths = [];
     for (const skill of repo.skills) {

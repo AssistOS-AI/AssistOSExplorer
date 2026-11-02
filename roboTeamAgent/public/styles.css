@@ -466,6 +466,7 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .skillset-toggle { display: inline-flex; flex-shrink: 0; align-items: center; gap: 8px; color: var(--text-soft); font-size: var(--font-sm); cursor: pointer; }
 .skillset-toggle input { width: 18px; min-height: 0; height: 18px; margin: 0; padding: 0; accent-color: var(--accent); box-shadow: none; }
 .skillset-toggle:has(input:disabled) { cursor: default; }
+.individual-skill { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); }
 .skills-manager-dialog .skillset-description { margin: 6px 0 0; color: var(--text-soft); font-size: var(--font-sm); white-space: pre-line; }
 .skills-manager-dialog .skill-members { display: flex; flex-wrap: wrap; gap: 4px 10px; list-style: none; margin: 0; padding: 0; color: var(--text-soft); font-size: var(--font-xs); }
 .skills-manager-dialog .skill-members li { overflow-wrap: anywhere; }

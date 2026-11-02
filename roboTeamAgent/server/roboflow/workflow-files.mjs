@@ -66,26 +66,16 @@ export class WorkflowFiles {
             try { data = JSON.parse(content); } catch { throw new Error('invalid JSON'); }
             if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('the file must hold a JSON object');
             if (data.id !== undefined && data.id !== entry.id) throw new Error(`id "${data.id}" does not match the file name`);
-            entry.graph = normalizeWorkflow({ ...data, tasks: this.resolveTasks(data.tasks, root) }, { id: entry.id });
+            entry.graph = normalizeWorkflow(data, { id: entry.id });
         } catch (error) {
             entry.error = error.message;
         }
         return entry;
     }
-    resolveTasks(tasks, root) {
-        if (!Array.isArray(tasks)) return tasks;
-        return tasks.map(task => !task || !Array.isArray(task.skillsets) ? task : { ...task, skillsets: task.skillsets.map(id =>
-            typeof id !== 'string' || id.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(id) ? id : path.join(root, id)) });
-    }
-    relativeSkillset(id, root) {
-        if (!path.isAbsolute(id)) return id;
-        const relative = path.relative(root, id);
-        return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? toPosix(relative) : id;
-    }
     serialize(graph, root) {
         const derived = workflowDefaultObjective({ ...graph, defaultObjective: '' });
         const definition = { schemaVersion: graph.schemaVersion, name: graph.name, description: graph.description, entryTaskId: graph.entryTaskId,
-            tasks: graph.tasks.map(task => ({ ...task, skillsets: task.skillsets.map(id => this.relativeSkillset(id, root)) })),
+            tasks: graph.tasks,
             edges: graph.edges, layout: graph.layout,
             ...(graph.defaultObjective && graph.defaultObjective !== derived ? { defaultObjective: graph.defaultObjective } : {}) };
         return `${JSON.stringify(definition, null, 2)}\n`;

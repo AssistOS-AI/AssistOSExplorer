@@ -330,7 +330,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         const repositories = new Map();
         for (const set of catalog) {
             const key = set.repositoryId || set.repositoryName || 'Skillsets';
-            if (!repositories.has(key)) repositories.set(key, { key, name: set.repositoryName || key, source: set.repositoryId || '', entries: [] });
+            if (!repositories.has(key)) repositories.set(key, { key, name: set.repositoryName || key, source: '', entries: [] });
             repositories.get(key).entries.push(set);
         }
         const known = new Set(catalog.map(set => set.id));
@@ -410,7 +410,8 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
             if (repo) {
                 const heading = node('div', null, 'skills-repository-heading');
                 const titles = node('div');
-                titles.append(node('h3', repo.name), node('p', repo.source, 'muted skills-repository-source'));
+                titles.append(node('h3', repo.name));
+                if (repo.source) titles.append(node('p', repo.source, 'muted skills-repository-source'));
                 heading.append(titles);
                 detail.append(heading);
                 const sets = repo.entries.filter(set => set.kind === 'skillset');

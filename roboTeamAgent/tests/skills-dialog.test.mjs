@@ -7,17 +7,9 @@ const source = await readFile(new URL('../public/skills-dialog.js', import.meta.
 const manager = source.slice(source.indexOf('export function openSkillsDialog'), source.indexOf('const CODING_AGENT_LABELS'));
 const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
 
-test('repository labels use readable names without exposing paths in the sidebar', () => {
+test('repository labels are the Ploinky repository names', () => {
     assert.equal(skillRepositoryLabel({ builtin: true }), 'Built-in copilot');
-    assert.equal(skillRepositoryLabel({ id: 'r', source: '/workspace/my-skills/' }), 'my-skills');
-    assert.equal(skillRepositoryLabel({ id: 'r', source: 'https://github.com/team/my-skills.git' }), 'my-skills');
-    assert.equal(skillRepositoryLabel({ id: 'r', source: '' }), 'r');
-    assert.equal(skillRepositoryLabel({ id: 'r', source: '/workspace/Project/skills' }, [
-        { name: 'Project', source: '/workspace/Project', kind: 'mixed' },
-    ]), 'Project');
-    assert.equal(skillRepositoryLabel({ id: 'r', source: '/workspace/.ploinky/repos/Project' }, [
-        { name: 'Project', source: '/workspace/Project', kind: 'skills' },
-    ]), 'Project');
+    assert.equal(skillRepositoryLabel({ id: 'ScriptaHubAgent', source: '/workspace/.ploinky/repos/ScriptaHubAgent/skills' }), 'ScriptaHubAgent');
 });
 
 test('the manager keeps a discreet add action in the navigation heading and opens a separate dialog', () => {
@@ -43,11 +35,15 @@ test('skill names stay inside their skillset, with only ungrouped skills listed 
     assert.match(manager, /item\.append\(skillList\(set\.skills, `Skills included in/);
     assert.match(manager, /new Set\(sets\.flatMap\(set => set\.skills\)\)/);
     assert.match(manager, /repo\.skills\.filter\(skill => !grouped\.has\(skill\.name\)\)/);
-    assert.match(manager, /sets\.length \? 'Other skills' : 'Skills'/);
+    assert.match(manager, /node\('h4', 'Other skills'/);
+    assert.match(manager, /node\('h4', 'Skills'/);
     assert.doesNotMatch(manager, /skill\.description/);
     assert.match(manager, /input\.setAttribute\('role', 'switch'\)/);
     assert.match(manager, /input\.disabled = busy \|\| !canAdmin/);
-    assert.match(manager, /mutate\('PATCH', \{ id: set\.id, enabled: input\.checked \}\)/);
+    assert.match(manager, /mutate\('PATCH', \{ id, enabled: input\.checked \}\)/);
+    assert.match(manager, /toggle\(set\.id, set\.name \|\| set\.id, set\.enabled !== false, set\.partial === true\)/);
+    assert.match(manager, /toggle\(skill\.id, skill\.name, skill\.enabled !== false\)/);
+    assert.match(manager, /input\.indeterminate = partial/);
 });
 
 test('administrator mutations retain the existing API and built-in sources cannot be removed', () => {

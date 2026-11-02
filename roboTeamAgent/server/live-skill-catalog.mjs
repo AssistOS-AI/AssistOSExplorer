@@ -3,8 +3,8 @@ import { projectDirectories } from './project-storage.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector, WEBCHAT_WORKFLOW_SKILLS } from './copilot-skillset.mjs';
-import { inspectSkill, explicitSkillDirectories } from './workspace-skill-source.mjs';
+import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector, skillIsActive, WEBCHAT_WORKFLOW_SKILLS } from './copilot-skillset.mjs';
+import { inspectSkill } from './workspace-skill-source.mjs';
 import { atomicJson, inside, hashValue, readSkillTree, treeFingerprint, writeSkillTree, catalogDigest, skillError } from './skill-files.mjs';
 
 async function owner() {
@@ -27,21 +27,10 @@ function identitySource(identity) {
 }
 
 function suppression(policy, entry) {
-    const nativeName = entry.error && entry.unprovenIdentity ? null : entry.name;
-    if ((!entry.unprovenIdentity && policy.excludedSkills.includes(entry.identity)) || policy.excludedNames.includes(nativeName)
+    if (policy.excludedSkills.includes(entry.identity) || policy.excludedNames.includes(entry.name)
         || policy.excludedSources.includes(entry.source) || policy.excludedSources.includes(entry.sourceId)) return 'disabled';
     if (Object.hasOwn(policy.overrides, entry.source)) return 'shadowed';
     return null;
-}
-
-function importedRecord(set, policy, root, directoryPath) {
-    const directory = path.relative(root, directoryPath).split(path.sep).join('/');
-    const proof = policy.importedSkillNames?.[set.name];
-    const remembered = proof?.source === set.source && proof.generation === set.generation
-        && Object.hasOwn(proof.names, directory) ? proof.names[directory] : null;
-    const registered = set.skills.find(skill => path.resolve(root, skill.directory) === directoryPath);
-    return { name: remembered || registered?.name || path.basename(directoryPath), directoryPath,
-        unprovenIdentity: !remembered && !registered };
 }
 
 export class LiveSkillCatalog {
@@ -66,9 +55,7 @@ export class LiveSkillCatalog {
         const definitions = new Map(skillsets.map(set => [set.id, set]));
         const selectorSource = selector => {
             const { repository } = resolveSkillsetSelector(repositories, skillsets, selector);
-            if (repository) return repository.name;
-            const generated = /^(.+)-set-[1-9][0-9]*$/.exec(selector);
-            return generated && Object.hasOwn(policy.bindings, generated[1]) ? generated[1] : selector;
+            return repository ? repository.name : selector.split('/')[0];
         };
         const wholeSources = new Set();
         const memberSkills = new Set();
@@ -80,35 +67,33 @@ export class LiveSkillCatalog {
             } else wholeSources.add(selector);
         }
         const selected = entry => entry.explicit || wholeSources.has(entry.source) || wholeSources.has(entry.sourceId)
-            || (!entry.unprovenIdentity && memberSkills.has(entry.identity));
+            || memberSkills.has(entry.identity);
         for (const set of repositories) {
             const needed = !suppression(policy, { source: set.name, sourceId: set.name })
                 && (wholeSources.has(set.name) || [...memberSkills, ...policy.selectors.skills].some((identity) =>
                     identity.startsWith(`${set.name}/`) && !suppression(policy, identitySource(identity))));
             const binding = policy.bindings[set.name];
-            if (!set.builtin && needed && (!binding || binding.unavailable || binding.generation !== set.generation || binding.source !== set.source)) {
+            if (!set.builtin && needed && (!binding || binding.unavailable || set.unavailable)) {
                 throw skillError(`Original source for ${set.name} is unavailable; explicit reselection is required`);
             }
             try {
-                const source = set.builtin ? set.source : await this.service.resolveLiveRepository(set.source);
-                const local = !set.builtin && path.isAbsolute(source);
-                const root = await fs.realpath(set.builtin ? copilotSkillsRoot : local ? source
-                    : path.join(this.service.robotStore.robotPath(robot.id), 'skillsets', set.generation));
-                if (local && (root !== path.resolve(source) || !inside(scope, root) || inside(this.service.robotStore.dataDir, root))) {
+                if (set.unavailable) throw skillError(`repository ${set.name} is unavailable`);
+                const root = await fs.realpath(set.builtin ? copilotSkillsRoot : set.source);
+                if (!set.builtin && (!inside(scope, root) || inside(this.service.robotStore.dataDir, root))) {
                     if (needed) throw skillError(`local skillset ${set.name} is outside launch scope or its original path changed`);
                     continue;
                 }
-                const records = local ? (await explicitSkillDirectories(root)).map(directoryPath => importedRecord(set, policy, root, directoryPath)) : set.skills.map((skill) => ({ ...skill, directoryPath: path.resolve(root, skill.directory) }));
+                const records = set.skills.filter(skill => skillIsActive(set, skill.name))
+                    .map(skill => ({ ...skill, directoryPath: path.resolve(root, skill.directory) }));
                 for (const record of records) {
                     const sourcePath = await fs.realpath(record.directoryPath);
                     if (!inside(root, sourcePath)) throw skillError('invalid stored skill path');
                     const base = { identity: `${set.name}/${record.name}`, source: set.name, sourceId: set.name,
-                        sourcePath, owner: root, name: record.name, description: record.description, type: 'anthropic', builtin: Boolean(set.builtin),
-                        ...(record.unprovenIdentity ? { unprovenIdentity: true } : {}) };
+                        sourcePath, owner: root, name: record.name, description: record.description, type: 'anthropic', builtin: Boolean(set.builtin) };
                     try {
                         const inspected = await inspectSkill(sourcePath, (dir) => this.service.discover(dir));
-                        const { unprovenIdentity, ...proven } = base;
-                        entries.push({ ...proven, ...inspected, identity: `${set.name}/${inspected.name}`, state: 'available' });
+                        if (inspected.name !== record.name) throw skillError(`SKILL.md name ${inspected.name} differs from its folder ${record.name}`);
+                        entries.push({ ...base, ...inspected, state: 'available' });
                     }
                     catch (error) { entries.push({ ...base, state: 'invalid', error: error.message }); }
                 }
@@ -123,19 +108,19 @@ export class LiveSkillCatalog {
             if (!definitions.has(set) && !repositories.some((entry) => entry.name === set)) throw skillError(`skillset is not available for this robot: ${set}`);
         }
         for (const identity of policy.selectors.skills) {
-            const entry = entries.find((item) => item.identity === identity && !item.unprovenIdentity);
+            const entry = entries.find((item) => item.identity === identity);
             if (suppression(policy, entry || identitySource(identity))) continue;
             if (!entry) throw skillError(`explicitly selected skill is unavailable: ${identity}`);
             if (entry.state === 'invalid') throw skillError(`explicitly selected skill ${identity}: ${entry.error}`);
         }
         for (const identity of memberSkills) {
-            const entry = entries.find(item => item.identity === identity && !item.unprovenIdentity);
+            const entry = entries.find(item => item.identity === identity);
             if (suppression(policy, entry || identitySource(identity))) continue;
             if (!entry) throw skillError(`selected skill is unavailable: ${identity}`);
             if (entry.state === 'invalid') throw skillError(`selected skill ${identity}: ${entry.error}`);
         }
         for (const entry of entries) {
-            entry.explicit = !entry.unprovenIdentity && policy.selectors.skills.includes(entry.identity);
+            entry.explicit = policy.selectors.skills.includes(entry.identity);
             entry.enabled = false;
             const suppressed = suppression(policy, entry);
             if (suppressed) {

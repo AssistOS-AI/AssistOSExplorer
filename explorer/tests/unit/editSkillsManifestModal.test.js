@@ -1,3 +1,4 @@
+import { readRepositorySkillCatalog } from '../../../../ploinky/cli/utils/skillRepositorySource.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -301,7 +302,7 @@ async function modalAgainstHandlers(t, { name, origin, typedUrl = '' }) {
     const registered = { name, url: CONFIGURED_URL, source: origin === 'remote' ? CONFIGURED_URL : source, origin, kind: 'skills', branch: 'main' };
     const calls = { prepare: [], add: [] };
     const client = {
-        async listRepositories() { return [{ ...registered }]; },
+        async listRepositories() { return [registered.origin === 'remote' ? { ...registered, skills: [], skillsets: [] } : { ...registered, ...readRepositorySkillCatalog(registered.source) }]; },
         async prepareRepository(input) {
             calls.prepare.push({ ...input });
             if (input.url !== CONFIGURED_URL && input.name !== registered.name) throw new Error('unknown source');

@@ -55,7 +55,7 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
         }
         const skillsets = new RobotSkillsets({ robotStore: store,
             workspaceRoot, alaCommand: process.env.ACHILLES_ALA_COMMAND });
-        return { robot, store, skillsets, releaseUsage };
+        return { robot: await store.get(robot.id), store, skillsets, releaseUsage };
     } catch (error) {
         await releaseUsage?.();
         throw error;

@@ -9,7 +9,7 @@
       "name": "Execute objective",
       "prompt": "Execute the supplied objective and return the final result.",
       "skillsets": [
-        "builtin:copilot/copilot"
+        "copilot/copilot"
       ],
       "supportedExecutionTypes": [
         "terminal",

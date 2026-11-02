@@ -2,21 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hasRecommendedRepository } from '../public/skills-dialog.js';
 
-const recommendation = { source: '/workspace/DocumentationSkills', url: 'https://github.com/AssistOS-AI/DocumentationSkills.git' };
-
-test('recommendations recognize existing local and Git registrations on the current robot', () => {
-    for (const source of [recommendation.source, `${recommendation.source}/`, recommendation.url,
-        'https://github.com/AssistOS-AI/DocumentationSkills', 'https://github.com/AssistOS-AI/DocumentationSkills.git/']) {
-        assert.equal(hasRecommendedRepository({ repositories: [{ source }] }, recommendation), true, source);
-    }
-    assert.equal(hasRecommendedRepository({ repositories: [{ source: 'https://github.com/another-owner/DocumentationSkills.git' }] }, recommendation), false);
+test('a recommendation is recognized by its Ploinky repository name', () => {
+    const recommendation = { name: 'DocumentationSkills', source: '/workspace/DocumentationSkills', kind: 'skills' };
+    assert.equal(hasRecommendedRepository({ repositories: [{ id: 'DocumentationSkills' }] }, recommendation), true);
+    assert.equal(hasRecommendedRepository({ repositories: [{ id: 'Other', source: recommendation.source }] }, recommendation), false);
+    assert.equal(hasRecommendedRepository({ repositories: [{ id: 'DocumentationSkills', builtin: true }] }, recommendation), false);
     assert.equal(hasRecommendedRepository({ repositories: [] }, recommendation), false);
-});
-
-test('a mixed recommendation is recognized by the skills/ folder robots register for it', () => {
-    const mixed = { kind: 'mixed', source: '/workspace/AchillesCLI', url: 'https://github.com/AssistOS-AI/AchillesCLI.git' };
-    assert.equal(hasRecommendedRepository({ repositories: [{ source: '/workspace/AchillesCLI/skills' }] }, mixed), true);
-    assert.equal(hasRecommendedRepository({ repositories: [{ source: '/workspace/AchillesCLI/skills' }] }, { ...mixed, kind: 'skills' }), false);
 });
 
 test('recommendations include workspace-only repositories with no remote and mixed repositories', async () => {

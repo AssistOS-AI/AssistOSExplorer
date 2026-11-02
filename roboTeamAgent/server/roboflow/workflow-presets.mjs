@@ -3,7 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WORKFLOW_ID_PATTERN } from './constants.mjs';
 import { normalizeWorkflow } from './graph.mjs';
-import { canonicalSkill } from './skill-matching.mjs';
 
 // Built-in workflow types ship as JSON files in roboTeamAgent/default-flows/; the file name
 // is the workflow id. They are read-only: operators view them and copy them with Save as.
@@ -13,7 +12,7 @@ import { canonicalSkill } from './skill-matching.mjs';
 // generic workflow whose execution mode is chosen at launch.
 export const PRESETS_DIR = fileURLToPath(new URL('../../default-flows/', import.meta.url));
 
-const repositoryOf = id => typeof id === 'string' && !id.includes(':') && /^[A-Za-z0-9][\w.-]*\/[^/]/.test(id) ? id.split('/')[0] : null;
+const repositoryOf = id => typeof id === 'string' && !id.includes(':') && /^[A-Za-z0-9][\w.-]*\/[^/]/.test(id) && !id.startsWith('copilot/') ? id.split('/')[0] : null;
 
 export function readPresets(directory = PRESETS_DIR) {
     return fsSync.readdirSync(directory).filter(name => name.endsWith('.json')).sort().map(name => {
@@ -29,9 +28,8 @@ export function readPresets(directory = PRESETS_DIR) {
 export function presetGraph(preset, roots = {}) {
     const tasks = (preset.data.tasks || []).map(task => !Array.isArray(task.skillsets) ? task : { ...task, skillsets: task.skillsets.map(id => {
         const repository = repositoryOf(id);
-        if (!repository) return id;
-        if (!roots[repository]) throw new Error(`repository ${repository} is not available`);
-        return canonicalSkill(roots[repository], id.slice(repository.length + 1));
+        if (repository && !roots[repository]) throw new Error(`repository ${repository} is not available`);
+        return id;
     }) });
     return normalizeWorkflow({ ...preset.data, tasks }, { id: preset.id, builtin: preset.data.kind === 'default' });
 }

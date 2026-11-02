@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { installRepositoryLinks, removeRepositoryLinks } from '../../../../ploinky/cli/utils/repositoryInstall.mjs';
+import { readRepositorySkillCatalog } from '../../../../ploinky/cli/utils/skillRepositorySource.js';
 import { remoteUrlOrEmpty as ploinkyRemoteUrlOrEmpty } from '../../../../ploinky/cli/server/authHandlers/marketplaceProjection.js';
 import { createToolHandlers } from '../../utils/server/tool-handlers.mjs';
 import { displayRemoteUrl } from '../../utils/server/skills-manifest-projection.mjs';
@@ -71,7 +72,7 @@ function createClient(fx) {
         ['empty-skills', { name: 'empty-skills', url: 'https://git.example/acme/empty-skills.git', source: fx.emptyRepo, origin: 'workspace', kind: 'skills' }],
     ]);
     const client = {
-        async listRepositories() { calls.list += 1; return [...registry.values()].map((repo) => ({ ...repo })); },
+        async listRepositories() { calls.list += 1; return [...registry.values()].map((repo) => (repo.origin === 'remote' ? { ...repo, skills: [], skillsets: [] } : { ...repo, ...readRepositorySkillCatalog(repo.source) })); },
         async prepareRepository(input) {
             calls.prepare.push({ ...input });
             if (input.name === 'cred-skills') {

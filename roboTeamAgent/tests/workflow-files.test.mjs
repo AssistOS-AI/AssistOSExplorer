@@ -73,7 +73,7 @@ test('workflow files in <repository>/flows and <repository>/<folder>/flows are l
     const { root, registry, write } = await workspace(t);
     await registry.create(definition('Internal one'));
     await write('Repo/flows/add-topics.json', definition('Add topics', { tasks: [{ id: 'one', name: 'One', prompt: 'Do one.',
-        executionType: 'terminal', skillsets: ['Repo/skills/add-topic', 'builtin:copilot/bash'] }] }));
+        executionType: 'terminal', skillsets: ['Repo/add-topic', 'copilot/bash'] }] }));
     await write('Repo/agent/flows/deep-flow.json', definition('Deep flow'));
     // Hidden, dependency and deeper folders are not scanned.
     await write('.data/flows/hidden.json', definition('Hidden'));
@@ -87,7 +87,7 @@ test('workflow files in <repository>/flows and <repository>/<folder>/flows are l
     // Save keeps an internal workflow as a JSON file in the agent's data folder, never in the database.
     assert.equal(JSON.parse(await fs.readFile(path.join(root, '.data/roboflow/flows/internal-one.json'), 'utf8')).name, 'Internal one');
     // Workspace-relative skill paths resolve against the workspace; other identities stay unchanged.
-    assert.deepEqual(file.tasks[0].skillsets, [path.join(root, 'Repo/skills/add-topic'), 'builtin:copilot/bash']);
+    assert.deepEqual(file.tasks[0].skillsets, ['Repo/add-topic', 'copilot/bash']);
     assert.equal(file.readOnly, false);
     assert.equal((await registry.get('deep-flow')).name, 'Deep flow');
     assert.deepEqual(registry.fileErrors, []);
@@ -96,16 +96,16 @@ test('workflow files in <repository>/flows and <repository>/<folder>/flows are l
 test('a workflow can be created as a file, edited with a stale-save check and deleted', async t => {
     const { root, registry } = await workspace(t);
     await fs.mkdir(path.join(root, 'Repo', 'agent'), { recursive: true });
-    const skill = path.join(root, 'Repo/skills/add-topic');
+    const skill = 'Repo/add-topic';
     const created = await registry.create(definition('Add topics', { tasks: [{ id: 'one', name: 'One', prompt: 'Do one.',
-        executionType: 'terminal', skillsets: [skill, '/elsewhere/skill'] }] }), { location: 'Repo/agent' });
+        executionType: 'terminal', skillsets: [skill, 'Other/My set'] }] }), { location: 'Repo/agent' });
     assert.deepEqual(created.source, { kind: 'file', path: 'Repo/agent/flows/add-topics.json' });
     const file = path.join(root, 'Repo/agent/flows/add-topics.json');
     const saved = JSON.parse(await fs.readFile(file, 'utf8'));
-    // Only the definition is stored; skills inside the workspace are stored relative to it.
+    // Only the definition is stored; skills keep their repository-based identity.
     assert.deepEqual(Object.keys(saved), ['schemaVersion', 'name', 'description', 'entryTaskId', 'tasks', 'edges', 'layout']);
-    assert.deepEqual(saved.tasks[0].skillsets, ['Repo/skills/add-topic', '/elsewhere/skill']);
-    assert.deepEqual(created.tasks[0].skillsets, [skill, '/elsewhere/skill']);
+    assert.deepEqual(saved.tasks[0].skillsets, [skill, 'Other/My set']);
+    assert.deepEqual(created.tasks[0].skillsets, [skill, 'Other/My set']);
     // A flows folder location means the same folder; the id stays unique across both sources.
     await assert.rejects(registry.create(definition('Add topics'), { location: 'Repo/flows' }), { statusCode: 409 });
     await assert.rejects(registry.create(definition('Add topics')), { statusCode: 409 });

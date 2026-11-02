@@ -1,5 +1,4 @@
 import { readRepositorySkillState, ownsRepositorySkillLink, saveRepositorySkillState } from './repository-skill-state.mjs';
-import { skillsetMDParser } from './skillsetMDParser.mjs';
 import { createReadStream } from 'node:fs';
 import { EXPORT_LEDGER, skillTreeDigest } from './managed-skill-exports.mjs';
 import { execFileSync, spawn } from 'node:child_process';
@@ -272,6 +271,8 @@ export function createToolHandlers({
   let repositoryClientPromise;
   const resolvedRepositoryNames = new Map();
   const resolvedRepositorySources = new Map();
+  // Ploinky lists each repository's skills and skillsets; Explorer never scans them itself.
+  const resolvedRepositoryCatalogs = new Map();
   async function repositoriesClient() {
     if (suppliedRepositoryClient) return suppliedRepositoryClient;
     repositoryClientPromise ||= (async () => {
@@ -449,30 +450,8 @@ export function createToolHandlers({
     if (!repository || repository.origin === 'remote') throw skillsManifestError('Repository source is unavailable');
     resolvedRepositoryNames.set(entry.name, repository.name);
     resolvedRepositorySources.set(entry.name, repository.source);
+    resolvedRepositoryCatalogs.set(entry.name, { skills: repository.skills || [], skillsets: repository.skillsets || [] });
     return repository.source;
-  }
-
-  async function listRepoSkillNames(repoPath) {
-    const skillsRoot = path.join(repoPath, 'skills');
-    const stat = await fs.stat(skillsRoot).catch(() => null);
-    if (!stat?.isDirectory?.()) return [];
-    const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
-    const skills = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-      const skillFile = path.join(skillsRoot, entry.name, 'SKILL.md');
-      const skillStat = await fs.stat(skillFile).catch(() => null);
-      if (skillStat?.isFile?.()) skills.push(entry.name);
-    }
-    return skills.sort((left, right) => left.localeCompare(right));
-  }
-
-  async function readRepoSkillsets(repoPath, availableSkills) {
-    const source = await fs.readFile(path.join(repoPath, 'skillsets.md'), 'utf8').catch(error => {
-      if (error.code === 'ENOENT') return '';
-      throw error;
-    });
-    return skillsetMDParser(source, availableSkills);
   }
 
   async function syncSkillsManifestInstall(folder, entries) {
@@ -573,13 +552,14 @@ export function createToolHandlers({
         }
       }
       const exists = await repoPathExists(repoPath);
-      const availableSkills = exists ? await listRepoSkillNames(repoPath) : [];
+      const catalog = exists && !cacheError ? resolvedRepositoryCatalogs.get(entry.name) : null;
+      const availableSkills = catalog?.skills || [];
       repositories.push({
         ...entry,
         repoPath,
         cached: exists,
         availableSkills,
-        skillsets: exists ? (await readRepoSkillsets(repoPath, availableSkills)).map(set => ({ ...set, enabled: set.skills.every(skill => entry.skills.includes(skill)), partial: set.skills.some(skill => entry.skills.includes(skill)) && !set.skills.every(skill => entry.skills.includes(skill)) })) : [],
+        skillsets: (catalog?.skillsets || []).map(set => ({ ...set, enabled: set.skills.every(skill => entry.skills.includes(skill)), partial: set.skills.some(skill => entry.skills.includes(skill)) && !set.skills.every(skill => entry.skills.includes(skill)) })),
         cacheError
       });
     }
@@ -1327,8 +1307,8 @@ export function createToolHandlers({
     const name = resolved.name;
     const branch = normalizeBranch(data.branch) || resolved.branch || null;
     const repoEntry = { url, name, branch, skills: [] };
-    const repoPath = await ensureSkillRepoCached(repoEntry);
-    const availableSkills = await listRepoSkillNames(repoPath);
+    await ensureSkillRepoCached(repoEntry);
+    const { skills: availableSkills, skillsets: definitions } = resolvedRepositoryCatalogs.get(name);
     if (!availableSkills.length) {
       return {
         ok: true,
@@ -1339,7 +1319,6 @@ export function createToolHandlers({
     }
 
     const entries = await readSkillsManifestEntries(manifestPath);
-    const definitions = await readRepoSkillsets(repoPath, availableSkills);
     const nextEntry = { ...repoEntry, skills: definitions.length ? [...new Set(definitions.flatMap(set => set.skills))] : availableSkills };
     const existingIndex = entries.findIndex((entry) => entry.name === name || entry.url === url);
     const nextEntries = existingIndex === -1
@@ -1367,9 +1346,8 @@ export function createToolHandlers({
     if (index === -1) {
       throw skillsManifestError(`Repository '${repoName}' is not in the skills manifest.`);
     }
-    const repoPath = await ensureSkillRepoCached(entries[index]);
-    const availableSkills = await listRepoSkillNames(repoPath);
-    const definitions = await readRepoSkillsets(repoPath, availableSkills);
+    await ensureSkillRepoCached(entries[index]);
+    const { skills: availableSkills, skillsets: definitions } = resolvedRepositoryCatalogs.get(entries[index].name);
     let members;
     if (definitions.length) {
       if (data.skill !== undefined) throw skillsManifestError('Use skillset controls for this repository.');

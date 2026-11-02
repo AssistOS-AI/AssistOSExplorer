@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { RobotSkillsets } from '../../server/robot-skillsets.mjs';
 import { registerProject } from '../../server/project-storage.mjs';
+import { listedRepository } from './repository-listing.mjs';
 
 // A fixture for the conversation skill tests that runs on any platform. The real
 // RobotStore reads /proc to identify processes, so these tests use an in-memory
@@ -25,8 +26,14 @@ export function createStubRobotStore({ dataDir, robots }) {
     return {
         dataDir,
         robotPath: (id) => path.join(dataDir, 'robots', id),
-        get: async (id) => structuredClone(robots.get(id) || null),
-        list: async () => [...robots.values()].map((robot) => structuredClone(robot)),
+        async get(id) {
+            const robot = structuredClone(robots.get(id) || null);
+            return robot && this.hydrate ? (await this.hydrate([robot]))[0] : robot;
+        },
+        async list() {
+            const list = [...robots.values()].map((robot) => structuredClone(robot));
+            return this.hydrate ? this.hydrate(list) : list;
+        },
         withRobot(id, operation) {
             const run = chain.then(async () => {
                 const robot = structuredClone(robots.get(id) || null);
@@ -56,15 +63,15 @@ export async function createConversationSkillsFixture({ descriptions = {} } = {}
     const documentation = path.join(workspaceRoot, 'DocumentationSkills');
     await writeSkill(path.join(documentation, 'skills'), 'human-report', 'Final report.');
     const repository = path.join(project, 'skills-repo');
-    await writeSkill(repository, 'probe-skill', descriptions['probe-skill'] || 'Probe skill.');
-    await writeSkill(repository, 'second-skill', descriptions['second-skill'] || 'Second skill.');
+    await writeSkill(path.join(repository, 'skills'), 'probe-skill', descriptions['probe-skill'] || 'Probe skill.');
+    await writeSkill(path.join(repository, 'skills'), 'second-skill', descriptions['second-skill'] || 'Second skill.');
     const createdAt = new Date().toISOString();
     const robots = new Map(Object.entries({ [DEFAULT_ROBOT_ID]: 'default', [OTHER_ROBOT_ID]: 'other' })
         .map(([id, name]) => [id, { id, name, skillsets: [], codingAgents: ['codex'], createdAt, updatedAt: createdAt }]));
     const robotStore = createStubRobotStore({ dataDir, robots });
     const skillsets = new RobotSkillsets({ robotStore, workspaceRoot, alaCommand: '/nonexistent/ala.mjs',
-        repositoriesClient: { listRepositories: async () => [{ name: 'DocumentationSkills', source: documentation, origin: 'workspace' }] } });
-    await skillsets.add(DEFAULT_ROBOT_ID, { name: SKILLSET, source: repository });
+        repositoriesClient: { listRepositories: async () => [listedRepository('DocumentationSkills', documentation), listedRepository(SKILLSET, repository)] } });
+    await skillsets.add(DEFAULT_ROBOT_ID, { source: SKILLSET });
     registerProject({ dataDir, workspaceRoot }, project);
     const sessionsDirectory = path.join(project, '.roboteam', 'sessions');
     await fs.mkdir(sessionsDirectory, { recursive: true });

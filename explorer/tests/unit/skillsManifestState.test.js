@@ -1,6 +1,7 @@
 import fsSync from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { installRepositoryLinks, removeRepositoryLinks } from '../../../../ploinky/cli/utils/repositoryInstall.mjs';
+import { readRepositorySkillCatalog } from '../../../../ploinky/cli/utils/skillRepositorySource.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -122,6 +123,10 @@ async function createAchillesCopilotBasicSkillsRepo(rootDir) {
 // restricted projections are covered by skillsManifestProjection.test.js.
 const ADMIN_INVOCATION = { invocation: { sub: 'user:ops-1', actor: { kind: 'user', id: 'user:ops-1', roles: ['admin'] } } };
 
+// What Ploinky's repository listing adds to a local checkout.
+const withCatalog = repo => (repo.origin === 'remote' || !path.isAbsolute(repo.source || '') ? { ...repo, skills: [], skillsets: [] }
+    : (({ warnings, ...catalog }) => ({ ...repo, ...catalog, warnings: [...(repo.warnings || []), ...warnings] }))(readRepositorySkillCatalog(repo.source)));
+
 function createHandlers(workspaceRoot, invalidated = [], instrumentClient = null, invocationContext = {}) {
   const registry = new Map();
   const repositoryClient = {
@@ -143,7 +148,7 @@ function createHandlers(workspaceRoot, invalidated = [], instrumentClient = null
           registry.set(entry.name, { name: entry.name, source, url: source, kind: 'skills', origin: 'workspace' });
         }
       }
-      return [...registry.values()];
+      return [...registry.values()].map(withCatalog);
     },
     async prepareRepository({ name, url }) {
       registry.set(name, { name, source: url, url, kind: 'skills', origin: 'workspace' });

@@ -44,7 +44,8 @@ async function fixture(t) {
     const installOptions = { workspaceRoot: workingDir, resolveRepository: () => repository };
     skillsets.repositoriesClient = {
         listRepositories: async () => [repository,
-            { name: 'DocumentationSkills', source: documentation, origin: 'workspace' }],
+            { name: 'DocumentationSkills', source: documentation, origin: 'workspace', kind: 'skills', skills: ['human-report'], skillsets: [] },
+            { name: 'local-skills', source: path.join(workingDir, 'local-skills'), origin: 'workspace', kind: 'skills', skills: ['local'], skillsets: [] }],
         install: async (input) => installRepositoryLinks(input, installOptions),
         remove: async (paths) => removeRepositoryLinks(paths, installOptions),
     };
@@ -52,11 +53,11 @@ async function fixture(t) {
     const first = await sessionStore.createSession();
     const second = await sessionStore.createSession();
     const source = path.join(workingDir, 'local-skills');
-    const descriptor = path.join(source, 'local/SKILL.md');
+    const descriptor = path.join(source, 'skills/local/SKILL.md');
     await fs.mkdir(path.dirname(descriptor), { recursive: true });
     const writeSkill = (body) => fs.writeFile(descriptor, `---\nname: local\ndescription: Local ${body}\n---\n${body}\n`);
     await writeSkill('original');
-    await skillsets.add(robot.id, { name: 'local-skills', source });
+    await skillsets.add(robot.id, { source: 'local-skills' });
     const registered = await store.get(robot.id);
     for (const session of [first, second]) await skillsets.policies.ensure(registered, session.sessionId, { input: { skills: ['local-skills/local'] } });
     const catalog = createRobotSkillCatalog({ context: { robot, store, skillsets }, sessionStore, workingDir, initialSessionId: first.sessionId });

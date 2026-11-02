@@ -6,7 +6,7 @@ import test from 'node:test';
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
 import { normalizeWorkflow, workflowDefaultObjective, resolveWorkflowObjective } from '../server/roboflow/graph.mjs';
 import { parseRoute } from '../server/roboflow/result-parser.mjs';
-import { coverage, canonicalSkillset, canonicalSkill, matchRobot, robotSelections } from '../server/roboflow/skill-matching.mjs';
+import { coverage, matchRobot, robotSelections } from '../server/roboflow/skill-matching.mjs';
 
 const task = (id, extras = {}) => ({ id, name: id, prompt: `Execute ${id}`, executionType: 'terminal', skillsets: [], ...extras });
 const edge = (sourceTaskId, targetTaskId) => ({ id: `${sourceTaskId}-${targetTaskId}`, sourceTaskId, targetTaskId });
@@ -196,13 +196,13 @@ test('coverage requires all enabled skillsets on one robot and is not persisted'
     const f = await fixture(t);
     const source = '/workspace/skills';
     const repo = { name: 'local', source, skills: [{ name: 'one' }, { name: 'two' }], definitions: [{ name: 'S1', skills: ['one'] }, { name: 'S2', skills: ['two'] }] };
-    f.robots[0].skillsets = [repo]; f.robots[0].disabledSkillsets = ['local-set-2'];
-    f.robots[1].skillsets = [repo]; f.robots[1].disabledSkillsets = ['local-set-1'];
-    const definition = { ...graph(), tasks: [task('a', { skillsets: [canonicalSkillset(source, 'S1'), canonicalSkillset(source, 'S2')] })], edges: [] };
+    f.robots[0].skillsets = [{ ...repo, active: ['one'] }];
+    f.robots[1].skillsets = [{ ...repo, active: ['two'] }];
+    const definition = { ...graph(), tasks: [task('a', { skillsets: ['local/S1', 'local/S2'] })], edges: [] };
     assert.equal(coverage(definition, f.robots).warning, true);
     await f.service.createWorkflow(definition);
     const failed = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' }); assert.equal(failed.status, 'failed');
-    f.robots[1].disabledSkillsets = [];
+    f.robots[1].skillsets = [repo];
     assert.equal((await f.service.listWorkflows()).find(graph => graph.id === 'example').coverage.warning, false);
     assert.ok(!JSON.stringify(await f.service.registry.get('example')).includes('coverage'));
 });
@@ -409,60 +409,50 @@ test('global discovery includes unregistered skill repositories and prepares rem
     await fs.writeFile(path.join(source, 'skillsets.md'), '# Review set\n## Description\nReview changes.\n## Skills\n- review\n');
     const prepared = [];
     const catalog = await discoverWorkflowSkillsets({
-        listRepositories: async () => [{ name: 'skills-repo', source: 'https://example.com/skills.git', origin: 'remote', kind: 'skills' }],
-        prepareRepository: async input => { prepared.push(input); return [{ name: 'skills-repo', source, origin: 'workspace', kind: 'skills' }]; }
+        listRepositories: async () => [{ name: 'skills-repo', source: 'https://example.com/skills.git', origin: 'remote', kind: 'skills', skills: [], skillsets: [] }],
+        prepareRepository: async input => { prepared.push(input); return [{ name: 'skills-repo', source, origin: 'workspace', kind: 'skills', skills: ['review'], skillsets: [{ name: 'Review set', description: 'Review', skills: ['review'] }] }]; }
     });
     assert.equal(prepared.length, 1); assert.deepEqual(catalog.diagnostics, []);
-    assert.ok(catalog.skillsets.some(set => set.id === canonicalSkillset(source, 'Review set')));
-    assert.equal(coverage({ tasks: [task('a', { skillsets: [canonicalSkillset(source, 'Review set')] })] }, f.robots).warning, true);
+    assert.ok(catalog.skillsets.some(set => set.id === 'skills-repo/Review set'));
+    assert.equal(coverage({ tasks: [task('a', { skillsets: ['skills-repo/Review set'] })] }, f.robots).warning, true);
 });
 
-test('workflow skillset discovery reads only skills/ by folder name and never parses SKILL.md', async t => {
+test('workflow skillset discovery uses what Ploinky lists, identified by repository name', async t => {
     const { discoverWorkflowSkillsets } = await import('../server/roboflow/skill-matching.mjs');
-    const f = await fixture(t);
-    const source = path.join(f.root, 'project');
-    const agentSkill = path.join(source, '.agents', 'skills', 'achilles_specs', 'SKILL.md');
-    await fs.mkdir(path.dirname(agentSkill), { recursive: true });
-    await fs.writeFile(agentSkill, '---\nname: achilles_specs\ndescription: Agent instruction.\n---\n');
-    const skill = path.join(source, 'skills', 'review', 'SKILL.md');
-    await fs.mkdir(path.dirname(skill), { recursive: true });
-    // A descriptor with a different declared name must not affect the catalog.
-    await fs.writeFile(skill, '---\nname: Review Extra\ndescription: Review code.\n---\n');
-    const mixedSource = path.join(f.root, 'mixed');
-    await fs.mkdir(path.join(mixedSource, 'skills', 'review'), { recursive: true });
-    await fs.writeFile(path.join(mixedSource, 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: Review code.\n---\n');
     const catalog = await discoverWorkflowSkillsets({
         listRepositories: async () => [
-            { name: 'project', source, origin: 'workspace', kind: 'skills' },
-            { name: 'mixed-repo', source: mixedSource, origin: 'workspace', kind: 'mixed' },
-            { name: 'agent-repo', source, origin: 'workspace', kind: 'agents' },
+            { name: 'project', source: '/workspace/project', origin: 'workspace', kind: 'skills', skills: ['review'], skillsets: [], warnings: [] },
+            { name: 'mixed-repo', source: '/workspace/mixed', origin: 'workspace', kind: 'mixed', skills: ['review'], skillsets: [], warnings: ['Invalid skillsets.md: bad'] },
+            { name: 'sets', source: '/workspace/sets', origin: 'workspace', kind: 'skills', skills: ['x'], skillsets: [{ name: 'My set', description: 'Set', skills: ['x'] }] },
+            { name: 'agent-repo', source: '/workspace/agents', origin: 'workspace', kind: 'agents' },
         ],
     });
-    assert.deepEqual(catalog.diagnostics, []);
-    assert.ok(catalog.skillsets.some(set => set.kind === 'skill' && set.repositoryName === 'project' && set.name === 'review'));
-    assert.equal(catalog.skillsets.some(set => set.name === 'Review Extra'), false);
-    assert.equal(catalog.skillsets.some(set => set.name === 'achilles_specs'), false);
-    const mixedSkill = catalog.skillsets.find(set => set.repositoryName === 'mixed-repo' && set.name === 'review');
-    assert.ok(mixedSkill, 'mixed repositories contribute their skills/ folder');
-    // Environment recommendations pick the skills of the mixed repository an agent comes from.
-    assert.equal(mixedSkill.repositoryKind, 'mixed');
-    assert.equal(catalog.skillsets.find(set => set.repositoryName === 'project').repositoryKind, 'skills');
-    // A robot records a mixed repository by its skills/ folder, so it covers the workflow's id for the skill.
-    const mixedRoot = path.join(await fs.realpath(mixedSource), 'skills');
-    assert.equal(mixedSkill.id, canonicalSkill(mixedRoot, 'review'));
-    const robot = { id: 'worker', name: 'worker', skillsets: [{ name: 'mixed-repo', source: mixedRoot,
+    assert.deepEqual(catalog.diagnostics, [{ repository: 'mixed-repo', message: 'Invalid skillsets.md: bad' }]);
+    const ids = catalog.skillsets.filter(set => set.repositoryName !== 'copilot').map(set => [set.id, set.kind, set.repositoryKind]);
+    assert.deepEqual(ids, [['project/review', 'skill', 'skills'], ['mixed-repo/review', 'skill', 'mixed'], ['sets/My set', 'skillset', 'skills']]);
+    assert.ok(catalog.skillsets.some(set => set.id === 'copilot/copilot' && set.repositoryKind === 'builtin'));
+    const robot = { id: 'worker', name: 'worker', skillsets: [{ name: 'mixed-repo', source: '/workspace/mixed/skills',
         skills: [{ name: 'review', description: 'Review code.', directory: 'review' }], definitions: [] }] };
-    assert.equal(matchRobot(robot, { skillsets: [mixedSkill.id] }), true);
-    assert.equal(catalog.skillsets.some(set => set.repositoryName === 'agent-repo'), false);
+    assert.equal(matchRobot(robot, { skillsets: ['mixed-repo/review'] }), true);
+});
+
+test('a partial set does not match a robot, and neither does a disabled skill', () => {
+    const repo = { name: 'sets', source: '/workspace/sets', active: ['x'], skills: [{ name: 'x' }, { name: 'y' }], definitions: [{ name: 'Both', skills: ['x', 'y'] }, { name: 'Only x', skills: ['x'] }] };
+    const robot = { id: 'worker', name: 'worker', skillsets: [repo] };
+    assert.equal(matchRobot(robot, { skillsets: ['sets/Only x'] }), true);
+    assert.equal(matchRobot(robot, { skillsets: ['sets/Both'] }), false);
+    const plain = { id: 'plain', name: 'plain', skillsets: [{ name: 'local', source: '/workspace/local', active: ['one'], skills: [{ name: 'one' }, { name: 'two' }], definitions: [] }] };
+    assert.equal(matchRobot(plain, { skillsets: ['local/one'] }), true);
+    assert.equal(matchRobot(plain, { skillsets: ['local/two'] }), false);
 });
 
 test('repositories without declared skillsets match and mount individual skills', () => {
     const source = '/workspace/skills';
     const repo = { name: 'local', source, skills: [{ name: 'one', description: 'One' }], definitions: [] };
-    const skillId = canonicalSkill(source, 'one');
+    const skillId = 'local/one';
     const worker = { id: 'worker-id', name: 'worker', skillsets: [repo] };
     assert.deepEqual(robotSelections(worker), [{ id: skillId, kind: 'skill', selector: 'local/one', name: 'one',
-        description: 'One', repositoryId: source, repositoryName: 'local' }]);
+        description: 'One', repositoryId: 'local', repositoryName: 'local' }]);
     assert.equal(matchRobot(worker, { skillsets: [skillId] }), true);
     assert.equal(matchRobot({ id: 'other-id', name: 'other', skillsets: [] }, { skillsets: [skillId] }), false);
     assert.equal(robotSelections({ id: 'default-id', name: 'default', skillsets: [repo] }).some(item => item.id === skillId), true);
@@ -471,7 +461,7 @@ test('repositories without declared skillsets match and mount individual skills'
 test('repositories with declared skillsets expose only their skillsets', () => {
     const repo = { name: 'sets', source: '/workspace/sets', skills: [{ name: 'x' }, { name: 'y' }], definitions: [{ name: 'S', skills: ['x'] }] };
     const selections = robotSelections({ id: 'worker-id', name: 'worker', skillsets: [repo] });
-    assert.deepEqual(selections.map(item => item.selector), ['sets-set-1']);
+    assert.deepEqual(selections.map(item => item.selector), ['sets/S']);
     assert.ok(selections.every(item => item.kind === 'skillset'));
 });
 
@@ -483,12 +473,12 @@ test('workflow task selections map skillsets and individual skills to robot sele
         { name: 'named', source: '/workspace/named', skills: [{ name: 'x' }], definitions: [{ name: 'S1', skills: ['x'] }] },
         { name: 'individual', source, skills: [{ name: 'one' }], definitions: [] },
     ];
-    const setsId = canonicalSkillset('/workspace/named', 'S1');
-    const skillId = canonicalSkill(source, 'one');
+    const setsId = 'named/S1';
+    const skillId = 'individual/one';
     await f.service.createWorkflow({ ...graph(), tasks: [task('a', { skillsets: [setsId, skillId] })], edges: [] });
     await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
     assert.equal(f.started[0].robot.name, 'worker');
-    assert.deepEqual(recorded[0].skillSets, ['named-set-1']);
+    assert.deepEqual(recorded[0].skillSets, ['named/S1']);
     assert.deepEqual(recorded[0].skills, ['individual/one']);
 });
 

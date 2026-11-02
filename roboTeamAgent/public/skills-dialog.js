@@ -1,23 +1,7 @@
 import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
 
-function normalizeRepositorySource(source) {
-    const value = (source || '').trim().replace(/\/+$/, '');
-    if (!value.startsWith('https://')) return value;
-    try {
-        const url = new URL(value);
-        url.pathname = url.pathname.replace(/\/+$/, '').replace(/\.git$/, '');
-        return url.href;
-    } catch {
-        return value;
-    }
-}
-
 export function hasRecommendedRepository(robot, recommendation) {
-    const sources = [recommendation.source, recommendation.url].filter(Boolean).map(normalizeRepositorySource);
-    // A mixed repository is registered by its skills/ folder.
-    if (recommendation.kind === 'mixed' && recommendation.source?.startsWith('/')) sources.push(`${normalizeRepositorySource(recommendation.source)}/skills`);
-    return (robot.repositories || []).some(repo => !repo.builtin && (sources.includes(normalizeRepositorySource(repo.source))
-        || (recommendation.name && repo.source?.startsWith('/') && normalizeRepositorySource(repo.source).endsWith('/.ploinky/repos/' + recommendation.name))));
+    return (robot.repositories || []).some(repo => !repo.builtin && repo.id === recommendation.name);
 }
 
 export async function loadSkillRecommendations(fetchImpl = globalThis.fetch) {
@@ -31,14 +15,8 @@ export async function loadSkillRecommendations(fetchImpl = globalThis.fetch) {
             source: repo.skillSource?.source || repo.url, origin: repo.skillSource?.origin || 'remote' }));
 }
 
-export function skillRepositoryLabel(repo, recommendations = []) {
-    if (repo.builtin) return 'Built-in copilot';
-    const preferred = recommendations.find(item => hasRecommendedRepository({ repositories: [repo] }, item));
-    if (preferred?.name) return preferred.name;
-    const source = normalizeRepositorySource(repo.source);
-    if (!source) return repo.id;
-    try { return new URL(source).pathname.split('/').filter(Boolean).at(-1) || repo.id; }
-    catch { return source.split('/').filter(Boolean).at(-1) || repo.id; }
+export function skillRepositoryLabel(repo) {
+    return repo.builtin ? 'Built-in copilot' : repo.id;
 }
 
 export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
@@ -93,7 +71,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         if (className) element.className = className;
         return element;
     };
-    const labelFor = repo => skillRepositoryLabel(repo, recommendations);
+    const labelFor = repo => skillRepositoryLabel(repo);
     function setMessage(text, error = false) {
         const target = addDialog.open ? addMessage : message;
         target.textContent = text;
@@ -145,8 +123,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
             if (!canAdmin) repositoryPanel.lastChild.textContent = 'No repositories added to this robot.';
             return;
         }
-        const preferred = recommendations.find(item => hasRecommendedRepository({ repositories: [repo] }, item));
-        const source = repo.builtin ? 'Bundled with RoboTeam · read-only source' : preferred?.source || repo.source || repo.id;
+        const source = repo.builtin ? 'Bundled with RoboTeam · read-only source' : repo.source || repo.id;
         info.append(node('p', source, 'muted skills-repository-source'));
         if (canAdmin && !repo.builtin) {
             const menu = node('div', '', 'robot-manage');
@@ -163,22 +140,26 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         }
         const sets = repo.skillsets || [];
         if (sets.length) repositoryPanel.append(node('h4', 'Skillsets', 'skills-section-label'));
+        const toggle = (id, label, enabled, partial = false) => {
+            const wrapper = node('label', '', 'skillset-toggle');
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.setAttribute('role', 'switch');
+            input.checked = enabled;
+            input.indeterminate = partial;
+            if (partial) input.setAttribute('aria-checked', 'mixed');
+            input.disabled = busy || !canAdmin;
+            input.setAttribute('aria-label', `${label}: available in robot catalog`);
+            input.dataset.skillsFocus = `selection:${id}`;
+            input.addEventListener('change', () => void mutate('PATCH', { id, enabled: input.checked }));
+            wrapper.append(input, node('span', partial ? 'Partial' : enabled ? 'Enabled' : 'Disabled'));
+            return wrapper;
+        };
         for (const set of sets) {
             const item = node('article', '', 'skillset-item');
             item.classList.toggle('is-disabled', set.enabled === false);
             const head = node('div', '', 'skillset-heading');
-            head.append(node('h5', set.name || set.id));
-            const toggle = node('label', '', 'skillset-toggle');
-            const input = document.createElement('input');
-            input.type = 'checkbox';
-            input.setAttribute('role', 'switch');
-            input.checked = set.enabled !== false;
-            input.disabled = busy || !canAdmin;
-            input.setAttribute('aria-label', `${set.name || set.id}: available in robot catalog`);
-            input.dataset.skillsFocus = `skillset:${set.id}`;
-            input.addEventListener('change', () => void mutate('PATCH', { id: set.id, enabled: input.checked }));
-            toggle.append(input, node('span', input.checked ? 'Enabled' : 'Disabled'));
-            head.append(toggle);
+            head.append(node('h5', set.name || set.id), toggle(set.id, set.name || set.id, set.enabled !== false, set.partial === true));
             item.append(head);
             if (set.description) item.append(node('p', set.description, 'skillset-description'));
             item.append(skillList(set.skills, `Skills included in ${set.name || set.id}`));
@@ -186,11 +167,19 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         }
         const grouped = new Set(sets.flatMap(set => set.skills));
         const otherSkills = repo.skills.filter(skill => !grouped.has(skill.name)).map(skill => skill.name);
-        if (otherSkills.length || !sets.length) {
-            repositoryPanel.append(node('h4', sets.length ? 'Other skills' : 'Skills', 'skills-section-label'));
-            if (sets.length) repositoryPanel.append(node('p', 'Not included in the declared skillsets.', 'muted'));
-            if (otherSkills.length) repositoryPanel.append(skillList(otherSkills, 'Individual repository skills'));
-            else repositoryPanel.append(node('p', 'No skills available.', 'muted'));
+        if (sets.length) {
+            if (otherSkills.length) {
+                repositoryPanel.append(node('h4', 'Other skills', 'skills-section-label'), node('p', 'Not included in the declared skillsets.', 'muted'),
+                    skillList(otherSkills, 'Individual repository skills'));
+            }
+            return;
+        }
+        repositoryPanel.append(node('h4', 'Skills', 'skills-section-label'));
+        if (!repo.skills.length) repositoryPanel.append(node('p', 'No skills available.', 'muted'));
+        for (const skill of repo.skills) {
+            const row = node('div', '', 'individual-skill');
+            row.append(node('span', skill.name), toggle(skill.id, skill.name, skill.enabled !== false));
+            repositoryPanel.append(row);
         }
     }
     function renderRecommendations() {
@@ -212,8 +201,8 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
                 add.type = 'button';
                 add.disabled = busy || added;
                 add.setAttribute('aria-label', `Add ${repo.name}`);
-                add.dataset.skillsFocus = `recommendation:${repo.source}`;
-                add.addEventListener('click', () => void mutate('POST', { source: repo.source, description: repo.description }));
+                add.dataset.skillsFocus = `recommendation:${repo.name}`;
+                add.addEventListener('click', () => void mutate('POST', { source: repo.name }));
                 row.append(add);
             }
             recommended.append(row);
@@ -261,7 +250,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         const updating = method === 'PATCH';
         const idsBefore = new Set((current.repositories || []).map(repo => repo.id));
         const focusKey = document.activeElement?.dataset.skillsFocus;
-        setMessage(updating ? 'Updating skillset…' : method === 'POST' ? 'Adding repository…' : 'Removing repository…');
+        setMessage(updating ? 'Updating selection…' : method === 'POST' ? 'Adding repository…' : 'Removing repository…');
         render();
         try {
             const route = `api/robots/${robot.id}/skillsets`;
@@ -277,7 +266,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
                 if (added) { selectedId = added.id; view = 'repository'; contentPane.scrollTop = 0; }
                 addController.complete();
             }
-            setMessage(updating ? `Skillset ${body.enabled ? 'enabled' : 'disabled'}.` : method === 'POST' ? 'Repository added.' : 'Repository removed. Selected skills from this source will be unavailable when tasks next start or resume.');
+            setMessage(updating ? `Selection ${body.enabled ? 'enabled' : 'disabled'}.` : method === 'POST' ? 'Repository added.' : 'Repository removed. Selected skills from this source will be unavailable when tasks next start or resume.');
             await onChanged();
         } catch (error) {
             setMessage(error.message, true);

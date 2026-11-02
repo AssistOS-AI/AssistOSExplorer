@@ -11,33 +11,11 @@ export function selectorNames(value, individual = false) {
     return [...new Set(values.map((item) => {
         if (typeof item !== 'string') throw skillError('invalid skill selector');
         const name = item.trim();
-        if (!(individual ? /^[a-z0-9-]+\/[a-z0-9-]+$/ : /^[a-z0-9]+(?:-[a-z0-9]+)*$/).test(name)) {
+        if (!(individual ? /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/ : /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[^/\x00-\x1f][^\x00-\x1f]{0,99})?$/).test(name)) {
             throw skillError('invalid skillset or qualified skill selector');
         }
         return name;
     }))];
-}
-
-function validateImportedSkillNames(policy) {
-    const sources = policy.importedSkillNames;
-    if (sources === undefined) return;
-    const invalid = () => { throw skillError('invalid stored imported skill name provenance'); };
-    if (!sources || typeof sources !== 'object' || Array.isArray(sources) || Object.keys(sources).length > 32) invalid();
-    let count = 0;
-    for (const [name, proof] of Object.entries(sources)) {
-        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name === 'copilot'
-            || !proof || typeof proof !== 'object' || Array.isArray(proof)
-            || Object.keys(proof).sort().join(',') !== 'generation,names,source'
-            || typeof proof.source !== 'string' || proof.source.length > 2048 || /[\x00-\x1f]/.test(proof.source)
-            || !path.isAbsolute(proof.source) || path.resolve(proof.source) !== proof.source
-            || typeof proof.generation !== 'string' || !/^[a-f0-9-]{36}$/.test(proof.generation)
-            || !proof.names || typeof proof.names !== 'object' || Array.isArray(proof.names)) invalid();
-        for (const [directory, nativeName] of Object.entries(proof.names)) {
-            if (++count > 5000 || directory.length > 2048 || directory.includes('\\') || /[\x00-\x1f]/.test(directory)
-                || (directory !== '' && (directory.startsWith('/') || directory.split('/').some(part => !part || part === '.' || part === '..')))
-                || typeof nativeName !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(nativeName)) invalid();
-        }
-    }
 }
 
 export class SkillPolicies {
@@ -63,7 +41,6 @@ export class SkillPolicies {
                 selectorNames(policy.selectors.skillSets);
                 selectorNames(policy.selectors.skills, true);
                 if (![...policy.excludedSources, ...policy.excludedSkills, ...policy.excludedNames].every((value) => typeof value === 'string')) throw skillError('invalid stored skill exclusions');
-                validateImportedSkillNames(policy);
                 return policy;
             } finally { await handle.close(); }
         } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
@@ -73,33 +50,6 @@ export class SkillPolicies {
         const scope = await fs.realpath(this.service.scopeRoot || workspace);
         if (!inside(workspace, scope)) throw skillError('trusted skill scope is outside the workspace');
         return scope;
-    }
-    // Record only names proven by a valid descriptor during an explicit policy
-    // mutation. Inventory reads never write state. Imported names need their
-    // source generation and directory to stay identifiable when a live descriptor
-    // is temporarily malformed.
-    async rememberNameExclusions(robot, policy, cwd, entries) {
-        const next = { ...policy };
-        if (policy.excludedNames.length || policy.excludedSkills.length || policy.importedSkillNames) {
-            entries ||= (await this.service.live.resolve(robot, {
-                ...policy, selectors: { skillSets: [], skills: [] },
-            }, cwd)).entries;
-        }
-        const imported = [];
-        for (const set of robot.skillsets || []) {
-            if (!path.isAbsolute(set.source)) continue;
-            const previous = policy.importedSkillNames?.[set.name];
-            const names = new Map(Object.entries(previous?.source === set.source && previous.generation === set.generation ? previous.names : {}));
-            for (const entry of entries || []) {
-                if (entry.source !== set.name || entry.error || !entry.fingerprint || !inside(set.source, entry.sourcePath)) continue;
-                names.set(path.relative(set.source, entry.sourcePath).split(path.sep).join('/'), entry.name);
-            }
-            if (names.size) imported.push([set.name, { source: set.source, generation: set.generation, names: Object.fromEntries(names) }]);
-        }
-        if (imported.length) next.importedSkillNames = Object.fromEntries(imported);
-        else delete next.importedSkillNames;
-        validateImportedSkillNames(next);
-        return next;
     }
     async make(robot, input = {}, legacy = null) {
         const scopeRoot = await this.scope();
@@ -142,7 +92,7 @@ export class SkillPolicies {
         const policy = { ...(input?.allowsHumanInput === true ? { allowsHumanInput: true } : {}), ...(input?.workflowCreator === true ? { workflowCreator: true } : {}), version: 2, policyVersion: 1, mode: 'live', scopeRoot, selectors: { skillSets: sets, skills }, bindings,
             excludedSkills: [], excludedSources: [], excludedNames, overrides: {}, diagnostics,
             ...(legacy ? { legacyRecovery: structuredClone(legacy) } : {}) };
-        return this.rememberNameExclusions(robot, policy, scopeRoot);
+        return policy;
     }
     async ensure(robot, id, { input, legacy, useDefaults = true } = {}) {
         const existing = await this.read(robot.id, id);

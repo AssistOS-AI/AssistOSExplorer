@@ -42,7 +42,7 @@ test('built-in workflows are JSON files in default-flows, resolved when loaded a
     for (const preset of presets) registry.addPreset(presetGraph(preset, { DocumentationSkills: root }));
     const loaded = await registry.get('code-development');
     assert.equal(loaded.readOnly, true);
-    assert.deepEqual(loaded.tasks.find(task => task.id === 'planning').skillsets, [path.join(root, 'gamp-specs'), path.join(root, 'detect-main-behaviors')]);
+    assert.deepEqual(loaded.tasks.find(task => task.id === 'planning').skillsets, ['DocumentationSkills/gamp-specs', 'DocumentationSkills/detect-main-behaviors']);
     assert.equal((await registry.get('default')).kind, 'default');
     await assert.rejects(registry.update('default', loaded), /cannot be edited/);
     await assert.rejects(registry.remove('code-development'), /cannot be deleted/);
