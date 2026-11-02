@@ -102,37 +102,18 @@ export async function cancelWebchatGenerationIfActive(page, {timeout = smokeConf
   await waitForWebchatIdle(page);
 }
 
+// Observe the upload response without intercepting it: a route.fulfill replacement leaves the client's progress
+// indicator showing, while the real response settles it.
 async function captureNextUploadResponse(page) {
-  const pattern = '**/uploads**';
-  let handler;
-  const promise = new Promise((resolve, reject) => {
-    handler = async (route) => {
-      if (route.request().method() !== 'POST') {
-        await route.continue();
-        return;
-      }
-
-      try {
-        const response = await route.fetch();
-        const body = await response.text();
-        let payload = null;
-        try {
-          payload = JSON.parse(body);
-        } catch (error) {
-          reject(error);
-        }
-        resolve({ status: response.status(), payload, body });
-        await route.fulfill({ response, body });
-      } catch (error) {
-        reject(error);
-        await route.abort().catch(() => {});
-      } finally {
-        await page.unroute(pattern, handler).catch(() => {});
-      }
-    };
-  });
-  await page.route(pattern, handler);
-  return promise;
+  const responsePromise = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && new URL(response.url()).pathname.includes('/uploads'),
+    { timeout: smokeConfig.timeouts.navigation },
+  );
+  return (async () => {
+    const response = await responsePromise;
+    const body = await response.text();
+    return { status: response.status(), payload: JSON.parse(body), body };
+  })();
 }
 
 export async function setComposer(page, value) {
