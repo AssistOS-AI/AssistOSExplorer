@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 
 import { expect, attachPageDiagnostics } from './fixtures.mjs';
 import { smokeConfig } from './config.mjs';
-import { observeFreeCopilotRoutes } from './copilot-free-model.mjs';
+import { observeFreeCopilotRoutes, requireFreeCopilotSetup } from './copilot-free-model.mjs';
 import { readAuthenticatedPrincipal } from './auth.mjs';
 import { openExplorer } from './explorer.mjs';
 import { createDirectory, deleteDirectoryIfPresent, openCopilotForDirectory } from './copilot.mjs';
@@ -90,7 +90,9 @@ export async function attachEvidence(testInfo, name, value) {
 }
 
 export async function withFixture(browser, testInfo, operation) {
+    requireFreeCopilotSetup();
     const release = releaseBinding();
+    const routeAttempts = [];
     const contexts = [], diagnostics = [], readers = [], runs = [], chats = [], owned = [], routeFinalizers = [];
     let owner, admin, foreign, directoryPath;
     let primaryFailure, hasPrimary = false;
@@ -100,7 +102,7 @@ export async function withFixture(browser, testInfo, operation) {
     async function accountPage(account, label) {
         const context = await browser.newContext({ baseURL: smokeConfig.baseURL, ignoreHTTPSErrors: true });
         contexts.push(context);
-        if (process.env.SMOKE_ROBOWORK_MODEL_SETUP === '1') routeFinalizers.push(await observeFreeCopilotRoutes(context, testInfo));
+        routeFinalizers.push(await observeFreeCopilotRoutes(context, testInfo, { attempts: routeAttempts }));
         context.on('page', page => diagnostics.push({ page, finite: observeFinitePageWork(page),
             controller: attachPageDiagnostics(page, testInfo, `${label}-${diagnostics.length}`) }));
         const page = await context.newPage();

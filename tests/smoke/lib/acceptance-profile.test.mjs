@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import test from 'node:test';
 import {
-    acceptanceLedger, selectAcceptanceCases, validateAcceptanceProfile, assertLedgerResults,
+    acceptanceLedger, roboWorkRestartLedger, selectAcceptanceCases, validateAcceptanceProfile, assertLedgerResults,
     collectAcceptancePreflight, assertAcceptanceGeneration,
 } from './acceptance-profile.mjs';
 import { assertAccountRoles, assertMarketplaceLifecycleFixture } from './account-preflight.mjs';
@@ -31,7 +31,7 @@ const args = ['--project=chromium', '--workers=1', '--retries=0', 'specs/01-webt
 const record = entry => ({ identity: entry.identity, expectedStatus: 'passed', outcome: 'expected', results: [{ status: 'passed', retry: 0 }] });
 
 const liveArgs = ['--project=chromium', '--workers=1', '--retries=0', 'specs/07-live-sessions.spec.mjs'];
-const liveEnv = { ...baseEnv, SMOKE_LIVE_SESSIONS: '1', SMOKE_PLOINKY_BIN: '/fixture/ploinky/bin/ploinky',
+const liveEnv = { ...baseEnv, SMOKE_LIVE_SESSIONS: '1', SMOKE_ROBOWORK_MODEL_SETUP: '1', SMOKE_PLOINKY_BIN: '/fixture/ploinky/bin/ploinky',
     SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL: 'foreign@example.test', SMOKE_LIVE_SESSIONS_FOREIGN_SIGN_IN_METHOD: 'password',
     SMOKE_LIVE_SESSIONS_FOREIGN_ACCOUNT_PASSWORD: 'fabricated-foreign', SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE: '/private/native-evidence.json' };
 
@@ -41,7 +41,7 @@ test('fresh Live Sessions profile selects exactly two additive identities with s
     assert.equal(profile.accounts.secondary, true);
     assert.equal(profile.cases.length, 2);
     assert.ok(profile.cases.every(entry => entry.cohort === 'fresh-live-sessions'));
-    for (const name of ['SMOKE_LIVE_SESSIONS', 'SMOKE_PLOINKY_BIN', 'SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE',
+    for (const name of ['SMOKE_ROBOWORK_MODEL_SETUP', 'SMOKE_LIVE_SESSIONS', 'SMOKE_PLOINKY_BIN', 'SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE',
         'SMOKE_LIVE_SESSIONS_FOREIGN_LOGIN_EMAIL', 'SMOKE_LIVE_SESSIONS_FOREIGN_SIGN_IN_METHOD',
         'SMOKE_LIVE_SESSIONS_FOREIGN_ACCOUNT_PASSWORD', 'SMOKE_SECONDARY_ACCOUNT_PASSWORD']) {
         const env = { ...liveEnv }; delete env[name];
@@ -61,7 +61,7 @@ test('fresh Live Sessions profile selects exactly two additive identities with s
     }
     assert.throws(() => assertLedgerResults(profile.cases, [], { terminal: true }));
     assert.throws(() => assertLedgerResults(profile.cases, [record(profile.cases[0])], { terminal: true }));
-    assert.doesNotThrow(() => validateAcceptanceProfile([...liveArgs, '--list'], { SMOKE_LIVE_SESSIONS: '1' }));
+    assert.doesNotThrow(() => validateAcceptanceProfile([...liveArgs, '--list'], { SMOKE_LIVE_SESSIONS: '1', SMOKE_ROBOWORK_MODEL_SETUP: '1' }));
 });
 
 test('ledger retains all 44 historical identities, 24 required cases and two Live Sessions identities', () => {
@@ -88,7 +88,15 @@ test('planned RA7 is an explicit separate profile with strict live evidence and 
     assert.equal(profile.coverage, 'planned-robowork-ra7');
     assert.equal(profile.accounts.secondary, true);
     assert.equal(profile.box, true);
+    assert.equal(roboWorkRestartLedger.runner, 'npm run test:robowork-restart');
+    assert.equal(roboWorkRestartLedger.requiredForFinal, true);
     assertLedgerResults(profile.cases, profile.cases.map(record), { terminal: true });
+    assert.throws(() => assertLedgerResults(profile.cases, [], { terminal: true }));
+    for (const status of ['skipped', 'interrupted', 'timedOut', 'failed']) {
+        const outcomes = profile.cases.map(record); outcomes[0].results[0].status = status;
+        assert.throws(() => assertLedgerResults(profile.cases, outcomes, { terminal: true }));
+    }
+    assert.throws(() => validateAcceptanceProfile([...args, '--grep=never-match'], env), /zero required/u);
     assert.throws(() => validateAcceptanceProfile(args, liveEnv), /zero required/u);
     assert.throws(() => validateAcceptanceProfile([...args, 'specs/07-live-sessions.spec.mjs'], env), /own explicit/u);
     for (const key of ['SMOKE_PLOINKY_BIN', 'SMOKE_LIVE_SESSIONS_NATIVE_EVIDENCE', 'SMOKE_SECONDARY_ACCOUNT_PASSWORD',
@@ -100,21 +108,27 @@ test('planned RA7 is an explicit separate profile with strict live evidence and 
     assert.equal(validateAcceptanceProfile(liveArgs, liveEnv).cases.length, 2);
 });
 
-test('planned feature profile preserves exactly E1 E2 E7 and requires model setup plus the ordinary user', () => {
+test('unavailable feature profile fails closed even during discovery and with a fabricated file', () => {
     const args = ['--project=chromium', '--workers=1', '--retries=0', 'specs/09-robowork-features.spec.mjs'];
     const env = { ...baseEnv, SMOKE_ROBOWORK_FEATURES: '1', SMOKE_ROBOWORK_MODEL_SETUP: '1' };
     const options = { exists: () => true };
-    const profile = validateAcceptanceProfile(args, env, options);
-    assert.equal(profile.cases.length, 3); assert.equal(profile.coverage, 'planned-robowork-features');
-    assert.equal(profile.accounts.secondary, true); assert.equal(profile.box, true);
-    assert.deepEqual(profile.cases.map(entry => entry.title.slice(0, 2)), ['E1', 'E2', 'E7']);
-    assertLedgerResults(profile.cases, profile.cases.map(record), { terminal: true });
-    for (const key of ['SMOKE_ROBOWORK_MODEL_SETUP', 'SMOKE_SECONDARY_ACCOUNT_PASSWORD']) {
-        const missing = { ...env }; delete missing[key]; assert.throws(() => validateAcceptanceProfile(args, missing, options));
+    for (const selection of [args, [...args, '--list'], [...args, '--grep', '^E1']]) {
+        assert.throws(() => validateAcceptanceProfile(selection, env, options), /spec 09 is unavailable/u);
     }
-    assert.throws(() => validateAcceptanceProfile([...args, '--grep', '^E1'], env, options), /forbids pruning/u);
-    assert.throws(() => validateAcceptanceProfile(args, { ...env, SMOKE_ROBOWORK_RESTART: '1' }, options), /separate invocations/u);
     assert.equal(acceptanceLedger.identities.length, 46);
+});
+
+test('all selected Copilot cohorts refuse unset setup before private prerequisites or runtime collection', () => {
+    for (const spec of ['05-copilot-folder-launch', '06-copilot-live-skills', '06-copilot-codex-delegation',
+        '07-copilot-codex-native', '07-live-sessions', '08-robowork-restart', '70-copilot-semantic-routing']) {
+        const env = { SMOKE_COPILOT_LIVE_SKILLS: '1', SMOKE_CODEX_DELEGATION: '1', SMOKE_LIVE_SESSIONS: '1',
+            SMOKE_ROBOWORK_RESTART: spec.startsWith('08-') ? '1' : '0', SMOKE_OPEN_INTERPRETER: '1' };
+        assert.throws(() => validateAcceptanceProfile([`specs/${spec}.spec.mjs`], env), /SMOKE_ROBOWORK_MODEL_SETUP=1/u);
+    }
+    const profile = validateAcceptanceProfile(['specs/05-copilot-folder-launch.spec.mjs', '--list'], { SMOKE_ROBOWORK_MODEL_SETUP: '1' });
+    assert.equal(profile.accounts.freeCopilotSetup, true);
+    assert.equal(profile.accounts.enabled, true);
+    assert.equal(validateAcceptanceProfile(['specs/00-router-auth.spec.mjs', '--list'], {}).accounts.freeCopilotSetup, false);
 });
 
 test('missing image pins, profile flags and private sign-in inputs fail before collectors', () => {
@@ -166,7 +180,7 @@ test('public-room WebMeet gate is a required official-release identity that need
     assert.deepEqual(profile.cases.map(value => value.identity), [entry.identity]);
     assert.equal(profile.box, true);
     assert.equal(profile.ledgerCoverage, true);
-    assert.deepEqual({ ...profile.accounts }, { enabled: true, secondary: false, primaryAdmin: true, marketplaceLifecycleFixture: false });
+    assert.deepEqual({ ...profile.accounts }, { enabled: true, secondary: false, primaryAdmin: true, freeCopilotSetup: false, marketplaceLifecycleFixture: false });
     for (const name of ['SMOKE_LOGIN_EMAIL', 'SMOKE_ACCOUNT_PASSWORD', 'SMOKE_PLOINKY_BOX_CONTAINER', 'SMOKE_RELEASE_MANIFEST']) {
         const missing = { ...env }; delete missing[name];
         assert.throws(() => validateAcceptanceProfile(publicRoomArgs, missing), error => error.message.includes(name));
@@ -349,6 +363,47 @@ test('canonical runner negative control rejects an omitted opt-in instead of rep
     assert.doesNotMatch(result.stdout, /skipped|passed/);
 });
 
+test('canonical Copilot runners refuse missing model setup before any browser or source probe', () => {
+    for (const [spec, flags] of [['specs/05-copilot-folder-launch.spec.mjs', {}],
+        ['specs/07-live-sessions.spec.mjs', { SMOKE_LIVE_SESSIONS: '1' }],
+        ['specs/08-robowork-restart.spec.mjs', { SMOKE_ROBOWORK_RESTART: '1' }]]) {
+        const result = spawnSync(process.execPath, [new URL('../scripts/run-playwright.mjs', import.meta.url).pathname, spec], {
+            env: { PATH: process.env.PATH, ...flags }, encoding: 'utf8', timeout: 5000,
+        });
+        assert.equal(result.error, undefined);
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /SMOKE_ROBOWORK_MODEL_SETUP=1/u);
+        assert.equal(result.stdout, '', 'Unset setup must fail before even the retired-source gate.');
+    }
+});
+
+test('required RA7 npm command discovers exactly its one ledger identity with no browser or model work', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ra7-discovery-'));
+    try {
+        const result = spawnSync('npm', ['run', 'test:robowork-restart', '--', '--list'], {
+            cwd: new URL('../', import.meta.url), encoding: 'utf8', timeout: 30000,
+            env: { PATH: process.env.PATH, SMOKE_ARTIFACT_DIR: root, SMOKE_DISCOVERY_ONLY: '1', SMOKE_ROBOWORK_MODEL_SETUP: '1' },
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+        const report = JSON.parse(fs.readFileSync(path.join(root, 'ledger-discovery_codex.json'), 'utf8'));
+        assert.equal(report.coverage, roboWorkRestartLedger.coverage);
+        assertLedgerResults(roboWorkRestartLedger.identities, report.records);
+        assert.equal(report.records.length, 1);
+        assert.ok(report.records.every(entry => entry.results.length === 0), 'Discovery never establishes a live RA7 pass.');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('required real-kernel alias command refuses missing explicit runtime binary paths', () => {
+    const result = spawnSync('npm', ['run', 'test:copilot-live-skills-alias-linux'], {
+        cwd: new URL('../', import.meta.url), encoding: 'utf8', timeout: 5000, env: { PATH: process.env.PATH },
+    });
+    assert.equal(result.error, undefined);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Usage: node copilot-live-skills-alias-linux\.mjs/u);
+    assert.doesNotMatch(result.stdout, /expectedOutcomeObserved|live-skill-real-linux-alias/u);
+});
+
 test('canonical discovery finds exactly the 24 required identities without starting a browser or Box probe', () => {
     const cases = acceptanceLedger.identities.filter(entry => entry.disposition === 'required-local-acceptance');
     const specs = [...new Set(cases.map(entry => entry.selection.spec))];
@@ -358,7 +413,7 @@ test('canonical discovery finds exactly the 24 required identities without start
         const result = spawnSync(process.execPath, [new URL('../scripts/run-playwright.mjs', import.meta.url).pathname,
             '--project=chromium', '--workers=1', '--retries=0', ...specs, '--grep', grep, '--list'], {
             cwd: new URL('../', import.meta.url), encoding: 'utf8', timeout: 30000,
-            env: { PATH: process.env.PATH, SMOKE_ARTIFACT_DIR: root, SMOKE_DISCOVERY_ONLY: '1',
+            env: { PATH: process.env.PATH, SMOKE_ARTIFACT_DIR: root, SMOKE_DISCOVERY_ONLY: '1', SMOKE_ROBOWORK_MODEL_SETUP: '1',
                 ...Object.assign({}, ...cases.map(entry => entry.requiredFlags)),
             },
         });
@@ -377,7 +432,7 @@ test('source inventory discovers 44 historical and two additive identities while
             '--project=chromium', ...new Set(cases.map(entry => entry.selection.spec)), '--grep',
             cases.map(entry => `${entry.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`).join('|'), '--list'], {
             cwd: new URL('../', import.meta.url), encoding: 'utf8', timeout: 30000,
-            env: { PATH: process.env.PATH, SMOKE_ARTIFACT_DIR: root, SMOKE_DISCOVERY_ONLY: '1', SMOKE_QA_EDGE_IP: '203.0.113.25',
+            env: { PATH: process.env.PATH, SMOKE_ARTIFACT_DIR: root, SMOKE_DISCOVERY_ONLY: '1', SMOKE_QA_EDGE_IP: '203.0.113.25', SMOKE_ROBOWORK_MODEL_SETUP: '1',
                 ...Object.assign({}, ...cases.map(entry => entry.requiredFlags)),
             },
         });
