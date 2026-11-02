@@ -383,6 +383,14 @@ async function assertChooserRows(chooser, discovery) {
   const unavailableTargets = listed(discovery.unavailableTargets || []);
   await expect(chooser.locator('.terminal-target-button')).toHaveCount(targets.length + unavailableTargets.length);
   if (environmentView) expect(targets.length + unavailableTargets.length, 'the robot provider needs a terminal row').toBeGreaterThan(0);
+  if (environmentView) {
+    const readWrite = targets.filter((row) => row.access === 'rw');
+    expect(readWrite, 'the robot view needs exactly one launchable RoboWork rw row').toHaveLength(1);
+    await expect(chooser.locator(`.terminal-target-button[data-launch="${readWrite[0].launch}"]`)).toBeEnabled();
+    for (const box of discovery.targets.filter((row) => row.kind === 'box')) {
+      await expect(chooser.locator(`.terminal-target-button[data-launch="${box.launch}"]`), 'the Box row is not launchable in the robot view').toHaveCount(0);
+    }
+  }
   for (const target of targets) {
     const targetButton = chooser.locator(`.terminal-target-button[data-launch="${target.launch}"]`);
     await expect(targetButton).toHaveCount(1);
@@ -442,7 +450,11 @@ async function assertEnvironmentsReachable(chooserState, expectedDirectory) {
   const keys = await select.locator('option:not([disabled])').evaluateAll((options) => options.map((option) => option.value));
   expect(keys, 'the selected environment must be one of the enabled environments').toContain(original);
   const others = keys.filter((key) => key !== original);
-  for (const key of others.length ? [...others, original] : []) {
+  // T5: a second environment must be exercised; disabled environments are reported, never dropped silently.
+  const disabled = await select.locator('option[disabled]').allTextContents();
+  for (const reason of disabled) test.info().annotations.push({ type: 'unavailable-environment', description: reason });
+  expect(others.length, `no second environment was exercised (unavailable: ${JSON.stringify(disabled)})`).toBeGreaterThan(0);
+  for (const key of [...others, original]) {
     const responsePromise = page.waitForResponse(isTargetDiscovery, { timeout: smokeConfig.timeouts.navigation });
     await select.selectOption(key);
     const discovery = await readTargetDiscovery(await responsePromise, expectedDirectory.replace(/^\/+/, ''), { profiled: true });
@@ -484,13 +496,24 @@ async function openTerminalChooser(page, directoryPath) {
   return chooserState;
 }
 
+// T5: the chooser needs a robot and a RoboWork robot lists only RoboWork's row, so Box and agent terminals are opened
+// through the Router's plain {dir} discovery and launch handoff (T6): a state without a chooser uses this route.
+async function openPlainTerminalDiscovery(page, directoryPath) {
+  const result = await browserMutation(page, '/webtty/target-discoveries', { body: { dir: directoryPath } });
+  const discovery = await readTargetDiscovery(
+    { status: () => result.status, json: async () => result.payload },
+    directoryPath.replace(/^\/+/, ''),
+  );
+  return { page, chooser: null, discovery, context: page.context(), profiled: false };
+}
+
 async function selectTerminalTarget(chooserState, predicate, terminals) {
   const selectedTarget = chooserState.discovery.targets.find(predicate);
   expect(selectedTarget, 'the requested terminal target must be present in the current discovery').toBeTruthy();
-  const selectedButton = chooserState.chooser.locator(
+  const selectedButton = chooserState.chooser && chooserState.chooser.locator(
     `.terminal-target-button[data-launch="${selectedTarget.launch}"]`,
   );
-  await expect(selectedButton).toHaveCount(1);
+  if (selectedButton) await expect(selectedButton).toHaveCount(1);
   const { context } = chooserState;
   const popupPromise = context.waitForEvent('page', { timeout: smokeConfig.timeouts.navigation });
   const navigationPromise = context.waitForEvent('request', {
@@ -501,10 +524,14 @@ async function selectTerminalTarget(chooserState, predicate, terminals) {
     predicate: isSessionCreation,
     timeout: smokeConfig.timeouts.navigation,
   });
-  // A row only selects the target; Open prepares the robot, reserves the tab and starts the terminal.
-  await selectedButton.click();
-  await expect(selectedButton).toHaveAttribute('aria-pressed', 'true');
-  await chooserState.chooser.getByRole('button', { name: 'Open', exact: true }).click();
+  if (selectedButton) {
+    // A row only selects the target; Open prepares the robot, reserves the tab and starts the terminal.
+    await selectedButton.click();
+    await expect(selectedButton).toHaveAttribute('aria-pressed', 'true');
+    await chooserState.chooser.getByRole('button', { name: 'Open', exact: true }).click();
+  } else {
+    await (await context.newPage()).goto(new URL(`/webtty/#launch=${selectedTarget.launch}`, smokeConfig.baseURL).toString());
+  }
   const createResponse = await createPromise;
   // Register the shell for DELETE cleanup before any later wait or assertion can fail; shells survive detach.
   // A 201 body is registered by its raw session id first; the strict shape checks run afterwards.
@@ -524,15 +551,38 @@ async function selectTerminalTarget(chooserState, predicate, terminals) {
       timeout: smokeConfig.timeouts.navigation,
     });
     await terminal.terminalPage.waitForLoadState('load');
-    await expect(chooserState.chooser).toBeHidden();
+    if (chooserState.chooser) await expect(chooserState.chooser).toBeHidden();
   });
 }
 
 async function openTerminalFromExplorer(page, directoryPath, predicate = (target) => target.kind === 'box', terminals) {
-  return selectTerminalTarget(await openTerminalChooser(page, directoryPath), predicate, terminals);
+  return selectTerminalTarget(await openPlainTerminalDiscovery(page, directoryPath), predicate, terminals);
+}
+
+// T5: with a robot chosen the chooser opens the RoboWork row once; Box is not launchable there.
+async function exerciseRobotChooser(page, directoryPath, terminals) {
+  const robotChooser = await openTerminalChooser(page, directoryPath);
+  await expect(robotChooser.chooser).toHaveAttribute('aria-labelledby', 'terminalTargetTitle');
+  await expect(robotChooser.chooser.getByRole('button', { name: 'Refresh' })).toBeVisible();
+  const provider = robotChooser.discovery.profile.provider;
+  const terminal = await selectTerminalTarget(
+    robotChooser,
+    (target) => target.kind === 'agent' && target.detail === `AchillesIDE/${provider}` && target.access === 'rw',
+    terminals,
+  );
+  expect(await terminal.terminalPage.evaluate(() => window.opener === null)).toBe(true);
+  expect(terminal.navigationRequest.headers().referer, 'the terminal navigation must not disclose the Explorer URL').toBeUndefined();
+  await waitForConnectedTerminal(terminal.terminalPage);
+  await closeTerminal(terminal);
 }
 
 async function refreshTerminalChooser(chooserState, expectedDirectory) {
+  if (!chooserState.chooser) {
+    // The plain route has no Refresh button: cancel the previous discovery, then request a new one, as the chooser does.
+    await browserMutation(chooserState.page, `/webtty/target-discoveries/${encodeURIComponent(chooserState.discovery.id)}`, { method: 'DELETE' });
+    chooserState.discovery = (await openPlainTerminalDiscovery(chooserState.page, expectedDirectory)).discovery;
+    return chooserState.discovery;
+  }
   const responsePromise = chooserState.page.waitForResponse(isTargetDiscovery, {
     timeout: smokeConfig.timeouts.navigation,
   });
@@ -920,7 +970,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         payload: { ok: false, error: 'browser_origin_required' },
       });
 
-      const firstChooser = await openTerminalChooser(page, fixture.nestedDirectoryPath);
+      const firstChooser = await openPlainTerminalDiscovery(page, fixture.nestedDirectoryPath);
       const expectedBoxTarget = {
         kind: 'box',
         label: 'Ploinky Box',
@@ -936,8 +986,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         target.label === isolatedMonitor.agentName
         && target.detail === `${isolatedMonitor.repoName}/${isolatedMonitor.agentName}`
       ))).toBe(false);
-      await expect(firstChooser.chooser).toHaveAttribute('aria-labelledby', 'terminalTargetTitle');
-      await expect(firstChooser.chooser.getByRole('button', { name: 'Refresh' })).toBeVisible();
+      await exerciseRobotChooser(page, fixture.nestedDirectoryPath, terminals);
 
       const ownedAgentLaunch = firstChooser.discovery.targets.find((target) => (
         target.kind === 'agent'
@@ -1293,7 +1342,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await waitForAgentProcess(initialRuntime, initialGitAgent, replacementVictimPattern, true);
       expect(replacementVictimDiagnostics.actionableEvents(), 'the replacement victim must be healthy before target removal').toEqual([]);
 
-      const replacementChooser = await openTerminalChooser(page, fixture.nestedDirectoryPath);
+      const replacementChooser = await openPlainTerminalDiscovery(page, fixture.nestedDirectoryPath);
       const staleGitTarget = replacementChooser.discovery.targets.find((target) => (
         target.kind === 'agent'
         && target.label === initialGitAgent.agentName
