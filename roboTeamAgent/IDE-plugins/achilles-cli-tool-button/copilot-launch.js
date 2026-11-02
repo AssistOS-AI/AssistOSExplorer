@@ -93,7 +93,7 @@ function getWorkspaceDirectory(context) {
         || relative.includes('\\') || relative.includes('\0') || relative.split('/').includes('..')) {
         throw new Error('Cannot open Copilot without a valid workspace directory.');
     }
-    // A robot cannot work in the workspace root, so the top folder opens the default robot's own folder.
+    // A robot cannot work in the workspace root, so the top folder opens `achilles-cli/default`, a separate folder for the default robot.
     return relative === '.' ? 'achilles-cli/default' : relative;
 }
 
