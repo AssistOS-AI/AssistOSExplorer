@@ -51,10 +51,9 @@ export async function buildPrivateLaunch({ paths, id, directory, command, args, 
     const wrapper = path.join(directory, 'launch.sh');
     await fs.writeFile(wrapper, script.join('\n') + '\n', { mode: 0o700 });
     const pastaArgs = ['--netns-only', '--runas', '0:0', '--config-net', '--no-map-gw', '-t', 'none', '-u', 'none'];
-    if (guiPort !== undefined) {
-        if (!Number.isInteger(guiPort) || guiPort < 1 || guiPort > 65535) throw fail('INVALID_INPUT', 'Invalid GUI port');
-        pastaArgs.push('-T', String(guiPort));
-    }
+    if (guiPort !== undefined && (!Number.isInteger(guiPort) || guiPort < 1 || guiPort > 65535)) throw fail('INVALID_INPUT', 'Invalid GUI port');
+    // Only a run's own GUI port reaches the service's loopback; pasta forwards every listening port by default.
+    pastaArgs.push('-T', guiPort === undefined ? 'none' : String(guiPort));
     pastaArgs.push('-U', 'none', '--', '/bin/sh', '-c', `exec unshare --mount /bin/sh ${shellQuote(wrapper)}`);
     const native = nativeEnvironment(env, paths.home(id));
     native.ALA_SANDBOX_HOME = homeTarget(id);

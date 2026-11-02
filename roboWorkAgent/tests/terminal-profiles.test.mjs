@@ -172,7 +172,7 @@ test('default launch uses private pasta with no forwarding, inherited TTY and no
     const { descriptor } = await readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub);
     const launch = await buildTerminalLaunch(descriptor, f.paths);
     assert.equal(launch.command, 'pasta'); assert.equal(launch.options.detached, false); assert.equal(launch.options.stdio, 'inherit');
-    assert.deepEqual(launch.args.slice(0, 12), ['--netns-only', '--runas', '0:0', '--config-net', '--no-map-gw', '-t', 'none', '-u', 'none', '-U', 'none', '--']);
+    assert.deepEqual(launch.args.slice(0, 14), ['--netns-only', '--runas', '0:0', '--config-net', '--no-map-gw', '-t', 'none', '-u', 'none', '-T', 'none', '-U', 'none', '--']);
     assert.ok(!Object.keys(launch.options.env).some(key => /PLOINKY_|TOKEN|SECRET|NODE_OPTIONS/u.test(key)));
     const wrapper = await fs.readFile(path.join(launch.directory, 'launch.sh'), 'utf8');
     assert.match(wrapper, /exec unshare|exec .*robot-shell.mjs/u);
