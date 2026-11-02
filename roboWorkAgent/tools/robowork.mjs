@@ -27,7 +27,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         const result = await invoke(JSON.parse(text || '{}'), process.argv[2]);
         process.stdout.write(JSON.stringify(result) + '\n');
     } catch (error) {
-        process.stderr.write(JSON.stringify({ code: error.code || 'INVALID_INPUT', error: error.statusCode ? error.message : 'RoboWork tool failed' }) + '\n');
+        process.stderr.write(JSON.stringify({ code: error.code || 'INVALID_INPUT', error: error.statusCode ? error.message : 'RoboWork tool failed', statusCode: error.statusCode }) + '\n');
         process.exitCode = 1;
     }
 }

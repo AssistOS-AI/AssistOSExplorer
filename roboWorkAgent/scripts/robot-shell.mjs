@@ -91,13 +91,12 @@ export async function buildTerminalLaunch(descriptor, paths, { environment = new
     if (descriptor.environment) {
         const entry = await environment.require(descriptor.environment, { retry: true });
         const launch = await environment.buildLaunch({ environment: entry.ref, runId: 'terminal-' + randomUUID(), robotId: descriptor.id,
-            home: paths.home(descriptor.id), workspaceRoot: paths.workspaceRoot, cwd: descriptor.cwd,
+            home: paths.home(descriptor.id), workspaceRoot: paths.workspaceRoot, cwd: descriptor.cwd, cwdIdentity: descriptor.cwdIdentity,
             toolCache: { source: descriptor.cacheRoot, target: descriptor.cacheRoot },
             ala: { source: codeRoot, target: '/opt/robowork-terminal', entry: '/opt/robowork-terminal/scripts/robot-shell.mjs' },
             bwrap: { source: descriptor.bwrap, target: '/opt/robowork-bwrap' },
             soul: { source: paths.soul(descriptor.id), target: '/workspace/roboteam-soul' },
             folders: [{ source: path.dirname(path.dirname(descriptor.alaEntry)), target: '/opt/robowork-ala', readOnly: true }],
-            mountIdentities: descriptor.cwd ? [{ target: descriptor.cwd, identity: descriptor.cwdIdentity }] : [],
             tty: true, args: ['--inner', JSON.stringify({ ...descriptor, innerEnvironment: true,
                 alaEntry: '/opt/robowork-ala/bin/ala.mjs', bwrap: '/opt/robowork-bwrap' })], env: {} });
         return { ...launch, options: { ...launch.options, stdio: 'inherit', detached: false } };

@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
+import { pinDirectory } from './robot-paths.mjs';
 
 const execute = promisify(execFile);
 const REF = /^[A-Za-z0-9._-]{1,128}\/[A-Za-z0-9._-]{1,128}$/u;
@@ -13,8 +14,8 @@ const TOOL_ENV = new Set(['CODEX_BIN', 'OPENCODE_BIN', 'PI_BIN', 'CLAUDE_BIN']);
 const DEFAULT_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 // Exit status of a run whose mounts are not the directories RoboWork granted. ALA uses the same status.
 export const MOUNT_REFUSED_EXIT = 78;
-// The container's first process. Nothing a robot controls has started, and the mounts it stats are final: podman has
-// resolved every path, so a later swap of a host path changes nothing here. It then continues in this process.
+// The container's first process, a backstop to mounting through descriptors. Nothing a robot controls has started, and the
+// mounts it stats are final. It then continues in this process.
 const MOUNT_CHECK = `const fs = require('node:fs'); const [, expected, entry, ...args] = process.argv;
 for (const { target, identity } of JSON.parse(expected)) {
     let stat; try { stat = fs.lstatSync(target, { bigint: true }); } catch {}
@@ -61,8 +62,8 @@ function privateData(manifest) {
 // Only the selected manifest's image is reused. Live agent containers never participate.
 export class EnvironmentManager {
     constructor({ loadMarketplace = defaultMarketplace, readManifest = async file => JSON.parse(await fs.readFile(file, 'utf8')),
-        ensureImage, imageExists, execFileImpl = execute, spawnImpl = spawn, podmanCommand = 'podman', ttlMs = 15000, now = Date.now } = {}) {
-        Object.assign(this, { loadMarketplace, readManifest, execFileImpl, spawnImpl, podmanCommand, ttlMs, now });
+        ensureImage, imageExists, execFileImpl = execute, podmanCommand = 'podman', ttlMs = 15000, now = Date.now } = {}) {
+        Object.assign(this, { loadMarketplace, readManifest, execFileImpl, podmanCommand, ttlMs, now });
         this.imageExists = imageExists || (async image => {
             try {
                 await this.execFileImpl(this.podmanCommand, ['image', 'exists', image]);
@@ -144,8 +145,8 @@ export class EnvironmentManager {
         return { ...entry, available: true, reason: '', imagePath: imageInfo.path || DEFAULT_PATH };
     }
 
-    async buildLaunch({ environment, runId, robotId, home, workspaceRoot, cwd, toolCache, ala, bwrap,
-        channels = [], soul, folders = [], args = [], env = {}, tty = false, signal, mountIdentities = [] }) {
+    async buildLaunch({ environment, runId, robotId, home, workspaceRoot, cwd, cwdIdentity, toolCache, ala, bwrap,
+        channels = [], soul, folders = [], args = [], env = {}, tty = false, signal }) {
         if (!ID.test(robotId) || typeof runId !== 'string' || !runId) throw failure('ENVIRONMENT_INVALID', 'Invalid environment run identity', 400);
         const entry = await this.prepare(environment, { signal });
         signal?.throwIfAborted();
@@ -163,12 +164,10 @@ export class EnvironmentManager {
             '--user', '0:0', '--network', 'pasta:--no-map-gw', '--security-opt', 'unmask=/proc/*',
             '--workdir', directory, '--entrypoint', '/usr/bin/env'];
         const mount = (source, target, readOnly) => launch.push('--volume', `${absolute(source)}:${absolute(target)}:${readOnly ? 'ro' : 'rw'}`);
-        if (cwd) mount(directory, directory, false);
         mount(home, homeTarget, false);
         mount(toolCache.source, toolCache.target, true);
         mount(ala.source, ala.target, true);
         mount(bwrap.source, bwrap.target, true);
-        for (const folder of folders) mount(folder.source, folder.target, folder.readOnly !== false);
         for (const channel of channels) mount(channel.source, channel.target, false);
         if (soul) mount(soul.source, soul.target, true);
         const variables = { PATH: entry.imagePath, HOME: homeTarget, USER: robotId, LOGNAME: robotId,
@@ -199,15 +198,20 @@ export class EnvironmentManager {
         for (const [name, value] of Object.entries(env)) {
             if (SAFE_ENV.has(name) && typeof value === 'string' && !value.includes('\0')) variables[name] = value;
         }
+        // A folder a robot can write is mounted through a descriptor checked against its grant.
+        const granted = [...(cwd ? [{ source: directory, target: directory, readOnly: false, identity: cwdIdentity }] : []), ...folders];
+        const pins = [];
+        const release = () => Promise.allSettled(pins.splice(0).map(pin => pin.close()));
+        try {
+            for (const folder of granted) {
+                const pin = folder.identity ? await pinDirectory(folder.source, folder.identity) : null;
+                if (pin) pins.push(pin);
+                mount(pin?.source || folder.source, folder.target, folder.readOnly !== false);
+            }
+        } catch (error) { await release(); throw error; }
+        const expected = granted.filter(folder => folder.identity).map(({ target, identity }) => ({ target, identity }));
         launch.push(entry.image, '-i', ...Object.entries(variables).map(([name, value]) => `${name}=${value}`),
-            'node', ...(mountIdentities.length ? ['-e', MOUNT_CHECK, '--', JSON.stringify(mountIdentities)] : []), absolute(ala.entry), ...args);
-        return { command: this.podmanCommand, args: launch, options: { stdio: ['pipe', 'pipe', 'pipe'] }, containerName };
-    }
-
-    async spawn(options) {
-        const launch = await this.buildLaunch(options);
-        const child = this.spawnImpl(launch.command, launch.args, launch.options);
-        child.containerName = launch.containerName;
-        return child;
+            'node', ...(expected.length ? ['-e', MOUNT_CHECK, '--', JSON.stringify(expected)] : []), absolute(ala.entry), ...args);
+        return { command: this.podmanCommand, args: launch, options: { stdio: ['pipe', 'pipe', 'pipe'] }, containerName, release };
     }
 }

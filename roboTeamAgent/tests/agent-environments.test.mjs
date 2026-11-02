@@ -212,15 +212,6 @@ test('cached executables and PATH are translated while executable symlink escape
     await assert.rejects(manager.buildLaunch({ ...configured, env: { CODEX_BIN: path.join(source, 'escape') } }), { code: 'ENVIRONMENT_PATH_INVALID' });
 });
 
-test('spawn delegates the exact vector and exposes the managed container identity for stop', async t => {
-    const options = await launchFixture(t), calls = [], child = {};
-    const { manager } = fixture({ spawnImpl: (...args) => { calls.push(args); return child; } });
-    assert.equal(await manager.spawn(options), child);
-    assert.equal(calls[0][0], 'podman');
-    assert.equal(calls[0][1][calls[0][1].indexOf('--name') + 1], child.containerName);
-    assert.deepEqual(calls[0][2].stdio, ['pipe', 'pipe', 'pipe']);
-});
-
 test('RoboTeam is a thin environment_list MCP client and propagates unavailable selection errors', async () => {
     const entries = [{ ref: 'AchillesIDE/gitAgent', key: 'git', available: true, reason: '' },
         { ref: 'AchillesIDE/broken', key: 'bad', available: false, reason: 'image cannot be pulled' }];

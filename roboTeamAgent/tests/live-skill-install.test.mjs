@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { installLiveSkills } from '../server/live-skill-install.mjs';
 import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
-import { alaSkillMountArguments } from '../copilot/src/lib/execution/alaSkillMounts.mjs';
+import { alaSkillMountArguments, skillOverlayTargets } from '../copilot/src/lib/execution/alaSkillMounts.mjs';
 
 // Use the same linked installation as production, including non-sibling checkouts.
 const { packageRoot } = await resolveAlaInstallation();
@@ -15,7 +15,7 @@ const loadAla = file => import(pathToFileURL(path.join(packageRoot, 'src', file)
 const { runProcess } = await loadAla('coding-agents/process.mjs');
 const { canStartBubblewrap, canMountPrivateProc } = await loadAla('coding-agents/sandbox.mjs');
 const { parseArguments } = await loadAla('arguments.mjs');
-const { resolveFolderMounts } = await loadAla('coding-agents/folders.mjs');
+const { pinDirectory, pinFolderMounts, resolveFolderMounts } = await loadAla('coding-agents/folders.mjs');
 const { ignoredMountTargets } = await loadAla('coding-agents/ignored-paths.mjs');
 
 const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
@@ -131,6 +131,65 @@ test('a project skills path that is not a directory leaves the session with no p
     assert.ok(await installLiveSkills(input(1)));
 });
 
+async function overlayLayouts(cwd) {
+    const agents = path.join(cwd, '.agents/skills'), claude = path.join(cwd, '.claude/skills'), shared = path.join(cwd, 'shared'), outside = path.join(path.dirname(cwd), 'outside');
+    return [
+        ['plain project', async () => {}, [agents, claude], []],
+        ['.claude/skills -> ../.agents/skills', async () => { await fs.mkdir(agents, { recursive: true }); await fs.mkdir(path.dirname(claude)); await fs.symlink('../.agents/skills', claude); }, [agents], []],
+        ['.claude -> .agents', async () => { await fs.mkdir(path.dirname(agents)); await fs.symlink('.agents', path.join(cwd, '.claude')); }, [agents], []],
+        ['.agents/skills -> ../shared', async () => { await fs.mkdir(path.dirname(agents)); await fs.mkdir(shared); await fs.symlink('../shared', agents); }, [shared, claude], []],
+        ['.agents -> shared', async () => { await fs.mkdir(path.join(shared, 'skills'), { recursive: true }); await fs.symlink('shared', path.join(cwd, '.agents')); }, [path.join(shared, 'skills'), claude], []],
+        ['link leaving the folder', async () => { await fs.mkdir(path.dirname(agents)); await fs.mkdir(outside, { recursive: true }); await fs.symlink(outside, agents); }, [claude], ['.agents/skills']],
+        ['link into private data', async () => { await fs.mkdir(path.dirname(agents)); await fs.mkdir(path.join(cwd, '.roboteam/x'), { recursive: true }); await fs.symlink('../.roboteam/x', agents); }, [claude], ['.agents/skills']],
+        ['dangling link', async () => { await fs.mkdir(path.dirname(claude)); await fs.symlink('missing', claude); }, [agents], ['.claude/skills']],
+        ['looping link', async () => { await fs.mkdir(path.dirname(claude)); await fs.symlink('skills', claude); }, [agents], ['.claude/skills']],
+        ['file in the way', async () => { await fs.writeFile(path.join(cwd, '.claude'), 'x'); }, [agents], ['.claude/skills']],
+        ['file at the target', async () => { await fs.mkdir(path.dirname(claude)); await fs.writeFile(claude, 'x'); }, [agents], ['.claude/skills']],
+    ];
+}
+
+test('the session skills overlay decides before mounting: follow a link inside the folder, one mount per place, skip the rest', async t => {
+    const probe = await fixture(t, { projectSkills: false });
+    for (const [label] of await overlayLayouts(probe.cwd)) {
+        const { cwd } = await fixture(t, { projectSkills: false });
+        const [, setup, targets, skipped] = (await overlayLayouts(cwd)).find(([name]) => name === label);
+        await setup();
+        assert.deepEqual(await skillOverlayTargets(cwd), { targets, skipped }, label);
+    }
+});
+
+test('every link layout runs with the session skills on real descriptor binds and a robot cannot stop the turn', {
+    skip: canStartBubblewrap() && canMountPrivateProc() ? false : 'Bubblewrap unavailable',
+}, async t => {
+    const probe = await fixture(t, { projectSkills: false });
+    for (const [label] of await overlayLayouts(probe.cwd)) {
+        const { cwd, input } = await fixture(t, { projectSkills: false });
+        const [, setup] = (await overlayLayouts(cwd)).find(([name]) => name === label);
+        await setup();
+        const snapshot = await installLiveSkills(input(0));
+        const { targets } = await skillOverlayTargets(cwd);
+        const options = parseArguments(alaSkillMountArguments({ snapshot, cwd, targets }));
+        const folders = pinFolderMounts(options.folders);
+        const pin = pinDirectory(cwd);
+        const result = await runProcess({ binary: process.execPath, cwd, args: ['-e', `
+            const fs = require('node:fs');
+            process.stdout.write(JSON.stringify(process.argv.slice(1).map(target => fs.readFileSync(target + '/example/SKILL.md', 'utf8'))));
+        `, ...targets], sandbox: { backend: 'codex', hostWorkspace: cwd, workspaceFd: pin.fd, workspaceTarget: cwd,
+            folders, ignoredPaths: [path.join(cwd, '.roboteam')] } });
+        assert.equal(result.code, 0, `${label}: ${result.stderr}`);
+        assert.deepEqual(JSON.parse(result.stdout), targets.map(() => 'first'), label);
+    }
+});
+
+test('an invalid old skill installation record is ignored and never stops the turn', async t => {
+    const { cwd, input } = await fixture(t);
+    await fs.writeFile(path.join(cwd, '.agents/.roboteam-links.json'), '{ not json');
+    assert.ok((await fs.readdir((await installLiveSkills(input(0))).skillsDirectory)).includes('local'));
+    await fs.rm(path.join(cwd, '.agents/.roboteam-links.json'));
+    await fs.mkdir(path.join(cwd, '.agents/.roboteam-links.json'));
+    assert.ok(await installLiveSkills(input(1)));
+});
+
 test('bundled skills resolve to the workspace checkout', async t => {
     const { copilotSkillsRoot } = await import('../server/copilot-skillset.mjs');
     const { root, input, entries } = await fixture(t);
@@ -171,7 +230,7 @@ test('RoboTeam arguments use the real ALA parser and mount every skill source, w
         [{ source: cwd, target: cwd }, ...mounts], cwd), [path.join(cwd, '.roboteam')]);
     assert.ok(mounts.some(mount => mount.target.startsWith('/workspace/roboteam-skill-')),
         'Project skills retain their read-only relocated source');
-    const aliased = alaSkillMountArguments({ snapshot, cwd, includeClaude: false });
+    const aliased = alaSkillMountArguments({ snapshot, cwd, targets: [path.join(cwd, '.agents/skills')] });
     assert.ok(!aliased.includes(path.join(cwd, '.claude/skills')));
     // A source that would sit at its own path inside a former workspace view is still mounted.
     const sameRoot = alaSkillMountArguments({ snapshot: { ...snapshot, mounts: [{ source: humanReport, target: humanReport }] }, workspaceRoot: root, cwd });
@@ -242,7 +301,7 @@ test('an existing Claude symlink sees the same session overlay without a duplica
     const { root, cwd, input } = await fixture(t);
     await fs.symlink('.agents', path.join(cwd, '.claude'));
     const snapshot = await installLiveSkills(input(0));
-    const options = parseArguments(alaSkillMountArguments({ snapshot, cwd, includeClaude: false }));
+    const options = parseArguments(alaSkillMountArguments({ snapshot, cwd, targets: (await skillOverlayTargets(cwd)).targets }));
     const result = await runProcess({ binary: process.execPath, cwd, args: ['-e', `
         const fs = require('node:fs');
         process.stdout.write(fs.readFileSync('.claude/skills/example/SKILL.md', 'utf8'));

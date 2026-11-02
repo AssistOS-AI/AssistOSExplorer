@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 import { MOUNT_REFUSED_EXIT } from './environment.mjs';
-import { directoryIdentity, fail, within } from './robot-paths.mjs';
+import { directoryIdentity, fail, pinDirectory, within } from './robot-paths.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
@@ -17,7 +17,7 @@ const MANAGED_LABEL = 'io.assistos.robowork.gui=1';
 const GUI_MODES = new Set(['desktop', 'browser']);
 const ROBOT_ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
 // The images start with /init and have no command. This runs first and in its place, before any robot-controlled
-// autostart, against mounts podman has already resolved: a working folder swapped after its check is refused here.
+// autostart, and is a backstop to mounting through a descriptor.
 const CWD_CHECK = `if [ -d "$1" ] && [ ! -L "$1" ] && [ "$(stat -c '%d:%i' -- "$1")" = "$2" ]; then exec /init; fi
 echo "[RoboWork] The working folder changed before the session started: $1" >&2
 exit ${MOUNT_REFUSED_EXIT}`;
@@ -86,7 +86,7 @@ function chromiumLanguageFlag(lang) {
     return lang && lang !== 'en-US' ? ` --lang=${lang}` : '';
 }
 
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, proxy = null, cwdIdentity = null, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, proxy = null, cwdIdentity = null, cwdSource = cwd, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     if (proxy && (!Number.isInteger(proxy.relayPort) || proxy.relayPort < 1 || proxy.relayPort > 65535 || !path.isAbsolute(String(proxy.policyFile || '')))) {
@@ -133,7 +133,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             '-v', `${homePath}:/config`, '-v', `${homePath}:${homeTarget}`,
             '-v', `${soulPath}:/workspace/roboteam-soul`,
             // Other robots' conversations live in the folder's private data; a session needs nothing from it.
-            ...(cwd === homeTarget ? [] : ['-v', `${cwd}:${cwd}:rw`, '--tmpfs', `${cwd}/.roboteam:ro,size=4k,mode=0555`]),
+            ...(cwd === homeTarget ? [] : ['-v', `${cwdSource}:${cwd}:rw`, '--tmpfs', `${cwd}/.roboteam:ro,size=4k,mode=0555,notmpcopyup`]),
             '-w', cwd,
             '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
             ...(proxy ? ['-v', `${proxy.policyFile}:${CHROMIUM_POLICY_TARGET}:ro`] : []),
@@ -213,13 +213,18 @@ export class GuiManager {
         const parts = path.relative(root, candidate).split(path.sep);
         if (['.data', '.ploinky'].includes(parts[0])) throw fail('CWD_REFUSED', 'Directory is protected workspace state');
         if (parts.includes('.roboteam')) throw fail('CWD_REFUSED', 'Directory is private project data');
+        // RoboTeam sends canonical paths, so a difference here is a path swapped since it resolved it.
+        if (candidate !== value) throw fail('CWD_REFUSED', 'A canonical directory path is required');
         if (!(await fs.stat(candidate)).isDirectory()) throw fail('CWD_REFUSED', 'A directory is required');
         return candidate;
     }
 
     status(robotId) {
         const session = this.sessions.get(robotId);
-        return session ? { state: session.state, mode: session.mode, sessionUrl: session.sessionUrl, cwd: session.cwd } : { state: 'stopped', mode: null, sessionUrl: null, cwd: null };
+        if (!session) return { state: 'stopped', mode: null, sessionUrl: null, cwd: null };
+        // Only a refusal written for the user carries a status; any other failure stays internal.
+        const reason = session.state === 'failed' && session.error?.statusCode ? { error: { code: session.error.code, message: session.error.message, statusCode: session.error.statusCode } } : {};
+        return { state: session.state, mode: session.mode, sessionUrl: session.sessionUrl, cwd: session.cwd, ...reason };
     }
 
     activeSession(robotId) { return this.sessions.get(robotId) || null; }
@@ -317,16 +322,19 @@ export class GuiManager {
             const firewallFile = upstream && mode === 'browser' ? await writeContainerFirewallRules(this.proxyPolicyDir) : null;
             session.relay = upstream ? this.createRelay(upstream) : null;
             const proxy = session.relay ? { relayPort: await session.relay.listen(), policyFile } : null;
-            const plan = buildRobotRunArgs({ robot: { ...robot, id: robotId }, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images,
-                timezone: locale?.timezone || this.timezone, locale, cwd, cwdIdentity, toolsPath: tools.path, shellTools, proxy });
-            Object.assign(session, { containerName: plan.containerName, sessionUrl: plan.subfolder });
-            check();
-            await this.execFileImpl(this.podmanCommand, plan.args, { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: process.env, signal });
-            check();
-            if (plan.firewalled) await this._startFirewalled(plan.containerName, firewallFile, signal);
-            started = true;
-            session.sessionPort = mappedPort((await this._podman(['port', plan.containerName, '3000/tcp'])).stdout);
-            session.mcpPort = mappedPort((await this._podman(['port', plan.containerName, '8100/tcp'])).stdout);
+            const pin = cwdIdentity ? await pinDirectory(cwd, cwdIdentity, 'CWD_REFUSED') : null;
+            try {
+                const plan = buildRobotRunArgs({ robot: { ...robot, id: robotId }, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images,
+                    timezone: locale?.timezone || this.timezone, locale, cwd, cwdIdentity, cwdSource: pin?.source || cwd, toolsPath: tools.path, shellTools, proxy });
+                Object.assign(session, { containerName: plan.containerName, sessionUrl: plan.subfolder });
+                check();
+                await this.execFileImpl(this.podmanCommand, plan.args, { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: process.env, signal });
+                check();
+                if (plan.firewalled) await this._startFirewalled(plan.containerName, firewallFile, signal);
+                started = true;
+            } finally { await pin?.close(); }
+            session.sessionPort = mappedPort((await this._podman(['port', session.containerName, '3000/tcp'])).stdout);
+            session.mcpPort = mappedPort((await this._podman(['port', session.containerName, '8100/tcp'])).stdout);
             await wait(this.waitForSession(session));
             check();
             session.state = 'running';

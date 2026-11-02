@@ -25,9 +25,9 @@ export function within(root, candidate) {
     return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-// Walks a canonical path one component at a time and never through a link, so the identity belongs to the path that was
+// Walks a canonical path one component at a time and never through a link, so the directory reached is the path that was
 // checked even when a robot swaps a component meanwhile. On Linux each step opens relative to the directory just reached.
-export async function directoryIdentity(directory) {
+async function openDirectory(directory) {
     let current = path.parse(directory).root;
     let handle = await fs.open(current, constants.O_RDONLY | constants.O_DIRECTORY);
     try {
@@ -37,9 +37,24 @@ export async function directoryIdentity(directory) {
             await handle.close();
             handle = next;
         }
-        const stat = await handle.stat({ bigint: true });
-        return `${stat.dev}:${stat.ino}`;
-    } finally { await handle.close(); }
+        return handle;
+    } catch (error) { await handle.close(); throw error; }
+}
+
+const identityOf = async handle => { const stat = await handle.stat({ bigint: true }); return `${stat.dev}:${stat.ino}`; };
+
+export async function directoryIdentity(directory) {
+    const handle = await openDirectory(directory);
+    try { return await identityOf(handle); } finally { await handle.close(); }
+}
+
+// Opens a granted directory and names it for nested Podman through this process's descriptor, so no later swap of its
+// path can change what is mounted. The descriptor must stay open until the container has started.
+export async function pinDirectory(directory, identity, code = 'FOLDER_REFUSED') {
+    const handle = await openDirectory(directory).catch(() => null);
+    if (handle && await identityOf(handle) === identity) return { source: `/proc/${process.pid}/fd/${handle.fd}`, close: () => handle.close() };
+    await handle?.close();
+    throw fail(code, 'A granted folder changed before it was mounted');
 }
 
 export function homeTarget(id) { return `/home/${robotId(id)}`; }
@@ -82,6 +97,8 @@ export class RobotPaths {
             const parts = path.relative(root, resolved).split(path.sep);
             if (within(root, resolved) && !(parts[0] === 'repos' && parts.length >= 2)) throw fail(code, 'Directory is protected workspace state');
         }
+        // RoboTeam sends canonical paths, so a difference here is a path swapped since it resolved it.
+        if (resolved !== value) throw fail(code, 'A canonical directory path is required');
         return resolved;
     }
 

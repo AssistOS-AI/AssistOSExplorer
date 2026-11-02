@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { alaSkillMountArguments } from './alaSkillMounts.mjs';
+import { alaSkillMountArguments, skillOverlayTargets } from './alaSkillMounts.mjs';
 import { readAlaSession } from './alaTranscript.mjs';
 import * as workspaceSettings from '../config/achillesSettings.mjs';
 import { acquireExecutionLease } from '../storage/workspaceStateLock.mjs';
@@ -250,15 +250,9 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             // The writable cwd is the --cwd grant and the robot sees no other part of the
             // workspace. ALA mounts exactly what it is given.
             if (snapshot.skillsDirectory) {
-                const claude = path.join(cwd, '.claude');
-                const claudeStat = await fs.lstat(claude).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-                // Existing .claude -> .agents aliases already see the same overlay.
-                if (claudeStat?.isSymbolicLink()
-                    && await fs.realpath(claude) !== await fs.realpath(path.join(cwd, '.agents'))) {
-                    throw new Error('Project .claude symlink must point to .agents for session skills.');
-                }
-                const skillArgs = alaSkillMountArguments({ snapshot, cwd,
-                    includeClaude: !claudeStat?.isSymbolicLink() });
+                const { targets, skipped } = await skillOverlayTargets(cwd);
+                for (const name of skipped) await emit({ type: 'diagnostic', category: 'skill-catalog', message: `invalid: Session skills are not available at ${name}` });
+                const skillArgs = alaSkillMountArguments({ snapshot, cwd, targets });
                 for (let i = 0; i < skillArgs.length;) {
                     i++;
                     const source = await targetPath(skillArgs[i++], config.workspaceRoot);

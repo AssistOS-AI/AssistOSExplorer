@@ -154,6 +154,24 @@ test('persisted flow interruption scan waits for the first successful run snapsh
     assert.equal(service.bindings.get('task-one').flowId, flow.id);
 });
 
+test('a RoboWork refusal or bad cwd reaches the HTTP caller with its code and reason', async t => {
+    for (const [error, status, body] of [
+        [Object.assign(new Error('The workspace root is not available to a robot'), { code: 'CWD_REFUSED', statusCode: 400 }), 400, { ok: false, error: 'The workspace root is not available to a robot', code: 'CWD_REFUSED' }],
+        [new Error('cwd must stay inside the enabled Ploinky workspace'), 400, { ok: false, error: 'cwd must stay inside the enabled Ploinky workspace' }],
+        [new Error('private detail'), 500, { ok: false, error: 'request failed' }],
+    ]) {
+        const robot = { id: 'robot-abc', name: 'analyst' };
+        const server = createRoboTeamServer({ robotStore: { list: async () => [robot], getByName: async () => robot, get: async () => robot },
+            runtimeManager: { workspaceRoot: os.tmpdir(), roboWork: {}, openDesktop: async () => { throw error; } }, skillsets: {}, internalToken: 'test-token' });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        const response = await fetch(`http://127.0.0.1:${server.address().port}/api/control`, { method: 'POST',
+            headers: { 'x-roboteam-internal-token': 'test-token', 'x-roboteam-listing-origin': 'agent', 'content-type': 'application/json' }, body: JSON.stringify({ operation: 'open-desktop', robotName: 'analyst', cwd: '/' }) });
+        server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+        assert.equal(response.status, status);
+        assert.deepEqual(await response.json(), body);
+    }
+});
+
 test('an HTTP request needing an unavailable RoboWork receives a clear retryable 503', async t => {
     const client = new RoboWorkClient({ createClient: async () => ({ callTool: async () => { throw inactive(); } }) });
     const server = createRoboTeamServer({ robotStore: { list: async () => [] },

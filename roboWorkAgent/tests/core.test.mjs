@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fstatSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -378,6 +379,31 @@ test('an Environment whose cwd or folder was swapped before its mount ends FOLDE
     assert.equal(result.exit.code, 1, log); assert.match(log, /ERR_MODULE_NOT_FOUND/u);
 });
 
+test('Podman receives each granted folder through a descriptor, checked against its grant, until release', async t => {
+    const { paths, input, root } = await fixture(t);
+    await fs.mkdir(paths.home(input.robotId), { recursive: true });
+    const folder = path.join(paths.workspaceRoot, 'granted');
+    await fs.mkdir(folder);
+    const environment = new EnvironmentManager();
+    environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/bin:/bin' });
+    const launchFor = identities => environment.buildLaunch({ environment: 'repo/agent', runId: 'r', robotId: input.robotId, home: paths.home(input.robotId),
+        workspaceRoot: paths.workspaceRoot, cwd: input.cwd, cwdIdentity: identities.cwd, toolCache: { source: root, target: root }, ala: { source: root, target: '/opt/ala', entry: '/opt/ala/bin/ala.mjs' },
+        bwrap: { source: '/fixture/bwrap', target: '/opt/bwrap' }, folders: [{ source: folder, target: '/workspace/granted', readOnly: true, identity: identities.folder }], args: [] });
+    const identities = { cwd: await identityOf(input.cwd), folder: await identityOf(folder) };
+    const launch = await launchFor(identities);
+    const volumes = launch.args.flatMap((value, index) => value === '--volume' ? [launch.args[index + 1]] : []);
+    const source = target => new RegExp(`^/proc/${process.pid}/fd/(\\d+):${target}:`, 'u');
+    const descriptors = [volumes.find(value => source(input.cwd).test(value)), volumes.find(value => source('/workspace/granted').test(value))].map(value => Number(/fd\/(\d+):/u.exec(value)[1]));
+    const open = descriptor => { const stat = fstatSync(descriptor, { bigint: true }); return `${stat.dev}:${stat.ino}`; };
+    assert.deepEqual(descriptors.map(open), [identities.cwd, identities.folder]);
+    assert.ok(!volumes.some(value => value.startsWith(`${input.cwd}:`) || value.startsWith(`${folder}:`)));
+    await launch.release();
+    for (const descriptor of descriptors) assert.throws(() => open(descriptor), { code: 'EBADF' });
+    // A swap between the grant and the launch is refused here, and neither descriptor stays open.
+    await fs.rename(folder, `${folder}-moved`); await fs.symlink(input.cwd, folder);
+    await assert.rejects(launchFor(identities), { code: 'FOLDER_REFUSED', message: /changed before it was mounted/u });
+});
+
 test('the first process checks identities before the entry runs and hands the entry its arguments', async t => {
     const { paths, input, root } = await fixture(t);
     await fs.mkdir(paths.home(input.robotId), { recursive: true });
@@ -386,27 +412,27 @@ test('the first process checks identities before the entry runs and hands the en
     await fs.writeFile(entry, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(1)));\n`);
     const environment = new EnvironmentManager();
     environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/bin:/bin' });
-    const launchFor = identity => environment.buildLaunch({ environment: 'repo/agent', runId: 'r', robotId: input.robotId, home: paths.home(input.robotId),
-        workspaceRoot: paths.workspaceRoot, cwd: input.cwd, toolCache: { source: root, target: root }, ala: { source: root, target: '/opt/ala', entry },
-        bwrap: { source: '/fixture/bwrap', target: '/opt/bwrap' }, args: ['--home', '/home/aaa', '--cwd', input.cwd], mountIdentities: [{ target: input.cwd, identity }] });
-    const first = async identity => {
-        const { args } = await launchFor(identity);
+    const launch = await environment.buildLaunch({ environment: 'repo/agent', runId: 'r', robotId: input.robotId, home: paths.home(input.robotId),
+        workspaceRoot: paths.workspaceRoot, cwd: input.cwd, cwdIdentity: await identityOf(input.cwd), toolCache: { source: root, target: root }, ala: { source: root, target: '/opt/ala', entry },
+        bwrap: { source: '/fixture/bwrap', target: '/opt/bwrap' }, args: ['--home', '/home/aaa', '--cwd', input.cwd] });
+    t.after(() => launch.release());
+    const first = async () => {
         await fs.rm(marker, { force: true });
-        return spawnSync(process.execPath, args.slice(args.lastIndexOf('node') + 1), { encoding: 'utf8' });
+        return spawnSync(process.execPath, launch.args.slice(launch.args.lastIndexOf('node') + 1), { encoding: 'utf8' });
     };
-    const refused = await first('1:1');
-    assert.equal(refused.status, 78, refused.stderr); assert.match(refused.stderr, /A granted folder changed/u);
-    await assert.rejects(fs.lstat(marker), { code: 'ENOENT' });
-    const identity = await identityOf(input.cwd);
-    const accepted = await first(identity);
+    const accepted = await first();
     assert.equal(accepted.status, 0, accepted.stderr);
     assert.deepEqual(JSON.parse(await fs.readFile(marker, 'utf8')), [entry, '--home', '/home/aaa', '--cwd', input.cwd]);
-    // A link at the mount target is refused even when it leads to the granted directory.
+    // Another directory at the mount target, then a link leading to the granted directory, as if Podman had resolved a name.
     const moved = `${input.cwd}-moved`;
-    await fs.rename(input.cwd, moved); await fs.symlink(moved, input.cwd);
-    const { args } = await launchFor(identity).catch(() => ({ args: null }));
-    const linked = spawnSync(process.execPath, [...(args || []).slice((args || []).lastIndexOf('node') + 1)], { encoding: 'utf8' });
+    await fs.rename(input.cwd, moved); await fs.mkdir(input.cwd);
+    const other = await first();
+    assert.equal(other.status, 78, other.stderr); assert.match(other.stderr, /A granted folder changed/u);
+    await assert.rejects(fs.lstat(marker), { code: 'ENOENT' });
+    await fs.rmdir(input.cwd); await fs.symlink(moved, input.cwd);
+    const linked = await first();
     assert.equal(linked.status, 78, linked.stderr);
+    await assert.rejects(fs.lstat(marker), { code: 'ENOENT' });
 });
 
 test('every granted directory reaches ALA and the Environment check with the identity recorded at grant time', async t => {
@@ -419,13 +445,35 @@ test('every granted directory reaches ALA and the Environment check with the ide
     await startReady(manager, { ...input, folders: [{ source: folder, alias: 'granted' }] });
     const expected = launchOptions.args.flatMap((value, index) => value === '--expect-dir' ? [launchOptions.args[index + 1]] : []);
     assert.deepEqual(expected, [`${recorded.cwd}:${input.cwd}`, `${recorded.folder}:${folder}`]);
-    let environmentOptions;
-    manager.environment = { buildLaunch: async options => { environmentOptions = options; return { command: process.execPath, args: ['-e', "process.stdin.on('data',()=>{});"], options: { detached: true, stdio: ['pipe', 'pipe', 'pipe'] } }; } };
+    let environmentOptions, released = 0;
+    manager.environment = { buildLaunch: async options => { environmentOptions = options; return { command: process.execPath, args: ['-e', "process.stdin.on('data',()=>{});"], options: { detached: true, stdio: ['pipe', 'pipe', 'pipe'] }, release: async () => { released++; } }; } };
     manager.runtimeBundle = { prepare: async () => ({ ala: { path: '/fixture/ala' }, bwrap: { bin: '/fixture/bwrap' } }) };
     await startReady(manager, { ...input, runId: 'run-2', environment: 'repo/agent', folders: [{ source: folder, alias: 'granted' }] });
-    assert.deepEqual(environmentOptions.mountIdentities, [{ target: input.cwd, identity: recorded.cwd }, { target: '/workspace/granted', identity: recorded.folder }]);
+    assert.equal(environmentOptions.cwdIdentity, recorded.cwd);
+    assert.deepEqual(environmentOptions.folders.map(({ target, identity }) => ({ target, identity })), [{ target: '/workspace/granted', identity: recorded.folder }]);
     assert.ok(environmentOptions.args.includes(`${recorded.folder}:/workspace/granted`));
+    assert.equal(released, 0, 'The descriptors stay open while the container starts.');
     await Promise.all(['run-1', 'run-2'].map(runId => manager.stop({ runId, signal: 'SIGKILL' })));
+    for (let attempt = 0; attempt < 300 && !released; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(released > 0);
+});
+
+test('a grant refuses a path that is no longer canonical, and a run refuses a planted private directory', async t => {
+    const { manager, paths, input } = await fixture(t);
+    const sibling = path.join(paths.workspaceRoot, 'sibling'), link = path.join(input.cwd, 'link');
+    await fs.mkdir(sibling); await fs.symlink(sibling, link);
+    // RoboTeam canonicalised this path; a swap since then must not grant what the link reaches.
+    await assert.rejects(paths.grant(link), { code: 'FOLDER_REFUSED', message: /canonical/u });
+    await assert.rejects(paths.grant(link, 'cwd'), { code: 'CWD_REFUSED', message: /canonical/u });
+    await assert.rejects(paths.grant(`${sibling}/`), { code: 'FOLDER_REFUSED' });
+    assert.equal(await paths.grant(sibling), sibling);
+    for (const plant of [target => fs.symlink(sibling, target), target => fs.writeFile(target, 'x')]) {
+        const target = path.join(input.cwd, '.roboteam');
+        await plant(target);
+        await assert.rejects(manager.start(input), { code: 'FOLDER_REFUSED', message: /\.roboteam is not a real directory/u });
+        await fs.rm(target);
+    }
+    assert.equal(manager.list().length, 0);
 });
 
 test('a grant records the identity of the checked path, never of a link or of what a link above it reaches', async t => {
@@ -468,6 +516,14 @@ test('model discovery masks private project data in a working folder and pins it
     const identity = await identityOf(input.cwd);
     assert.deepEqual(run({ cwd: input.cwd, identity }), { ignoredPaths: [path.join(input.cwd, '.roboteam')], workspaceIdentity: identity, masked: [true] });
     assert.deepEqual(run({ cwd: paths.home(input.robotId) }), { ignoredPaths: [], masked: [] });
+    // The identity is checked when the service is created, before the model cache reads anything a robot wrote.
+    const touched = path.join(root, 'probe-touched');
+    await fs.writeFile(path.join(root, 'ala', 'src', 'coding-agents', 'discovery.mjs'), `import fs from 'node:fs';
+export const discoverCodingAgents = async () => [{ name: 'opencode', available: true, get binary() { fs.writeFileSync(${JSON.stringify(touched)}, ''); return '/missing'; } }];`);
+    await fs.writeFile(path.join(root, 'ala', 'src', 'coding-agents', 'service.mjs'), `export const createCodingAgentService = () => { throw new Error('refused'); };`);
+    const refused = spawnSync(process.execPath, [script, JSON.stringify({ alaEntry, agent: 'opencode', cwd: input.cwd, identity, home: paths.home(input.robotId), soul: paths.soul(input.robotId), dataDir: paths.dataDir, robotId: input.robotId })], { encoding: 'utf8' });
+    assert.notEqual(refused.status, 0); assert.match(refused.stderr, /refused/u);
+    await assert.rejects(fs.lstat(touched), { code: 'ENOENT' });
     // The operation receives the identity recorded where the path was granted.
     let launched;
     await fs.mkdir(path.join(paths.robot(input.robotId)), { recursive: true });
@@ -478,6 +534,22 @@ test('model discovery masks private project data in a working folder and pins it
     robots.require = async () => ({ id: input.robotId, codingAgents: ['codex'] });
     await robots.models({ robotId: input.robotId, agent: 'codex', cwd: input.cwd });
     assert.ok(launched.includes(`"identity":"${identity}"`), launched);
+});
+
+test('a refused tool reports its status, so RoboTeam can pass the reason on', async t => {
+    const { manager } = await fixture(t);
+    const server = createRoboWorkServer({ robots: {}, runs: manager, environment: {}, internalToken: 'private' });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+    const tool = fileURLToPath(new URL('../tools/robowork.mjs', import.meta.url));
+    const child = spawn(process.execPath, [tool, 'run_read'], { stdio: ['pipe', 'ignore', 'pipe'],
+        env: { PATH: process.env.PATH, ROBOWORK_INTERNAL_TOKEN: 'private', ROBOWORK_SERVICE_PORT: String(server.address().port) } });
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.stdin.end(JSON.stringify({ ...grant(), input: { runId: 'unknown' } }));
+    const status = await new Promise(resolve => child.once('close', resolve));
+    assert.equal(status, 1);
+    assert.deepEqual(JSON.parse(stderr), { code: 'UNKNOWN_RUN', error: 'Unknown runId', statusCode: 404 });
 });
 
 test('resident HTTP service refuses missing token and returns stable operation errors', async t => {

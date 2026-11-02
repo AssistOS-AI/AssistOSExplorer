@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
+import { fstatSync } from 'node:fs';
 import { GuiManager, buildRobotRunArgs, proxySessionHttp } from '../server/gui-manager.mjs';
 import { createRoboWorkServer } from '../server/http-server.mjs';
 
@@ -44,7 +45,7 @@ test('proxy forwarding is only its relay and browser firewall precedes startup',
 });
 
 async function fixture(t, overrides = {}) {
-    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gui-manager-'));
+    const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gui-manager-')));
     t.after(() => fs.rm(workspaceRoot, { recursive: true, force: true }));
     const calls = [];
     const homeCalls = [];
@@ -121,12 +122,19 @@ test('gui_ensure reports CWD_REFUSED and its reason for every refused root form'
         assert.match(answer.error, reason, cwd); assert.notEqual(answer.error, 'RoboWork request failed', cwd);
     }
     assert.equal(manager.sessions.size, 0);
+    // A link inside the workspace is the path a swap leaves behind after RoboTeam canonicalised it.
+    await fs.symlink(project, path.join(root, 'swapped'));
+    assert.match((await ensure(path.join(root, 'swapped'))).error, /canonical/u);
 });
 
 test('Browser and Desktop mask private project data read-only in a working folder and need no mask in the home', () => {
     for (const mode of ['browser', 'desktop']) {
         const { args } = buildRobotRunArgs({ ...base, mode, cwd: '/workspace/project' });
-        assert.equal(args[args.indexOf('--tmpfs', args.indexOf('/workspace/project:/workspace/project:rw')) + 1], '/workspace/project/.roboteam:ro,size=4k,mode=0555');
+        const mask = args[args.indexOf('--tmpfs', args.indexOf('/workspace/project:/workspace/project:rw')) + 1];
+        assert.equal(mask, '/workspace/project/.roboteam:ro,size=4k,mode=0555,notmpcopyup');
+        // Without this flag Podman copies what the mask covers, so history stays readable or fills the 4k tmpfs.
+        // A real container is needed to prove the mask is empty, which only Linux can run.
+        assert.ok(mask.split(':')[1].split(',').includes('notmpcopyup'));
         assert.equal(buildRobotRunArgs({ ...base, mode, cwd: '/home/robot-a' }).args.some(value => value.includes('.roboteam')), false);
     }
 });
@@ -155,25 +163,38 @@ test('the container starts with the working folder check and only then becomes /
     assert.notEqual(passed.status, 78, passed.stderr); assert.doesNotMatch(passed.stderr, /working folder changed/u);
 });
 
-test('a session records the working folder identity when checked, and a refusal by the check reports CWD_REFUSED', async t => {
+test('a session mounts through a descriptor held until the container starts and reports a swap as CWD_REFUSED', async t => {
     const planned = [];
-    let swap = async () => {};
+    let swap = async () => {}, holding = null;
     const { manager, workspaceRoot } = await fixture(t, {
         prepareRobot: async () => { await swap(); },
         waitForSession: async () => { throw new Error('session did not become ready'); },
         execFileImpl: async (command, args) => {
             planned.push(args);
+            if (args[0] === 'run') holding = fstatSync(Number(/fd\/(\d+):/u.exec(args[args.findIndex(value => value.endsWith(`:${project}:rw`))])[1]), { bigint: true });
             return { stdout: args[0] === 'port' ? '127.0.0.1:4567' : args[0] === 'inspect' ? '78\n' : '', stderr: '' };
         },
     });
-    const project = path.join(await fs.realpath(workspaceRoot), 'project'), other = path.join(await fs.realpath(workspaceRoot), 'other');
+    const project = path.join(workspaceRoot, 'project'), other = path.join(workspaceRoot, 'other');
     await fs.mkdir(project); await fs.mkdir(other);
-    const stat = await fs.lstat(project, { bigint: true });
-    swap = async () => { await fs.rename(project, `${project}-moved`); await fs.symlink(other, project); };
+    const stat = await fs.lstat(project, { bigint: true }), identity = `${stat.dev}:${stat.ino}`;
+    // The first-process check is the backstop: its exit status becomes the refusal.
     await assert.rejects(manager.ensureReady({ robotId: 'robot-a', mode: 'desktop', cwd: project }), { code: 'CWD_REFUSED', message: /working folder changed/u });
     const run = planned.find(args => args[0] === 'run');
-    assert.ok(run.includes(`${stat.dev}:${stat.ino}`), 'The identity must be the one recorded before the swap.');
-    assert.equal(manager.status('robot-a').state, 'failed');
+    assert.ok(run.includes(identity));
+    assert.ok(run.some(value => new RegExp(`^/proc/${process.pid}/fd/\\d+:${project}:rw$`, 'u').test(value)));
+    assert.equal(`${holding.dev}:${holding.ino}`, identity);
+    const descriptor = Number(/fd\/(\d+):/u.exec(run.find(value => value.endsWith(`:${project}:rw`)))[1]);
+    assert.throws(() => fstatSync(descriptor), { code: 'EBADF' }, 'The descriptor closes once the container has started.');
+    const failed = manager.status('robot-a');
+    assert.equal(failed.state, 'failed');
+    assert.deepEqual(failed.error, { code: 'CWD_REFUSED', message: 'The working folder changed before the session started', statusCode: 400 });
+    // A swap during preparation is refused before Podman is asked for anything.
+    planned.length = 0;
+    await manager.stop({ robotId: 'robot-a' });
+    swap = async () => { await fs.rename(project, `${project}-moved`); await fs.symlink(other, project); };
+    await assert.rejects(manager.ensureReady({ robotId: 'robot-a', mode: 'desktop', cwd: project }), { code: 'CWD_REFUSED', message: /changed before it was mounted/u });
+    assert.equal(planned.filter(args => args[0] === 'run').length, 0);
 });
 
 test('failed start cleans only its own container and closes its relay', async t => {

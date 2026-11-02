@@ -826,12 +826,13 @@ test('runtime reattaches only authenticated live run records and preserves their
 test('GUI preparation waits by polling status and surfaces a failed preparation', async t => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-gui-poll-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const calls = []; let polls = 0, failing = false;
+    const calls = []; let polls = 0, failing = false, reason = null;
     const manager = new RuntimeManager({ dataDir: root, workspaceRoot: root, roboWork: { call: async (tool, input) => {
         calls.push({ tool, input });
         if (tool === 'gui_ensure') return { state: 'starting', mode: 'desktop', cwd: '/home/robot-abc' };
         if (tool === 'robot_status') return { robots: [{ id: 'robot-abc', gui: {
             state: failing ? 'failed' : ++polls === 1 ? 'starting' : 'running', mode: 'desktop', sessionUrl: '/own/session/',
+            ...(reason ? { error: reason } : {}),
         } }] };
         throw new Error('Unexpected tool');
     } } });
@@ -840,5 +841,8 @@ test('GUI preparation waits by polling status and surfaces a failed preparation'
     assert.equal(polls, 2);
     assert.equal(calls.filter(call => call.tool === 'gui_ensure').length, 1);
     failing = true;
-    await assert.rejects(manager.openDesktop(robot), { code: 'GUI_START_FAILED' });
+    await assert.rejects(manager.openDesktop(robot), { code: 'GUI_START_FAILED', statusCode: 409 });
+    reason = { code: 'CWD_REFUSED', message: 'The working folder changed before the session started', statusCode: 400 };
+    await assert.rejects(manager.openDesktop(robot), { ...reason });
+    await assert.rejects(manager.resolveCwd(path.join(root, 'missing')), { message: 'cwd is unavailable' });
 });

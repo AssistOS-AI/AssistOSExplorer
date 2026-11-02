@@ -259,7 +259,7 @@ test('an environment terminal in a project folder starts with the mount check fo
     let options;
     await buildTerminalLaunch(descriptor, f.paths, { environment: { require: f.environment.require, buildLaunch: async input => { options = input; return { command: 'podman', args: ['run', '-it'], options: {} }; } } });
     const stat = await fs.lstat(project, { bigint: true });
-    assert.deepEqual(options.mountIdentities, [{ target: project, identity: `${stat.dev}:${stat.ino}` }]);
+    assert.equal(options.cwdIdentity, `${stat.dev}:${stat.ino}`);
     assert.equal(JSON.parse(options.args[1]).cwdIdentity, `${stat.dev}:${stat.ino}`);
 });
 

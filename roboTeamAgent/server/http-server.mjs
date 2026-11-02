@@ -900,7 +900,7 @@ export function createRoboTeamServer(options) {
                     error: 'RoboWork is temporarily unavailable; retry this request.' });
             }
             const message = String(error?.message || '');
-            const badRequest = error instanceof SyntaxError || /required|invalid|at most|too large|must be browser or desktop/.test(message);
+            const badRequest = error instanceof SyntaxError || /required|invalid|at most|too large|must be browser or desktop|^cwd /.test(message);
             const conflict = /already running|active robot limit|occupied|active task|different cwd|stop the|interrupted GUI/.test(message);
             const explicit = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode < 500;
             const status = explicit ? error.statusCode : badRequest ? 400 : conflict ? 409 : 500;
@@ -909,7 +909,7 @@ export function createRoboTeamServer(options) {
             } else {
                 console.warn(`[roboTeamAgent] ${req.method} ${req.url} rejected (${status}): ${message}`);
             }
-            sendError(res, status, status < 500 ? message : 'request failed');
+            sendJson(res, status, { ok: false, error: status < 500 ? message : 'request failed', ...(status < 500 && error.code ? { code: error.code } : {}) });
         }
     });
 

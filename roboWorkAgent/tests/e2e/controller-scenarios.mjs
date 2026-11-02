@@ -283,7 +283,9 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
         if (!retain) await runtime.node(runtime.config.rw, `
             const st=fs.lstatSync(input.project);
             if(!st.isDirectory()||st.isSymbolicLink()||st.ino!==input.ino||st.dev!==input.dev) throw Error('Grant control ownership changed');
-            const names=fs.readdirSync(input.project); if(names.length>1||(names.length===1&&(names[0]!=='victim-link'||!fs.lstatSync(path.join(input.project,'victim-link')).isSymbolicLink()))) throw Error('Grant control changed');
+            // Opening a terminal creates the empty mask target; a non-empty one or any other entry is a failure, and rmdir proves it empty.
+            const names=fs.readdirSync(input.project).filter(name=>name!=='.roboteam'||!fs.lstatSync(path.join(input.project,name)).isDirectory()||fs.rmdirSync(path.join(input.project,name)));
+            if(names.length>1||(names.length===1&&(names[0]!=='victim-link'||!fs.lstatSync(path.join(input.project,'victim-link')).isSymbolicLink()))) throw Error('Grant control changed');
             if(names.length) fs.unlinkSync(path.join(input.project,'victim-link')); fs.rmdirSync(input.project); console.log('true');
         `, { project, ...owner });
         assertVictimUnchanged(before, await runtime.snapshot(victim));

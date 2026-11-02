@@ -25,6 +25,13 @@ test('terminal discovery names RoboWork and compound profile, with relative cwd 
     assert.doesNotMatch(calls[0][1].body, /\/home\/|\/data\//u);
 });
 
+test('terminal directory "." matches the root the router reports, so the terminal itself can refuse it', async () => {
+    const body = discovery([target]);
+    body.discovery.directory = '';
+    const launch = await discoverRobotTerminal('.', PROFILE, { cookie: '', fetchImpl: async () => ({ ok: true, json: async () => body }) });
+    assert.equal(launch.url, '/webtty/#launch=' + target.launch);
+});
+
 test('terminal cancels missing, read-only, ambiguous and wrong-provider rows without falling back to Box or RoboTeam', async () => {
     const bad = [[], [{ ...target, kind: 'box' }], [{ ...target, detail: 'AchillesIDE/roboTeamAgent' }],
         [target, target], [{ ...target, access: 'ro' }], [{ ...target, launch: 'https://wrong' }],

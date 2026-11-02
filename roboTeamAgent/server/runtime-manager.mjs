@@ -246,7 +246,7 @@ export class RuntimeManager {
         if (!requested || !path.isAbsolute(requested)) throw new Error('cwd must be an absolute workspace path');
         let candidate = path.resolve(requested);
         try { candidate = await fs.realpath(candidate); } catch (error) {
-            if (!this.hostWorkspaceRoot || !candidate.startsWith(`${this.hostWorkspaceRoot}${path.sep}`)) throw error;
+            if (!this.hostWorkspaceRoot || !candidate.startsWith(`${this.hostWorkspaceRoot}${path.sep}`)) throw Object.assign(new Error('cwd is unavailable'), { cause: error });
             candidate = await fs.realpath(path.join(this.workspaceRoot, path.relative(this.hostWorkspaceRoot, candidate)));
         }
         const root = await fs.realpath(this.workspaceRoot);
@@ -286,7 +286,8 @@ export class RuntimeManager {
                 const status = await this.roboWork.call('robot_status', { robotIds: [robot.id] });
                 session = status.robots.find(value => value.id === robot.id)?.gui || { state: 'stopped' };
             }
-            if (session.state !== 'running') throw Object.assign(new Error('Robot workstation preparation failed; retry this request.'), { code: 'GUI_START_FAILED' });
+            if (session.state !== 'running') throw Object.assign(new Error(session.error?.message || 'Robot workstation preparation failed; retry this request.'),
+                { code: session.error?.code || 'GUI_START_FAILED', statusCode: session.error?.statusCode || 409 });
             this.sessions.set(robot.id, { robotId: robot.id, ...session });
             return session;
         });

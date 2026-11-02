@@ -34,7 +34,7 @@ export async function discoverRobotTerminal(directory, id, { fetchImpl = fetch, 
     const matches = writable.length === 1 && IDENTIFIER.test(writable[0].launch || '') ? writable : [];
     // Never launch a terminal the router did not bind to this robot.
     const bound = discovery.profile?.provider === PROVIDER && discovery.profile.id === id;
-    if (discovery.directory !== directory || !Number.isSafeInteger(discovery.expiresAt) || discovery.expiresAt <= Date.now()
+    if (discovery.directory !== (directory === '.' ? '' : directory) || !Number.isSafeInteger(discovery.expiresAt) || discovery.expiresAt <= Date.now()
         || !bound || matches.length !== 1) {
         await cancel();
         const reason = bound && rows.length === 1 ? UNAVAILABLE_REASONS[rows[0].unavailable] : '';
