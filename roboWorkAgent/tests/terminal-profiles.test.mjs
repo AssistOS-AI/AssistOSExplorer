@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { resolveAlaInstallation } from '../server/ala-installation.mjs';
 import { RobotPaths } from '../server/robot-paths.mjs';
 import { createTerminalProfiles, ensureTerminalStub, parseTerminalProfile, terminalProfileAccess } from '../server/terminal-profiles.mjs';
 import { buildShellSandbox, buildTerminalLaunch, readTerminalDescriptor } from '../scripts/robot-shell.mjs';
@@ -209,12 +211,56 @@ test('shell sandbox in a project folder grants that folder only, never the works
     const previous = process.env.ALA_SANDBOX_HOME;
     t.after(() => { if (previous === undefined) delete process.env.ALA_SANDBOX_HOME; else process.env.ALA_SANDBOX_HOME = previous; });
     let options;
-    await buildShellSandbox(descriptor, { loadSandbox: async () => ({ canMountPrivateProc: () => true,
+    let pinned;
+    const launch = await buildShellSandbox(descriptor, { loadSandbox: async () => ({ canMountPrivateProc: () => true,
+        pinDirectory: (source, identity) => { pinned = { source, identity }; return { fd: 42 }; },
         buildSandboxArgs: input => { options = input; return ['--', '/bin/bash']; } }) });
     assert.equal(options.workspace, project); assert.equal(options.chdir, project);
     assert.deepEqual(options.folders.map(folder => folder.target), [descriptor.cacheRoot, '/workspace/roboteam-soul']);
     assert.equal(options.folders.some(folder => [f.paths.workspaceRoot, sibling].includes(folder.source)), false);
-    assert.equal(options.ignoredPaths, undefined);
+    // Private project data is hidden as in a run, and the mask target exists before ALA is asked to mask it.
+    assert.deepEqual(options.ignoredPaths, [path.join(project, '.roboteam')]);
+    assert.equal((await fs.stat(path.join(project, '.roboteam'))).isDirectory(), true);
+    // The folder is bound through a descriptor opened against the identity checked by the outer process.
+    const stat = await fs.lstat(project, { bigint: true });
+    assert.deepEqual(pinned, { source: project, identity: `${stat.dev}:${stat.ino}` });
+    assert.equal(descriptor.cwdIdentity, pinned.identity);
+    assert.equal(options.workspaceFd, 42);
+    assert.deepEqual(launch.options.stdio, ['inherit', 'inherit', 'inherit', 42]);
+});
+
+test('terminal in a real ALA sandbox module refuses a swapped folder and masks through the descriptor', async t => {
+    const f = await fixture(t);
+    await f.api.prepare(PROFILE);
+    const project = path.join(f.paths.workspaceRoot, 'project'), sibling = path.join(f.paths.workspaceRoot, 'sibling');
+    await fs.mkdir(project); await fs.mkdir(sibling);
+    const { descriptor } = await readTerminalDescriptor(f.paths, PROFILE, f.stub, project);
+    const { packageRoot } = await resolveAlaInstallation();
+    const sandbox = await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/sandbox.mjs')).href);
+    await fs.rename(project, `${project}-moved`); await fs.symlink(sibling, project);
+    await assert.rejects(buildShellSandbox(descriptor, { loadSandbox: async () => ({ ...sandbox, canMountPrivateProc: () => true }) }), { exitCode: 78 });
+    await assert.rejects(fs.lstat(path.join(sibling, '.roboteam')), { code: 'ENOENT' });
+});
+
+test('a terminal cannot start inside private project data', async t => {
+    const f = await fixture(t);
+    await f.api.prepare(PROFILE);
+    const inside = path.join(f.paths.workspaceRoot, 'project', '.roboteam', 'sessions');
+    await fs.mkdir(inside, { recursive: true });
+    for (const directory of [inside, path.dirname(inside)]) await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, f.stub, directory), { code: 'CWD_REFUSED', message: /private project data/u });
+});
+
+test('an environment terminal in a project folder starts with the mount check for that folder', async t => {
+    const f = await fixture(t);
+    await prepareReady(f.api, 'robot-a.YWdlbnQ');
+    const project = path.join(f.paths.workspaceRoot, 'project');
+    await fs.mkdir(project);
+    const { descriptor } = await readTerminalDescriptor(f.paths, 'robot-a.YWdlbnQ', f.stub, project);
+    let options;
+    await buildTerminalLaunch(descriptor, f.paths, { environment: { require: f.environment.require, buildLaunch: async input => { options = input; return { command: 'podman', args: ['run', '-it'], options: {} }; } } });
+    const stat = await fs.lstat(project, { bigint: true });
+    assert.deepEqual(options.mountIdentities, [{ target: project, identity: `${stat.dev}:${stat.ino}` }]);
+    assert.equal(JSON.parse(options.args[1]).cwdIdentity, `${stat.dev}:${stat.ino}`);
 });
 
 test('environment terminal creates an interactive new image launch and never executes in a live agent', async t => {

@@ -4,7 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { authorizeCaller } from '../server/caller.mjs';
 import { RobotPaths } from '../server/robot-paths.mjs';
 import { RunManager } from '../server/run-manager.mjs';
@@ -328,6 +329,155 @@ test('native ALA host receives the controller-derived transcript directory throu
     const wrapper = await fs.readFile(path.join(paths.run(input.runId), 'launch.sh'), 'utf8');
     assert.ok(wrapper.includes("'--ignore' '" + path.join(input.cwd, '.roboteam') + "'"));
     assert.ok(!Object.keys(launch.options.env).some(key => key.startsWith('PLOINKY_')));
+});
+
+const identityOf = async directory => {
+    const stat = await fs.lstat(directory, { bigint: true });
+    return `${stat.dev}:${stat.ino}`;
+};
+
+// Podman resolves a --volume source when the container is created. This stand-in does what podman did in the live
+// failure: the path has been swapped by then, and the container's first process then starts on the swapped directory.
+async function fakePodman(root, { swap = null } = {}) {
+    const file = path.join(root, 'fake-podman');
+    await fs.writeFile(file, `#!/bin/sh
+${swap ? `mv '${swap.target}' '${swap.target}-moved' && ln -s '${swap.other}' '${swap.target}'` : ''}
+while [ "$1" != node ]; do shift; done
+shift
+exec '${process.execPath}' "$@"
+`, { mode: 0o755 });
+    return file;
+}
+
+async function environmentRun(t, swapped) {
+    const { manager, paths, input, root } = await fixture(t);
+    const other = path.join(root, 'other-home');
+    const folder = path.join(paths.workspaceRoot, 'granted');
+    for (const directory of [other, folder, manager.toolCache.root, paths.home(input.robotId), paths.soul(input.robotId)]) await fs.mkdir(directory, { recursive: true });
+    const environment = new EnvironmentManager({ podmanCommand: await fakePodman(root, { swap: swapped ? { target: swapped === 'folder' ? folder : input.cwd, other } : null }) });
+    environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/local/bin:/usr/bin:/bin' });
+    manager.environment = environment;
+    manager.runtimeBundle = { prepare: async () => ({ ala: { path: '/fixture/ala' }, bwrap: { bin: '/fixture/bwrap' } }) };
+    manager.execFileImpl = async () => { throw Object.assign(new Error('No fixture container'), { code: 1 }); };
+    await startReady(manager, { ...input, environment: 'repo/agent', folders: [{ source: folder, at: folder }] });
+    await manager.input({ runId: input.runId, data: Buffer.from('{"type":"prompt","prompt":"go"}\n').toString('base64') }).catch(() => {});
+    for (let attempt = 0; attempt < 500 && manager.get(input.runId).meta.state !== 'exited'; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    const result = await manager.read({ runId: input.runId, after: 0 });
+    return { result, log: result.records.map(record => Buffer.from(record.data, 'base64').toString()).join('') };
+}
+
+test('an Environment whose cwd or folder was swapped before its mount ends FOLDER_REFUSED without loading ALA', async t => {
+    for (const swapped of ['cwd', 'folder']) {
+        const { result, log } = await environmentRun(t, swapped);
+        assert.equal(result.state, 'exited', swapped); assert.equal(result.exit.signal, 'FOLDER_REFUSED', log);
+        assert.match(log, /A granted folder changed before the run started/u);
+        assert.doesNotMatch(log, /ERR_MODULE_NOT_FOUND|robowork-ala/u, 'The entry was loaded after a swap.');
+    }
+    // The control proves the check can pass: without a swap the first process goes on to load the mounted entry.
+    const { result, log } = await environmentRun(t, null);
+    assert.equal(result.exit.code, 1, log); assert.match(log, /ERR_MODULE_NOT_FOUND/u);
+});
+
+test('the first process checks identities before the entry runs and hands the entry its arguments', async t => {
+    const { paths, input, root } = await fixture(t);
+    await fs.mkdir(paths.home(input.robotId), { recursive: true });
+    const marker = path.join(root, 'entry-ran');
+    const entry = path.join(root, 'entry.mjs');
+    await fs.writeFile(entry, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(1)));\n`);
+    const environment = new EnvironmentManager();
+    environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/bin:/bin' });
+    const launchFor = identity => environment.buildLaunch({ environment: 'repo/agent', runId: 'r', robotId: input.robotId, home: paths.home(input.robotId),
+        workspaceRoot: paths.workspaceRoot, cwd: input.cwd, toolCache: { source: root, target: root }, ala: { source: root, target: '/opt/ala', entry },
+        bwrap: { source: '/fixture/bwrap', target: '/opt/bwrap' }, args: ['--home', '/home/aaa', '--cwd', input.cwd], mountIdentities: [{ target: input.cwd, identity }] });
+    const first = async identity => {
+        const { args } = await launchFor(identity);
+        await fs.rm(marker, { force: true });
+        return spawnSync(process.execPath, args.slice(args.lastIndexOf('node') + 1), { encoding: 'utf8' });
+    };
+    const refused = await first('1:1');
+    assert.equal(refused.status, 78, refused.stderr); assert.match(refused.stderr, /A granted folder changed/u);
+    await assert.rejects(fs.lstat(marker), { code: 'ENOENT' });
+    const identity = await identityOf(input.cwd);
+    const accepted = await first(identity);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.deepEqual(JSON.parse(await fs.readFile(marker, 'utf8')), [entry, '--home', '/home/aaa', '--cwd', input.cwd]);
+    // A link at the mount target is refused even when it leads to the granted directory.
+    const moved = `${input.cwd}-moved`;
+    await fs.rename(input.cwd, moved); await fs.symlink(moved, input.cwd);
+    const { args } = await launchFor(identity).catch(() => ({ args: null }));
+    const linked = spawnSync(process.execPath, [...(args || []).slice((args || []).lastIndexOf('node') + 1)], { encoding: 'utf8' });
+    assert.equal(linked.status, 78, linked.stderr);
+});
+
+test('every granted directory reaches ALA and the Environment check with the identity recorded at grant time', async t => {
+    const { manager, paths, input } = await fixture(t);
+    const folder = path.join(paths.workspaceRoot, 'granted');
+    await fs.mkdir(folder);
+    const recorded = { cwd: await identityOf(input.cwd), folder: await identityOf(folder) };
+    let launchOptions;
+    manager.buildLaunch = async options => { launchOptions = options; return { command: process.execPath, args: ['-e', "process.stdin.on('data',()=>{});"], options: { detached: true, stdio: ['pipe', 'pipe', 'pipe'] } }; };
+    await startReady(manager, { ...input, folders: [{ source: folder, alias: 'granted' }] });
+    const expected = launchOptions.args.flatMap((value, index) => value === '--expect-dir' ? [launchOptions.args[index + 1]] : []);
+    assert.deepEqual(expected, [`${recorded.cwd}:${input.cwd}`, `${recorded.folder}:${folder}`]);
+    let environmentOptions;
+    manager.environment = { buildLaunch: async options => { environmentOptions = options; return { command: process.execPath, args: ['-e', "process.stdin.on('data',()=>{});"], options: { detached: true, stdio: ['pipe', 'pipe', 'pipe'] } }; } };
+    manager.runtimeBundle = { prepare: async () => ({ ala: { path: '/fixture/ala' }, bwrap: { bin: '/fixture/bwrap' } }) };
+    await startReady(manager, { ...input, runId: 'run-2', environment: 'repo/agent', folders: [{ source: folder, alias: 'granted' }] });
+    assert.deepEqual(environmentOptions.mountIdentities, [{ target: input.cwd, identity: recorded.cwd }, { target: '/workspace/granted', identity: recorded.folder }]);
+    assert.ok(environmentOptions.args.includes(`${recorded.folder}:/workspace/granted`));
+    await Promise.all(['run-1', 'run-2'].map(runId => manager.stop({ runId, signal: 'SIGKILL' })));
+});
+
+test('a grant records the identity of the checked path, never of a link or of what a link above it reaches', async t => {
+    const { paths, root } = await fixture(t);
+    const parent = path.join(paths.workspaceRoot, 'parent');
+    await fs.mkdir(path.join(parent, 'folder'), { recursive: true });
+    const victim = path.join(root, 'victim', 'folder');
+    await fs.mkdir(victim, { recursive: true });
+    assert.equal(await paths.identity(path.join(parent, 'folder')), await identityOf(path.join(parent, 'folder')));
+    const link = path.join(paths.workspaceRoot, 'link');
+    await fs.symlink(victim, link);
+    await assert.rejects(paths.identity(link), { code: 'FOLDER_REFUSED' });
+    await assert.rejects(paths.identity(link, 'cwd'), { code: 'CWD_REFUSED' });
+    await fs.rename(parent, `${parent}-moved`); await fs.symlink(path.dirname(victim), parent);
+    await assert.rejects(paths.identity(path.join(parent, 'folder')), { code: 'FOLDER_REFUSED' });
+});
+
+async function stubAla(root) {
+    const entry = path.join(root, 'ala', 'bin', 'ala.mjs');
+    await fs.mkdir(path.join(root, 'ala', 'src', 'coding-agents'), { recursive: true }); await fs.mkdir(path.dirname(entry));
+    await fs.writeFile(entry, ''); await fs.writeFile(path.join(root, 'ala', 'package.json'), '{"name":"advanced-language-agent"}');
+    for (const name of ['config.mjs', 'coding-agents/logins.mjs']) await fs.writeFile(path.join(root, 'ala', 'src', name), '');
+    await fs.writeFile(path.join(root, 'ala', 'src', 'coding-agents', 'discovery.mjs'), 'export const discoverCodingAgents = async () => [];');
+    await fs.writeFile(path.join(root, 'ala', 'src', 'coding-agents', 'service.mjs'), `export const createCodingAgentService = options => ({
+    listModels: async () => [{ ignoredPaths: options.ignoredPaths, workspaceIdentity: options.workspaceIdentity, masked: await import('node:fs').then(fs => (options.ignoredPaths || []).map(file => fs.statSync(file).isDirectory())) }],
+    close: async () => {} });`);
+    return entry;
+}
+
+test('model discovery masks private project data in a working folder and pins it to its granted identity', async t => {
+    const { paths, input, root } = await fixture(t);
+    const alaEntry = await stubAla(root);
+    const script = fileURLToPath(new URL('../server/model-op.mjs', import.meta.url));
+    await fs.mkdir(paths.home(input.robotId), { recursive: true });
+    const run = extra => {
+        const result = spawnSync(process.execPath, [script, JSON.stringify({ alaEntry, agent: 'codex', home: paths.home(input.robotId), soul: paths.soul(input.robotId), dataDir: paths.dataDir, robotId: input.robotId, ...extra })], { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        return JSON.parse(result.stdout)[0];
+    };
+    const identity = await identityOf(input.cwd);
+    assert.deepEqual(run({ cwd: input.cwd, identity }), { ignoredPaths: [path.join(input.cwd, '.roboteam')], workspaceIdentity: identity, masked: [true] });
+    assert.deepEqual(run({ cwd: paths.home(input.robotId) }), { ignoredPaths: [], masked: [] });
+    // The operation receives the identity recorded where the path was granted.
+    let launched;
+    await fs.mkdir(path.join(paths.robot(input.robotId)), { recursive: true });
+    await fs.writeFile(path.join(paths.robot(input.robotId), 'label'), JSON.stringify({ id: input.robotId, name: 'Robot', codingAgents: ['codex'] }));
+    const robots = new RobotManager({ paths, alaEntry, toolCache: { root: path.join(paths.dataDir, 'tool-cache'), prepareCodingAgents: async () => ({}) },
+        soulGateway: { prepare: async () => {} }, homeOperation: async () => {},
+        captureLaunch: async launch => { launched = await fs.readFile(launch.args.at(-1).match(/'(.+launch\.sh)'/u)[1], 'utf8'); return { stdout: '[]' }; } });
+    robots.require = async () => ({ id: input.robotId, codingAgents: ['codex'] });
+    await robots.models({ robotId: input.robotId, agent: 'codex', cwd: input.cwd });
+    assert.ok(launched.includes(`"identity":"${identity}"`), launched);
 });
 
 test('resident HTTP service refuses missing token and returns stable operation errors', async t => {

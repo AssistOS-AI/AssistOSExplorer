@@ -110,6 +110,7 @@ export class RobotManager {
         const record = await this.require(id);
         if (!record.codingAgents.includes(agent)) throw fail('INVALID_INPUT', 'Coding agent is unavailable');
         const workingDirectory = cwd !== undefined ? await this.paths.grant(cwd, 'cwd') : this.paths.home(id);
+        const identity = cwd !== undefined ? await this.paths.identity(workingDirectory, 'cwd') : undefined;
         const tools = await this.toolCache.prepareCodingAgents([agent]);
         await this.soulGateway.prepare(this.paths.soul(id));
         const directory = path.join(this.paths.dataDir, 'runs', 'models-' + randomUUID());
@@ -119,7 +120,7 @@ export class RobotManager {
         try {
             const launch = await buildPrivateLaunch({ paths: this.paths, id, directory, command: process.execPath,
                 args: [fileURLToPath(new URL('./model-op.mjs', import.meta.url)), JSON.stringify({ alaEntry: this.alaEntry,
-                    agent, cwd: workingDirectory, home: this.paths.home(id), soul: this.paths.soul(id), dataDir: this.paths.dataDir, robotId: id })],
+                    agent, cwd: workingDirectory, identity, home: this.paths.home(id), soul: this.paths.soul(id), dataDir: this.paths.dataDir, robotId: id })],
                 extraBindings: [[cacheDirectory, cacheDirectory]],
                 env: codingAgentEnvironment(tools, { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' }, this.toolCache.root) });
             const result = await this.captureLaunch(launch);

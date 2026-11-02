@@ -4,7 +4,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import { GuiManager, buildRobotRunArgs, proxySessionHttp } from '../server/gui-manager.mjs';
+import { createRoboWorkServer } from '../server/http-server.mjs';
 
 const shellTools = { path: '/data/tool-cache/shell-generation', binPath: '/data/tool-cache/shell-generation/bin', agents: { codex: { path: '/data/tool-cache/codex-generation' } } };
 const base = { robot: { id: 'robot-a', name: 'Robot' }, mode: 'browser', dataDir: '/data', workspaceRoot: '/workspace', images: { browser: 'browser', desktop: 'desktop' }, toolsPath: '/data/tool-cache/browser', shellTools };
@@ -85,11 +87,93 @@ test('GUI cwd rejects protected folders and escaping symlinks', async t => {
     const { manager, workspaceRoot } = await fixture(t);
     await fs.mkdir(path.join(workspaceRoot, '.data'));
     await fs.symlink(os.tmpdir(), path.join(workspaceRoot, 'outside'));
-    await assert.rejects(manager.resolveCwd('robot-a', path.join(workspaceRoot, '.data')), /CWD_REFUSED/u);
-    await assert.rejects(manager.resolveCwd('robot-a', workspaceRoot), /CWD_REFUSED/u);
+    await assert.rejects(manager.resolveCwd('robot-a', path.join(workspaceRoot, '.data')), { code: 'CWD_REFUSED' });
+    await assert.rejects(manager.resolveCwd('robot-a', workspaceRoot), { code: 'CWD_REFUSED' });
     await fs.mkdir(path.join(workspaceRoot, 'project'));
     assert.equal(await manager.resolveCwd('robot-a', path.join(workspaceRoot, 'project')), path.join(await fs.realpath(workspaceRoot), 'project'));
-    await assert.rejects(manager.resolveCwd('robot-a', path.join(workspaceRoot, 'outside')), /CWD_REFUSED/u);
+    await assert.rejects(manager.resolveCwd('robot-a', path.join(workspaceRoot, 'outside')), { code: 'CWD_REFUSED' });
+});
+
+test('gui_ensure reports CWD_REFUSED and its reason for every refused root form', async t => {
+    const { manager, workspaceRoot } = await fixture(t);
+    const root = await fs.realpath(workspaceRoot);
+    const project = path.join(root, 'project');
+    await fs.mkdir(path.join(project, '.roboteam', 'sessions'), { recursive: true });
+    await fs.mkdir(path.join(root, '.data', '.private'), { recursive: true });
+    await fs.mkdir(path.join(root, '.ploinky', 'repos', 'repo'), { recursive: true });
+    await fs.mkdir(path.join(manager.dataDir, 'robots', 'robot-b', 'home'), { recursive: true });
+    await fs.writeFile(path.join(root, 'file'), 'fixture');
+    await fs.symlink(root, path.join(project, 'root-link'));
+    await fs.symlink(path.join(manager.dataDir, 'robots', 'robot-b', 'home'), path.join(project, 'victim-link'));
+    const server = createRoboWorkServer({ robots: {}, runs: {}, environment: {}, gui: manager, internalToken: 'private' });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+    const ensure = cwd => fetch(`http://127.0.0.1:${server.address().port}/internal/gui_ensure`, { method: 'POST', headers: { 'x-robowork-internal-token': 'private' },
+        body: JSON.stringify({ robotId: 'robot-a', mode: 'browser', cwd }) }).then(async response => ({ status: response.status, ...(await response.json()) }));
+    const forms = [[manager.dataDir, /protected/u], [path.join(manager.dataDir, 'robots'), /protected/u], [path.join(manager.dataDir, 'robots', 'robot-b', 'home'), /protected/u],
+        [path.join(root, '.data', '.private'), /protected/u], [root, /workspace root/u], ['/', /outside/u], [path.join(project, 'victim-link'), /protected/u],
+        [`${root}/`, /workspace root/u], [`${root}/.`, /workspace root/u], [`${project}/..`, /workspace root/u], [path.join(project, 'root-link'), /workspace root/u],
+        [path.join(root, '.ploinky', 'repos', 'repo'), /protected/u], [path.join(project, '.roboteam'), /private project data/u], [path.join(project, '.roboteam', 'sessions'), /private project data/u],
+        ['relative', /absolute/u], [path.join(root, 'missing'), /unavailable/u], [path.join(root, 'file'), /directory is required/iu]];
+    for (const [cwd, reason] of forms) {
+        const answer = await ensure(cwd);
+        assert.equal(answer.status, 400, cwd); assert.equal(answer.code, 'CWD_REFUSED', cwd);
+        assert.match(answer.error, reason, cwd); assert.notEqual(answer.error, 'RoboWork request failed', cwd);
+    }
+    assert.equal(manager.sessions.size, 0);
+});
+
+test('Browser and Desktop mask private project data read-only in a working folder and need no mask in the home', () => {
+    for (const mode of ['browser', 'desktop']) {
+        const { args } = buildRobotRunArgs({ ...base, mode, cwd: '/workspace/project' });
+        assert.equal(args[args.indexOf('--tmpfs', args.indexOf('/workspace/project:/workspace/project:rw')) + 1], '/workspace/project/.roboteam:ro,size=4k,mode=0555');
+        assert.equal(buildRobotRunArgs({ ...base, mode, cwd: '/home/robot-a' }).args.some(value => value.includes('.roboteam')), false);
+    }
+});
+
+test('the container starts with the working folder check and only then becomes /init', async t => {
+    const plan = buildRobotRunArgs({ ...base, cwd: '/workspace/project', cwdIdentity: '12:34' });
+    const image = plan.args.indexOf('browser');
+    assert.equal(plan.args[plan.args.indexOf('--entrypoint') + 1], '/bin/sh'); assert.ok(plan.args.indexOf('--entrypoint') < image);
+    const [flag, script, name, cwd, identity] = plan.args.slice(image + 1);
+    assert.deepEqual([flag, name, cwd, identity], ['-c', 'robowork-cwd-check', '/workspace/project', '12:34']);
+    assert.equal(buildRobotRunArgs({ ...base, cwd: '/home/robot-a' }).args.at(-1), 'browser');
+    // Runs the real script. macOS has another stat, so a stand-in answers; only Linux proves the format against coreutils.
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gui-check-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const directory = path.join(root, 'folder'), link = path.join(root, 'link');
+    await fs.mkdir(directory); await fs.symlink(directory, link);
+    await fs.mkdir(path.join(root, 'bin'));
+    await fs.writeFile(path.join(root, 'bin', 'stat'), `#!/bin/sh\n[ "$1" = -c ] && [ "$2" = '%d:%i' ] && [ "$3" = -- ] && [ "$4" = '${directory}' ] && echo 12:34\n`, { mode: 0o755 });
+    const run = (target, expected) => spawnSync('/bin/sh', ['-c', script, name, target, expected], { encoding: 'utf8', env: { PATH: `${path.join(root, 'bin')}:/usr/bin:/bin` } });
+    for (const [target, expected] of [[directory, '99:99'], [link, '12:34'], [path.join(root, 'missing'), '12:34']]) {
+        const refused = run(target, expected);
+        assert.equal(refused.status, 78, target); assert.match(refused.stderr, /working folder changed/u);
+    }
+    // /init does not exist here, so a passing check ends as the shell's failure to run it.
+    const passed = run(directory, '12:34');
+    assert.notEqual(passed.status, 78, passed.stderr); assert.doesNotMatch(passed.stderr, /working folder changed/u);
+});
+
+test('a session records the working folder identity when checked, and a refusal by the check reports CWD_REFUSED', async t => {
+    const planned = [];
+    let swap = async () => {};
+    const { manager, workspaceRoot } = await fixture(t, {
+        prepareRobot: async () => { await swap(); },
+        waitForSession: async () => { throw new Error('session did not become ready'); },
+        execFileImpl: async (command, args) => {
+            planned.push(args);
+            return { stdout: args[0] === 'port' ? '127.0.0.1:4567' : args[0] === 'inspect' ? '78\n' : '', stderr: '' };
+        },
+    });
+    const project = path.join(await fs.realpath(workspaceRoot), 'project'), other = path.join(await fs.realpath(workspaceRoot), 'other');
+    await fs.mkdir(project); await fs.mkdir(other);
+    const stat = await fs.lstat(project, { bigint: true });
+    swap = async () => { await fs.rename(project, `${project}-moved`); await fs.symlink(other, project); };
+    await assert.rejects(manager.ensureReady({ robotId: 'robot-a', mode: 'desktop', cwd: project }), { code: 'CWD_REFUSED', message: /working folder changed/u });
+    const run = planned.find(args => args[0] === 'run');
+    assert.ok(run.includes(`${stat.dev}:${stat.ino}`), 'The identity must be the one recorded before the swap.');
+    assert.equal(manager.status('robot-a').state, 'failed');
 });
 
 test('failed start cleans only its own container and closes its relay', async t => {

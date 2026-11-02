@@ -11,6 +11,20 @@ const ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
 const SAFE_ENV = new Set(['LANG', 'LC_ALL', 'TERM', 'TZ', 'ALA_SESSIONS', 'ALA_EVENT_STREAM', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR']);
 const TOOL_ENV = new Set(['CODEX_BIN', 'OPENCODE_BIN', 'PI_BIN', 'CLAUDE_BIN']);
 const DEFAULT_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+// Exit status of a run whose mounts are not the directories RoboWork granted. ALA uses the same status.
+export const MOUNT_REFUSED_EXIT = 78;
+// The container's first process. Nothing a robot controls has started, and the mounts it stats are final: podman has
+// resolved every path, so a later swap of a host path changes nothing here. It then continues in this process.
+const MOUNT_CHECK = `const fs = require('node:fs'); const [, expected, entry, ...args] = process.argv;
+for (const { target, identity } of JSON.parse(expected)) {
+    let stat; try { stat = fs.lstatSync(target, { bigint: true }); } catch {}
+    if (!stat || !stat.isDirectory() || stat.dev + ':' + stat.ino !== identity) {
+        process.stderr.write('[RoboWork] A granted folder changed before the run started: ' + target + '\\n');
+        process.exit(${MOUNT_REFUSED_EXIT});
+    }
+}
+process.argv = [process.execPath, entry, ...args];
+import(require('node:url').pathToFileURL(entry).href).catch(error => { process.stderr.write(String(error?.stack || error) + '\\n'); process.exit(1); });`;
 
 export function isEnvironmentRef(value) {
     return typeof value === 'string' && REF.test(value) && value.split('/').every(part => part !== '.' && part !== '..');
@@ -131,7 +145,7 @@ export class EnvironmentManager {
     }
 
     async buildLaunch({ environment, runId, robotId, home, workspaceRoot, cwd, toolCache, ala, bwrap,
-        channels = [], soul, folders = [], args = [], env = {}, tty = false, signal }) {
+        channels = [], soul, folders = [], args = [], env = {}, tty = false, signal, mountIdentities = [] }) {
         if (!ID.test(robotId) || typeof runId !== 'string' || !runId) throw failure('ENVIRONMENT_INVALID', 'Invalid environment run identity', 400);
         const entry = await this.prepare(environment, { signal });
         signal?.throwIfAborted();
@@ -186,7 +200,7 @@ export class EnvironmentManager {
             if (SAFE_ENV.has(name) && typeof value === 'string' && !value.includes('\0')) variables[name] = value;
         }
         launch.push(entry.image, '-i', ...Object.entries(variables).map(([name, value]) => `${name}=${value}`),
-            'node', absolute(ala.entry), ...args);
+            'node', ...(mountIdentities.length ? ['-e', MOUNT_CHECK, '--', JSON.stringify(mountIdentities)] : []), absolute(ala.entry), ...args);
         return { command: this.podmanCommand, args: launch, options: { stdio: ['pipe', 'pipe', 'pipe'] }, containerName };
     }
 

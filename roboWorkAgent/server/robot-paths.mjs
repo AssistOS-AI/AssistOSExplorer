@@ -1,5 +1,10 @@
+import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+
+// O_PATH needs only search permission on each directory. It has this value on the Linux architectures RoboWork runs on.
+const O_PATH = process.platform === 'linux' ? 0o10000000 : 0;
+const WALK_FLAGS = O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 
 export function fail(code, message, statusCode = 400) {
     return Object.assign(new Error(message), { code, statusCode });
@@ -18,6 +23,23 @@ export function runId(value) {
 export function within(root, candidate) {
     const relative = path.relative(root, candidate);
     return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+// Walks a canonical path one component at a time and never through a link, so the identity belongs to the path that was
+// checked even when a robot swaps a component meanwhile. On Linux each step opens relative to the directory just reached.
+export async function directoryIdentity(directory) {
+    let current = path.parse(directory).root;
+    let handle = await fs.open(current, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+        for (const name of directory.split(path.sep).filter(Boolean)) {
+            current = path.join(current, name);
+            const next = await fs.open(process.platform === 'linux' ? `/proc/self/fd/${handle.fd}/${name}` : current, WALK_FLAGS);
+            await handle.close();
+            handle = next;
+        }
+        const stat = await handle.stat({ bigint: true });
+        return `${stat.dev}:${stat.ino}`;
+    } finally { await handle.close(); }
 }
 
 export function homeTarget(id) { return `/home/${robotId(id)}`; }
@@ -61,5 +83,10 @@ export class RobotPaths {
             if (within(root, resolved) && !(parts[0] === 'repos' && parts.length >= 2)) throw fail(code, 'Directory is protected workspace state');
         }
         return resolved;
+    }
+
+    async identity(resolved, kind = 'folder') {
+        try { return await directoryIdentity(resolved); }
+        catch { throw fail(kind === 'cwd' ? 'CWD_REFUSED' : 'FOLDER_REFUSED', 'Directory changed while it was being granted'); }
     }
 }

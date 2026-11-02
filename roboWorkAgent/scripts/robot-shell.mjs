@@ -44,6 +44,7 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
         || selectedStat.dev !== stat.dev || selectedStat.ino !== stat.ino) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
     const directory = await fs.realpath(cwd);
     descriptor.cwd = directory === stub || directory === selectedHome ? null : await publicDirectory(paths, directory);
+    descriptor.cwdIdentity = descriptor.cwd ? await paths.identity(descriptor.cwd, 'cwd') : null;
     return { descriptor, paths };
 }
 
@@ -53,6 +54,8 @@ export async function publicDirectory(paths, directory) {
     // The workspace root holds every project and is never visible to a robot.
     if (actual === paths.workspaceRoot || actual === await fs.realpath(paths.workspaceRoot)) throw fail('CWD_REFUSED', 'Terminal directory is the workspace root');
     await paths.grant(actual, 'cwd');
+    // Other robots' conversations live there, and a mask cannot hide the directory a shell starts in.
+    if (actual.split(path.sep).includes('.roboteam')) throw fail('CWD_REFUSED', 'Terminal directory is private project data');
     return actual;
 }
 
@@ -70,14 +73,18 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
         { source: descriptor.innerEnvironment ? '/workspace/roboteam-soul' : path.join(descriptor.dataDir, 'robots', descriptor.id, 'run/soul'),
             target: '/workspace/roboteam-soul' }];
     const env = nativeEnvironment({ PATH: '/usr/local/bin:/usr/bin:/bin', TERM: descriptor.term || 'xterm-256color', LANG: 'C.UTF-8' }, target);
-    const args = api.buildSandboxArgs({ workspace: descriptor.cwd || home, workspaceTarget: cwd,
+    // The folder is opened once and bound by descriptor. The robot home has no private project data to mask.
+    const pin = descriptor.cwd ? api.pinDirectory(descriptor.cwd, descriptor.cwdIdentity) : null;
+    const mask = descriptor.cwd ? { ignoredPaths: [path.join(descriptor.cwd, '.roboteam')] } : {};
+    if (descriptor.cwd) await fs.mkdir(mask.ignoredPaths[0], { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+    const args = api.buildSandboxArgs({ workspace: descriptor.cwd || home, workspaceTarget: cwd, ...(pin ? { workspaceFd: pin.fd } : {}), ...mask,
         binary: shell, args: shell.endsWith('/bash') ? ['--login', '-i'] : ['-i'], env, bwrap,
         privateProc: true, home, folders, chdir: cwd, newSession: false });
     // Tool paths are service-selected. Every parent credential and environment value is discarded.
     const boundary = args.indexOf('--');
     args.splice(boundary, 0, '--setenv', 'PATH', `${descriptor.binPath}:/usr/local/bin:/usr/bin:/bin`,
         '--setenv', 'ROBOTEAM_WORKING_DIRECTORY', cwd, '--setenv', 'PS1', '\\w $ ');
-    return { command: bwrap, args, options: { env, stdio: 'inherit', detached: false } };
+    return { command: bwrap, args, options: { env, stdio: pin ? ['inherit', 'inherit', 'inherit', pin.fd] : 'inherit', detached: false } };
 }
 
 export async function buildTerminalLaunch(descriptor, paths, { environment = new EnvironmentManager() } = {}) {
@@ -90,6 +97,7 @@ export async function buildTerminalLaunch(descriptor, paths, { environment = new
             bwrap: { source: descriptor.bwrap, target: '/opt/robowork-bwrap' },
             soul: { source: paths.soul(descriptor.id), target: '/workspace/roboteam-soul' },
             folders: [{ source: path.dirname(path.dirname(descriptor.alaEntry)), target: '/opt/robowork-ala', readOnly: true }],
+            mountIdentities: descriptor.cwd ? [{ target: descriptor.cwd, identity: descriptor.cwdIdentity }] : [],
             tty: true, args: ['--inner', JSON.stringify({ ...descriptor, innerEnvironment: true,
                 alaEntry: '/opt/robowork-ala/bin/ala.mjs', bwrap: '/opt/robowork-bwrap' })], env: {} });
         return { ...launch, options: { ...launch.options, stdio: 'inherit', detached: false } };

@@ -94,6 +94,36 @@ test('a folder or cwd swapped while an Environment image is prepared never start
     }
 });
 
+test('a child refusing its mounts ends the run FOLDER_REFUSED even while queued input cannot be delivered', async t => {
+    const f = await runsFixture(t);
+    f.manager.buildLaunch = async () => ({ command: process.execPath, args: ['-e', 'process.exit(78);'], options: { detached: true, stdio: ['pipe', 'pipe', 'pipe'] } });
+    await f.manager.start(f.input);
+    await f.manager.input({ runId: f.input.runId, data: Buffer.alloc(600000).toString('base64') });
+    await f.manager.input({ runId: f.input.runId, data: Buffer.alloc(600000).toString('base64') });
+    f.gate.resolve({}); await f.manager.get(f.input.runId).preparing;
+    for (let attempt = 0; attempt < 300 && f.manager.get(f.input.runId).meta.state !== 'exited'; attempt++) await delay(10);
+    const result = await f.manager.read({ runId: f.input.runId, after: 0 });
+    assert.equal(result.state, 'exited'); assert.equal(result.exit.signal, 'FOLDER_REFUSED'); assert.equal(result.exit.code, null);
+    assert.ok(result.records.some(record => Buffer.from(record.data, 'base64').includes('run refused: FOLDER_REFUSED')));
+});
+
+test('a refused preparation logs the plain reason and an internal failure keeps it private', async t => {
+    const refused = await runsFixture(t);
+    const folder = path.join(refused.input.cwd, 'skill'), sibling = path.join(refused.paths.workspaceRoot, 'sibling');
+    await fs.mkdir(folder); await fs.mkdir(sibling);
+    await refused.manager.start({ ...refused.input, folders: [{ source: folder, alias: 'skill' }] });
+    await fs.rename(folder, `${folder}-moved`); await fs.symlink(sibling, folder);
+    refused.gate.resolve({}); await refused.manager.get(refused.input.runId).preparing;
+    const text = async f => (await f.manager.read({ runId: f.input.runId, after: 0 })).records.map(record => Buffer.from(record.data, 'base64').toString()).join('');
+    assert.match(await text(refused), /preparation ended: FOLDER_REFUSED: A granted folder changed while the run was preparing/u);
+    const internal = await runsFixture(t);
+    internal.manager.buildLaunch = async () => { throw new Error('private detail'); };
+    await internal.manager.start(internal.input);
+    internal.gate.resolve({}); await internal.manager.get(internal.input.runId).preparing;
+    const log = await text(internal);
+    assert.match(log, /preparation ended: START_FAILED/u); assert.doesNotMatch(log, /private detail/u);
+});
+
 test('pending input is bounded without starting a child', async t => {
     const f = await runsFixture(t); await promptly(f.manager.start(f.input));
     const data = Buffer.alloc(600000).toString('base64');

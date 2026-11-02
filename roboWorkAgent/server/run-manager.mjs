@@ -4,10 +4,11 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { fail, robotId, runId, homeTarget, within } from './robot-paths.mjs';
+import { directoryIdentity, fail, robotId, runId, homeTarget, within } from './robot-paths.mjs';
 import { RunChannels, validateChannels } from './run-channels.mjs';
 import { buildPrivateLaunch } from './launch.mjs';
 import { codingAgentEnvironment } from './coding-agents.mjs';
+import { MOUNT_REFUSED_EXIT } from './environment.mjs';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 
 export const LOG_CAP = 64 * 1024 * 1024;
@@ -106,6 +107,7 @@ export class RunManager {
         for (const key of ['resume', 'workflowExecution']) if (ala[key] !== undefined && typeof ala[key] !== 'boolean') throw fail('INVALID_INPUT', 'Invalid ALA option');
         for (const key of ['model', 'effort']) if (ala[key] !== undefined && (typeof ala[key] !== 'string' || !ala[key] || ala[key].length > 512 || /[\x00-\x1f]/u.test(ala[key]))) throw fail('INVALID_INPUT', 'Invalid ALA option');
         const cwd = await this.paths.grant(input.cwd, 'cwd');
+        const cwdIdentity = await this.paths.identity(cwd, 'cwd');
         if (!Array.isArray(input.folders || []) || (input.folders || []).length > 128 || !Array.isArray(input.ignore || [])) throw fail('INVALID_INPUT', 'Invalid folder grants');
         const channels = validateChannels(input.channels);
         const aliases = new Set(channels.map(channel => channel.alias)); aliases.add('roboteam-soul');
@@ -126,7 +128,7 @@ export class RunManager {
                     .some(root => within(root, folder.at) || within(folder.at, root))
                 || folder.at === '/workspace'
                 || aliases.has(folder.at.slice('/workspace/'.length)))) throw fail('FOLDER_REFUSED', 'Invalid folder target');
-            folders.push({ ...folder, source });
+            folders.push({ ...folder, source, identity: await this.paths.identity(source) });
         }
         for (const ignored of input.ignore || []) if (typeof ignored !== 'string' || !path.isAbsolute(ignored)) throw fail('INVALID_INPUT', 'Ignore path must be absolute');
         const requestedMcp = Array.isArray(ala.mcpServers) ? ala.mcpServers.join(',') : String(ala.mcpServers || '');
@@ -142,13 +144,13 @@ export class RunManager {
         this.runs.set(input.runId, run);
         run.abort = new AbortController(); run.inputQueue = []; run.inputBytes = 0;
         await this.persist(run);
-        run.preparing = new Promise(resolve => setImmediate(resolve)).then(() => this.prepareRun(run, input, { cwd, ala, folders, channels, requestedMcp }));
+        run.preparing = new Promise(resolve => setImmediate(resolve)).then(() => this.prepareRun(run, input, { cwd, cwdIdentity, ala, folders, channels, requestedMcp }));
         // The resident service owns preparation after the short admission response.
         void run.preparing.catch(() => {});
         return { runId: input.runId, state: 'starting', alreadyRunning: false };
     }
 
-    async prepareRun(run, input, { cwd, ala, folders, channels, requestedMcp }) {
+    async prepareRun(run, input, { cwd, cwdIdentity, ala, folders, channels, requestedMcp }) {
         const { meta, directory } = run;
         const signal = run.abort.signal;
         const check = () => { if (signal.aborted || this.closed) throw preparationCancelled(); };
@@ -167,7 +169,7 @@ export class RunManager {
             const runtimeEnv = codingAgentEnvironment(tools, { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8',
                 ALA_SESSIONS: path.join(cwd, '.roboteam', '.ala') }, this.toolCache.root);
             const args = ['--home', input.environment ? homeTarget(input.robotId) : this.paths.home(input.robotId), '--cwd', cwd, '--session-id', ala.sessionId,
-                '--control-stdin', '--permissions', ala.permissions || 'full-access'];
+                '--control-stdin', '--permissions', ala.permissions || 'full-access', '--expect-dir', `${cwdIdentity}:${cwd}`];
             if (ala.turnId) args.push('--turn-id', ala.turnId);
             if (ala.model) args.push('--model', ala.model);
             if (ala.effort) args.push('--effort', ala.effort);
@@ -185,6 +187,7 @@ export class RunManager {
                 else if (folder.at) args.push('at', folder.at);
                 if (folder.expose !== undefined && typeof folder.expose !== 'boolean') throw fail('INVALID_INPUT', 'Invalid folder exposure');
                 if (folder.expose) args.push('expose');
+                args.push('--expect-dir', `${folder.identity}:${input.environment ? environmentFolders[index].target : folder.source}`);
             }
             for (const mount of [...mounts, soul]) args.push('--folder', input.environment ? mount.target : mount.source, 'as', mount.alias);
             let gui;
@@ -207,13 +210,16 @@ export class RunManager {
                     ala: { source: bundle.ala.path, target: '/opt/robowork-ala', entry: '/opt/robowork-ala/bin/ala.mjs' },
                     bwrap: { source: bundle.bwrap.bin, target: '/opt/robowork-bwrap' },
                     channels: mounts, soul,
-                    folders: environmentFolders, args, env: runtimeEnv, signal });
+                    folders: environmentFolders, args, env: runtimeEnv, signal,
+                    mountIdentities: [{ target: cwd, identity: cwdIdentity },
+                        ...folders.map((folder, index) => ({ target: environmentFolders[index].target, identity: folder.identity }))] });
                 check();
             } else launch = await this.buildLaunch({ paths: this.paths, id: input.robotId, directory,
                 command: process.execPath, args: [this.alaEntry, ...args], env: runtimeEnv, guiPort: gui?.mcpPort });
-            // Preparation can take minutes and a robot may write in these folders: a path swapped for a link since its grant is refused.
-            for (const source of [cwd, ...folders.map(folder => folder.source)]) {
-                if (await fs.realpath(source).catch(() => null) !== source) throw fail('FOLDER_REFUSED', 'A granted folder changed while the run was preparing');
+            // Preparation can take minutes and a robot may write in these folders. This refuses a swap early with a clear
+            // message; what closes the race is the check of the mounted directories in the Environment and ALA's descriptor binds.
+            for (const { source, identity } of [{ source: cwd, identity: cwdIdentity }, ...folders]) {
+                if (await directoryIdentity(source).catch(() => null) !== identity) throw fail('FOLDER_REFUSED', 'A granted folder changed while the run was preparing');
             }
             check();
             const child = this.spawnImpl(launch.command, launch.args, launch.options);
@@ -221,11 +227,22 @@ export class RunManager {
             child.stdout.on('data', chunk => this.append(run, 'stdout', chunk));
             child.stderr.on('data', chunk => this.append(run, 'stderr', chunk));
             child.once('error', () => { void this.finish(run, null, 'SPAWN_FAILED'); });
-            child.once('close', (code, signal) => { void this.finish(run, code, signal); });
+            const exited = new Promise(resolve => child.once('close', (code, exitSignal) => {
+                const refused = code === MOUNT_REFUSED_EXIT;
+                if (refused) this.append(run, 'stderr', Buffer.from('[RoboWork] run refused: FOLDER_REFUSED: A granted folder changed before the run started\n'));
+                resolve(this.finish(run, refused ? null : code, refused ? 'FOLDER_REFUSED' : exitSignal));
+            }));
+            // A child that refuses its mounts closes stdin first. Its exit decides the outcome, not the failed write.
+            child.stdin.on('error', () => {});
             meta.pid = child.pid; meta.servicePid = process.pid;
             meta.pidStamp = await processStamp(child.pid);
             if (!run.finishing && !signal.aborted) {
-                for (const input of run.inputQueue) await this.writeInput(run, input);
+                try { for (const input of run.inputQueue) await this.writeInput(run, input); }
+                catch (error) {
+                    await Promise.race([exited, sleep(2000)]);
+                    if (!run.finishing) throw error;
+                    return { runId: input.runId, state: meta.state, alreadyRunning: false };
+                }
                 run.inputQueue = []; run.inputReady = true;
                 run.inputBytes = 0;
                 if (!run.finishing && !signal.aborted) { meta.state = 'running'; await this.persist(run); }
@@ -234,7 +251,8 @@ export class RunManager {
         } catch (error) {
             run.preparationError = error;
             if (run.child && !run.finishing) { this.signal(run, 'SIGKILL'); await run.stopQueue; }
-            this.append(run, 'stderr', Buffer.from(`[RoboWork] preparation ended: ${error.code || 'START_FAILED'}\n`));
+            // A refusal raised by RoboWork carries a status and a message written for the user; anything else stays internal.
+            this.append(run, 'stderr', Buffer.from(`[RoboWork] preparation ended: ${error.code || 'START_FAILED'}${error.statusCode ? `: ${error.message}` : ''}\n`));
             await this.finish(run, null, error.code === 'PREPARATION_CLEANUP_FAILED' ? error.code
                 : signal.aborted ? run.stopSignal || 'SIGTERM' : error.code || 'START_FAILED');
         }

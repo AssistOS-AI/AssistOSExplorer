@@ -41,7 +41,7 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
     const privateDirectory = path.join(root, ACHILLES_PRIVATE_DIRECTORY_NAME);
     // Retain skills already supplied by the project, including directory symlinks.
     for (const name of await fs.readdir(projectSkills).catch(error => {
-        if (error.code === 'ENOENT') return [];
+        if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) return [];
         throw error;
     })) {
         const file = path.join(projectSkills, name);
@@ -49,7 +49,14 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
         // disk, but do not inherit another robot's selection into this session.
         if (legacy.has(file) && (await fs.lstat(file)).isSymbolicLink()
             && await fs.readlink(file) === legacy.get(file)) continue;
-        const source = await fs.realpath(file);
+        let source;
+        try { source = await fs.realpath(file); }
+        catch (error) {
+            // A robot can write these links; one that leads nowhere must not stop every turn in the folder.
+            if (!['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) throw error;
+            diagnostics.push({ source: name, state: 'invalid', message: 'Project skill link cannot be resolved' });
+            continue;
+        }
         // A project link may not lead out of the working folder or into, or over, its private data.
         if (!inside(root, source) || inside(privateDirectory, source) || inside(source, privateDirectory)) {
             diagnostics.push({ source: name, state: 'invalid', message: 'Project skill link leaves the working folder' });

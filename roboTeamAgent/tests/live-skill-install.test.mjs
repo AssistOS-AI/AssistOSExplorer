@@ -104,6 +104,33 @@ test('project skill links that leave the working folder are dropped with a diagn
     assert.ok(mounted.includes(inner) && mounted.includes(local));
 });
 
+test('project skill links that lead nowhere are skipped with a diagnostic and never stop the turn', async t => {
+    const { cwd, local, input } = await fixture(t);
+    const skills = path.dirname(local);
+    await fs.symlink(path.join(cwd, 'missing'), path.join(skills, 'dangling'));
+    await fs.writeFile(path.join(cwd, 'plain-file'), 'not a directory');
+    await fs.symlink(path.join(cwd, 'plain-file', 'child'), path.join(skills, 'through-file'));
+    await fs.symlink(path.join(skills, 'looping'), path.join(skills, 'looping'));
+    const snapshot = await installLiveSkills(input(0));
+    assert.deepEqual(snapshot.diagnostics.map(entry => entry.source).sort(), ['dangling', 'looping', 'through-file']);
+    for (const entry of snapshot.diagnostics) {
+        assert.equal(entry.state, 'invalid'); assert.equal(entry.message, 'Project skill link cannot be resolved');
+    }
+    const installed = await fs.readdir(snapshot.skillsDirectory);
+    assert.ok(installed.includes('local'));
+    for (const name of ['dangling', 'looping', 'through-file']) assert.ok(!installed.includes(name), name);
+});
+
+test('a project skills path that is not a directory leaves the session with no project skills', async t => {
+    const { cwd, input } = await fixture(t, { projectSkills: false });
+    await fs.mkdir(path.join(cwd, '.agents'));
+    await fs.writeFile(path.join(cwd, '.agents', 'skills'), 'not a directory');
+    assert.ok(await installLiveSkills(input(0)));
+    await fs.rm(path.join(cwd, '.agents', 'skills'));
+    await fs.symlink(path.join(cwd, '.agents', 'skills'), path.join(cwd, '.agents', 'skills'));
+    assert.ok(await installLiveSkills(input(1)));
+});
+
 test('bundled skills resolve to the workspace checkout', async t => {
     const { copilotSkillsRoot } = await import('../server/copilot-skillset.mjs');
     const { root, input, entries } = await fixture(t);

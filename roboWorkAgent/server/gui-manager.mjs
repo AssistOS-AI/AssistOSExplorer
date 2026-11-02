@@ -5,6 +5,8 @@ import net from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
+import { MOUNT_REFUSED_EXIT } from './environment.mjs';
+import { directoryIdentity, fail, within } from './robot-paths.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
@@ -14,6 +16,11 @@ const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.robowork.gui=1';
 const GUI_MODES = new Set(['desktop', 'browser']);
 const ROBOT_ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
+// The images start with /init and have no command. This runs first and in its place, before any robot-controlled
+// autostart, against mounts podman has already resolved: a working folder swapped after its check is refused here.
+const CWD_CHECK = `if [ -d "$1" ] && [ ! -L "$1" ] && [ "$(stat -c '%d:%i' -- "$1")" = "$2" ]; then exec /init; fi
+echo "[RoboWork] The working folder changed before the session started: $1" >&2
+exit ${MOUNT_REFUSED_EXIT}`;
 
 function normalizeBasePath(value) {
     const raw = String(value || '/').trim();
@@ -79,7 +86,7 @@ function chromiumLanguageFlag(lang) {
     return lang && lang !== 'en-US' ? ` --lang=${lang}` : '';
 }
 
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, proxy = null, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, proxy = null, cwdIdentity = null, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     if (proxy && (!Number.isInteger(proxy.relayPort) || proxy.relayPort < 1 || proxy.relayPort > 65535 || !path.isAbsolute(String(proxy.policyFile || '')))) {
@@ -125,7 +132,8 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             ] : []),
             '-v', `${homePath}:/config`, '-v', `${homePath}:${homeTarget}`,
             '-v', `${soulPath}:/workspace/roboteam-soul`,
-            ...(cwd === homeTarget ? [] : ['-v', `${cwd}:${cwd}:rw`]),
+            // Other robots' conversations live in the folder's private data; a session needs nothing from it.
+            ...(cwd === homeTarget ? [] : ['-v', `${cwd}:${cwd}:rw`, '--tmpfs', `${cwd}/.roboteam:ro,size=4k,mode=0555`]),
             '-w', cwd,
             '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
             ...(proxy ? ['-v', `${proxy.policyFile}:${CHROMIUM_POLICY_TARGET}:ro`] : []),
@@ -133,7 +141,9 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
                 '-v', `${shellTools.path}:${path.dirname(shellTools.binPath)}:ro`,
                 ...Object.values(shellTools.agents).flatMap(agent => ['-v', `${agent.path}:${agent.path}:ro`]),
             ] : []),
+            ...(cwdIdentity ? ['--entrypoint', '/bin/sh'] : []),
             images[mode],
+            ...(cwdIdentity ? ['-c', CWD_CHECK, 'robowork-cwd-check', cwd, cwdIdentity] : []),
         ],
     };
 }
@@ -195,14 +205,15 @@ export class GuiManager {
     async resolveCwd(robotId, value) {
         const homeTarget = `/home/${robotId}`;
         if (!value || value === homeTarget) return homeTarget;
-        if (!path.isAbsolute(value)) throw new Error('cwd must be an absolute workspace path');
-        const candidate = await fs.realpath(value);
+        if (typeof value !== 'string' || !path.isAbsolute(value)) throw fail('CWD_REFUSED', 'An absolute directory is required');
+        const candidate = await fs.realpath(value).catch(() => { throw fail('CWD_REFUSED', 'Directory is unavailable'); });
         const root = await fs.realpath(this.workspaceRoot);
-        const relative = path.relative(root, candidate);
-        if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative) || ['.data', '.ploinky'].includes(relative.split(path.sep)[0])) {
-            throw new Error('CWD_REFUSED');
-        }
-        if (!(await fs.stat(candidate)).isDirectory()) throw new Error('cwd must reference a directory');
+        if (candidate === root) throw fail('CWD_REFUSED', 'The workspace root is not available to a robot');
+        if (!within(root, candidate)) throw fail('CWD_REFUSED', 'Directory is outside the workspace');
+        const parts = path.relative(root, candidate).split(path.sep);
+        if (['.data', '.ploinky'].includes(parts[0])) throw fail('CWD_REFUSED', 'Directory is protected workspace state');
+        if (parts.includes('.roboteam')) throw fail('CWD_REFUSED', 'Directory is private project data');
+        if (!(await fs.stat(candidate)).isDirectory()) throw fail('CWD_REFUSED', 'A directory is required');
         return candidate;
     }
 
@@ -253,6 +264,7 @@ export class GuiManager {
             if (!Array.isArray(codingAgents) || codingAgents.some(name => !['codex', 'opencode', 'pi', 'claude'].includes(name))) throw new Error('Invalid coding agents');
             const robot = await this.getRobot(robotId);
             const cwd = await this.resolveCwd(robotId, cwdValue);
+            const cwdIdentity = cwd === `/home/${robotId}` ? null : await directoryIdentity(cwd).catch(() => { throw fail('CWD_REFUSED', 'Directory changed while it was being checked'); });
             const codingAgentsKey = codingAgents.join(',');
             const lease = this.proxyPool && await this.proxySettings.useProxy() ? await this.proxyPool.lease(robotId, robot.name) : null;
             const upstream = lease?.upstream || null;
@@ -273,7 +285,7 @@ export class GuiManager {
             if ([...this.sessions.values()].filter(value => value.state !== 'failed').length >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
             const session = { robotId, mode, cwd, codingAgentsKey, proxyKey, localeKey, state: 'starting', relay: null, containerName: null, abort: new AbortController() };
             this.sessions.set(robotId, session);
-            session.preparing = this._prepareSession(session, { robot, codingAgents, mode, cwd, upstream, locale });
+            session.preparing = this._prepareSession(session, { robot, codingAgents, mode, cwd, cwdIdentity, upstream, locale });
             void session.preparing.catch(() => {});
             return this._result(session);
         });
@@ -288,8 +300,9 @@ export class GuiManager {
         return this._result(session);
     }
 
-    async _prepareSession(session, { robot, codingAgents, mode, cwd, upstream, locale }) {
+    async _prepareSession(session, { robot, codingAgents, mode, cwd, cwdIdentity, upstream, locale }) {
         const { robotId } = session;
+        let started = false;
         const signal = session.abort.signal;
         const check = () => { if (signal.aborted) throw preparationCancelled(); };
         const wait = operation => waitForPreparation(operation, signal);
@@ -305,12 +318,13 @@ export class GuiManager {
             session.relay = upstream ? this.createRelay(upstream) : null;
             const proxy = session.relay ? { relayPort: await session.relay.listen(), policyFile } : null;
             const plan = buildRobotRunArgs({ robot: { ...robot, id: robotId }, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images,
-                timezone: locale?.timezone || this.timezone, locale, cwd, toolsPath: tools.path, shellTools, proxy });
+                timezone: locale?.timezone || this.timezone, locale, cwd, cwdIdentity, toolsPath: tools.path, shellTools, proxy });
             Object.assign(session, { containerName: plan.containerName, sessionUrl: plan.subfolder });
             check();
             await this.execFileImpl(this.podmanCommand, plan.args, { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: process.env, signal });
             check();
             if (plan.firewalled) await this._startFirewalled(plan.containerName, firewallFile, signal);
+            started = true;
             session.sessionPort = mappedPort((await this._podman(['port', plan.containerName, '3000/tcp'])).stdout);
             session.mcpPort = mappedPort((await this._podman(['port', plan.containerName, '8100/tcp'])).stdout);
             await wait(this.waitForSession(session));
@@ -318,13 +332,19 @@ export class GuiManager {
             session.state = 'running';
             return this._result(session);
         } catch (error) {
+            const failure = started && await this._refusedCwd(session) ? fail('CWD_REFUSED', 'The working folder changed before the session started') : error;
             try { await this._remove(session); }
             finally {
-                session.state = 'failed'; session.error = error;
+                session.state = 'failed'; session.error = failure;
                 this.sessions.set(robotId, session);
             }
-            throw error;
+            throw failure;
         }
+    }
+
+    async _refusedCwd(session) {
+        const result = await this._podman(['inspect', '--format', '{{.State.ExitCode}}', session.containerName], 30000).catch(() => null);
+        return Number(String(result?.stdout || '').trim()) === MOUNT_REFUSED_EXIT;
     }
 
     async _startFirewalled(containerName, rulesFile, signal) {

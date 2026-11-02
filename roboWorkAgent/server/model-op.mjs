@@ -1,4 +1,6 @@
+import fs from 'node:fs/promises';
 import http from 'node:http';
+import path from 'node:path';
 import { resolveAlaInstallation } from './ala-installation.mjs';
 import { createOpenCodeModelCache } from './opencode-model-cache.mjs';
 
@@ -26,9 +28,13 @@ const gateway = async () => ({ async request(operation, body, querySignal) {
 const cache = input.agent === 'opencode' ? createOpenCodeModelCache({ root: input.dataDir, robotId: input.robotId, connect: gateway }) : null;
 const config = { agents, api, cwd: input.cwd, home: input.home, env };
 const probe = cache ? await cache.probe(config, signal).catch(() => null) : null;
+// A native catalog query runs OpenCode in the working folder, where other robots' conversations must stay hidden like
+// in a run. The mask needs an existing directory, and the robot home has no such folder.
+const ignoredPaths = input.cwd === input.home ? [] : [path.join(input.cwd, '.roboteam')];
 const service = api.createCodingAgentService({ agents, home: input.home, workspace: input.cwd, cwd: input.cwd, env,
-    folders: [{ source: input.soul, alias: 'roboteam-soul' }] });
+    workspaceIdentity: input.identity, ignoredPaths, folders: [{ source: input.soul, alias: 'roboteam-soul' }] });
 try {
+    for (const mask of ignoredPaths) await fs.mkdir(mask, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
     const models = probe?.models || await service.listModels(input.agent, { signal, details: true });
     if (cache && !probe?.models) await cache.store(probe, models).catch(() => false);
     process.stdout.write(JSON.stringify(models));
