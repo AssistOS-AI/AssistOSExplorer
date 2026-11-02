@@ -144,6 +144,9 @@ async function overlayLayouts(cwd) {
         ['dangling link', async () => { await fs.mkdir(path.dirname(claude)); await fs.symlink('missing', claude); }, [agents], ['.claude/skills']],
         ['looping link', async () => { await fs.mkdir(path.dirname(claude)); await fs.symlink('skills', claude); }, [agents], ['.claude/skills']],
         ['file in the way', async () => { await fs.writeFile(path.join(cwd, '.claude'), 'x'); }, [agents], ['.claude/skills']],
+        ['.agents/skills -> ../.claude, a real .claude', async () => { await fs.mkdir(path.dirname(agents)); await fs.mkdir(path.dirname(claude)); await fs.symlink('../.claude', agents); }, [claude], ['.agents/skills']],
+        ['.claude/skills -> ../.agents, a real .agents', async () => { await fs.mkdir(path.dirname(agents)); await fs.mkdir(path.dirname(claude)); await fs.symlink('../.agents', claude); }, [agents], ['.claude/skills']],
+        ['.agents/skills -> ../a, .claude/skills -> ../a/b', async () => { await fs.mkdir(path.dirname(agents)); await fs.mkdir(path.dirname(claude)); await fs.mkdir(path.join(cwd, 'a/b'), { recursive: true }); await fs.symlink('../a', agents); await fs.symlink('../a/b', claude); }, [path.join(cwd, 'a/b')], ['.agents/skills']],
         ['file at the target', async () => { await fs.mkdir(path.dirname(claude)); await fs.writeFile(claude, 'x'); }, [agents], ['.claude/skills']],
     ];
 }

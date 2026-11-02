@@ -279,23 +279,28 @@ export class RobotStore {
         return withRegistryMutation(this.robotsDir, async () => {
             const robot = await this.get(robotId);
             if (!robot) return false;
-            const root = this.robotPath(robotId);
-            const boot = (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
-            for (const name of await fs.readdir(root)) {
-                if (!/^\.cli-[a-f0-9-]+\.json$/.test(name)) continue;
-                const { owner } = await readRegistryOwner(path.join(root, name));
-                if (owner.boot !== boot) continue;
-                try {
-                    if (await processStart(owner.pid) === owner.start) {
-                        throw new Error('close the robot chat and stop its CLI tasks before deleting it');
-                    }
-                } catch (error) {
-                    if (error.code !== 'ENOENT') throw error;
-                }
-            }
+            await this.assertDeletable(robotId);
             await fs.rm(this.robotPath(robotId), { recursive: true, force: true });
             return true;
         });
+    }
+
+    // Also checked before RoboWork destroys anything, so a refusal leaves the robot whole.
+    async assertDeletable(robotId) {
+        const root = this.robotPath(robotId);
+        const names = await fs.readdir(root).catch((error) => { if (error.code !== 'ENOENT') throw error; return []; });
+        for (const name of names) {
+            if (!/^\.cli-[a-f0-9-]+\.json$/.test(name)) continue;
+            const { owner } = await readRegistryOwner(path.join(root, name));
+            if (owner.boot !== (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim()) continue;
+            try {
+                if (await processStart(owner.pid) === owner.start) {
+                    throw Object.assign(new Error('close the robot chat and stop its CLI tasks before deleting it'), { code: 'ROBOT_BUSY', statusCode: 409 });
+                }
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+            }
+        }
     }
 
     async acquireCliUsage(robotId) {

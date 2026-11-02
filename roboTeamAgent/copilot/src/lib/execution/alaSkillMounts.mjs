@@ -20,14 +20,18 @@ async function realPlace(target) {
 // the destination, and a robot writing a shared folder must not be able to stop other robots' turns: a link that stays in
 // the working folder is followed, two names for one place get one mount, and anything else is skipped with a diagnostic.
 export async function skillOverlayTargets(cwd) {
-    const targets = new Set(), skipped = [];
+    const places = new Map(), skipped = [];
     for (const name of ['.agents', '.claude']) {
         const place = await realPlace(path.join(cwd, name, 'skills'));
         const directory = place && (await fs.stat(place).catch(() => null))?.isDirectory() !== false;
-        if (directory && inside(cwd, place) && place !== cwd && !inside(path.join(cwd, '.roboteam'), place)) targets.add(place);
+        if (directory && inside(cwd, place) && place !== cwd && !inside(path.join(cwd, '.roboteam'), place)) places.set(name, place);
         else skipped.push(path.join(name, 'skills'));
     }
-    return { targets: [...targets], skipped };
+    // A mount cannot sit inside another read-only mount. The narrower one stays, because it hides less of the project.
+    for (const [name, place] of places) {
+        if ([...places.values()].some(other => other !== place && inside(place, other))) { places.delete(name); skipped.push(path.join(name, 'skills')); }
+    }
+    return { targets: [...new Set(places.values())], skipped };
 }
 
 // Every skill source is mounted, because a robot sees only its home, its cwd and

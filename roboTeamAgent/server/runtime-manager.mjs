@@ -786,11 +786,16 @@ export class RuntimeManager {
             || this.hasUnfinishedTasks(robotId)
             || [...this.#taskExecutions.values()].some(record => record.robotId === robotId
                 && this.tasks.get(record.task.taskId) === record.task)) throw new Error('stop the robot and its queued tasks before deleting it');
+        await this.robotStore?.assertDeletable?.(robotId);
         this.deletedRobots.add(robotId);
         // A seed or shell preparation in flight finishes (or aborts) before the folder is removed;
         // anything queued afterwards sees deletedRobots and does nothing.
         await this.seedChain.get(robotId)?.catch(() => {});
-        try { await this.roboWork.call('robot_delete', { robotId }); await remove(); }
+        try {
+            // An earlier delete may have finished in RoboWork and been refused here.
+            await this.roboWork.call('robot_delete', { robotId }).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; });
+            await remove();
+        }
         catch (error) { this.deletedRobots.delete(robotId); throw error; }
         this.manualControl.delete(robotId);
         this.taskQueues.delete(robotId);

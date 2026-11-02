@@ -823,6 +823,27 @@ test('runtime reattaches only authenticated live run records and preserves their
     assert.equal(events[0].taskId, taskId);
 });
 
+test('a refused robot delete destroys nothing, and a repeat delete succeeds when RoboWork no longer has the robot', async t => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-delete-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = []; let refusal = Object.assign(new Error('close the robot chat and stop its CLI tasks before deleting it'), { code: 'ROBOT_BUSY', statusCode: 409 }), roboWorkError = null;
+    const manager = new RuntimeManager({ dataDir: root, workspaceRoot: root,
+        robotStore: { assertDeletable: async () => { if (refusal) throw refusal; } },
+        roboWork: { call: async tool => { calls.push(tool); if (roboWorkError) throw roboWorkError; return {}; } } });
+    let removed = 0;
+    const remove = async () => { removed++; };
+    await assert.rejects(manager.deleteRobot('robot-abc', remove), { code: 'ROBOT_BUSY', statusCode: 409 });
+    assert.deepEqual(calls, []); assert.equal(removed, 0);
+    assert.equal(manager.deletedRobots.has('robot-abc'), false);
+    refusal = null;
+    roboWorkError = Object.assign(new Error('RoboWork failed'), { code: 'ROBOWORK_FAILED' });
+    await assert.rejects(manager.deleteRobot('robot-abc', remove), { code: 'ROBOWORK_FAILED' });
+    assert.equal(removed, 0);
+    roboWorkError = Object.assign(new Error('Unknown robotId'), { code: 'UNKNOWN_ROBOT', statusCode: 404 });
+    await manager.deleteRobot('robot-abc', remove);
+    assert.equal(removed, 1);
+});
+
 test('GUI preparation waits by polling status and surfaces a failed preparation', async t => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-gui-poll-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));

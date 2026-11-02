@@ -57,6 +57,12 @@ export async function pinDirectory(directory, identity, code = 'FOLDER_REFUSED')
     throw fail(code, 'A granted folder changed before it was mounted');
 }
 
+// ALA keeps transcripts and a session keeps its mask in a folder's private data, where a robot may have planted something else.
+export async function assertPrivateDirectory(cwd, code) {
+    const entry = await fs.lstat(path.join(cwd, '.roboteam')).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
+    if (entry && !entry.isDirectory()) throw fail(code, "The working folder's .roboteam is not a real directory");
+}
+
 export function homeTarget(id) { return `/home/${robotId(id)}`; }
 
 export class RobotPaths {

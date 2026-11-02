@@ -4,7 +4,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { fail, robotId, runId, homeTarget, within } from './robot-paths.mjs';
+import { assertPrivateDirectory, fail, robotId, runId, homeTarget, within } from './robot-paths.mjs';
 import { RunChannels, validateChannels } from './run-channels.mjs';
 import { buildPrivateLaunch } from './launch.mjs';
 import { codingAgentEnvironment } from './coding-agents.mjs';
@@ -108,9 +108,7 @@ export class RunManager {
         for (const key of ['model', 'effort']) if (ala[key] !== undefined && (typeof ala[key] !== 'string' || !ala[key] || ala[key].length > 512 || /[\x00-\x1f]/u.test(ala[key]))) throw fail('INVALID_INPUT', 'Invalid ALA option');
         const cwd = await this.paths.grant(input.cwd, 'cwd');
         const cwdIdentity = await this.paths.identity(cwd, 'cwd');
-        // ALA keeps its transcripts there and a robot may have planted something else.
-        const privateData = await fs.lstat(path.join(cwd, '.roboteam')).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
-        if (privateData && !privateData.isDirectory()) throw fail('FOLDER_REFUSED', "The working folder's .roboteam is not a real directory");
+        await assertPrivateDirectory(cwd, 'FOLDER_REFUSED');
         if (!Array.isArray(input.folders || []) || (input.folders || []).length > 128 || !Array.isArray(input.ignore || [])) throw fail('INVALID_INPUT', 'Invalid folder grants');
         const channels = validateChannels(input.channels);
         const aliases = new Set(channels.map(channel => channel.alias)); aliases.add('roboteam-soul');

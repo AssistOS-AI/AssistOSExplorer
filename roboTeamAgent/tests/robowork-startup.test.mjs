@@ -6,6 +6,9 @@ import { RoboWorkClient } from '../server/run-client.mjs';
 import { RuntimeManager } from '../server/runtime-manager.mjs';
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
 import { createRoboTeamServer } from '../server/http-server.mjs';
+import path from 'node:path';
+import { RobotPaths } from '../../roboWorkAgent/server/robot-paths.mjs';
+import { RobotManager } from '../../roboWorkAgent/server/robot-manager.mjs';
 
 const inactive = () => Object.assign(new Error('agent-to-agent target is inactive'), { statusCode: 503, code: 'TARGET_INACTIVE' });
 
@@ -152,6 +155,30 @@ test('persisted flow interruption scan waits for the first successful run snapsh
     assert.equal(flow.status, 'running');
     assert.equal(runtime.recoveredTask('task-one').attachRun, 'run-one');
     assert.equal(service.bindings.get('task-one').flowId, flow.id);
+});
+
+test('the robot list survives one robot RoboWork does not know, and a store refusal reaches the delete caller', async t => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'list-unknown-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const paths = new RobotPaths({ dataDir: path.join(root, 'data'), workspaceRoot: root });
+    await fs.mkdir(paths.robot('robot-known'), { recursive: true });
+    await fs.writeFile(path.join(paths.robot('robot-known'), 'label'), JSON.stringify({ id: 'robot-known', name: 'known', codingAgents: [] }));
+    const roboWorkRobots = new RobotManager({ paths, homeOperation: async () => ({ activeAgent: 'codex' }) });
+    const robots = ['robot-known', 'robot-gone'].map(id => ({ id, name: id, createdAt: 'x', updatedAt: 'x' }));
+    const stopped = { state: 'stopped', mode: null };
+    const busy = Object.assign(new Error('close the robot chat and stop its CLI tasks before deleting it'), { code: 'ROBOT_BUSY', statusCode: 409 });
+    const server = createRoboTeamServer({ robotStore: { list: async () => robots, get: async id => robots.find(robot => robot.id === id), delete: async () => { throw busy; } },
+        runtimeManager: { workspaceRoot: root, status: () => stopped, deleteRobot: async () => { throw busy; }, roboWork: { call: (tool, input) => roboWorkRobots.status(input) } }, skillsets: {}, internalToken: 'test-token' });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+    const headers = { 'x-roboteam-internal-token': 'test-token', 'x-roboteam-listing-origin': 'agent', 'content-type': 'application/json' };
+    const listing = await fetch(`http://127.0.0.1:${server.address().port}/api/robots`, { headers });
+    assert.equal(listing.status, 200);
+    const views = (await listing.json()).robots;
+    assert.deepEqual(views.map(view => [view.id, view.codingAgent]), [['robot-known', 'codex'], ['robot-gone', null]]);
+    const deleted = await fetch(`http://127.0.0.1:${server.address().port}/api/control`, { method: 'POST', headers: { ...headers, 'x-roboteam-user-id': 'admin', 'x-roboteam-user-roles': '["admin"]' }, body: JSON.stringify({ operation: 'robot-delete', robotId: 'robot-gone' }) });
+    assert.equal(deleted.status, 409);
+    assert.deepEqual(await deleted.json(), { ok: false, error: busy.message, code: 'ROBOT_BUSY' });
 });
 
 test('a RoboWork refusal or bad cwd reaches the HTTP caller with its code and reason', async t => {

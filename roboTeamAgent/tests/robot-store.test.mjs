@@ -24,6 +24,7 @@ test('concurrent CLI users do not serialize execution but prevent deletion until
         const robot = await store.create({ name: 'Worker' });
         const releaseFirst = await store.acquireCliUsage(robot.id);
         const releaseSecond = await store.acquireCliUsage(robot.id);
+        await assert.rejects(store.assertDeletable(robot.id), { code: 'ROBOT_BUSY', statusCode: 409 });
         await assert.rejects(store.delete(robot.id), /close the robot chat/);
         await releaseFirst();
         await assert.rejects(store.delete(robot.id), /close the robot chat/);

@@ -122,6 +122,14 @@ test('gui_ensure reports CWD_REFUSED and its reason for every refused root form'
         assert.match(answer.error, reason, cwd); assert.notEqual(answer.error, 'RoboWork request failed', cwd);
     }
     assert.equal(manager.sessions.size, 0);
+    // A planted private directory reaches the caller with the same message a run gives.
+    for (const plant of [target => fs.symlink(root, target), target => fs.writeFile(target, 'x')]) {
+        const planted = path.join(root, 'planted');
+        await fs.mkdir(planted); await plant(path.join(planted, '.roboteam'));
+        const refused = await ensure(planted);
+        assert.equal(refused.code, 'CWD_REFUSED'); assert.equal(refused.error, "The working folder's .roboteam is not a real directory");
+        await fs.rm(planted, { recursive: true });
+    }
     // A link inside the workspace is the path a swap leaves behind after RoboTeam canonicalised it.
     await fs.symlink(project, path.join(root, 'swapped'));
     assert.match((await ensure(path.join(root, 'swapped'))).error, /canonical/u);
@@ -158,6 +166,10 @@ test('the container starts with the working folder check and only then becomes /
         const refused = run(target, expected);
         assert.equal(refused.status, 78, target); assert.match(refused.stderr, /working folder changed/u);
     }
+    // A link planted after the last check would put the mask on its target.
+    await fs.symlink(root, path.join(directory, '.roboteam'));
+    assert.equal(run(directory, '12:34').status, 78);
+    await fs.rm(path.join(directory, '.roboteam'));
     // /init does not exist here, so a passing check ends as the shell's failure to run it.
     const passed = run(directory, '12:34');
     assert.notEqual(passed.status, 78, passed.stderr); assert.doesNotMatch(passed.stderr, /working folder changed/u);
@@ -189,6 +201,14 @@ test('a session mounts through a descriptor held until the container starts and 
     const failed = manager.status('robot-a');
     assert.equal(failed.state, 'failed');
     assert.deepEqual(failed.error, { code: 'CWD_REFUSED', message: 'The working folder changed before the session started', statusCode: 400 });
+    // Planted during preparation: the reason reaches the status and Podman is never asked.
+    planned.length = 0;
+    await manager.stop({ robotId: 'robot-a' });
+    swap = async () => { await fs.symlink(other, path.join(project, '.roboteam')); };
+    await assert.rejects(manager.ensureReady({ robotId: 'robot-a', mode: 'desktop', cwd: project }), { code: 'CWD_REFUSED', message: /\.roboteam is not a real directory/u });
+    assert.equal(manager.status('robot-a').error.message, "The working folder's .roboteam is not a real directory");
+    assert.equal(planned.filter(args => args[0] === 'run').length, 0);
+    await fs.rm(path.join(project, '.roboteam'));
     // A swap during preparation is refused before Podman is asked for anything.
     planned.length = 0;
     await manager.stop({ robotId: 'robot-a' });

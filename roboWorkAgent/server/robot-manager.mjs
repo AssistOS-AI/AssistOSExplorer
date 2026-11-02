@@ -99,7 +99,9 @@ export class RobotManager {
         const ids = robotIds || await fs.readdir(path.join(this.paths.dataDir, 'robots'));
         const robots = [];
         for (const id of ids) {
-            const record = await this.require(id);
+            // One registry entry RoboWork does not know must not take every other robot's status with it.
+            const record = await this.require(id).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; return null; });
+            if (!record) continue;
             const status = await this.homeOperation(id, 'status', { includeLogins, codingAgents: record.codingAgents });
             robots.push({ id, ...status, gui: this.gui ? await this.gui.status(id) : { state: 'stopped', mode: null, sessionUrl: null, cwd: null } });
         }

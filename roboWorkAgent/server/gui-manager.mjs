@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 import { MOUNT_REFUSED_EXIT } from './environment.mjs';
-import { directoryIdentity, fail, pinDirectory, within } from './robot-paths.mjs';
+import { assertPrivateDirectory, directoryIdentity, fail, pinDirectory, within } from './robot-paths.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
@@ -18,7 +18,7 @@ const GUI_MODES = new Set(['desktop', 'browser']);
 const ROBOT_ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
 // The images start with /init and have no command. This runs first and in its place, before any robot-controlled
 // autostart, and is a backstop to mounting through a descriptor.
-const CWD_CHECK = `if [ -d "$1" ] && [ ! -L "$1" ] && [ "$(stat -c '%d:%i' -- "$1")" = "$2" ]; then exec /init; fi
+const CWD_CHECK = `if [ -d "$1" ] && [ ! -L "$1" ] && [ ! -L "$1/.roboteam" ] && [ "$(stat -c '%d:%i' -- "$1")" = "$2" ]; then exec /init; fi
 echo "[RoboWork] The working folder changed before the session started: $1" >&2
 exit ${MOUNT_REFUSED_EXIT}`;
 
@@ -216,6 +216,7 @@ export class GuiManager {
         // RoboTeam sends canonical paths, so a difference here is a path swapped since it resolved it.
         if (candidate !== value) throw fail('CWD_REFUSED', 'A canonical directory path is required');
         if (!(await fs.stat(candidate)).isDirectory()) throw fail('CWD_REFUSED', 'A directory is required');
+        await assertPrivateDirectory(candidate, 'CWD_REFUSED');
         return candidate;
     }
 
@@ -322,6 +323,8 @@ export class GuiManager {
             const firewallFile = upstream && mode === 'browser' ? await writeContainerFirewallRules(this.proxyPolicyDir) : null;
             session.relay = upstream ? this.createRelay(upstream) : null;
             const proxy = session.relay ? { relayPort: await session.relay.listen(), policyFile } : null;
+            // Preparation can take minutes, and the mask must not land on a link's target.
+            if (cwdIdentity) await assertPrivateDirectory(cwd, 'CWD_REFUSED');
             const pin = cwdIdentity ? await pinDirectory(cwd, cwdIdentity, 'CWD_REFUSED') : null;
             try {
                 const plan = buildRobotRunArgs({ robot: { ...robot, id: robotId }, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images,
