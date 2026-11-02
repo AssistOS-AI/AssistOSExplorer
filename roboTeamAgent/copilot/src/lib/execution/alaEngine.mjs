@@ -242,7 +242,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 origin: structuredClone(context.origin || context.webchatOrigin || {}) };
             // A turn that runs in another agent's container keeps its callback sockets under /data, which that
             // container sees through the workspace.
-            scriptContext = await createPloinkyTaskContext({ context: captured,
+            scriptContext = await createPloinkyTaskContext({ context: captured, robotId: config.robotId,
                 env, onTask: (task) => backgroundTasks?.observeScriptTask(task, captured) });
             let nativePrompt = buildNativePrompt({ prompt, resume: config.resume,
                 selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt });

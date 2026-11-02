@@ -6,14 +6,12 @@ const TOOLS = new Map([
     ['roboTeamAgent', new Set(['roboflow_start_flow', 'roboflow_list_workflows'])],
     ['GPTResearcher', new Set(['start_research'])],
 ]);
-// The payload field that names a folder. The relay sets it to the run's own working folder, so a robot cannot start work elsewhere.
-const FOLDER_FIELD = { roboflow_start_flow: 'folder', start_research: 'workingDir' };
 const REFS = new Set(['AchillesIDE/roboTeamAgent', 'legacy-agents/GPTResearcher', 'legacy-agents/searchAgent']);
 const refused = () => Object.assign(new Error('Task callback is not permitted'), { statusCode: 403 });
 
 // Only noncredential context crosses into a robot. The controller relays the
 // narrow skill calls using its own verified MCP identity.
-export async function createPloinkyTaskContext({ context, env = process.env, onTask, createClient = null }) {
+export async function createPloinkyTaskContext({ context, robotId = null, env = process.env, onTask, createClient = null }) {
     const sanitize = createSanitizer(context, env);
     const clients = new Map();
     const clientFor = async agent => {
@@ -30,7 +28,11 @@ export async function createPloinkyTaskContext({ context, env = process.env, onT
                 if (!TOOLS.get(body.agent)?.has(body.tool)) throw refused();
                 const given = body.payload ?? {};
                 if (!given || typeof given !== 'object' || Array.isArray(given)) throw refused();
-                const payload = FOLDER_FIELD[body.tool] ? { ...given, [FOLDER_FIELD[body.tool]]: context.workingDir } : given;
+                // The relay sets these itself and replaces whatever a robot sends: the run's own working folder, and the calling
+                // robot as the only one a workflow it starts may use.
+                if (body.tool === 'roboflow_start_flow' && !robotId) throw refused();
+                const forced = { roboflow_start_flow: { folder: context.workingDir, restrictToRobot: robotId }, start_research: { workingDir: context.workingDir } }[body.tool];
+                const payload = forced ? { ...given, ...forced } : given;
                 const result = await runWithSkillRuntimeOrigin(context, async () =>
                     (await clientFor(body.agent)).callToolWithoutWait(body.tool, payload));
                 const taskId = result?.metadata?.taskId || result?.result?.metadata?.taskId;

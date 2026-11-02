@@ -972,3 +972,38 @@ test('RoboFlow continuations name their phase, and a message to a phase that is 
     assert.equal(options[0].workflowInstanceId, phase.id);
     assert.match(options[0].runtimeTaskId, /^[0-9a-f-]{36}$/u);
 });
+
+test('a workflow a robot started may use only that robot, checked for every task before anything starts', async t => {
+    const f = await fixture(t);
+    const source = '/workspace/skills';
+    const repo = { name: 'local', source, skills: [{ name: 'one' }, { name: 'two' }], definitions: [{ name: 'S1', skills: ['one'] }, { name: 'S2', skills: ['two'] }] };
+    f.robots[0].skillsets = [repo]; f.robots[0].disabledSkillsets = ['local-set-2'];
+    f.robots[1].skillsets = [repo]; f.robots[1].disabledSkillsets = ['local-set-1'];
+    const [first, second] = [canonicalSkillset(source, 'S1'), canonicalSkillset(source, 'S2')];
+    const refusal = /can only use that robot/u;
+    const flows = async () => (await f.service.listFlows()).length;
+    await f.service.createWorkflow({ ...graph(), id: 'solo', tasks: [task('a', { skillsets: [first] })], edges: [] });
+    await f.service.createWorkflow({ ...graph(), id: 'pair', tasks: [task('a', { skillsets: [first] }), task('b', { skillsets: [second] })], edges: [edge('a', 'b')] });
+    // Another robot is refused and nothing starts.
+    await assert.rejects(f.service.startFlow({ workflowTypeId: 'solo', objective: 'Work', restrictToRobot: 'worker-id' }), refusal);
+    assert.deepEqual([f.started.length, await flows()], [0, 0]);
+    // The same robot works, and every task of the flow runs on it.
+    const own = await f.service.startFlow({ workflowTypeId: 'solo', objective: 'Work', restrictToRobot: 'default-id' });
+    assert.equal(own.restrictToRobot, 'default-id');
+    assert.deepEqual(f.started.map(item => item.robot.id), ['default-id']);
+    // A workflow that needs two robots is refused whole, before its first task starts.
+    await assert.rejects(f.service.startFlow({ workflowTypeId: 'pair', objective: 'Work', restrictToRobot: 'default-id' }), refusal);
+    assert.deepEqual([f.started.length, await flows()], [1, 1]);
+    // A flow started from the screen is not restricted.
+    const open = await f.service.startFlow({ workflowTypeId: 'pair', objective: 'Work' });
+    assert.equal(open.restrictToRobot, undefined);
+    assert.deepEqual(f.started.slice(1).map(item => item.robot.id), ['default-id']);
+    // The default workflow picks the robot named default: another robot is refused, that robot works.
+    await assert.rejects(f.service.startFlow({ workflowTypeId: 'default', objective: 'Work', executionType: 'terminal', restrictToRobot: 'worker-id' }), refusal);
+    const before = f.started.length;
+    await f.service.startFlow({ workflowTypeId: 'default', objective: 'Work', executionType: 'terminal', restrictToRobot: 'default-id' });
+    assert.deepEqual(f.started.slice(before).map(item => item.robot.id), ['default-id']);
+    // A later phase keeps the constraint from the stored flow.
+    const stored = await f.service.store.get(own.id);
+    assert.equal(stored.restrictToRobot, 'default-id');
+});

@@ -106,15 +106,18 @@ test('task context carries no environment, SDK or delegation and refuses other r
 
 test('task context forces the folder of tools that start work to the run working folder', async () => {
     const calls = [];
-    const context = await createPloinkyTaskContext({ context: { workingDir: '/workspace/project' }, env: {},
-        createClient: async agent => ({ callToolWithoutWait: async (tool, input) => { calls.push({ agent, tool, input }); return {}; } }) });
+    const createClient = async agent => ({ callToolWithoutWait: async (tool, input) => { calls.push({ agent, tool, input }); return {}; } });
+    const context = await createPloinkyTaskContext({ context: { workingDir: '/workspace/project' }, robotId: 'robot-one', env: {}, createClient });
     await context.dispatch({ path: '/agent-call', body: { agent: 'roboTeamAgent', tool: 'roboflow_start_flow',
-        payload: { workflowTypeId: 'default', folder: '/workspace/other-robot' } } });
+        payload: { workflowTypeId: 'default', folder: '/workspace/other-robot', restrictToRobot: 'robot-two' } } });
     await context.dispatch({ path: '/agent-call', body: { agent: 'roboTeamAgent', tool: 'roboflow_start_flow', payload: { workflowTypeId: 'default' } } });
+    // Without a calling robot the relay cannot constrain a workflow, so it starts none.
+    const anonymous = await createPloinkyTaskContext({ context: { workingDir: '/workspace/project' }, env: {}, createClient });
+    await assert.rejects(anonymous.dispatch({ path: '/agent-call', body: { agent: 'roboTeamAgent', tool: 'roboflow_start_flow', payload: {} } }), { statusCode: 403 });
     await context.dispatch({ path: '/agent-call', body: { agent: 'GPTResearcher', tool: 'start_research',
         payload: { query: 'q', workingDir: '/workspace/other-robot' } } });
-    assert.deepEqual(calls.map(call => call.input), [{ workflowTypeId: 'default', folder: '/workspace/project' },
-        { workflowTypeId: 'default', folder: '/workspace/project' }, { query: 'q', workingDir: '/workspace/project' }]);
+    assert.deepEqual(calls.map(call => call.input), [{ workflowTypeId: 'default', folder: '/workspace/project', restrictToRobot: 'robot-one' },
+        { workflowTypeId: 'default', folder: '/workspace/project', restrictToRobot: 'robot-one' }, { query: 'q', workingDir: '/workspace/project' }]);
     await assert.rejects(context.dispatch({ path: '/agent-call', body: { agent: 'roboTeamAgent', tool: 'roboflow_start_flow', payload: 'x' } }), { statusCode: 403 });
 });
 
