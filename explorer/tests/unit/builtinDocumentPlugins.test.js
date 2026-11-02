@@ -4,51 +4,56 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { aggregateIdePlugins } from '../../utils/ide-plugins.mjs';
-import { processMediaUpload } from '../../IDE-plugins/document-media/mediaUpload.js';
 
 const pluginRoot = new URL('../../IDE-plugins/', import.meta.url);
-const components = ['scripta-variants', 'image-plugin', 'audio-plugin', 'video-plugin'];
+const multimediaComponents = ['image-plugin', 'audio-plugin', 'video-plugin'];
 
-test('clean Explorer discovers all built-in document plugins without another agent repository', async t => {
+async function createWorkspace(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-document-plugins-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const installed = path.join(root, '.ploinky/repos/AchillesIDE/explorer/IDE-plugins');
-    await fs.mkdir(installed, { recursive: true });
-    for (const component of components) await fs.cp(new URL(component, pluginRoot), path.join(installed, component), { recursive: true });
+    // Copy the actual built-in inventory so reintroducing a media plugin is detected.
+    await fs.cp(pluginRoot, path.join(root, '.ploinky/repos/AchillesIDE/explorer/IDE-plugins'), { recursive: true });
+    return root;
+}
+
+test('clean Explorer bundles SCRIPTA Variants without multimedia document plugins', async t => {
+    const root = await createWorkspace(t);
     const plugins = (await aggregateIdePlugins(root)).document;
-    for (const component of components) {
-        const paragraph = plugins.paragraph.filter(plugin => plugin.component === component);
-        assert.equal(paragraph.length, 1, component);
-        assert.equal(paragraph[0].agent, 'explorer');
-        await fs.access(path.join(installed, component, 'icon.svg'));
-        for (const extension of ['js', 'css', 'html']) await fs.access(path.join(installed, component, `${component}.${extension}`));
+    const variants = plugins.paragraph.filter(plugin => plugin.component === 'scripta-variants');
+    assert.equal(variants.length, 1);
+    assert.equal(variants[0].agent, 'explorer');
+    for (const extension of ['js', 'css', 'html']) {
+        await fs.access(new URL(`scripta-variants/scripta-variants.${extension}`, pluginRoot));
     }
-    for (const component of components.slice(1)) assert.ok(plugins.chapter.some(plugin => plugin.component === component));
-    const earlier = path.join(root, '.ploinky/repos/legacy-agents/multimedia/IDE-plugins');
-    await fs.mkdir(earlier, { recursive: true });
-    for (const component of components) await fs.cp(new URL(component, pluginRoot), path.join(earlier, component), { recursive: true });
-    const withOlderCopy = (await aggregateIdePlugins(root)).document;
-    for (const component of components) {
-        const paragraph = withOlderCopy.paragraph.filter(plugin => plugin.component === component);
-        assert.equal(paragraph.length, 1, component);
-        assert.equal(paragraph[0].agent, 'explorer');
+    await fs.access(new URL('scripta-variants/icon.svg', pluginRoot));
+    for (const name of [...multimediaComponents, 'document-media']) {
+        await assert.rejects(fs.access(new URL(name, pluginRoot)), { code: 'ENOENT' });
     }
+    assert.equal(Object.values(plugins).flat().some(plugin => multimediaComponents.includes(plugin.component)), false);
 });
 
-test('built-in media uploads retain metadata and the Explorer blob endpoint', async t => {
-    const file = new File(['image'], 'image.png', { type: 'image/png' });
-    const requests = [];
-    t.mock.method(globalThis, 'fetch', async (url, options) => {
-        requests.push({ url, options });
-        return { ok: true, json: async () => ({ id: 'blob-1' }) };
-    });
-    const result = await processMediaUpload({ file, maxFileSize: 20,
-        metadataReader: async selected => { assert.equal(selected, file); return { width: 20, height: 10 }; },
-    });
-    assert.equal(result.uploadResult.id, 'blob-1');
-    assert.equal(result.metadata.width, 20);
-    assert.equal(requests[0].url, '/blobs/explorer');
-    assert.equal(requests[0].options.body, file);
-    await assert.rejects(processMediaUpload({ file, maxFileSize: 1 }), { code: 'too-large' });
-    assert.equal(requests.length, 1);
+test('explicit legacy multimedia plugins remain discoverable while Explorer retains its variants component', async t => {
+    const root = await createWorkspace(t);
+    const legacy = path.join(root, '.ploinky/repos/legacy-agents');
+    for (const component of multimediaComponents) {
+        const dir = path.join(legacy, 'multimedia/IDE-plugins', component);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({
+            pluginCategory: 'document', component, location: ['chapter', 'paragraph'],
+            tooltip: component, presenter: 'LegacyMedia', type: 'modal',
+        }));
+    }
+    const duplicate = path.join(legacy, 'soplangAgent/IDE-plugins/scripta-variants');
+    await fs.cp(new URL('scripta-variants', pluginRoot), duplicate, { recursive: true });
+    const plugins = (await aggregateIdePlugins(root)).document;
+    for (const component of multimediaComponents) {
+        for (const location of ['paragraph', 'chapter']) {
+            const matches = plugins[location].filter(plugin => plugin.component === component);
+            assert.equal(matches.length, 1, `${location}/${component}`);
+            assert.equal(matches[0].agent, 'multimedia');
+        }
+    }
+    const variants = plugins.paragraph.filter(plugin => plugin.component === 'scripta-variants');
+    assert.equal(variants.length, 1);
+    assert.equal(variants[0].agent, 'explorer');
 });
