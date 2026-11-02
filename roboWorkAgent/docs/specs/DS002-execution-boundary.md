@@ -31,4 +31,6 @@ An Environment is a new short-lived container from an enabled global agent's dec
 
 Administrator robot terminals use RoboWork's profile source and only its verified writable discovery row. The second-prompt launcher enters the sandbox after Ploinky identity capture and exits the terminal when the sandbox exits. Plain terminals in every agent retain their ordinary behavior. An administrator can access all homes through a plain RoboWork terminal. A robot can indirectly influence another robot through workflow prompts; workflows do not accept a target robot. These accepted limits do not grant direct sibling-home or credential access.
 
+The inner robot-terminal launcher checks its inherited TTY without consuming input and exits when that TTY hangs up. Its private PID namespace then ends, including foreground and detached children that ignore hangup and termination signals. Live-terminal input, job control and resize remain with the interactive shell.
+
 Proxy assignments and release retain RoboTeam's administrator HTTP routes. RoboWork owns leases, relays and firewall setup. Releasing an active GUI robot is refused; orphan assignments are released. The tools add no robot credentials, ports or mounts.

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { isatty } from 'node:tty';
 import { RobotPaths, homeTarget, within, fail } from '../server/robot-paths.mjs';
 import { parseTerminalProfile, terminalDirectory } from '../server/terminal-profiles.mjs';
 import { buildPrivateLaunch } from '../server/launch.mjs';
@@ -107,17 +108,26 @@ export async function buildTerminalLaunch(descriptor, paths, { environment = new
     } catch (error) { await fs.rm(directory, { recursive: true, force: true }); throw error; }
 }
 
-async function run(launch) {
+async function run(launch, { inner = false } = {}) {
     return new Promise((resolve, reject) => {
+        // A fresh ioctl detects hangup without reading stdin. Exiting the inner
+        // namespace's PID 1 also ends children that ignore HUP and TERM.
+        const checkTty = () => { if (!isatty(0)) process.exit(129); };
+        if (inner && !isatty(0)) { process.exit(129); return; }
         const child = spawn(launch.command, launch.args, launch.options);
+        const ttyWatch = inner ? setInterval(checkTty, 100) : undefined;
         // The child shares the controlling TTY and foreground process group. Ctrl-C and
         // Ctrl-Z therefore reach the actual shell, without creating an outer prompt.
         const ignore = () => {};
         process.on('SIGINT', ignore);
         process.on('SIGQUIT', ignore);
-        child.once('error', reject);
-        child.once('exit', (code, signal) => {
+        const dispose = () => {
+            clearInterval(ttyWatch);
             process.off('SIGINT', ignore); process.off('SIGQUIT', ignore);
+        };
+        child.once('error', error => { dispose(); reject(error); });
+        child.once('exit', (code, signal) => {
+            dispose();
             resolve(code ?? (signal ? 128 : 1));
         });
     });
@@ -125,8 +135,9 @@ async function run(launch) {
 
 export async function main() {
     let launch;
+    const inner = process.argv[2] === '--inner';
     try {
-        if (process.argv[2] === '--inner') {
+        if (inner) {
             const descriptor = JSON.parse(process.argv[3]);
             // The private wrapper inherits only this allowlist, before shell profiles run.
             const env = nativeEnvironment({ PATH: '/usr/local/bin:/usr/bin:/bin' }, homeTarget(descriptor.id));
@@ -138,7 +149,7 @@ export async function main() {
             descriptor.term = /^[A-Za-z0-9+_.-]{1,64}$/u.test(process.env.TERM || '') ? process.env.TERM : 'xterm-256color';
             launch = await buildTerminalLaunch(descriptor, paths);
         }
-        process.exitCode = await run(launch);
+        process.exitCode = await run(launch, { inner });
     } catch {
         process.stderr.write('Robot terminal could not start safely. Close this tab and retry.\n');
         process.exitCode = 124;
