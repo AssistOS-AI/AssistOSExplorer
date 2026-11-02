@@ -197,9 +197,13 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
     const expected = { attacker, project, victim: runtime.config.victim, nonce };
     const argument = JSON.stringify({ ...expected, release });
     const baseline = await records(runtime);
-    let browser, context, page, sessionId, receipt, native, result, primary, stubOwner,
-        created = false, launched = false, cleanup;
-    let stage = 'administrator-check', primaryStage, sessionRequestObserved = false, sessionRequestFailed = false, sessionResponseStatus = null;
+    let browser, context, page, sessionId, receipt, native, observed, result, primary, stubOwner, retainedEvidence,
+        created = false, launched = false, cleanup, cleanupConfirmed = false;
+    let stage = 'administrator-check', primaryStage, primaryFailureCode,
+        sessionRequestObserved = false, sessionRequestFailed = false, sessionResponseStatus = null;
+    const failureCode = error => ['ERR_ASSERTION', 'CONTROLLER_PREREQUISITE', 'CONTROLLER_COMMAND_FAILED', 'CONTROLLER_CLEANUP_FAILED'].includes(error?.code)
+        ? error.code : ['AssertionError', 'TimeoutError', 'AbortError', 'TypeError', 'SyntaxError', 'RangeError', 'Error'].includes(error?.name)
+            ? error.name : 'UNKNOWN_FAILURE';
     const state = await privateJson(runtime.config.explorer.storageState);
     try {
         browser = await chromium.launch({ headless: true });
@@ -269,13 +273,17 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
             if(!text.includes(prefix)||!part) return false;
             try {JSON.parse(atob(part));return true;} catch {return false;}
         }, `I10_NATIVE_${nonce} `);
+        stage = 'native-output';
         const text = await page.locator('#terminal .xterm-rows').textContent();
         assertNoMarker(text, victim.markerHash, victim.markerLength);
         const match = new RegExp(`I10_NATIVE_${nonce} ([A-Za-z0-9+/=]+)`, 'u').exec(text);
         assert.ok(match, 'Native command did not produce a nonce response.');
-        const observed = JSON.parse(Buffer.from(match[1], 'base64').toString('utf8'));
+        observed = JSON.parse(Buffer.from(match[1], 'base64').toString('utf8'));
+        stage = 'native-process';
         native = await processProof(runtime, { ...expected, argument, code, executable, anchor: receipt.record.agent.innerProcess });
+        stage = 'native-assertions';
         assertNativeObservation(observed, expected, native);
+        stage = 'native-exit';
         await input(`${release}\r`);
         await page.waitForFunction(() => document.querySelector('#status')?.textContent === 'Closed');
         const ended = await page.locator('#terminal .xterm-rows').textContent();
@@ -284,7 +292,7 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
         assert.equal(await page.locator('#message').textContent(), 'Terminal closed: terminal_clean.');
         result = { nonce, sessionId, target, profile, commandHash: sha256(command), codeHash: sha256(code),
             markerHash: sha256(receipt.record.marker), native, denial: observed.denial, exitCode: 0 };
-    } catch (error) { primary = error; primaryStage = stage; }
+    } catch (error) { primary = error; primaryStage = stage; primaryFailureCode = failureCode(error); }
     finally {
         try {
             // Exit through the owned session even when receipt readiness failed.
@@ -307,17 +315,37 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
                 cleanup.sessionAbsent=true; assertNativeCleanup(cleanup);
             }
             assert.deepEqual(await runtime.verify(), identity, 'Runtime/source identity changed during native control.');
+            cleanupConfirmed = true;
         } catch (error) {
+            primaryStage ||= stage; primaryFailureCode ||= failureCode(error);
             primary = Object.assign(new Error('Native terminal cleanup is unproven; retain owned robot and project.'), {
                 code: 'CONTROLLER_CLEANUP_FAILED', evidence: { nativeTerminal: { cleanupConfirmed: false, attacker, project, sessionId,
                     created, receiptName: receipt?.name, target, stage, primaryStage, sessionRequestObserved, sessionRequestFailed, sessionResponseStatus,
-                    primaryFailureCode: primary?.code || primary?.name, failureCode: error.code || error.name } },
+                    primaryFailureCode, failureCode: failureCode(error) } },
             });
+            retainedEvidence = primary.evidence.nativeTerminal;
             runtime.retainedNativeTerminal = primary.evidence.nativeTerminal;
         }
         try { await context?.close(); await browser?.close(); }
         catch { primary ||= Object.assign(new Error('Native terminal browser cleanup failed.'), { code: 'CONTROLLER_CLEANUP_FAILED' }); }
     }
-    if (primary) throw primary;
+    if (primary) {
+        // Only fixed stage/cause labels and boolean comparisons cross into
+        // evidence. Never serialize assertion messages, actual/expected values,
+        // environment, argv or the browser's launch ticket.
+        primary.evidence = { nativeTerminal: { ...retainedEvidence,
+            primaryStage: primaryStage || 'browser-close', primaryFailureCode: primaryFailureCode || failureCode(primary),
+            created, sessionRequestObserved, sessionRequestFailed, sessionResponseStatus, cleanupConfirmed,
+            observed: observed ? { nonceMatches: observed.nonce === nonce, homeMatches: observed.home === `/home/${attacker}`,
+                userMatches: observed.user === attacker, cwdMatches: observed.cwd === project, tty: observed.tty === true,
+                profileEnvAbsent: observed.profileEnv === false, linkMatches: observed.link === `/data/robots/${runtime.config.victim}/home`,
+                readDenied: observed.readable === false && ['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR'].includes(observed.denial) } : null,
+            native: native ? { homeMatches: native.homeMatches === true, ttyMatches: native.ttyMatches === true,
+                receiptAncestor: native.receiptAncestor === true, pidMatches: native.innerPid === observed?.pid,
+                startMatches: native.startToken === observed?.startToken, namespaceMatches: native.pidNamespace === observed?.pidNamespace,
+                privateNamespace: native.pidNamespace !== native.serviceNamespace } : null,
+        } };
+        throw primary;
+    }
     return { ...result, cleanup };
 }
