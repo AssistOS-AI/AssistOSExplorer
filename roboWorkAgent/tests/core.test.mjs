@@ -69,11 +69,13 @@ test('folder grants refuse .ploinky except below a registered repository', async
     const source = path.join(ploinky, 'repos', 'skills', 'skills', 'one');
     await fs.mkdir(source, { recursive: true }); await fs.mkdir(path.join(ploinky, 'agents', 'x'), { recursive: true });
     const link = path.join(input.cwd, 'to-ploinky'); await fs.symlink(path.join(ploinky, 'agents', 'x'), link);
-    for (const value of [ploinky, path.join(ploinky, 'agents'), path.join(ploinky, 'agents', 'x'), path.join(ploinky, 'repos'), path.join(ploinky, 'repos', 'skills'), link]) {
+    for (const value of [ploinky, path.join(ploinky, 'agents'), path.join(ploinky, 'agents', 'x'), path.join(ploinky, 'repos'), link]) {
         await assert.rejects(paths.grant(value), { code: 'FOLDER_REFUSED' }, value);
     }
     assert.equal(await paths.grant(source), await fs.realpath(source));
     assert.equal(await paths.grant(path.join(ploinky, 'repos', 'skills', 'skills')), await fs.realpath(path.join(ploinky, 'repos', 'skills', 'skills')));
+    // A repository may itself be one skill.
+    assert.equal(await paths.grant(path.join(ploinky, 'repos', 'skills')), await fs.realpath(path.join(ploinky, 'repos', 'skills')));
 });
 
 test('the workspace root is refused as a working folder or grant even before private storage exists', async t => {

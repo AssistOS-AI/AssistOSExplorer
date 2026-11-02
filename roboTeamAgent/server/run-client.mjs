@@ -28,6 +28,14 @@ export async function loadAgentClient(env = process.env) {
     return (await import(pathToFileURL(file).href)).createAgentClient;
 }
 
+// A failed tool reaches the client as an MCP error whose text ends with the tool's JSON report.
+function toolFailure(result) {
+    const text = result?.content?.find?.(item => item?.type === 'text')?.text;
+    const start = typeof text === 'string' ? text.indexOf('{') : -1;
+    if (start < 0) return {};
+    try { return JSON.parse(text.slice(start)); } catch { return {}; }
+}
+
 export class RoboWorkClient {
     constructor({ createClient = null, agentName = 'roboWorkAgent', startupRetry = false, wait = delay } = {}) {
         this.createClient = createClient;
@@ -58,8 +66,9 @@ export class RoboWorkClient {
             }
         }
         if (result?.isError || result?.ok === false) {
-            throw Object.assign(new Error(result.message || result.error || 'RoboWork request failed'), {
-                code: result.code || 'ROBOWORK_FAILED', statusCode: result.statusCode || 502,
+            const failure = { ...toolFailure(result), ...result };
+            throw Object.assign(new Error(failure.message || failure.error || 'RoboWork request failed'), {
+                code: failure.code || 'ROBOWORK_FAILED', statusCode: failure.statusCode || 502,
             });
         }
         return result;

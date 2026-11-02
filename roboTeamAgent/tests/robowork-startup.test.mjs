@@ -95,6 +95,16 @@ test('startup retries are bounded and exhaustion returns a clear retryable error
     assert.ok(waits.reduce((sum, ms) => sum + ms, 0) <= 6000);
 });
 
+test('a refused tool call keeps its code and reason through the MCP error wrapper', async () => {
+    const report = { code: 'CWD_REFUSED', error: 'The workspace root is not available to a robot' };
+    for (const text of [`MCP error -32603: ${JSON.stringify(report)}\n`, JSON.stringify(report)]) {
+        const client = new RoboWorkClient({ createClient: async () => ({ callTool: async () => ({ content: [{ type: 'text', text }], isError: true }) }) });
+        await assert.rejects(client.call('run_start', {}), { code: 'CWD_REFUSED', message: report.error });
+    }
+    const client = new RoboWorkClient({ createClient: async () => ({ callTool: async () => ({ content: [{ type: 'text', text: 'MCP error -32603: plain failure' }], isError: true }) }) });
+    await assert.rejects(client.call('run_start', {}), { code: 'ROBOWORK_FAILED', message: 'RoboWork request failed' });
+});
+
 test('auth, tool and unrelated HTTP failures fail immediately without startup retries', async () => {
     for (const failure of [Object.assign(new Error('forbidden'), { statusCode: 403, code: 'TARGET_INACTIVE' }),
         Object.assign(new Error('other service failure'), { statusCode: 503, code: 'OTHER_ERROR' }),

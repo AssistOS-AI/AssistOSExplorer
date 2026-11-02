@@ -195,6 +195,10 @@ export class RunManager {
             }
             const mcpServers = [requestedMcp, gui ? `${input.gui.mode || 'gui'}=http://127.0.0.1:${gui.mcpPort}/mcp` : ''].filter(Boolean).join(',');
             if (mcpServers) args.push('--MCPServers', mcpServers);
+            // Preparation takes seconds and a robot may write in these folders: a path swapped for a link since its grant is refused.
+            for (const source of [cwd, ...folders.map(folder => folder.source)]) {
+                if (await fs.realpath(source).catch(() => null) !== source) throw fail('FOLDER_REFUSED', 'A granted folder changed while the run was preparing');
+            }
             let launch;
             if (input.environment) {
                 if (!this.environment) throw fail('ENVIRONMENT_NOT_READY', 'Environment support is not ready', 503);
