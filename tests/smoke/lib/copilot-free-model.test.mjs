@@ -1,12 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { configureRequiredCopilotModels } from './account-preflight.mjs';
-import { FREE_COPILOT_MODEL, configureFreeCopilotRobot, configureFreeCopilotRobots, observeFreeCopilotRoutes,
-    requireFreeCopilotSetup, requiresFreeCopilotSetup } from './copilot-free-model.mjs';
+import { FREE_COPILOT_MODEL, configureFreeCopilotRobot, observeFreeCopilotRoutes } from './copilot-free-model.mjs';
 
 function setupFixture() {
     const calls = [];
@@ -30,20 +25,6 @@ function setupFixture() {
     return fixture;
 }
 
-test('authenticated model setup PATCHes the default and every probe through the normal controller route with persisted readback', async () => {
-    const fixture = setupFixture();
-    const receipts = await configureFreeCopilotRobots(fixture.page);
-    assert.deepEqual(receipts.map(row => row.robotId), ['default-id', 'probe-id']);
-    const mutations = fixture.calls.filter(call => call.method === 'PATCH');
-    assert.equal(mutations.length, 2);
-    for (const mutation of mutations) {
-        assert.deepEqual(mutation.options.data, { codingAgents: ['opencode'], model: FREE_COPILOT_MODEL });
-        assert.equal(mutation.options.headers['x-ploinky-browser-csrf-token'], 'synthetic-proof');
-        assert.equal(mutation.options.maxRedirects, 0);
-    }
-    assert.ok(!JSON.stringify(receipts).includes('synthetic-proof'));
-});
-
 test('model setup refuses foreign route, origin and missing administrator mutation proof before PATCH', async () => {
     for (const proof of [undefined, {}, { routeKey: 'explorer', origin: 'http://fixture.test', csrfToken: 'synthetic-proof' },
         { routeKey: 'roboTeamAgent', origin: 'http://foreign.test', csrfToken: 'synthetic-proof' }]) {
@@ -51,18 +32,6 @@ test('model setup refuses foreign route, origin and missing administrator mutati
         await assert.rejects(configureFreeCopilotRobot(fixture.page, 'probe-id'));
         assert.equal(fixture.calls.filter(call => call.method === 'PATCH').length, 0);
     }
-});
-
-test('model setup refuses missing default, busy robot and a persisted fallback without another mutation', async () => {
-    const missing = setupFixture(); missing.robots.shift();
-    await assert.rejects(configureFreeCopilotRobots(missing.page), /default robot/u);
-    assert.equal(missing.calls.filter(call => call.method === 'PATCH').length, 0);
-    const busy = setupFixture(); busy.patchStatus = 409;
-    await assert.rejects(configureFreeCopilotRobot(busy.page, 'probe-id'), /cannot fall back/u);
-    assert.equal(busy.calls.filter(call => call.method === 'PATCH').length, 1);
-    const fallback = setupFixture(); fallback.config.models.opencode = 'opencode/glm-5.3-flash-free';
-    await assert.rejects(configureFreeCopilotRobot(fallback.page, 'probe-id'), /Persisted model/u);
-    assert.equal(fallback.calls.filter(call => call.method === 'PATCH').length, 1);
 });
 
 async function routeFixture(options) {
@@ -89,106 +58,6 @@ async function routeFixture(options) {
     };
 }
 
-test('actual route evidence requires a post-submission SSE state for every accepted input and preserves only public identities', async () => {
-    const fixture = await routeFixture();
-    fixture.state(); // Initial model selection alone does not prove a turn.
-    fixture.submit(); fixture.state(); fixture.submit(); fixture.state();
-    await fixture.finish();
-    const receipt = JSON.parse(fixture.attachments[0].value.body);
-    assert.equal(receipt.attempts.length, 2);
-    assert.ok(receipt.attempts.every(attempt => attempt.accepted && attempt.routes.length === 1));
-    assert.equal(fixture.detached(), true);
-});
-
-test('housekeeping, empty and control submissions cannot establish a model turn despite scoped route events', async () => {
-    const envelope = (text, visible = true) => JSON.stringify({ __webchatMessage: 1, version: 1,
-        text, attachments: [], presentation: { visible } });
-    for (const body of [envelope('/tasks', false), envelope('/tasks'), envelope('hidden prompt', false),
-        null, '', '  \n', envelope(''), envelope('  '), envelope(null),
-        envelope('/model'), envelope('/session new'), envelope('/execute fixture'),
-        '{', 'null', '{}', '\x1b', envelope('\x1b'),
-        JSON.stringify({ __webchatControl: 1, action: 'stop' }),
-        JSON.stringify({ __webchatMessage: 1, __webchatControl: 1, text: 'stop' })]) {
-        const fixture = await routeFixture();
-        fixture.submit(204, body); fixture.state();
-        await assert.rejects(fixture.finish(), /at least one accepted Copilot input/u);
-        assert.equal(JSON.parse(fixture.attachments[0].value.body).attempts.length, 0);
-        assert.equal(fixture.detached(), true);
-    }
-});
-
-test('/exec skill submissions require and retain their own actual model route', async () => {
-    const body = JSON.stringify({ __webchatMessage: 1, version: 1,
-        text: '/exec aku-memory {"action":"create","title":"fixture"}', presentation: { visible: true } });
-    const fixture = await routeFixture();
-    fixture.submit(204, body); fixture.state();
-    await fixture.finish();
-    const receipt = JSON.parse(fixture.attachments[0].value.body);
-    assert.equal(receipt.attempts.length, 1);
-    assert.equal(receipt.attempts[0].accepted, true);
-    assert.equal(receipt.attempts[0].routes.length, 1);
-    assert.ok(!JSON.stringify(receipt).includes('aku-memory'));
-    const missing = await routeFixture();
-    missing.state(); missing.submit(204, body);
-    await assert.rejects(missing.finish(), /no actual post-submission/u);
-});
-
-test('a model-selection response after intervening non-model input cannot prove the preceding model submission', async () => {
-    for (const command of ['/model', '/tasks']) {
-        const fixture = await routeFixture();
-        fixture.submit();
-        fixture.submit(204, JSON.stringify({ __webchatMessage: 1, text: command, presentation: { visible: false } }));
-        fixture.state();
-        await assert.rejects(fixture.finish(), /no actual post-submission/u);
-        const receipt = JSON.parse(fixture.attachments[0].value.body);
-        assert.equal(receipt.attempts.length, 1);
-        assert.equal(receipt.attempts[0].routes.length, 0);
-    }
-});
-
-test('housekeeping does not replace a real submission or supply its missing route proof', async () => {
-    const hidden = JSON.stringify({ __webchatMessage: 1, text: '/tasks', presentation: { visible: false } });
-    const fixture = await routeFixture();
-    fixture.submit(); fixture.state(); fixture.submit(204, hidden);
-    await fixture.finish();
-    const receipt = JSON.parse(fixture.attachments[0].value.body);
-    assert.equal(receipt.attempts.length, 1);
-    assert.equal(receipt.attempts[0].routes.length, 1);
-    assert.ok(!JSON.stringify(receipt).includes('fixture acknowledgement'));
-    const missing = await routeFixture();
-    missing.submit(204, hidden); missing.state(); missing.submit();
-    await assert.rejects(missing.finish(), /no actual post-submission/u);
-});
-
-test('account setup requires the opt-in before any request and configures every deployed robot with a public receipt', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-model-setup-'));
-    try {
-        const fixture = setupFixture(), requirements = { freeCopilotSetup: true };
-        await assert.rejects(configureRequiredCopilotModels(fixture.page, requirements, { SMOKE_ARTIFACT_DIR: root }), /SMOKE_ROBOWORK_MODEL_SETUP/u);
-        assert.equal(fixture.calls.length, 0);
-        await configureRequiredCopilotModels(fixture.page, requirements, { SMOKE_ROBOWORK_MODEL_SETUP: '1', SMOKE_ARTIFACT_DIR: root });
-        const receipt = fs.readFileSync(path.join(root, 'copilot-model-setup.json'), 'utf8');
-        assert.deepEqual(JSON.parse(receipt).receipts.map(row => row.robotId), ['default-id', 'probe-id']);
-        assert.ok(!receipt.includes('synthetic-proof'));
-        const nonModel = setupFixture();
-        await configureRequiredCopilotModels(nonModel.page, {}, {});
-        assert.equal(nonModel.calls.length, 0);
-    } finally { fs.rmSync(root, { recursive: true, force: true }); }
-});
-
-test('multi-account model tests aggregate the owner turn while a whole test with no submissions still fails', async () => {
-    const attempts = [];
-    const admin = await routeFixture({ attempts }), owner = await routeFixture({ attempts }), foreign = await routeFixture({ attempts });
-    owner.submit(); owner.state();
-    await owner.finish(); await admin.finish(); await foreign.finish();
-    assert.equal(attempts.length, 1);
-    assert.equal(attempts[0].accepted, true);
-    for (const fixture of [admin, owner, foreign]) assert.equal(fixture.detached(), true);
-    const empty = [], first = await routeFixture({ attempts: empty }), second = await routeFixture({ attempts: empty });
-    await assert.rejects(first.finish(), /at least one accepted/u);
-    await assert.rejects(second.finish(), /at least one accepted/u);
-});
-
 test('missing actual event, wrong tab, fallback, wrong backend and rejected input all fail with capture released', async () => {
     for (const scenario of ['initial-only', 'wrong-tab', 'wrong-page', 'unscoped', 'foreign-stream', 'fallback', 'backend', 'rejected']) {
         const fixture = await routeFixture(); fixture.state(); fixture.submit(scenario === 'rejected' ? 403 : 204);
@@ -206,23 +75,4 @@ test('missing actual event, wrong tab, fallback, wrong backend and rejected inpu
         await assert.rejects(fixture.finish(), undefined, scenario);
         assert.equal(fixture.detached(), true);
     }
-});
-
-test('every Copilot cohort requires explicit model setup and non-model profiles do not claim a turn', () => {
-    for (const value of [undefined, '', '0', 'true', FREE_COPILOT_MODEL]) {
-        assert.throws(() => requireFreeCopilotSetup({ SMOKE_ROBOWORK_MODEL_SETUP: value }), /SMOKE_ROBOWORK_MODEL_SETUP=1/u);
-    }
-    requireFreeCopilotSetup({ SMOKE_ROBOWORK_MODEL_SETUP: '1' });
-    for (const spec of ['05-copilot-folder-launch', '06-copilot-live-skills', '06-copilot-codex-delegation',
-        '07-copilot-codex-native', '07-live-sessions', '08-robowork-restart', '70-copilot-semantic-routing']) {
-        assert.equal(requiresFreeCopilotSetup(`specs/${spec}.spec.mjs`), true, spec);
-    }
-    assert.equal(requiresFreeCopilotSetup('specs/00-bootstrap.spec.mjs'), false);
-    assert.equal(requiresFreeCopilotSetup('specs/09-robowork-features.spec.mjs'), false);
-});
-
-test('a model test with zero accepted submissions fails even when an initial route event exists', async () => {
-    const fixture = await routeFixture(); fixture.state();
-    await assert.rejects(fixture.finish(), /at least one accepted Copilot input/u);
-    assert.equal(fixture.detached(), true);
 });

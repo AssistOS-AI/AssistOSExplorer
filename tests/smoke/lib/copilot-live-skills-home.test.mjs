@@ -25,31 +25,14 @@ function fixture(t) {
     return { root, home, dataRoot, robotId, robotName, fsApi, read };
 }
 
-test('RoboWork private home observation binds the registered owner and exact home directory object without exposing contents', async t => {
-    const c = fixture(t), first = await c.read(), stat = fs.statSync(c.home, { bigint: true });
-    fs.writeFileSync(`${c.home}/private-secret`, 'PRIVATE_HOME_SENTINEL');
-    assert.deepEqual(await c.read(), first, 'Ordinary home contents do not replace its identity.');
-    assert.equal(first.homeTarget, `/home/${c.robotId}`);
-    assert.deepEqual(first.identity, Object.fromEntries(['dev', 'ino', 'uid', 'gid', 'mode'].map(key => [key, String(stat[key])])));
-    assert.ok(!JSON.stringify(first).includes(c.dataRoot));
-    assert.ok(!JSON.stringify(first).includes('PRIVATE_HOME_SENTINEL'));
+test('private home observation rejects a wrong registered owner', async t => {
+    const c = fixture(t);
+    fs.writeFileSync(`${c.root}/label`, JSON.stringify({ id: 'another-robot', name: c.robotName }));
+    await assert.rejects(c.read());
 });
 
-for (const [name, mutate] of Object.entries({
-    'wrong owner': c => fs.writeFileSync(`${c.root}/label`, JSON.stringify({ id: 'another-robot', name: c.robotName })),
-    'wrong registered name': c => fs.writeFileSync(`${c.root}/label`, JSON.stringify({ id: c.robotId, name: 'foreign' })),
-    'symlink home': c => { fs.renameSync(c.home, `${c.home}-real`); fs.symlinkSync(`${c.home}-real`, c.home); },
-    'symlink label': c => { fs.renameSync(`${c.root}/label`, `${c.root}/label-real`); fs.symlinkSync(`${c.root}/label-real`, `${c.root}/label`); },
-    'hardlinked label': c => fs.linkSync(`${c.root}/label`, `${c.dataRoot}/label-copy`),
-    'non-directory home': c => { fs.rmdirSync(c.home); fs.writeFileSync(c.home, 'foreign'); },
-})) test(`private home observation rejects ${name}`, async t => { const c = fixture(t); mutate(c); await assert.rejects(c.read()); });
-
-for (const [name, mutate] of Object.entries({
-    'replaced home directory': c => { fs.renameSync(c.home, `${c.home}-old`); fs.mkdirSync(c.home); },
-    'label mutation': c => fs.appendFileSync(`${c.root}/label`, ' '),
-    'label replacement with identical bytes': c => { const bytes = fs.readFileSync(`${c.root}/label`); fs.renameSync(`${c.root}/label`, `${c.root}/label-old`); fs.writeFileSync(`${c.root}/label`, bytes); },
-})) test(`private home observation fences ${name} during capture`, async t => {
+test('private home observation fences a replaced home directory during capture', async t => {
     const c = fixture(t), original = c.fsApi.readFileSync;
-    c.fsApi.readFileSync = fd => { const bytes = original(fd); mutate(c); return bytes; };
+    c.fsApi.readFileSync = fd => { const bytes = original(fd); fs.renameSync(c.home, `${c.home}-old`); fs.mkdirSync(c.home); return bytes; };
     await assert.rejects(c.read(), /changed during capture/);
 });

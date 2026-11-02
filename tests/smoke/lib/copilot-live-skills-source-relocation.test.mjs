@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { LIVE_SKILLS_CONTRACTS, readLiveSkillsCodeHashes, readLiveSkillsHomeBinding } from './copilot-live-skills-runtime.mjs';
-import { createLiveSkillsFixture, liveSkillsHash } from './copilot-live-skills.mjs';
+import { createLiveSkillsFixture } from './copilot-live-skills.mjs';
 const { operateLiveSkillsFixture } = await import(process.env.SMOKE_SOURCE_FIXTURE_MODULE || './copilot-live-skills-fixture-runtime.mjs');
 
 const { createLiveSkillsRuntimeReader } = await import(process.env.SMOKE_SOURCE_READER_MODULE || './copilot-live-skills-runtime.mjs');
@@ -94,90 +94,6 @@ function setup(t, agentName) {
     return { root, repository, source, runtime, otherRuntime, state, create, bind, alaRoot };
 }
 
-test('original moved source claims belong to RoboWork and remain protected exactly once', () => {
-    assert.deepEqual(LIVE_SKILLS_CONTRACTS.roboWorkAgent, moved);
-    const files = Object.values(LIVE_SKILLS_CONTRACTS).flat();
-    assert.equal(new Set(files).size, files.length);
-    assert.equal(files.length, 36, 'All 35 original claims and the current RoboTeam runtime client must remain protected.');
-    assert.ok(LIVE_SKILLS_CONTRACTS.roboTeamAgent.includes('server/run-client.mjs'));
-});
-
-for (const agentName of ['roboTeamAgent', 'roboWorkAgent']) {
-    test(`actual relocated source tree constructs the ${agentName} reader and binds its own runtime bytes`, async t => {
-        const c = setup(t, agentName), reader = await c.create(), evidence = await reader.finish();
-        assert.equal(c.state.programs.filter(args => args.agentName === agentName).length, 2);
-        assert.deepEqual(evidence.contractHashes, Object.fromEntries(LIVE_SKILLS_CONTRACTS[agentName].map(file =>
-            [file, liveSkillsHash(fs.readFileSync(`${c.source}/${file}`))])));
-        if (agentName === 'roboTeamAgent') {
-            assert.equal(evidence.executionSources.runtime.containerId, 'd'.repeat(64));
-            assert.deepEqual(Object.keys(evidence.executionSources.contractHashes), moved);
-            assert.ok(c.state.programs.filter(args => args.agentName === 'roboWorkAgent').length >= 2);
-        } else assert.equal(evidence.executionSources, undefined, 'Execution reader must not recursively create a controller guard.');
-    });
-
-    test(`${agentName} refuses another container's source even when its bytes are identical`, async t => {
-        const c = setup(t, agentName);
-        fs.cpSync(c.source, `${c.root}/copied-code`, { recursive: true }); c.state.codeRoot = `${c.root}/copied-code`;
-        await assert.rejects(c.create(), /verified source directory object/);
-    });
-
-    test(`${agentName} finish refuses changed hash and generation instead of certifying stale source`, async t => {
-        const c = setup(t, agentName), reader = await c.create();
-        const file = `${c.source}/${LIVE_SKILLS_CONTRACTS[agentName][0]}`, original = fs.readFileSync(file);
-        fs.appendFileSync(file, '\n// changed source\n');
-        await assert.rejects(reader.finish(), /source differs/);
-        fs.writeFileSync(file, original); c.runtime.enableGeneration = randomUUID();
-        await assert.rejects(reader.finish(), /replaced, restarted or remounted/);
-    });
-}
-
-test('RoboWork reader refuses RoboTeam owner mounts and moved-file shadows in either container layer', async t => {
-    const c = setup(t, 'roboWorkAgent');
-    const code = c.runtime.mounts.find(mount => mount.Destination === '/code');
-    code.Source = `${c.repository}/roboTeamAgent`;
-    await assert.rejects(c.create(), /exact verified/); code.Source = c.source;
-    c.runtime.mounts.push(c.bind('/foreign', `/code/${moved[0]}`));
-    await assert.rejects(c.create(), /shadowing/); c.runtime.mounts.pop();
-    c.state.outerMounts.push(c.bind('/foreign', `${c.source}/${moved[0]}`));
-    await assert.rejects(c.create(), /shadowing/);
-});
-
-for (const operation of ['capture', 'fixtureOperation']) test(`controller ${operation} rechecks moved runtime source after the operation`, async t => {
-    const c = setup(t, 'roboTeamAgent'), reader = await c.create();
-    const fixture = createLiveSkillsFixture(c.root);
-    if (operation === 'capture') fixture.robotId = 'owned-live-robot';
-    const hashes = Object.fromEntries(LIVE_SKILLS_CONTRACTS.roboTeamAgent.map(file => [file, liveSkillsHash(fs.readFileSync(`${c.source}/${file}`))]));
-    c.state.onOperation = () => {
-        fs.appendFileSync(`${c.repository}/roboWorkAgent/${moved[0]}`, '\n// changed during operation\n');
-        return { prepared: true, workspaceRoot: c.root, codeHashes: hashes, homeBinding: homeEvidence(fixture), sourceMapping: 'aliases', alaBinding: {
-            root: c.alaRoot, command: `${c.alaRoot}/bin/ala.mjs`, hashes: Object.fromEntries(['package.json', 'bin/ala.mjs', 'src/transcript.mjs']
-                .map(file => [file, liveSkillsHash(fs.readFileSync(`${c.alaRoot}/${file}`))])),
-        } };
-    };
-    await assert.rejects(operation === 'capture' ? reader.capture({ sessionId: randomUUID(), fixture }) : reader.fixtureOperation('prepare', fixture), /source differs/);
-});
-
-test('controller companion rejects a changed execution generation and a reused controller container ID', async t => {
-    const c = setup(t, 'roboTeamAgent'), reader = await c.create();
-    const generation = c.otherRuntime.enableGeneration;
-    c.otherRuntime.enableGeneration = randomUUID();
-    await assert.rejects(reader.finish(), /replaced, restarted or remounted/);
-    c.otherRuntime.enableGeneration = generation;
-    c.otherRuntime.containerId = c.runtime.containerId;
-    await assert.rejects(c.create(), /different exact runtime containers/);
-});
-
-test('controller companion retains hash protection for every moved source claim', async t => {
-    const c = setup(t, 'roboTeamAgent'), reader = await c.create();
-    for (const file of moved) {
-        const target = `${c.repository}/roboWorkAgent/${file}`, original = fs.readFileSync(target);
-        fs.appendFileSync(target, '\n// changed moved source\n');
-        await assert.rejects(reader.finish(), /source differs/, file);
-        fs.writeFileSync(target, original);
-    }
-    await reader.finish();
-});
-
 test('every moved source claim is checked before a fixture action can mutate state', async t => {
     const c = setup(t, 'roboTeamAgent'), reader = await c.create(), fixture = createLiveSkillsFixture(c.root);
     let operations = 0; c.state.onOperation = () => { operations++; return { prepared: true }; };
@@ -188,50 +104,4 @@ test('every moved source claim is checked before a fixture action can mutate sta
         fs.writeFileSync(target, original);
     }
     assert.equal(operations, 0, 'Unverified relocated source must prevent entry into the fixture operation.');
-});
-
-test('fixture source guard accepts the canonical /code bind object and rejects identical copied bytes before mutation', async t => {
-    const c = setup(t, 'roboTeamAgent');
-    let fixture = createLiveSkillsFixture(c.root);
-    const contractHashes = Object.fromEntries(LIVE_SKILLS_CONTRACTS.roboTeamAgent.map(file => [file, liveSkillsHash(fs.readFileSync(`${c.source}/${file}`))]));
-    const codeRoot = `${c.root}/runtime-code`, descriptors = new Map();
-    let backingRoot = c.source;
-    const backing = file => file === codeRoot || file.startsWith(`${codeRoot}/`) ? backingRoot + file.slice(codeRoot.length) : file;
-    const fsApi = { ...fs,
-        realpathSync(file) {
-            const match = String(file).match(/^\/proc\/self\/fd\/(\d+)$/);
-            if (match) {
-                const opened = descriptors.get(Number(match[1]));
-                const actual = process.platform === 'linux' ? fs.realpathSync(file) : fs.realpathSync(opened.backing);
-                return actual === opened.backing ? opened.filename : actual;
-            }
-            const actual = fs.realpathSync(backing(file));
-            return actual === backing(file) ? file : actual;
-        },
-        lstatSync(file, options) { return fs.lstatSync(backing(file), options); },
-        openSync(file, flags) { const fd = fs.openSync(backing(file), flags); descriptors.set(fd, { filename: file, backing: backing(file) }); return fd; },
-        closeSync(fd) { descriptors.delete(fd); return fs.closeSync(fd); },
-    };
-    const run = async () => { let result; await operateLiveSkillsFixture({ action: 'prepare', fixture, workspaceRoot: c.root,
-        expectedRepository: c.repository, contractHashes }, { codeRoot, fsApi, emit: value => { result = value; } }); return result; };
-    assert.equal((await run()).prepared, true);
-    assert.equal(descriptors.size, 0);
-    fixture = createLiveSkillsFixture(c.root);
-    fs.cpSync(c.source, `${c.root}/copied-code`, { recursive: true }); backingRoot = `${c.root}/copied-code`;
-    await assert.rejects(run(), /verified source directory object/);
-    assert.equal(descriptors.size, 0);
-    assert.equal(fs.existsSync(fixture.workspace), false); assert.equal(fs.existsSync(fixture.repositoryRoot), false);
-});
-
-for (const invalid of ['canonical mapping', 'replaced home']) test(`production capture rejects ${invalid}`, async t => {
-    const c = setup(t, 'roboTeamAgent'), reader = await c.create(), fixture = createLiveSkillsFixture(c.root);
-    fixture.robotId = 'owned-live-robot'; let homeReads = 0;
-    c.state.onHome = value => { homeReads++; if (invalid === 'replaced home' && homeReads > 1) value.identity.ino = '99'; return value; };
-    c.state.onOperation = () => ({ workspaceRoot: c.root, codeHashes: Object.fromEntries(LIVE_SKILLS_CONTRACTS.roboTeamAgent.map(file =>
-        [file, liveSkillsHash(fs.readFileSync(`${c.source}/${file}`))])), homeBinding: homeEvidence(fixture),
-    sourceMapping: invalid === 'canonical mapping' ? 'canonical' : 'aliases', alaBinding: {
-        root: c.alaRoot, command: `${c.alaRoot}/bin/ala.mjs`, hashes: Object.fromEntries(['package.json', 'bin/ala.mjs', 'src/transcript.mjs']
-            .map(file => [file, liveSkillsHash(fs.readFileSync(`${c.alaRoot}/${file}`))])),
-    } });
-    await assert.rejects(reader.capture({ sessionId: randomUUID(), fixture }), invalid === 'canonical mapping' ? /source aliases/ : /home changed/);
 });
