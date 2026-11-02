@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "coverage": "planned-robowork-ra7",
+  "runner": "npm run test:robowork-restart",
+  "requiredForFinal": true,
+  "identities": [
+    {
+      "identity": "08-robowork-restart.spec.mjs::RoboWork restart pauses live flows, clears native census and resumes execution",
+      "title": "RoboWork restart pauses live flows, clears native census and resumes execution",
+      "selection": { "spec": "specs/08-robowork-restart.spec.mjs" },
+      "cohort": "planned-robowork-ra7",
+      "requiredFlags": { "SMOKE_ROBOWORK_RESTART": "1", "SMOKE_ROBOWORK_MODEL_SETUP": "1" },
+      "privateInputNamesOrCategories": []
+    }
+  ]
+}
