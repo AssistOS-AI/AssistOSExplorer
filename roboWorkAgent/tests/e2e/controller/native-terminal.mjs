@@ -124,17 +124,28 @@ async function processProof(runtime, input) {
                 const env=fs.readFileSync(base+'/environ','utf8').split('\\0');
                 if(!env.includes('HOME=/home/'+input.attacker)||fs.realpathSync(base+'/cwd')!==input.project) throw Error('Wrong native process');
                 const home=fs.statSync(base+'/root/home/'+input.attacker),owned=fs.statSync('/data/robots/'+input.attacker+'/home');
-                let pid=Number(name),receiptAncestor=false,ttySameAsReceipt=null,ttyReceiptReadError=null;
+                let pid=Number(name),receiptAncestor=false,ttySameAsReceipt=null,ttyReceiptReadError=null,ttyControllingMatches=false;
                 for(let depth=0;depth<32&&pid>1;depth++) {
                     const s=fs.readFileSync('/proc/'+pid+'/stat','utf8').split(') ').at(-1).split(' ');
                     if(pid===input.anchor.innerPid&&s[19]===input.anchor.innerStartToken.replace(/^linux-proc:/,'')) {
                         receiptAncestor=true;
                         try {
-                            const ownFd=fs.statSync(base+'/fd/0'),anchorFd=fs.statSync('/proc/'+pid+'/fd/0');
+                            // Namespace-specific fd link spelling is diagnostic.
+                            // Bind the live PTY object and controlling TTY to the receipt instead.
+                            const anchorBase='/proc/'+pid,nativeNs=fs.readlinkSync(base+'/ns/pid'),anchorNs=fs.readlinkSync(anchorBase+'/ns/pid');
+                            const ownFd=fs.statSync(base+'/fd/0',{bigint:true}),anchorFd=fs.statSync(anchorBase+'/fd/0',{bigint:true});
+                            const ownFdAfter=fs.statSync(base+'/fd/0',{bigint:true}),anchorFdAfter=fs.statSync(anchorBase+'/fd/0',{bigint:true});
+                            const nativeAfter=fs.readFileSync(base+'/stat','utf8').split(') ').at(-1).split(' ');
                             const anchorAfter=fs.readFileSync('/proc/'+pid+'/stat','utf8').split(') ').at(-1).split(' ');
-                            if(anchorAfter[19]!==s[19]) ttyReceiptReadError='TTY_ANCHOR_CHANGED';
-                            else ttySameAsReceipt=ownFd.isCharacterDevice()&&anchorFd.isCharacterDevice()
-                                &&ownFd.dev===anchorFd.dev&&ownFd.ino===anchorFd.ino&&ownFd.rdev===anchorFd.rdev;
+                            const stable=(before,after)=>[1,2,3,4,19].every(index=>before[index]===after[index]);
+                            if(!stable(stat,nativeAfter)||nativeNs!==fs.readlinkSync(base+'/ns/pid')) ttyReceiptReadError='TTY_NATIVE_CHANGED';
+                            else if(!stable(s,anchorAfter)||anchorNs!==fs.readlinkSync(anchorBase+'/ns/pid')) ttyReceiptReadError='TTY_ANCHOR_CHANGED';
+                            else {
+                                ttySameAsReceipt=[ownFd,anchorFd,ownFdAfter,anchorFdAfter].every(fd=>fd.isCharacterDevice()
+                                    &&fd.dev===ownFd.dev&&fd.ino===ownFd.ino&&fd.rdev===ownFd.rdev);
+                                ttyControllingMatches=Number.isSafeInteger(Number(stat[4]))&&Number(stat[4])!==0
+                                    &&stat[4]===s[4]&&s[3]===String(input.anchor.innerSessionId);
+                            }
                         } catch {ttyReceiptReadError='TTY_FD_UNAVAILABLE';}
                         break;
                     }
@@ -152,8 +163,8 @@ async function processProof(runtime, input) {
                 const ttyLink=fs.readlinkSync(base+'/fd/0'),ttyPathMatches=/^\\/dev\\/pts\\/[0-9]+$/.test(ttyLink),ttyControlling=Number(stat[4])!==0;
                 rows.push({pid:Number(name),innerPid:Number(nspid[1].trim().split(/\\s+/).at(-1)),startToken:stat[19],members,
                     nonce:input.nonce,pidNamespace:fs.readlinkSync(base+'/ns/pid'),serviceNamespace:self,
-                    ttyMatches:/^\\/dev\\/pts\\/[0-9]+$/.test(ttyLink)&&Number(stat[4])!==0,ttyPathMatches,ttyControlling,
-                    ttyLinkDeletedSuffix:ttyLink.endsWith(' (deleted)'),ttySameAsReceipt,ttyReceiptReadError,
+                    ttyMatches:ttySameAsReceipt===true&&ttyControllingMatches&&ttyReceiptReadError===null,ttyPathMatches,ttyControlling,
+                    ttyLinkDeletedSuffix:ttyLink.endsWith(' (deleted)'),ttySameAsReceipt,ttyControllingMatches,ttyReceiptReadError,
                     homeMatches:home.dev===owned.dev&&home.ino===owned.ino,receiptAncestor});
             } catch(error) {if(!['ENOENT','ESRCH'].includes(error.code)) throw error;}
         }
@@ -357,7 +368,8 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
                 ttyControlling: typeof native.ttyControlling === 'boolean' ? native.ttyControlling : null,
                 ttyLinkDeletedSuffix: typeof native.ttyLinkDeletedSuffix === 'boolean' ? native.ttyLinkDeletedSuffix : null,
                 ttySameAsReceipt: typeof native.ttySameAsReceipt === 'boolean' ? native.ttySameAsReceipt : null,
-                ttyReceiptReadError: ['TTY_FD_UNAVAILABLE', 'TTY_ANCHOR_CHANGED'].includes(native.ttyReceiptReadError) ? native.ttyReceiptReadError : null,
+                ttyControllingMatches: typeof native.ttyControllingMatches === 'boolean' ? native.ttyControllingMatches : null,
+                ttyReceiptReadError: ['TTY_FD_UNAVAILABLE', 'TTY_ANCHOR_CHANGED', 'TTY_NATIVE_CHANGED'].includes(native.ttyReceiptReadError) ? native.ttyReceiptReadError : null,
                 receiptAncestor: native.receiptAncestor === true, pidMatches: native.innerPid === observed?.pid,
                 startMatches: native.startToken === observed?.startToken, namespaceMatches: native.pidNamespace === observed?.pidNamespace,
                 privateNamespace: native.pidNamespace !== native.serviceNamespace } : null,
