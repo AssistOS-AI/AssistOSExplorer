@@ -51,6 +51,22 @@ export async function configureFreeCopilotRobots(page) {
     return receipts;
 }
 
+function isModelSubmission(request) {
+    // Browser network.js serializes every composer submission as this envelope.
+    // Router admission also accepts empty bodies and hidden /tasks refreshes;
+    // neither proves a turn. Slash commands use executeRuntimeCommand instead
+    // of the ordinary model executeTurn path in webchatRuntime.mjs.
+    try {
+        const message = JSON.parse(request.postData() || '');
+        if (!message?.__webchatMessage || message.__webchatControl
+            || message.presentation?.visible === false || typeof message.text !== 'string') return false;
+        const text = message.text.trim();
+        return Boolean(text) && !text.startsWith('/') && !/[\x00-\x08\x0e-\x1f\x7f]/u.test(text);
+    } catch {
+        return false;
+    }
+}
+
 // CDP observes the Router's actual SSE event after each accepted submission.
 // Initial configuration or a model chip alone cannot satisfy a turn's proof.
 export async function observeFreeCopilotRoutes(context, testInfo, { attempts = [] } = {}) {
@@ -72,7 +88,7 @@ export async function observeFreeCopilotRoutes(context, testInfo, { attempts = [
             const submitted = request => {
                 const url = new URL(request.url());
                 if (url.pathname !== '/webchat/input' || request.method() !== 'POST'
-                    || url.searchParams.get('agent') !== 'roboTeamAgent') return;
+                    || url.searchParams.get('agent') !== 'roboTeamAgent' || !isModelSubmission(request)) return;
                 current = { attempt: attempts.length + 1, origin: url.origin, tabId: url.searchParams.get('tabId'),
                     pageInstanceId: url.searchParams.get('pageInstanceId'), accepted: false, routes: [] };
                 if (!current.tabId || !current.pageInstanceId || url.origin !== new URL(page.url()).origin) {

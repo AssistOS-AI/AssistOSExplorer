@@ -78,9 +78,10 @@ async function routeFixture(options) {
         url: 'http://fixture.test/webchat/stream?agent=roboTeamAgent&tabId=tab&pageInstanceId=page',
     } });
     return { page, cdp, finish, attachments, detached: () => detached,
-        submit(status = 204) { page.emit('request', {
+        submit(status = 204, body = JSON.stringify({ __webchatMessage: 1, version: 1,
+            text: 'Reply with the fixture acknowledgement.', attachments: [], presentation: { visible: true } })) { page.emit('request', {
             url: () => 'http://fixture.test/webchat/input?agent=roboTeamAgent&tabId=tab&pageInstanceId=page',
-            method: () => 'POST', response: async () => ({ status: () => status }),
+            method: () => 'POST', postData: () => body, response: async () => ({ status: () => status }),
         }); },
         state(model = FREE_COPILOT_MODEL, backend = 'opencode', targetTabId = 'tab', targetPageInstanceId = 'page') {
             cdp.emit('Network.eventSourceMessageReceived', { requestId: 'stream', eventName: 'runtime-state', data: JSON.stringify({ model, backend, targetTabId, targetPageInstanceId }) });
@@ -97,6 +98,37 @@ test('actual route evidence requires a post-submission SSE state for every accep
     assert.equal(receipt.attempts.length, 2);
     assert.ok(receipt.attempts.every(attempt => attempt.accepted && attempt.routes.length === 1));
     assert.equal(fixture.detached(), true);
+});
+
+test('housekeeping, empty and control submissions cannot establish a model turn despite scoped route events', async () => {
+    const envelope = (text, visible = true) => JSON.stringify({ __webchatMessage: 1, version: 1,
+        text, attachments: [], presentation: { visible } });
+    for (const body of [envelope('/tasks', false), envelope('/tasks'), envelope('hidden prompt', false),
+        null, '', '  \n', envelope(''), envelope('  '), envelope(null),
+        envelope('/model'), envelope('/session new'), envelope('/exec echo fixture'),
+        '{', 'null', '{}', '\x1b', envelope('\x1b'),
+        JSON.stringify({ __webchatControl: 1, action: 'stop' }),
+        JSON.stringify({ __webchatMessage: 1, __webchatControl: 1, text: 'stop' })]) {
+        const fixture = await routeFixture();
+        fixture.submit(204, body); fixture.state();
+        await assert.rejects(fixture.finish(), /at least one accepted Copilot input/u);
+        assert.equal(JSON.parse(fixture.attachments[0].value.body).attempts.length, 0);
+        assert.equal(fixture.detached(), true);
+    }
+});
+
+test('housekeeping does not replace a real submission or supply its missing route proof', async () => {
+    const hidden = JSON.stringify({ __webchatMessage: 1, text: '/tasks', presentation: { visible: false } });
+    const fixture = await routeFixture();
+    fixture.submit(); fixture.state(); fixture.submit(204, hidden);
+    await fixture.finish();
+    const receipt = JSON.parse(fixture.attachments[0].value.body);
+    assert.equal(receipt.attempts.length, 1);
+    assert.equal(receipt.attempts[0].routes.length, 1);
+    assert.ok(!JSON.stringify(receipt).includes('fixture acknowledgement'));
+    const missing = await routeFixture();
+    missing.submit(204, hidden); missing.state(); missing.submit();
+    await assert.rejects(missing.finish(), /no actual post-submission/u);
 });
 
 test('account setup requires the opt-in before any request and configures every deployed robot with a public receipt', async () => {
