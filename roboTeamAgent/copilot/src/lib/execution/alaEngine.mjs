@@ -555,7 +555,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const abort = () => controller.abort(signal.reason);
             signal?.addEventListener('abort', abort, { once: true });
             if (signal?.aborted) abort();
-            let finish, service;
+            let finish;
             const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
             active.add(operation);
             try {
@@ -569,7 +569,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 return { backend: config.backend, models, ...selection };
             } finally {
                 signal?.removeEventListener('abort', abort);
-                try { await service?.close(); } finally { active.delete(operation); finish(); }
+                active.delete(operation);
+                finish();
             }
         },
         async close() {

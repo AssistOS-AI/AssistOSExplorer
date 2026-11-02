@@ -3,14 +3,11 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { requestActor } from './request-identity.mjs';
 
-// Workspace robot listing and the RoboTeam HTTP surface are decided only on the
-// Router-signed request, never on the unsigned compatibility header, and only
-// for a verified direct user without a guest role who is an administrator or
-// holds the Explorer access capability. Internal MCP calls qualify only when the
-// tool proved that an agent is listing on its own behalf.
+// Access to the HTTP surface is decided only on the Router-signed request, never
+// on the unsigned compatibility header, and only for a verified direct user
+// without a guest role who is an administrator or holds the Explorer access
+// capability.
 export const LISTING_CAPABILITY = 'explorer.access';
-export const AGENT_LISTING_ORIGIN = 'agent';
-export const ROBOFLOW_ENTITLEMENT_ERROR = 'Explorer access permission is required to use RoboFlow';
 export const ROBOTEAM_ENTITLEMENT_ERROR = 'Explorer access permission is required to use RoboTeam';
 
 function normalizedRoles(value) {
@@ -56,36 +53,8 @@ function deny(status, error) {
     return { ok: false, status, error };
 }
 
-export async function authorizeRobotListing(req, url, { internalToken = '', env = process.env } = {}) {
-    const actor = requestActor(req, internalToken);
-    if (actor?.internal) {
-        if (actor.listingOrigin !== AGENT_LISTING_ORIGIN) {
-            return deny(403, 'robot listing requires an agent acting on its own behalf');
-        }
-        return { ok: true, canAdmin: false };
-    }
-    if (typeof req.headers['x-ploinky-auth-info'] !== 'string') {
-        return deny(401, 'authenticated Ploinky user is required');
-    }
-    const verifier = await loadRouteVerifier(env);
-    if (!verifier || !verifier.readAgentSecret(env) || !verifier.expectedAudienceForSelf(env)) {
-        return deny(503, 'request verification is unavailable');
-    }
-    const verified = verifier.verifyHttpRouteAuthInfoFromHeaders(req.headers, {
-        env,
-        method: req.method,
-        path: url.pathname,
-        query: url.search,
-        body: Buffer.alloc(0),
-    });
-    if (!verified?.ok) return deny(401, 'authenticated Ploinky user is required');
-    const decision = listingDecision(verified.payload);
-    if (!decision.entitled) return deny(403, 'Explorer access is required to list robots');
-    return { ok: true, canAdmin: decision.admin };
-}
-
-// Gate for every RoboTeam route that is not an internal-token call, the status
-// probe, the AgentServer passthrough or the robot listing. The Router-signed
+// Gate for every route that is not an internal-token call, the status
+// probe or the AgentServer passthrough. The Router-signed
 // request is verified exactly once, over the exact body bytes: readBody runs
 // only after the header and verifier checks and its result is what the
 // signature is checked against. Verifier faults never echo a helper message.
@@ -118,18 +87,4 @@ export async function authorizeWorkspaceRequest(req, url, {
     const decision = listingDecision(verified.payload);
     if (!decision.entitled) return deny(403, refusal);
     return { ok: true, internal: false, canAdmin: decision.admin, principal: verified.payload.actor.id };
-}
-
-export const LIVE_SESSIONS_USER_REQUIRED = 'Live Sessions require a signed-in user';
-
-// Live Sessions authority: only a verified direct user, identified by the
-// signed principal, with administrator status from the signed decision.
-// Internal-token callers are refused even when they forward user headers or
-// also carry a signed header, because ownership must never come from them.
-export function liveSessionsAccess(access) {
-    if (!access?.ok) return access;
-    if (access.internal !== false || typeof access.principal !== 'string' || !/^user:.+/.test(access.principal)) {
-        return deny(403, LIVE_SESSIONS_USER_REQUIRED);
-    }
-    return { ok: true, principal: access.principal, canAdmin: access.canAdmin === true };
 }

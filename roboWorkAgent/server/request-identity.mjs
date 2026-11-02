@@ -49,11 +49,6 @@ export function requestActor(req, internalToken) {
     return user ? { ...user, internal: false } : null;
 }
 
-export function isAdminActor(actor) {
-    const roles = Array.isArray(actor?.roles) ? actor.roles.map((role) => String(role || '').trim().toLowerCase()) : [];
-    return roles.includes('admin') && !roles.includes('guest');
-}
-
 function cryptoSafeEqual(left, right) {
     let difference = 0;
     for (let index = 0; index < left.length; index += 1) {
