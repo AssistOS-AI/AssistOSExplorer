@@ -9,6 +9,7 @@ import { explorerListing, explorerProtectedListing } from './controller/explorer
 import { BASELINE_REVISION, baselineSymlinkControl } from './controller/baseline-control.mjs';
 import { openControllerSession } from './controller/auth-session.mjs';
 import { FREE_MODEL, ProbeRobots } from './controller/robots.mjs';
+import { nativeSymlinkControl } from './controller/native-terminal.mjs';
 import { SENTINEL, assertNoAgentExec, assertVictimUnchanged, assertDualHome, assertDeleted,
     assertEmptyPrivateListing, assertNoMarker, createMarkerStreamGuard, assertRefused, sha256, pending } from './controller/contracts.mjs';
 
@@ -26,8 +27,9 @@ or result overrides. All scenarios need explorer {origin,storageState}, where st
 is the current operator browser's private Playwright JSON and origin is a local
 published port of this exact Box. I2 exercises native preparation and Browser
 creation but supplies no model prompt; it requires the approved baseline Git
-object for its isolated mode-mutation negative control. I10 gathers real grant
-refusal evidence and exits pending until its sandbox symlink read is supplied.
+object for its isolated mode-mutation negative control. I10 retains all fourteen
+grant refusals and performs a finite native symlink read through the normal
+default robot WebTTY terminal (existing smoke Playwright/Chromium required).
 M17 sets default and probe robots by normal RT PATCH to the exact free Nemotron
 route. H2 stops and deletes only its own newly provisioned probe and GUI.
 P1 lifecycle orchestration remains pending and exits nonzero before live access.
@@ -226,7 +228,7 @@ export async function otherAgentMasks(runtime) {
         workspacePrivateRootHidden: true, positiveControl: 'Explorer lists newly created owned file' };
 }
 
-export async function grantRefusals(runtime) {
+export async function grantRefusals(runtime, nativeControl = nativeSymlinkControl) {
     const { workspace, victim } = runtime.config;
     const attacker = await runtime.probes.create(runtime.config.attacker);
     const before = await runtime.snapshot(victim);
@@ -236,6 +238,7 @@ export async function grantRefusals(runtime) {
         const st=fs.lstatSync(input.project); console.log(JSON.stringify({ino:st.ino,dev:st.dev}));
     `, { project, victim, markerHash: before.markerHash });
     const observations = [];
+    let nativeTerminal, retain = false;
     const noRuns = async () => {
         const result = await runtime.mcp('run_list', { robotId: attacker });
         assert.ok(result.ok && Array.isArray(result.result), 'Grant probe run inventory is unavailable.');
@@ -267,8 +270,17 @@ export async function grantRefusals(runtime) {
             }
         }
         await noRuns();
+        nativeTerminal = await nativeControl(runtime, { attacker, project, victim: before });
+        await noRuns();
+    } catch (error) {
+        retain = error.evidence?.nativeTerminal?.cleanupConfirmed === false;
+        if (retain) runtime.retainedNativeTerminal = { ...error.evidence.nativeTerminal,
+            projectOwner: { project, ...owner }, robotOwner: runtime.probes.owned?.get(attacker) };
+        error.evidence = { ...error.evidence, observations, victim: before,
+            ...(retain ? { nativeTerminal: runtime.retainedNativeTerminal } : {}) };
+        throw error;
     } finally {
-        await runtime.node(runtime.config.rw, `
+        if (!retain) await runtime.node(runtime.config.rw, `
             const st=fs.lstatSync(input.project);
             if(!st.isDirectory()||st.isSymbolicLink()||st.ino!==input.ino||st.dev!==input.dev) throw Error('Grant control ownership changed');
             const names=fs.readdirSync(input.project); if(names.length>1||(names.length===1&&(names[0]!=='victim-link'||!fs.lstatSync(path.join(input.project,'victim-link')).isSymbolicLink()))) throw Error('Grant control changed');
@@ -276,9 +288,8 @@ export async function grantRefusals(runtime) {
         `, { project, ...owner });
         assertVictimUnchanged(before, await runtime.snapshot(victim));
     }
-    pending('I10', 'Actual grant refusals observed; real robot sandbox symlink read remains pending.', {
-        observations, victim: before, positiveControl: 'safe cwd and folder reach subsequent tag validation; privileged symlink reads marker',
-    });
+    return { observations, victim: before, nativeTerminal,
+        positiveControl: 'safe cwd and folder reach subsequent tag validation; privileged symlink reads marker' };
 }
 
 export async function dualHome(runtime) {
@@ -372,7 +383,13 @@ export async function runVerifiedScenario(runtime, scenario) {
     }
     finally {
         let cleanupFailed = false;
-        try { if (runtime.probes) await runtime.probes.cleanup(); } catch { cleanupFailed = true; }
+        // An unproven native terminal still owns the robot/home/project. Keep its
+        // exact creation receipts for operator recovery instead of deleting it.
+        const retained = runtime.retainedNativeTerminal || primaryError?.evidence?.nativeTerminal?.cleanupConfirmed === false;
+        if (runtime.retainedNativeTerminal && primaryError) primaryError.evidence = {
+            ...primaryError.evidence, nativeTerminal: runtime.retainedNativeTerminal,
+        };
+        try { if (runtime.probes && !retained) await runtime.probes.cleanup(); } catch { cleanupFailed = true; }
         try { if (runtime.auth) await runtime.auth.close(); } catch { cleanupFailed = true; }
         if (cleanupFailed) {
             const error = Object.assign(new Error('Controller cleanup failed.'), { code: 'CONTROLLER_CLEANUP_FAILED' });

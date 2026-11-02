@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import fsSync from 'node:fs';
+import vm from 'node:vm';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
@@ -16,6 +19,7 @@ import { ControllerRuntime } from './controller/runtime.mjs';
 import { explorerListing, explorerProtectedListing } from './controller/explorer-api.mjs';
 import { FREE_MODEL, ProbeRobots, assertFreeConfig } from './controller/robots.mjs';
 import { ControllerSession, assertAdminToken, cookieHeader, privateJson, openControllerSession } from './controller/auth-session.mjs';
+import { NATIVE_PROBE, assertNativeReceipt, assertNativeObservation, assertNativeCleanup } from './controller/native-terminal.mjs';
 
 const hash = 'a'.repeat(64);
 const config = () => ({
@@ -536,14 +540,144 @@ test('I2 keeps unrelated native streams and runs separate while scanning marker 
     }
 });
 
-test('I10 records exact CWD/folder refusals and remains pending without a real native symlink fixture', async () => {
+test('I10 retains all fourteen refusals and fails without the native terminal prerequisite', async () => {
     await assert.rejects(grantRefusals(isolationFixture()), error => {
-        assert.equal(error.code, 'ACCEPTANCE_PENDING'); assert.equal(error.scenario, 'I10');
+        assert.equal(error.code, 'CONTROLLER_PREREQUISITE');
         assert.equal(error.evidence.observations.length, 14);
         assert.deepEqual(new Set(error.evidence.observations.map(row => row.code)), new Set(['CWD_REFUSED', 'FOLDER_REFUSED']));
         assert.equal(error.sentinel, undefined); return true;
     });
     await assert.rejects(grantRefusals(isolationFixture({ admitted: true })), /unexpectedly admitted a native run/u);
+});
+
+test('I10 runs the finite native control only after fourteen exact refusals and no admitted runs', async () => {
+    const runtime = isolationFixture();
+    const result = await grantRefusals(runtime, async (observed, input) => {
+        assert.equal(observed, runtime);
+        assert.equal(runtime.observations.filter(row => row === 'run_start').length, 16);
+        assert.equal(runtime.observations.filter(row => row === 'run_list').length, 2);
+        assert.equal(input.attacker, 'owned-new-probe');
+        assert.ok(input.project.startsWith(`${runtime.config.workspace}/controller-grants-`));
+        return { unitFixture: true };
+    });
+    assert.equal(result.observations.length, 14);
+    assert.equal(result.nativeTerminal.unitFixture, true);
+    assert.equal(runtime.observations.filter(row => row === 'run_list').length, 3);
+    await assert.rejects(grantRefusals(isolationFixture({ mutateVictim: true }), async () => ({})), /Victim tree bytes, links or modes changed/u);
+});
+
+test('I10 retains the exact owned project when terminal cleanup is unproven', async () => {
+    const runtime = isolationFixture(); let removed = false;
+    runtime.node = async (_id, body) => { if (body.includes('fs.rmdirSync(input.project)')) removed = true; return { ino: 1, dev: 2 }; };
+    await assert.rejects(grantRefusals(runtime, async (_runtime, { attacker, project }) => {
+        throw Object.assign(new Error('unit cleanup failed'), { code: 'CONTROLLER_CLEANUP_FAILED',
+            evidence: { nativeTerminal: { cleanupConfirmed: false, attacker, project, sessionId: 'owned-session' } } });
+    }), error => {
+        assert.equal(error.code, 'CONTROLLER_CLEANUP_FAILED');
+        assert.equal(error.evidence.observations.length, 14);
+        assert.equal(error.evidence.nativeTerminal.attacker, 'owned-new-probe');
+        return true;
+    });
+    assert.equal(removed, false);
+    assert.ok(!runtime.observations.includes('robot_delete'));
+    assert.deepEqual(runtime.retainedNativeTerminal.projectOwner, {
+        project: runtime.retainedNativeTerminal.project, ino: 1, dev: 2,
+    });
+});
+
+function nativeIdentityFixture() {
+    const target = { runtime: 'podman', containerId: 'c'.repeat(64), containerName: 'owned-rw', instanceId: 'instance', enableGeneration: 'generation' };
+    const expected = { attacker: 'owned-new-probe', project: '/task/project', victim: 'owned-victim', nonce: 'unit-nonce' };
+    const record = { schema: 'ploinky-webtty-recovery/v2', targetKind: 'agent', ptyState: 'pty-ready', target,
+        marker: 'm'.repeat(32), worker: { pid: 10, startToken: 'linux-proc:100' },
+        agent: { containerId: target.containerId, marker: 'm'.repeat(32), translatedCwd: expected.project,
+            execId: 'd'.repeat(64), clientProcess: { pid: 11, startToken: 'linux-proc:101' }, innerProcess: {
+                innerPid: 12, boxPid: 112, innerSessionId: 12, innerStartToken: 'linux-proc:102', boxStartToken: 'linux-proc:102',
+            } },
+        agentStartup: { containerId: target.containerId, marker: 'm'.repeat(32), translatedCwd: expected.project,
+            translatedHome: '/task/.data/roboWorkAgent/terminal/owned-new-probe', profile: { provider: 'roboWorkAgent', id: 'owned-new-probe.default' } } };
+    const observed = { nonce: expected.nonce, home: '/home/owned-new-probe', user: expected.attacker, cwd: expected.project,
+        pid: 4, startToken: '102', pidNamespace: 'pid:[100]', tty: true, profileEnv: false,
+        link: '/data/robots/owned-victim/home', readable: false, denial: 'ENOENT' };
+    const proof = { nonce: expected.nonce, innerPid: 4, startToken: '102', pidNamespace: 'pid:[100]',
+        serviceNamespace: 'pid:[99]', homeMatches: true, ttyMatches: true, receiptAncestor: true };
+    return { target, expected, record, observed, proof };
+}
+
+test('I10 rejects wrong CID/generation, profile, cwd, marker, foreign or incomplete native receipts', () => {
+    const { target, expected, record } = nativeIdentityFixture();
+    const check = value => assertNativeReceipt(value, target, `${expected.attacker}.default`, expected.project);
+    check(record);
+    for (const change of [r => { r.target.containerId = 'e'.repeat(64); }, r => { r.target.enableGeneration = 'foreign'; },
+        r => { r.agent.containerId = 'e'.repeat(64); }, r => { r.agentStartup.profile.id = 'foreign.default'; },
+        r => { r.agentStartup.profile.provider = 'roboTeamAgent'; }, r => { r.agent.translatedCwd = '/foreign'; },
+        r => { r.agent.marker = 'foreign'; }, r => { r.ptyState = 'pty-starting'; },
+        r => { r.cleanupState = 'unproven'; }, r => { r.agent = null; }, r => { r.worker.pid = 0; }]) {
+        const value = structuredClone(record); change(value); assert.throws(() => check(value));
+    }
+});
+
+test('I10 rejects wrong nonce/HOME/cwd/TTY, unsandboxed namespace, foreign process ancestry and readable victim link', () => {
+    const fixture = nativeIdentityFixture();
+    const { observed, expected, proof } = fixture;
+    assertNativeObservation(observed, expected, proof);
+    for (const change of [r => { r.nonce = 'wrong'; }, r => { r.home = '/data/robots/owned-new-probe/home'; },
+        r => { r.cwd = '/foreign'; }, r => { r.tty = false; }, r => { r.profileEnv = true; },
+        r => { r.readable = true; r.denial = null; }, r => { r.denial = 'EIO'; }, r => { r.link = '/foreign'; }]) {
+        const value = structuredClone(observed); change(value);
+        assert.throws(() => assertNativeObservation(value, expected, proof));
+    }
+    for (const change of [r => { r.nonce = 'wrong'; }, r => { r.serviceNamespace = observed.pidNamespace; },
+        r => { r.startToken = '999'; }, r => { r.innerPid = 9; }, r => { r.receiptAncestor = false; },
+        r => { r.homeMatches = false; }, r => { r.ttyMatches = false; }]) {
+        const value = structuredClone(proof); change(value);
+        assert.throws(() => assertNativeObservation(observed, expected, value));
+    }
+});
+
+test('I10 cleanup requires every exact record/process/ExecID/session absence and an empty stub', () => {
+    const good = { recordAbsent: true, processesAbsent: true, execAbsent: true, sessionAbsent: true, stubEmpty: true };
+    assertNativeCleanup(good);
+    for (const key of Object.keys(good)) {
+        assert.throws(() => assertNativeCleanup({ ...good, [key]: false }));
+        const absent = { ...good }; delete absent[key]; assert.throws(() => assertNativeCleanup(absent));
+    }
+});
+
+test('I10 finite command attempts a real file read and never echoes victim bytes with synthetic proc identities', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'i10-command-'));
+    try {
+        const project = path.join(root, 'project'), victim = path.join(root, 'victim');
+        await fs.mkdir(project); await fs.mkdir(victim);
+        const marker = `private-victim-${randomUUID()}`;
+        await fs.writeFile(path.join(victim, 'marker-B'), marker);
+        await fs.symlink(victim, path.join(project, 'victim-link'));
+        for (const readable of [true, false]) {
+            if (!readable) await fs.unlink(path.join(victim, 'marker-B'));
+            const input = { project, nonce: 'local-unit', release: 'unit-release' };
+            let line, released, exit;
+            // Only /proc identity is synthetic here; the symlink and victim
+            // marker read use real temporary files. This is no namespace proof.
+            const probeFs = { ...fsSync,
+                readFileSync(file, ...args) { return file === '/proc/self/stat' ? `1 (node) ${Array(20).fill('1').join(' ')}` : fsSync.readFileSync(file, ...args); },
+                readlinkSync(file) { return file === '/proc/self/ns/pid' ? 'pid:[100]' : fsSync.readlinkSync(file); },
+            };
+            vm.runInNewContext(NATIVE_PROBE, {
+                require(name) { assert.equal(name, 'node:fs'); return probeFs; },
+                Buffer, console: { log(value) { line = value; } },
+                process: { argv: ['node', JSON.stringify(input)], env: {}, pid: 1, cwd: () => project,
+                    stdin: { once(event, listener) { assert.equal(event, 'data'); released = listener; } },
+                    stdout: {}, exit(code) { exit = code; } },
+                setTimeout(_fn, ms) { assert.equal(ms, 45000); return 1; }, clearTimeout() {},
+            });
+            assert.equal(exit, undefined);
+            released(Buffer.from('unit-release\n')); assert.equal(exit, 0);
+            assert.ok(!line.includes(marker));
+            const observed = JSON.parse(Buffer.from(line.trim().split(' ')[1], 'base64').toString());
+            assert.equal(observed.readable, readable);
+            assert.equal(observed.denial, readable ? null : 'ENOENT');
+        }
+    } finally { await fs.rm(root, { recursive: true }); }
 });
 
 test('I11 uses a newly provisioned deletion target and rejects changed victim bytes or modes', async () => {
@@ -579,7 +713,7 @@ test('final changed runtime identity or failed cleanup prevents a controller suc
                         : { ok: true, codingAgent: 'opencode', models: { opencode: FREE_MODEL } };
             return new Response(JSON.stringify(payload), { status: 200 });
         };
-        for (const failure of [null, 'identity', 'cleanup', 'pending-cleanup']) {
+        for (const failure of [null, 'identity', 'cleanup', 'pending-cleanup', 'retained-terminal']) {
             let checks = 0;
             const c = config(); c.explorer = { origin: 'http://127.0.0.1:18080', storageState: state };
             const runtime = { config: c, receipts: [], registry: { one: { type: 'agent', containerId: hash } },
@@ -588,10 +722,21 @@ test('final changed runtime identity or failed cleanup prevents a controller suc
                 async node() {
                     if (failure === 'cleanup' || failure === 'pending-cleanup') runtime.auth.close = async () => { throw Error('Failed close'); };
                     if (failure === 'pending-cleanup') throw Object.assign(new Error('Pending fixture'), { code: 'ACCEPTANCE_PENDING' });
+                    if (failure === 'retained-terminal') {
+                        runtime.probes.owned.set('owned-new-probe', { name: 'owned-name', createdAt: 'unit-created' });
+                        runtime.retainedNativeTerminal = { cleanupConfirmed: false, attacker: 'owned-new-probe', sessionId: 'owned-session' };
+                        throw new Error('Retained terminal primary');
+                    }
                     return {};
                 },
             };
             if (!failure) assert.equal((await runVerifiedScenario(runtime, 'I9')).scenario, 'I9');
+            else if (failure === 'retained-terminal') await assert.rejects(runVerifiedScenario(runtime, 'I9'), error => {
+                assert.match(error.message, /Retained terminal primary/u);
+                assert.equal(error.evidence.nativeTerminal.sessionId, 'owned-session');
+                assert.equal(runtime.probes.owned.has('owned-new-probe'), true);
+                return true;
+            });
             else await assert.rejects(runVerifiedScenario(runtime, 'I9'), failure === 'identity'
                 ? /Runtime identity changed/u : error => error.code === 'CONTROLLER_CLEANUP_FAILED');
         }
