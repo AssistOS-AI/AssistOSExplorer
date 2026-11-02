@@ -205,7 +205,7 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
         context = await browser.newContext({ storageState: state });
         page = await context.newPage(); page.setDefaultTimeout(30000);
         await page.goto(`${runtime.auth.origin}/webtty/`);
-        const auth = await page.evaluate(async () => { const r=await fetch('/auth/token'); return {status:r.status,body:await r.json()}; });
+        const auth = await page.evaluate(async () => { const r=await fetch('/auth/token', {signal:AbortSignal.timeout(30000)}); return {status:r.status,body:await r.json()}; });
         assert.equal(auth.status, 200);
         assert.equal(assertAdminToken(auth.body), runtime.auth.principalHash, 'Browser and controller principals differ.');
         const selected = await page.evaluate(async ({ profile, project, attacker }) => {
@@ -243,7 +243,7 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
         assert.equal(payload.session.profileLabel, runtime.probes.owned.get(attacker).name);
         const input = async data => {
             const reply=await page.evaluate(async ({id,data}) => {const r=await fetch('/webtty/sessions/'+id+'/input',{
-                method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({data})});return {status:r.status,body:await r.json()};}, { id: sessionId, data });
+                method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({data}),signal:AbortSignal.timeout(30000)});return {status:r.status,body:await r.json()};}, { id: sessionId, data });
             assert.ok(reply.status===200&&reply.body?.ok===true, 'Native terminal input was refused.');
         };
         await page.waitForFunction(() => document.querySelector('#status')?.textContent === 'Connected');
@@ -278,7 +278,7 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
             // Never force DELETE or erase a quarantined recovery record.
             if (sessionId && page && !result) {
                 await page.evaluate(async ({id,release}) => {await fetch('/webtty/sessions/'+id+'/input',{
-                    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({data:release+'\rexit 1\r'})});}, { id: sessionId, release });
+                    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({data:release+'\rexit 1\r'}),signal:AbortSignal.timeout(30000)});}, { id: sessionId, release });
             }
             if (launched) {
                 assert.ok(sessionId && receipt, 'Owned launch cleanup identity is incomplete; retain fixture.');
@@ -286,7 +286,7 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
                     try { cleanup=await cleanupProof(runtime,baseline,receipt,native,attacker,stubOwner); break; }
                     catch (error) {if(attempt===39) throw error;await delay(250);}
                 }
-                const listed=await page.evaluate(async () => {const r=await fetch('/webtty/live-sessions');return {status:r.status,body:await r.json()};});
+                const listed=await page.evaluate(async () => {const r=await fetch('/webtty/live-sessions', {signal:AbortSignal.timeout(30000)});return {status:r.status,body:await r.json()};});
                 assert.ok(listed.status===200&&listed.body?.ok===true&&listed.body.available!==false&&Array.isArray(listed.body.sessions));
                 assert.ok(!listed.body.sessions.some(row=>row.id===sessionId&&row.status!=='exited'), 'Owned terminal remains live.');
                 cleanup.sessionAbsent=true; assertNativeCleanup(cleanup);

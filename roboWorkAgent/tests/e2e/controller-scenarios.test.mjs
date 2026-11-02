@@ -19,7 +19,7 @@ import { ControllerRuntime } from './controller/runtime.mjs';
 import { explorerListing, explorerProtectedListing } from './controller/explorer-api.mjs';
 import { FREE_MODEL, ProbeRobots, assertFreeConfig } from './controller/robots.mjs';
 import { ControllerSession, assertAdminToken, cookieHeader, privateJson, openControllerSession } from './controller/auth-session.mjs';
-import { NATIVE_PROBE, assertNativeReceipt, assertNativeObservation, assertNativeCleanup } from './controller/native-terminal.mjs';
+import { NATIVE_PROBE, nativeSymlinkControl, assertNativeReceipt, assertNativeObservation, assertNativeCleanup } from './controller/native-terminal.mjs';
 
 const hash = 'a'.repeat(64);
 const config = () => ({
@@ -641,6 +641,78 @@ test('I10 cleanup requires every exact record/process/ExecID/session absence and
     for (const key of Object.keys(good)) {
         assert.throws(() => assertNativeCleanup({ ...good, [key]: false }));
         const absent = { ...good }; delete absent[key]; assert.throws(() => assertNativeCleanup(absent));
+    }
+});
+
+test('I10 browser requests receive fixed timeout signals and aborts fail with cleanup or retained ownership', async () => {
+    for (const abortedRequest of ['auth', 'input', 'failure-exit', 'live-list']) {
+        const { target, expected, record, observed, proof } = nativeIdentityFixture();
+        const calls = [], signals = new Map(); let recordReads = 0;
+        const owner = { name: 'owned-name' }; record.agentStartup.profile.label = owner.name;
+        const sessionId = 's'.repeat(32), launch = 'l'.repeat(32);
+        const runtime = { config: { rw: target.containerId, workspace: '/task', victim: expected.victim,
+            explorer: { storageState: '/unit/private-state' } },
+        auth: { origin: 'http://127.0.0.1', principalHash: 'unit-principal' },
+        probes: { owned: new Map([[expected.attacker, owner]]) }, registry: {},
+        async verify() { return { unitIdentity: true }; },
+        async node(_id, body) { return body.includes('process.execPath') ? '/usr/bin/node' : { dev: 1, ino: 2 }; } };
+        const page = { setDefaultTimeout(ms) { assert.equal(ms, 30000); }, async goto() {},
+            async evaluate(callback, argument) {
+                // Profile import/discovery is separately owned by the normal
+                // client. Every fetch callback below executes unchanged in VM.
+                if (callback.toString().includes('await import(')) return `/webtty/#launch=${launch}`;
+                return callback(argument);
+            },
+            async waitForResponse() { return { status: () => 201, request: () => ({ postDataJSON: () => ({ launch }) }),
+                async json() { return { ok: true, session: { id: sessionId, role: 'owner', profileLabel: owner.name,
+                    target: { kind: 'agent', detail: 'AchillesIDE/roboWorkAgent', access: 'rw', cwdDisplay: expected.project } } }; } }; },
+            async waitForFunction() {},
+            locator(selector) { return { async textContent() { return selector === '#message' ? 'Terminal closed: terminal_clean.'
+                : `I10_NATIVE_${expected.nonce} ${Buffer.from(JSON.stringify(observed)).toString('base64')} I10_EXIT_${expected.nonce} 0`; } }; },
+        };
+        const context = { async newPage() { return page; }, async close() { calls.push('close-context'); } };
+        const browser = { async newContext() { return context; }, async close() { calls.push('close-browser'); } };
+        let uuid = 0;
+        const execute = vm.runInNewContext(`(${nativeSymlinkControl.toString()})`, {
+            assert, Buffer, URL, NATIVE_PROBE, ID: /^[A-Za-z0-9_-]{32}$/u,
+            prerequisite: message => new Error(message), requireSmoke: () => ({ chromium: { async launch() { return browser; } } }),
+            selectAgent: () => [target.containerName, target], privateJson: async () => ({}),
+            randomUUID: () => uuid++ === 0 ? expected.nonce : 'unit-release',
+            records: async () => recordReads++ === 0 ? [] : [{ name: 'owned-receipt.json', record }],
+            assertNativeReceipt: (value, selected, ...args) => assertNativeReceipt(value, JSON.parse(JSON.stringify(selected)), ...args),
+            assertAdminToken: () => 'unit-principal', assertNoMarker() {},
+            processProof: async () => proof, assertNativeObservation,
+            cleanupProof: async () => ({ recordAbsent: true, processesAbsent: true, execAbsent: true, stubEmpty: true }),
+            assertNativeCleanup, delay: async () => {}, quote: value => JSON.stringify(value), sha256,
+            AbortSignal: { timeout(ms) { assert.equal(ms, 30000); const controller = new AbortController();
+                signals.set(controller.signal, controller); return controller.signal; } },
+            async fetch(route, options) {
+                const kind = route === '/auth/token' ? 'auth' : route === '/webtty/live-sessions' ? 'live-list'
+                    : JSON.parse(options.body).data.endsWith('exit 1\r') ? 'failure-exit' : 'input';
+                calls.push(kind);
+                assert.ok(signals.has(options?.signal), `${kind} requires its own bounded browser signal`);
+                // Enter the failure path before its normal-exit request when
+                // that request is the selected abort target.
+                if (kind === abortedRequest || (abortedRequest === 'failure-exit' && kind === 'input')) {
+                    const error = Object.assign(new Error('unit request deadline'), { name: 'TimeoutError' });
+                    signals.get(options.signal).abort(error); throw options.signal.reason;
+                }
+                return { status: 200, async json() { return kind === 'auth' ? {} : { ok: true, sessions: [] }; } };
+            },
+        });
+        await assert.rejects(execute(runtime, { attacker: expected.attacker, project: expected.project,
+            victim: { markerHash: hash, markerLength: 1 } }), error => {
+            if (abortedRequest === 'auth' || abortedRequest === 'input') assert.equal(error.name, 'TimeoutError', `${abortedRequest}: ${error.message}`);
+            else {
+                assert.equal(error.code, 'CONTROLLER_CLEANUP_FAILED');
+                assert.equal(error.evidence.nativeTerminal.cleanupConfirmed, false);
+                assert.equal(runtime.retainedNativeTerminal.sessionId, sessionId);
+            }
+            return true;
+        });
+        assert.ok(calls.includes(abortedRequest));
+        if (abortedRequest === 'input') assert.ok(calls.includes('failure-exit'), 'Input abort must attempt normal owned-session exit');
+        assert.deepEqual(calls.slice(-2), ['close-context', 'close-browser']);
     }
 });
 
