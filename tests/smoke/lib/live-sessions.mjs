@@ -609,8 +609,13 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
                 if (row.argv[1] !== script) continue;
                 const executable = interpreter(row);
                 const value = flag => {
-                    if (row.argv.filter(argument => argument === flag || argument.startsWith(flag + '=')).length !== 1) throw new Error('invalid producer arguments');
-                    const offset = row.argv.indexOf(flag);
+                    const hits = row.argv.map((argument, index) => [argument, index]).filter(([argument]) => argument === flag || argument.startsWith(flag + '='));
+                    if (hits.length !== 1) throw new Error('invalid producer arguments');
+                    const [argument, offset] = hits[0];
+                    if (argument !== flag) {
+                        if (offset < 2 || argument.length === flag.length + 1) throw new Error('invalid producer value');
+                        return argument.slice(flag.length + 1);
+                    }
                     if (offset < 0 || !row.argv[offset + 1] || row.argv[offset + 1].startsWith('--')) throw new Error('invalid producer value');
                     return row.argv[offset + 1];
                 };

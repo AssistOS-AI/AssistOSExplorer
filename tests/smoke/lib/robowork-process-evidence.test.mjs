@@ -78,3 +78,23 @@ test('different producer, dead producer, reused PID and wrong container all fail
     }
     const foreign = fixture(); await assert.rejects(foreign.read(80));
 });
+
+test('the producer accepts --flag=value once, rejects duplicates, and a ppid 0 producer needs the exact identity', async () => {
+    const inline = fixture(); inline.rows.get(40).argv = ['node', '/code/server/robot-cli.mjs', `--dir=${inline.record.cwd}`];
+    assert.equal((await inline.read()).producer.pid, 40);
+    for (const mutate of [
+        f => { f.rows.get(40).argv.push('--dir', f.record.cwd); },
+        f => { f.rows.get(40).argv = ['node', '/code/server/robot-cli.mjs', `--dir=${f.record.cwd}`, `--dir=${f.record.cwd}`]; },
+        f => { f.rows.get(40).argv = ['node', '/code/server/robot-cli.mjs', '--dir=']; },
+        f => { f.rows.get(40).argv = ['node', '/code/server/robot-cli.mjs', '--dir=/foreign']; },
+    ]) { const f = fixture(); mutate(f); await assert.rejects(f.read()); }
+    const exec = fixture(); exec.rows.get(40).ppid = 0;
+    assert.equal((await exec.read()).producer.pid, 40);
+    for (const mutate of [
+        f => { f.source = Buffer.from('foreign source'); },
+        f => { f.rows.get(40).executable = '/bin/sh'; },
+        f => { f.rows.get(40).argv[1] = '/foreign/robot-cli.mjs'; },
+        f => { f.rows.get(40).ppid = 77; },
+        f => { f.rows.get(40).ppid = 80; },
+    ]) { const f = fixture(); f.rows.get(40).ppid = 0; mutate(f); await assert.rejects(f.read()); }
+});

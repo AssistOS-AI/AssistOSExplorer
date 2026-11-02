@@ -562,3 +562,17 @@ if('${kind}'==='copilot')start();else process.send({ready:true});`);
     await Promise.all(children.slice(1).map(async child => { const exit = once(child, 'exit'); child.send('stop'); await exit; }));
     assert.deepEqual(JSON.parse((await run(NATIVE_PROCESS_SNAPSHOT_SOURCE, censusSelection)).stdout), []);
 });
+
+test('the producer accepts --dir=value once and rejects a duplicate or wrong inline value', async () => {
+    const run = async args => {
+        const fixture = snapshotFixture();
+        fixture.rows.get(20).ppid = 40;
+        fixture.add(40, 1, args);
+        return collectNativeProcessSnapshot(10, native, cwd, fixture.io, selectionFor('copilot', 'session', 'turn'));
+    };
+    assert.equal((await run(['node', '/code/server/robot-cli.mjs', `--dir=${cwd}`])).producer.pid, 40);
+    for (const args of [['node', '/code/server/robot-cli.mjs', `--dir=${cwd}`, '--dir', cwd],
+        ['node', '/code/server/robot-cli.mjs', '--dir=/other/selected'], ['node', '/code/server/robot-cli.mjs', '--dir=']]) {
+        await assert.rejects(run(args));
+    }
+});

@@ -66,8 +66,11 @@ export async function collectControllerProducer(initPid, record, options, io = n
     assert.equal(argv[1], script, 'Trusted producer has the wrong deployed script.');
     const executable = fs.readlinkSync(`/proc/${producer.pid}/exe`); assert.match(executable, /(?:^|\/)(?:node|nodejs|bun)$/u);
     const value = flag => {
-        assert.equal(argv.filter(argument => argument === flag || argument.startsWith(flag + '=')).length, 1);
-        const offset = argv.indexOf(flag); assert.ok(offset > 1 && argv[offset + 1] && !argv[offset + 1].startsWith('--'));
+        const hits = argv.map((argument, index) => [argument, index]).filter(([argument]) => argument === flag || argument.startsWith(flag + '='));
+        assert.equal(hits.length, 1);
+        const [argument, offset] = hits[0];
+        if (argument !== flag) { assert.ok(offset > 1 && argument.length > flag.length + 1); return argument.slice(flag.length + 1); }
+        assert.ok(offset > 1 && argv[offset + 1] && !argv[offset + 1].startsWith('--'));
         return argv[offset + 1];
     };
     assert.equal(value(record.kind === 'copilot' ? '--dir' : '--cwd'), record.cwd);
@@ -78,6 +81,10 @@ export async function collectControllerProducer(initPid, record, options, io = n
     }
     const chain = [producer], seen = new Set([producer.pid]); let cursor = producer;
     while (cursor.ppid !== initPid) {
+        // A producer WebChat execs into the container has ppid 0. Accept that only for the producer itself, in the
+        // init's pid namespace; the exact executable, script path and sha256 are asserted above and below. This no
+        // longer proves the producer was started by the container's init.
+        if (cursor === producer && cursor.ppid === 0) { assert.equal(producer.pidNamespace, init.pidNamespace); break; }
         assert.ok(cursor.ppid > 1 && !seen.has(cursor.ppid) && chain.length < 256, 'Producer is not a descendant of the exact RoboTeam init.');
         cursor = identity(cursor.ppid); assert.equal(cursor.pidNamespace, init.pidNamespace);
         seen.add(cursor.pid); chain.push(cursor);
