@@ -260,8 +260,7 @@ export class ConversationSessionStore {
 
     // The ALA transcript lives in the conversation's working folder.
     #alaSession(metadata) {
-        const cwd = metadata.engine?.cwd || metadata.cwd || this.workingDir;
-        try { return alaTranscript.readSessionSync(alaSessionsRoot(cwd), metadata.sessionId); }
+        try { return alaTranscript.readSessionSync(alaSessionsRoot(this.workingDir), metadata.sessionId); }
         catch (error) { if (error.code === 'ENOENT') return null; throw error; }
     }
 

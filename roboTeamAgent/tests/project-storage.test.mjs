@@ -68,3 +68,38 @@ test('registration rejects a symlinked project store and paths outside the works
     assert.deepEqual(await fs.readdir(target), []);
     assert.throws(() => registerProject(f.options, os.tmpdir()), /outside PLOINKY_WORKSPACE_ROOT/);
 });
+
+test('a continued task takes its folder and skill policy from where its record sits, not from the record', async t => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'robot-resume-folder-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const options = { dataDir: path.join(root, '.data/roboTeamAgent'), workspaceRoot: root };
+    const project = path.join(root, 'project'), other = path.join(root, 'other');
+    await fs.mkdir(project); await fs.mkdir(other);
+    registerProject(options, project);
+    const robot = { id: 'worker-123456', name: 'worker' };
+    const id = randomUUID();
+    const request = { cwd: project, task: 'Review' };
+    const manager = new RuntimeManager({ ...options, roboWork: { call: async () => ({}) } });
+    manager._drainTaskQueue = async () => {};
+    await manager._saveTask({ taskId: id, robotId: robot.id, type: 'simple', state: 'completed', alaSessionId: id, request });
+    const record = findProjectRecord(options, 'task', id);
+    const policies = [], started = [];
+    const resume = () => {
+        const fresh = new RuntimeManager({ ...options, roboWork: { call: async () => ({}) } });
+        fresh._drainTaskQueue = async () => {};
+        fresh.skillsets = { policies: { ensure: async (_robot, policyId) => { policies.push(policyId); } } };
+        const enqueue = fresh._enqueueTask.bind(fresh);
+        fresh._enqueueTask = (...args) => { started.push(args[2]); return enqueue(...args); };
+        return fresh.resumeTask(robot, id);
+    };
+    // A robot planted a record that names another folder: nothing starts.
+    const saved = JSON.parse(await fs.readFile(record, 'utf8'));
+    await fs.writeFile(record, JSON.stringify({ ...saved, request: { ...saved.request, cwd: other } }));
+    await assert.rejects(resume(), /belongs to another folder/u);
+    assert.deepEqual(started, []);
+    // A skill policy reference in the record is not followed.
+    await fs.writeFile(record, JSON.stringify({ ...saved, request: { ...saved.request, skillPolicyRef: randomUUID() } }));
+    await resume();
+    assert.deepEqual(policies, [id]);
+    assert.equal(started[0].cwd, project);
+});

@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector, WEBCHAT_WORKFLOW_SKILLS } from './copilot-skillset.mjs';
 import { inspectSkill, explicitSkillDirectories } from './workspace-skill-source.mjs';
-import { atomicJson, inside, hashValue, readSkillTree, treeFingerprint, writeSkillTree, catalogDigest, skillError } from './skill-files.mjs';
+import { atomicJson, inside, hashValue, readRegularFile, readSkillTree, treeFingerprint, writeSkillTree, catalogDigest, skillError } from './skill-files.mjs';
 
 async function owner() {
     const stat = await fs.readFile(`/proc/${process.pid}/stat`, 'utf8');
@@ -329,8 +329,9 @@ export class LiveSkillCatalog {
                 const sessions = path.join(cwd, '.roboteam', 'sessions');
                 for (const file of await fs.readdir(sessions).catch((error) => { if (error.code === 'ENOENT') return []; throw error; })) {
                     if (!/^[a-f0-9-]{36}$/.test(file)) continue;
+                    // One bad record, such as a file a robot planted, must not end the pass for everyone.
                     let session;
-                    try { session = JSON.parse(await fs.readFile(path.join(sessions, file, 'config.json'), 'utf8')); } catch { return; }
+                    try { session = JSON.parse(await readRegularFile(path.join(sessions, file, 'config.json'))); } catch { continue; }
                     for (const value of [session.skillExecution, session.previousSkillExecution, session.skillSelection, session.legacySkillSelection]) if (value?.catalogId) protectedIds.add(value.catalogId);
                 }
             }

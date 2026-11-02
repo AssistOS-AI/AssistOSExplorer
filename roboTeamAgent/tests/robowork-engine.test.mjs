@@ -140,3 +140,28 @@ test('engine reattaches from sequence zero using the trusted run and marks repla
     assert.equal(calls.find(call => call.tool === 'run_read').input.after, 0);
     assert.equal(events.find(event => event.type === 'coding-agent-message').replayed, true);
 });
+
+test('engine refuses a conversation whose saved folder is not the folder that holds it and starts nothing', async t => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'robowork-folder-')));
+    const previous = process.env.PLOINKY_WORKSPACE_ROOT;
+    process.env.PLOINKY_WORKSPACE_ROOT = root;
+    t.after(async () => {
+        if (previous === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = previous;
+        await fs.rm(root, { recursive: true, force: true });
+    });
+    const project = path.join(root, 'project'), other = path.join(root, 'other');
+    await fs.mkdir(project); await fs.mkdir(other);
+    const sessionId = randomUUID();
+    const calls = [];
+    for (const saved of [{ cwd: other }, { cwd: project, engine: { sessionId, cwd: other, home: '/home/robot-abc', backend: null, robotId: 'robot-abc' } }]) {
+        const session = { sessionId, ...saved };
+        const sessionStore = { loadSession: () => structuredClone(session), bindEngine: async () => assert.fail('nothing may be bound') };
+        const engine = createAlaEngine({ workingDir: project, sessionStore, roboWork: { call: async tool => { calls.push(tool); return {}; } },
+            skillCatalog: { refresh: async () => ({ skills: [] }) }, execution: { robotId: 'robot-abc' } });
+        // Model listing and a turn read the folder through the same configuration; a turn takes a Linux-only lock first.
+        await assert.rejects(engine.listModels({ sessionId }), /belongs to another folder/u);
+        if (process.platform === 'linux') await assert.rejects(engine.executeTurn({ sessionId, prompt: 'go' }), /belongs to another folder/u);
+        await engine.close();
+    }
+    assert.deepEqual(calls, []);
+});

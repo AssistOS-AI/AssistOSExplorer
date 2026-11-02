@@ -15,6 +15,7 @@ import { emailInstructions, robotEmailAddress } from './robot-email.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
 import { robotCodingAgents } from './coding-agents.mjs';
 import { RoboWorkClient } from './run-client.mjs';
+import { readRegularFile } from './skill-files.mjs';
 
 const GUI_MODES = new Set(['desktop', 'browser']);
 const ALA_FAILURE_DETAIL_LIMIT = 4096;
@@ -699,9 +700,14 @@ export class RuntimeManager {
         if (!internal) {
             const file = findProjectRecord(this, 'task', taskId);
             if (!file) throw new Error('Task execution record is unavailable in registered projects.');
-            const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-            try { internal = JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
+            internal = JSON.parse(await readRegularFile(file));
             if (internal.taskId !== taskId) throw new Error('Task execution record identity mismatch.');
+            // The record sits in .roboteam/tasks/<id>/executions below the folder the task ran in. A robot can write it, so the
+            // folder it names is never taken from it.
+            const holding = path.resolve(file, '../../../../..');
+            if (await fs.realpath(String(internal.request?.cwd || '')).catch(() => null) !== await fs.realpath(holding).catch(() => holding)) {
+                throw new Error('This task belongs to another folder. Open it there, or start a new task.');
+            }
             if (['starting', 'running'].includes(internal.state)) internal.state = 'paused';
             owner = this._boundOwner(internal);
         }
@@ -721,7 +727,8 @@ export class RuntimeManager {
             throw new Error('Resume the task currently under manual control before continuing another task.');
         }
         if (this.skillsets) {
-            const policyId = internal.request.skillPolicyRef || internal.alaSessionId;
+            // A conversation's policy is its own id, so a reference in a robot-writable record is not followed.
+            const policyId = internal.alaSessionId;
             // A current conversation policy always wins over a terminal task's old request.
             await this.skillsets.policies.ensure(robot, policyId, { legacy: internal.request.skillSelection });
             internal.request.skillPolicyRef = policyId;

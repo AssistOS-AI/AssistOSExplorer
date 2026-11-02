@@ -16,7 +16,7 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, ini
                 if (record.skillSelection) { record.legacySkillSelection = record.skillSelection; delete record.skillSelection; }
             });
         }
-        return { robot, policyId, policy, cwd: session.engine?.cwd || session.cwd || workingDir };
+        return { robot, policyId, policy, cwd: workingDir };
     }
     const api = {
         async refresh(sessionId = initialSessionId, { execution = false, cwd } = {}) {

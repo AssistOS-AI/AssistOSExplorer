@@ -4,6 +4,15 @@ import path from 'node:path';
 
 export const skillError = (message) => Object.assign(new Error(message), { statusCode: 400 });
 export const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
+// A robot can plant a FIFO or a link where a record belongs. This opens without following a link or waiting for a writer
+// and reads only a regular file.
+export async function readRegularFile(file) {
+    const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    try {
+        if (!(await handle.stat()).isFile()) throw skillError('record is not a regular file');
+        return await handle.readFile('utf8');
+    } finally { await handle.close(); }
+}
 export const hashValue = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 // Content, membership and executable modes participate in every capture. No timestamp cache.

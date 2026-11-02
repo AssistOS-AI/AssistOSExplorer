@@ -75,7 +75,11 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         if (session.engine?.robotId && session.engine.robotId !== execution.robotId) {
             throw new Error('This conversation uses another robot. Open it with that robot, or create a new session.');
         }
-        const cwd = await fs.realpath(session.engine?.cwd || session.cwd || workingDir);
+        // The conversation's folder is the one that holds its .roboteam. A robot can write the saved paths, so they are only checked.
+        const cwd = await fs.realpath(workingDir);
+        for (const saved of [session.engine?.cwd, session.cwd]) {
+            if (saved && await fs.realpath(saved).catch(() => null) !== cwd) throw new Error('This conversation belongs to another folder. Open it there, or create a new session.');
+        }
         const workspaceRoot = resolveAchillesWorkspaceRoot(cwd, env);
         // One persistent native home per robot. The robot home is mounted
         // writable and used directly, so credentials and native sessions never

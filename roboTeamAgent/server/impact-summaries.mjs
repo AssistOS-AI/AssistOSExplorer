@@ -38,7 +38,7 @@ export async function conversationSummaries(robotStore, workspaceRoot, sessionId
     if (!sessionFile) throw missing();
     const cwd = projectForSessionRecord(sessionFile);
     const session = new ConversationSessionStore({ workingDir: cwd }).loadSession(sessionId);
-    const alaTurns = new Map((readAlaSession(session.engine?.cwd || session.cwd || cwd, sessionId)?.turns || []).map(turn => [turn.turnId, turn]));
+    const alaTurns = new Map((readAlaSession(cwd, sessionId)?.turns || []).map(turn => [turn.turnId, turn]));
     const summaries = [];
     for (const message of session.messages.filter(entry => entry.role === 'assistant' && entry.context !== false)) {
         const turn = alaTurns.get(message.turnId);
