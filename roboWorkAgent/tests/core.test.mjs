@@ -63,6 +63,19 @@ test('cwd and folder grants reject private storage, ancestors and symlink aliase
     assert.equal(await paths.grant(input.cwd, 'cwd'), input.cwd);
 });
 
+test('folder grants refuse .ploinky except below a registered repository', async t => {
+    const { paths, input } = await fixture(t);
+    const ploinky = path.join(paths.workspaceRoot, '.ploinky');
+    const source = path.join(ploinky, 'repos', 'skills', 'skills', 'one');
+    await fs.mkdir(source, { recursive: true }); await fs.mkdir(path.join(ploinky, 'agents', 'x'), { recursive: true });
+    const link = path.join(input.cwd, 'to-ploinky'); await fs.symlink(path.join(ploinky, 'agents', 'x'), link);
+    for (const value of [ploinky, path.join(ploinky, 'agents'), path.join(ploinky, 'agents', 'x'), path.join(ploinky, 'repos'), path.join(ploinky, 'repos', 'skills'), link]) {
+        await assert.rejects(paths.grant(value), { code: 'FOLDER_REFUSED' }, value);
+    }
+    assert.equal(await paths.grant(source), await fs.realpath(source));
+    assert.equal(await paths.grant(path.join(ploinky, 'repos', 'skills', 'skills')), await fs.realpath(path.join(ploinky, 'repos', 'skills', 'skills')));
+});
+
 test('the workspace root is refused as a working folder or grant even before private storage exists', async t => {
     const { paths, manager, input } = await fixture(t);
     await assert.rejects(paths.grant(paths.workspaceRoot, 'cwd'), { code: 'CWD_REFUSED', message: /workspace root/u });

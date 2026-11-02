@@ -12,10 +12,13 @@ export async function withLiveSkillsProjection({ fixture, workspaceRoot, session
     assert.equal(fs.realpathSync(parent), parent);
     assert.equal(fs.lstatSync(destination, { throwIfNoEntry: false }), undefined, 'Offline projection requires absent project skills.');
     await inspectSessionSkillLinks({ workspace: fixture.workspace, sessionId, execution }, { sourceMapping: execution.mounts.some(mount => mount.source === mount.target) ? 'canonical' : 'aliases' });
-    const args = alaSkillMountArguments({ snapshot: execution, workspaceRoot, cwd: fixture.workspace, includeClaude: false });
-    assert.deepEqual(args, ['--folder', execution.skillsDirectory, 'at', destination, 'expose'],
-        'Offline projection cannot represent auxiliary source mounts.');
-    fs.symlinkSync(args[1], args[3]);
+    const args = alaSkillMountArguments({ snapshot: execution, cwd: fixture.workspace, includeClaude: false });
+    // Canonical mounts keep their real path in the offline projection; an alias mount cannot be represented.
+    const canonical = execution.mounts.filter(mount => mount.source === mount.target);
+    assert.deepEqual(args, [...canonical.flatMap(mount => ['--folder', mount.source, 'at', mount.target, 'expose']),
+        '--folder', execution.skillsDirectory, 'at', destination, 'expose'],
+    'Offline projection cannot represent auxiliary source mounts.');
+    fs.symlinkSync(execution.skillsDirectory, destination);
     const installed = fs.lstatSync(destination);
     try { return await callback(); }
     finally {

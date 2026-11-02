@@ -88,9 +88,14 @@ export async function runIsolationProbe(options, { io = fs, run = execute, env =
         // A robot started in a project folder sees no other part of the workspace: its private children are absent
         // and the workspace root lists only the path to the working folder.
         for (const name of ['.data', '.ploinky', '.env']) await checked(`${name} is not mounted`, () => assert.throws(() => io.lstatSync(`${workspace}/${name}`), { code: 'ENOENT' }));
-        await checked('workspace root shows only the working folder path', () => {
-            assert.ok(options.control && path.posix.dirname(options.control).startsWith(`${workspace}/`), 'A control file inside the working folder is required.');
-            assert.deepEqual(io.readdirSync(workspace), [path.posix.relative(workspace, options.control).split('/')[0]]);
+        await checked('every level above the working folder shows only the next path segment', () => {
+            const folder = options.control && path.posix.dirname(options.control);
+            assert.ok(folder && folder.startsWith(`${workspace}/`), 'A control file directly in a working folder below the workspace root is required.');
+            let level = workspace;
+            for (const segment of folder.slice(workspace.length + 1).split('/')) {
+                assert.deepEqual(io.readdirSync(level), [segment], `Unexpected entries in ${level}`);
+                level = `${level}/${segment}`;
+            }
         });
         await checked('working folder positive-control file readable and writable', () => {
             const descriptor = io.openSync(options.control, 'r+'); io.closeSync(descriptor);

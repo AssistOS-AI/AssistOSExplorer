@@ -54,6 +54,12 @@ export class RobotPaths {
                 if (within(root, resolved)) throw fail(code, 'Working directory is protected');
             }
         }
+        if (kind !== 'cwd') {
+            // Registered repository sources live below .ploinky/repos/<name>; nothing else in .ploinky is for a robot.
+            const root = await fs.realpath(path.join(this.workspaceRoot, '.ploinky')).catch(() => path.join(this.workspaceRoot, '.ploinky'));
+            const parts = path.relative(root, resolved).split(path.sep);
+            if (within(root, resolved) && !(parts[0] === 'repos' && parts.length > 2)) throw fail(code, 'Directory is protected workspace state');
+        }
         return resolved;
     }
 }

@@ -59,6 +59,22 @@ test('GUI probe requires all forbidden ports to refuse and its own port to answe
     await assert.rejects(runIsolationProbe(input, { run: async () => { throw Object.assign(new Error('timeout'), { code: 28 }); } }));
 });
 
+test('masks probe walks every level from the workspace root to the working folder', async () => {
+    const view = tree => ({
+        lstatSync: file => { if (tree[path.posix.dirname(file)]?.includes(path.posix.basename(file))) return {}; throw denied(); },
+        readdirSync: dir => tree[dir] ?? denied(), openSync: () => 9, closeSync() {},
+    });
+    const probe = (tree, control) => runIsolationProbe({ ...options, probe: 'masks', control }, { io: view(tree) });
+    assert.equal((await probe({ '/fixture': ['app'], '/fixture/app': ['x'] }, '/fixture/app/control')).checks.length, 5);
+    assert.equal((await probe({ '/fixture': ['a'], '/fixture/a': ['b'], '/fixture/a/b': ['c'] }, '/fixture/a/b/control')).checks.length, 5);
+    await assert.rejects(probe({ '/fixture': ['app', 'sibling'] }, '/fixture/app/control'), /Unexpected entries in \/fixture/u);
+    await assert.rejects(probe({ '/fixture': ['a'], '/fixture/a': ['b', 'other'], '/fixture/a/b': [] }, '/fixture/a/b/control'), /Unexpected entries in \/fixture\/a/u);
+    await assert.rejects(probe({ '/fixture': ['app', '.data'] }, '/fixture/app/control'));
+    await assert.rejects(probe({ '/fixture': ['app'] }, undefined), /control file/u);
+    await assert.rejects(probe({ '/fixture': ['control'] }, '/fixture/control'), /control file/u);
+    await assert.rejects(probe({ '/fixture': ['app'] }, '/elsewhere/control'), /control file/u);
+});
+
 test('fd probe detects an inherited non-CLOEXEC descriptor', async () => {
     const standard = 'lr-x------ 1 root root 64 Oct 1 00:00 0 -> /dev/null\nl-wx------ 1 root root 64 Oct 1 00:00 1 -> pipe:[123]\nl-wx------ 1 root root 64 Oct 1 00:00 2 -> pipe:[124]\nlr-x------ 1 root root 64 Oct 1 00:00 3 -> /proc/123/fd\n';
     await runIsolationProbe({ ...options, probe: 'fds' }, { run: async () => ({ stdout: standard }) });

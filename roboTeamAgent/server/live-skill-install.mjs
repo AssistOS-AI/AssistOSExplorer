@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { repositoryClient } from './repository-client.mjs';
 import { sessionDirectory } from '../copilot/src/lib/storage/sessionPaths.mjs';
-import { assertSafeAchillesPrivatePath } from '../copilot/src/lib/storage/privateDataRoot.mjs';
+import { ACHILLES_PRIVATE_DIRECTORY_NAME, assertSafeAchillesPrivatePath } from '../copilot/src/lib/storage/privateDataRoot.mjs';
 
 const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
 
@@ -36,6 +36,9 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
     const projectSkills = path.join(cwd, '.agents', 'skills');
     const selected = new Map();
     const legacy = await legacyRobotLinks(cwd);
+    const diagnostics = [...(inventory.diagnostics || [])];
+    const root = await fs.realpath(cwd);
+    const privateDirectory = path.join(root, ACHILLES_PRIVATE_DIRECTORY_NAME);
     // Retain skills already supplied by the project, including directory symlinks.
     for (const name of await fs.readdir(projectSkills).catch(error => {
         if (error.code === 'ENOENT') return [];
@@ -47,6 +50,11 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
         if (legacy.has(file) && (await fs.lstat(file)).isSymbolicLink()
             && await fs.readlink(file) === legacy.get(file)) continue;
         const source = await fs.realpath(file);
+        // A project link may not lead out of the working folder or into, or over, its private data.
+        if (!inside(root, source) || inside(privateDirectory, source) || inside(source, privateDirectory)) {
+            diagnostics.push({ source: name, state: 'invalid', message: 'Project skill link leaves the working folder' });
+            continue;
+        }
         if ((await fs.stat(source)).isDirectory()) selected.set(name, source);
     }
     // A robot's explicit selection wins a name collision in its own session only.
@@ -86,5 +94,5 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
     } finally { await fs.rm(stage, { recursive: true, force: true }); }
     const revision = crypto.createHash('sha256').update(JSON.stringify(links)).digest('hex');
     return { entries, revision, skillsDirectory, mounts, policyVersion: policy.policyVersion,
-        diagnostics: inventory.diagnostics, release: async () => {}, live: true };
+        diagnostics, release: async () => {}, live: true };
 }

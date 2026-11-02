@@ -44,7 +44,7 @@ function deferred() {
     return { promise, resolve };
 }
 
-async function harness(t, interactions = {}, { workspaceAtRoot = false, execution = {}, webchatLogsBase = '', skillSnapshot = {}, livePublisher = null, backgroundTasks = undefined } = {}) {
+async function harness(t, interactions = {}, { workspaceAtRoot = false, execution = {}, webchatLogsBase = '', skillSnapshot = {}, livePublisher = null, backgroundTasks = undefined, roboWork = undefined } = {}) {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-engine-'));
     const oldRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = workspaceAtRoot ? workingDir : path.dirname(workingDir);
@@ -69,13 +69,43 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false, executio
         async discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; },
     };
     const engine = createAlaEngine({ workingDir, sessionStore: store, skillCatalog: catalog, installation,
-        execution, webchatLogsBase, livePublisher, backgroundTasks,
+        execution, webchatLogsBase, livePublisher, backgroundTasks, roboWork,
         settings: { readAchillesSettings: () => ({}), getPermissionMode: () => 'ask-for-approval' },
         interactions: { cancelTurn() {}, resolve() {}, ...interactions } });
     t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); await fs.rm(home, { recursive: true, force: true }); });
     return { workingDir, engine, store, installation, sessionId: session.sessionId, home, configFile,
         setSkills: (next) => { records = next; }, setModels };
 }
+
+// A resident RoboWork stand-in: the robot exists, no run is listed, and run_start fails as told.
+function refusingRoboWork(code) {
+    const calls = [];
+    return { calls, async call(name, args) {
+        calls.push(name);
+        if (name === 'robot_config') return { homeTarget: '/home/robot-a', models: { codex: 'm' }, efforts: {}, codingAgent: 'codex', agents: [{ name: 'codex', available: true }] };
+        if (name === 'run_list') return [];
+        if (name === 'run_start') throw Object.assign(new Error(`Start failed: ${code}`), { code });
+        return {};
+    } };
+}
+
+test('a refused run start drops the saved run, so a later turn is not blamed on run ownership', { timeout: 15000 }, async (t) => {
+    for (const code of ['CWD_REFUSED', 'FOLDER_REFUSED']) {
+        const roboWork = refusingRoboWork(code);
+        const h = await harness(t, {}, { roboWork, execution: { robotId: 'robot-a' } });
+        await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Refused' }), new RegExp(`Start failed: ${code}`));
+        assert.equal(h.store.loadSession(h.sessionId).remoteRun, undefined);
+        assert.deepEqual(roboWork.calls.filter(name => name === 'run_start'), ['run_start']);
+        await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Again' }), error => !/not owned/u.test(error.message));
+    }
+});
+
+test('a transient RoboWork failure keeps the saved run so it can reattach', { timeout: 15000 }, async (t) => {
+    const roboWork = refusingRoboWork('ROBOWORK_UNAVAILABLE');
+    const h = await harness(t, {}, { roboWork, execution: { robotId: 'robot-a' } });
+    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Unavailable' }), /Start failed: ROBOWORK_UNAVAILABLE/);
+    assert.ok(h.store.loadSession(h.sessionId).remoteRun?.runId);
+});
 
 test('a competing turn is rejected before placeholders, while native approval is waiting', { timeout: 15000 }, async (t) => {
     const requested = deferred();

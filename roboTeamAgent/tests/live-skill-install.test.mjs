@@ -18,6 +18,8 @@ const { parseArguments } = await loadAla('arguments.mjs');
 const { resolveFolderMounts } = await loadAla('coding-agents/folders.mjs');
 const { ignoredMountTargets } = await loadAla('coding-agents/ignored-paths.mjs');
 
+const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
+
 async function fixture(t, { projectSkills = true } = {}) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'robot-session-skills-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -76,6 +78,30 @@ test('robot selection overrides a project name only in its session, including no
     const prepared = await installLiveSkills(input(0));
     assert.equal(await viewed(prepared, 'example'), 'first');
     assert.equal(await fs.readFile(path.join(cwd, '.agents/skills/example/SKILL.md'), 'utf8'), 'project example');
+});
+
+test('project skill links that leave the working folder are dropped with a diagnostic', async t => {
+    const { root, cwd, local, input } = await fixture(t);
+    const inner = path.join(cwd, 'tools/inner');
+    await fs.mkdir(inner, { recursive: true });
+    const targets = { sibling: path.join(root, 'sibling'), ploinky: path.join(root, '.ploinky'), data: path.join(root, '.data/x'),
+        self: cwd, session: path.join(cwd, '.roboteam/sessions/other'), private: path.join(cwd, '.roboteam') };
+    for (const target of Object.values(targets).filter(target => target !== cwd && target !== path.join(cwd, '.roboteam'))) await fs.mkdir(target, { recursive: true });
+    await fs.mkdir(path.join(cwd, '.roboteam'), { recursive: true });
+    for (const [name, target] of Object.entries(targets)) await fs.symlink(target, path.join(cwd, '.agents/skills', name), 'dir');
+    await fs.symlink(inner, path.join(cwd, '.agents/skills/inner'), 'dir');
+    const prepared = await installLiveSkills(input(0));
+    const names = await fs.readdir(prepared.skillsDirectory);
+    assert.deepEqual(names.sort(), ['example', 'inner', 'local']);
+    for (const name of Object.keys(targets)) {
+        assert.ok(!names.includes(name), `Escaping link was published: ${name}`);
+        assert.ok(prepared.diagnostics.some(item => item.source === name && item.state === 'invalid'
+            && item.message === 'Project skill link leaves the working folder'), `Missing diagnostic: ${name}`);
+    }
+    const mounted = prepared.mounts.map(mount => mount.source);
+    assert.deepEqual(mounted.filter(source => !inside(cwd, source) && !source.endsWith('/skills/example')), []);
+    assert.ok(!mounted.includes(cwd) && !mounted.some(source => source.startsWith(path.join(cwd, '.roboteam'))));
+    assert.ok(mounted.includes(inner) && mounted.includes(local));
 });
 
 test('bundled skills resolve to the workspace checkout', async t => {

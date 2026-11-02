@@ -384,6 +384,10 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                     await sessionStore.updateSession(sessionId, session => { delete session.remoteRun; });
                     if (runId) await roboWork.call('run_release', { runId }).catch(() => {});
                 }
+                // A refused start never created the run; a kept record would hide the refusal behind "not owned".
+                else if (!child && ['CWD_REFUSED', 'FOLDER_REFUSED'].includes(cause?.code)) {
+                    await sessionStore.updateSession(sessionId, session => { delete session.remoteRun; });
+                }
             }
             throw error;
         } finally {
