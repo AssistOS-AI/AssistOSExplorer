@@ -95,7 +95,7 @@ test('a continued task takes its folder and skill policy from where its record s
     // A robot planted a record that names another folder: nothing starts.
     const saved = JSON.parse(await fs.readFile(record, 'utf8'));
     await fs.writeFile(record, JSON.stringify({ ...saved, request: { ...saved.request, cwd: other } }));
-    await assert.rejects(resume(), /belongs to another folder/u);
+    await assert.rejects(resume(), { statusCode: 409, message: /belongs to another folder/u });
     assert.deepEqual(started, []);
     // A skill policy reference in the record is not followed.
     await fs.writeFile(record, JSON.stringify({ ...saved, request: { ...saved.request, skillPolicyRef: randomUUID() } }));

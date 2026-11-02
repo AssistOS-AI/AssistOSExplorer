@@ -706,7 +706,7 @@ export class RuntimeManager {
             // folder it names is never taken from it.
             const holding = await fs.realpath(path.resolve(file, '../../../../..')).catch(() => null);
             if (!holding || await fs.realpath(String(internal.request?.cwd || '')).catch(() => null) !== holding) {
-                throw new Error('This task belongs to another folder. Open it there, or start a new task.');
+                throw Object.assign(new Error('This task belongs to another folder. Open it there, or start a new task.'), { statusCode: 409 });
             }
             // The saved path may be a link that is changed later; the canonical folder replaces it.
             internal.request.cwd = holding;
