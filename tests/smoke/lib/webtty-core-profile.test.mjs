@@ -104,7 +104,7 @@ test('npm WebTTY core profile owns the exact Chromium release gate', () => {
   assert.match(webttySpec.slice(quiesceIndex - 120, quiesceIndex), /background traffic without muting/);
   assert.doesNotMatch(webttySpec.slice(quiesceIndex, reopenedIndex), /\.pause\(|setExpectedOffline\(true\)/);
   const replacementVictimIndex = webttySpec.indexOf('const replacementVictim = await openTerminalFromExplorer(');
-  const replacementChooserIndex = webttySpec.indexOf('const replacementChooser = await openTerminalChooser(');
+  const replacementChooserIndex = webttySpec.indexOf('const replacementChooser = await openPlainTerminalDiscovery(');
   assert.ok(replacementVictimIndex >= 0, 'the replacement victim must be launched through Explorer');
   assert.ok(
     replacementChooserIndex > replacementVictimIndex,
