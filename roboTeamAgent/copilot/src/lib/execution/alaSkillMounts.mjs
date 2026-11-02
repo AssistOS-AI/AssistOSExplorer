@@ -1,19 +1,11 @@
 import path from 'node:path';
 
-const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
-
-// Canonical skill sources already visible through the read-only workspace do
-// not need another bind. Sources inside the writable cwd still need protection.
-export function alaSkillMountArguments({ snapshot, workspaceRoot, cwd, includeClaude = true }) {
+// Every skill source is mounted, because a robot sees only its home, its cwd and
+// the folders granted for the run, never the workspace around them.
+export function alaSkillMountArguments({ snapshot, cwd, includeClaude = true }) {
     if (!snapshot.skillsDirectory) return [];
     const args = [];
-    const privateRoot = path.join(cwd, '.roboteam');
-    for (const mount of snapshot.mounts || []) {
-        const covered = workspaceRoot !== cwd && mount.source === mount.target
-            && inside(workspaceRoot, mount.target) && !inside(cwd, mount.target)
-            && !inside(privateRoot, mount.target);
-        if (!covered) args.push('--folder', mount.source, 'at', mount.target, 'expose');
-    }
+    for (const mount of snapshot.mounts || []) args.push('--folder', mount.source, 'at', mount.target, 'expose');
     args.push('--folder', snapshot.skillsDirectory, 'at', path.join(cwd, '.agents', 'skills'), 'expose');
     if (includeClaude) {
         args.push('--folder', snapshot.skillsDirectory, 'at', path.join(cwd, '.claude', 'skills'), 'expose');

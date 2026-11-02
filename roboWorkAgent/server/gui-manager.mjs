@@ -79,7 +79,7 @@ function chromiumLanguageFlag(lang) {
     return lang && lang !== 'en-US' ? ` --lang=${lang}` : '';
 }
 
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, proxy = null, workspaceRoot, maskEnv = false, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, proxy = null, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     if (proxy && (!Number.isInteger(proxy.relayPort) || proxy.relayPort < 1 || proxy.relayPort > 65535 || !path.isAbsolute(String(proxy.policyFile || '')))) {
@@ -125,11 +125,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             ] : []),
             '-v', `${homePath}:/config`, '-v', `${homePath}:${homeTarget}`,
             '-v', `${soulPath}:/workspace/roboteam-soul`,
-            ...(path.resolve(workspaceRoot) === path.resolve(cwd)
-                ? ['-v', `${cwd}:${cwd}:rw`]
-                : ['-v', `${workspaceRoot}:${workspaceRoot}:ro`, ...(cwd === homeTarget ? [] : ['-v', `${cwd}:${cwd}:rw`])]),
-            '--tmpfs', `${workspaceRoot}/.data:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`, '--tmpfs', `${workspaceRoot}/.ploinky:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`,
-            ...(maskEnv ? ['-v', `/dev/null:${workspaceRoot}/.env:ro`] : []),
+            ...(cwd === homeTarget ? [] : ['-v', `${cwd}:${cwd}:rw`]),
             '-w', cwd,
             '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
             ...(proxy ? ['-v', `${proxy.policyFile}:${CHROMIUM_POLICY_TARGET}:ro`] : []),
@@ -203,7 +199,7 @@ export class GuiManager {
         const candidate = await fs.realpath(value);
         const root = await fs.realpath(this.workspaceRoot);
         const relative = path.relative(root, candidate);
-        if (relative.startsWith('..') || path.isAbsolute(relative) || ['.data', '.ploinky'].includes(relative.split(path.sep)[0])) {
+        if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative) || ['.data', '.ploinky'].includes(relative.split(path.sep)[0])) {
             throw new Error('CWD_REFUSED');
         }
         if (!(await fs.stat(candidate)).isDirectory()) throw new Error('cwd must reference a directory');
@@ -308,9 +304,8 @@ export class GuiManager {
             const firewallFile = upstream && mode === 'browser' ? await writeContainerFirewallRules(this.proxyPolicyDir) : null;
             session.relay = upstream ? this.createRelay(upstream) : null;
             const proxy = session.relay ? { relayPort: await session.relay.listen(), policyFile } : null;
-            const maskEnv = await fs.lstat(path.join(this.workspaceRoot, '.env')).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
             const plan = buildRobotRunArgs({ robot: { ...robot, id: robotId }, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images,
-                timezone: locale?.timezone || this.timezone, locale, cwd, toolsPath: tools.path, shellTools, proxy, workspaceRoot: this.workspaceRoot, maskEnv });
+                timezone: locale?.timezone || this.timezone, locale, cwd, toolsPath: tools.path, shellTools, proxy });
             Object.assign(session, { containerName: plan.containerName, sessionUrl: plan.subfolder });
             check();
             await this.execFileImpl(this.podmanCommand, plan.args, { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: process.env, signal });

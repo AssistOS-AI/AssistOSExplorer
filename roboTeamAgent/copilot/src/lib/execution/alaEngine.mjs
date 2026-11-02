@@ -247,8 +247,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             // ALA reads defaults from the robot home. Only explicit session or
             // task overrides are passed as arguments; no derived config is written.
             const folders = [];
-            // The workspace is mounted read-only at its canonical path; the writable
-            // cwd is the --cwd grant. ALA mounts exactly what it is given.
+            // The writable cwd is the --cwd grant and the robot sees no other part of the
+            // workspace. ALA mounts exactly what it is given.
             if (snapshot.skillsDirectory) {
                 const claude = path.join(cwd, '.claude');
                 const claudeStat = await fs.lstat(claude).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
@@ -257,7 +257,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                     && await fs.realpath(claude) !== await fs.realpath(path.join(cwd, '.agents'))) {
                     throw new Error('Project .claude symlink must point to .agents for session skills.');
                 }
-                const skillArgs = alaSkillMountArguments({ snapshot, workspaceRoot: config.workspaceRoot, cwd,
+                const skillArgs = alaSkillMountArguments({ snapshot, cwd,
                     includeClaude: !claudeStat?.isSymbolicLink() });
                 for (let i = 0; i < skillArgs.length;) {
                     i++;

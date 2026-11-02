@@ -135,20 +135,21 @@ export class EnvironmentManager {
         if (!ID.test(robotId) || typeof runId !== 'string' || !runId) throw failure('ENVIRONMENT_INVALID', 'Invalid environment run identity', 400);
         const entry = await this.prepare(environment, { signal });
         signal?.throwIfAborted();
+        const homeTarget = `/home/${robotId}`;
+        // Without a cwd the container starts in the robot home. The workspace root is never a cwd.
         const workspace = await fs.realpath(absolute(workspaceRoot));
-        const directory = await fs.realpath(absolute(cwd));
-        if (!within(workspace, directory) || ['.data', '.ploinky'].some(name => within(path.join(workspace, name), directory))) {
+        const directory = cwd ? await fs.realpath(absolute(cwd)) : homeTarget;
+        if (cwd && (directory === workspace || !within(workspace, directory)
+            || ['.data', '.ploinky'].some(name => within(path.join(workspace, name), directory)))) {
             throw failure('ENVIRONMENT_PATH_INVALID', 'Environment cwd must be a public workspace directory', 400);
         }
-        const homeTarget = `/home/${robotId}`;
         const containerName = `robowork-env-${createHash('sha256').update(runId).digest('hex').slice(0, 24)}`;
         const launch = ['run', '--rm', tty ? '-it' : '-i', '--name', containerName,
             '--label', 'robowork.environment=true', '--label', `robowork.robot=${robotId}`,
             '--user', '0:0', '--network', 'pasta:--no-map-gw', '--security-opt', 'unmask=/proc/*',
             '--workdir', directory, '--entrypoint', '/usr/bin/env'];
         const mount = (source, target, readOnly) => launch.push('--volume', `${absolute(source)}:${absolute(target)}:${readOnly ? 'ro' : 'rw'}`);
-        mount(workspace, workspace, true);
-        mount(directory, directory, false);
+        if (cwd) mount(directory, directory, false);
         mount(home, homeTarget, false);
         mount(toolCache.source, toolCache.target, true);
         mount(ala.source, ala.target, true);
@@ -156,12 +157,6 @@ export class EnvironmentManager {
         for (const folder of folders) mount(folder.source, folder.target, folder.readOnly !== false);
         for (const channel of channels) mount(channel.source, channel.target, false);
         if (soul) mount(soul.source, soul.target, true);
-        // Masks come after writable binds, including when cwd is the workspace root.
-        for (const name of ['.data', '.ploinky']) launch.push('--tmpfs', `${path.join(workspace, name)}:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`);
-        try {
-            await fs.lstat(path.join(workspace, '.env'));
-            mount('/dev/null', path.join(workspace, '.env'), true);
-        } catch (error) { if (error.code !== 'ENOENT') throw error; }
         const variables = { PATH: entry.imagePath, HOME: homeTarget, USER: robotId, LOGNAME: robotId,
             ALA_BWRAP: absolute(bwrap.target), ALA_SANDBOX_HOME: homeTarget,
             CODEX_HOME: `${homeTarget}/.codex`, XDG_CONFIG_HOME: `${homeTarget}/.config`,

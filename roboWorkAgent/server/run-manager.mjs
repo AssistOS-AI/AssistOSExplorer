@@ -173,8 +173,8 @@ export class RunManager {
             if (ala.effort) args.push('--effort', ala.effort);
             if (ala.ca) args.push('--ca', ala.ca);
             if (ala.resume) args.push('--resume-session');
-            if (this.paths.workspaceRoot !== cwd) args.push('--folder', this.paths.workspaceRoot);
-            for (const ignored of [path.join(this.paths.workspaceRoot, '.data'), path.join(this.paths.workspaceRoot, '.ploinky'), path.join(this.paths.workspaceRoot, '.env'), path.join(cwd, '.roboteam'), ...input.ignore || []]) {
+            // The run sees its home, its cwd, the folders granted for it and the service mounts below, never the workspace.
+            for (const ignored of [path.join(cwd, '.roboteam'), ...input.ignore || []]) {
                 if (typeof ignored !== 'string' || !path.isAbsolute(ignored)) throw fail('INVALID_INPUT', 'Ignore path must be absolute');
                 if (ignored !== path.join(cwd, '.roboteam') && !await fs.lstat(ignored).catch(error => { if (error.code !== 'ENOENT') throw error; return null; })) continue;
                 args.push('--ignore', ignored);

@@ -9,16 +9,12 @@ import { GuiManager, buildRobotRunArgs, proxySessionHttp } from '../server/gui-m
 const shellTools = { path: '/data/tool-cache/shell-generation', binPath: '/data/tool-cache/shell-generation/bin', agents: { codex: { path: '/data/tool-cache/codex-generation' } } };
 const base = { robot: { id: 'robot-a', name: 'Robot' }, mode: 'browser', dataDir: '/data', workspaceRoot: '/workspace', images: { browser: 'browser', desktop: 'desktop' }, toolsPath: '/data/tool-cache/browser', shellTools };
 
-for (const mode of ['browser', 'desktop']) for (const cwd of ['/home/robot-a', '/workspace', '/workspace/project']) {
-    test(`${mode} launch limits home and retains bounded read-only hidden paths without copy-up at ${cwd}`, () => {
-        const { args } = buildRobotRunArgs({ ...base, mode, cwd, maskEnv: true });
+for (const mode of ['browser', 'desktop']) for (const cwd of ['/home/robot-a', '/workspace/project']) {
+    test(`${mode} launch mounts only home, the working folder and service paths at ${cwd}`, () => {
+        const { args } = buildRobotRunArgs({ ...base, mode, cwd });
         for (const grant of ['/data/robots/robot-a/home:/config', '/data/robots/robot-a/home:/home/robot-a', '/data/robots/robot-a/run/soul:/workspace/roboteam-soul']) assert.ok(args.includes(grant));
-        for (const hidden of ['.data', '.ploinky']) {
-            const masks = args.filter((value, index) => args[index - 1] === '--tmpfs' && value.startsWith(`/workspace/${hidden}:`));
-            assert.deepEqual(masks, [`/workspace/${hidden}:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`]);
-            assert.ok(args.indexOf(masks[0]) > args.lastIndexOf(`${cwd}:${cwd}:rw`));
-        }
-        assert.ok(args.includes('/dev/null:/workspace/.env:ro'));
+        assert.equal(args.some(value => /^\/workspace\/\.(data|ploinky):/u.test(value)), false);
+        assert.equal(args.some(value => value.includes('/workspace/.env')), false);
         assert.ok(args.includes('HOME=/home/robot-a'));
         assert.ok(args.includes('ROBOTEAM_SHELL_HOME=/home/robot-a'));
         assert.ok(args.includes('USER=robot-a'));
@@ -26,7 +22,13 @@ for (const mode of ['browser', 'desktop']) for (const cwd of ['/home/robot-a', '
         const mounts = args.filter((value, index) => args[index - 1] === '-v');
         assert.equal(mounts.includes('/data:/data'), false);
         assert.equal(mounts.includes('/data/robots:/data/robots'), false);
-        assert.ok(mounts.includes(cwd === '/workspace' ? '/workspace:/workspace:rw' : '/workspace:/workspace:ro'));
+        // Neither the workspace root nor a sibling project is mounted.
+        assert.equal(mounts.some(value => value.startsWith('/workspace:')), false);
+        assert.equal(mounts.some(value => value.startsWith('/workspace/sibling')), false);
+        assert.equal(mounts.includes(`${cwd}:${cwd}:rw`), cwd !== '/home/robot-a');
+        const writable = mounts.filter(value => value.endsWith(':rw'));
+        assert.deepEqual(writable, cwd === '/home/robot-a' ? [] : [`${cwd}:${cwd}:rw`]);
+        assert.equal(args[args.indexOf('-w') + 1], cwd);
         if (cwd === '/home/robot-a') assert.equal(mounts.some(value => value.startsWith('/home/robot-a:')), false);
     });
 }
@@ -84,6 +86,9 @@ test('GUI cwd rejects protected folders and escaping symlinks', async t => {
     await fs.mkdir(path.join(workspaceRoot, '.data'));
     await fs.symlink(os.tmpdir(), path.join(workspaceRoot, 'outside'));
     await assert.rejects(manager.resolveCwd('robot-a', path.join(workspaceRoot, '.data')), /CWD_REFUSED/u);
+    await assert.rejects(manager.resolveCwd('robot-a', workspaceRoot), /CWD_REFUSED/u);
+    await fs.mkdir(path.join(workspaceRoot, 'project'));
+    assert.equal(await manager.resolveCwd('robot-a', path.join(workspaceRoot, 'project')), path.join(await fs.realpath(workspaceRoot), 'project'));
     await assert.rejects(manager.resolveCwd('robot-a', path.join(workspaceRoot, 'outside')), /CWD_REFUSED/u);
 });
 

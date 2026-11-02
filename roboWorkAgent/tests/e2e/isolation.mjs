@@ -85,13 +85,14 @@ export async function runIsolationProbe(options, { io = fs, run = execute, env =
             }
         });
     } else if (probe === 'masks') {
-        for (const name of ['.data', '.ploinky']) await checked(`${name} empty even at root cwd`, () => assert.deepEqual(io.readdirSync(`${workspace}/${name}`), []));
-        if (io.existsSync(`${workspace}/.env`)) await checked('.env empty or unreadable', () => {
-            try { assert.equal(io.readFileSync(`${workspace}/.env`).length, 0); }
-            catch (error) { if (!['EACCES', 'EPERM'].includes(error.code)) throw error; }
+        // A robot started in a project folder sees no other part of the workspace: its private children are absent
+        // and the workspace root lists only the path to the working folder.
+        for (const name of ['.data', '.ploinky', '.env']) await checked(`${name} is not mounted`, () => assert.throws(() => io.lstatSync(`${workspace}/${name}`), { code: 'ENOENT' }));
+        await checked('workspace root shows only the working folder path', () => {
+            assert.ok(options.control && path.posix.dirname(options.control).startsWith(`${workspace}/`), 'A control file inside the working folder is required.');
+            assert.deepEqual(io.readdirSync(workspace), [path.posix.relative(workspace, options.control).split('/')[0]]);
         });
-        await checked('workspace positive-control file readable and writable', () => {
-            assert.ok(options.control && path.posix.dirname(options.control) === workspace, 'Root cwd requires an owned control file.');
+        await checked('working folder positive-control file readable and writable', () => {
             const descriptor = io.openSync(options.control, 'r+'); io.closeSync(descriptor);
         });
     } else if (probe === 'service') {

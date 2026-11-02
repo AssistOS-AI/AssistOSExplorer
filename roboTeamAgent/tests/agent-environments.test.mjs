@@ -122,17 +122,20 @@ async function launchFixture(t) {
     const workspaceRoot = path.join(root, 'workspace');
     await fs.mkdir(workspaceRoot);
     await fs.mkdir(path.join(workspaceRoot, '.data'));
+    await fs.mkdir(path.join(workspaceRoot, 'project'));
+    await fs.mkdir(path.join(workspaceRoot, 'sibling'));
     await fs.writeFile(path.join(workspaceRoot, '.env'), 'secret');
+    const cwd = path.join(workspaceRoot, 'project');
     return { environment: 'AchillesIDE/gitAgent', runId: 'run-1', robotId: 'robot-one',
-        workspaceRoot, cwd: workspaceRoot, home: path.join(root, 'private/robot-one/home'),
+        workspaceRoot, cwd, home: path.join(root, 'private/robot-one/home'),
         toolCache: { source: '/data/tool-cache', target: '/data/tool-cache' },
         ala: { source: '/Agent/linked/AdvancedLanguageAgent', target: '/opt/ala', entry: '/opt/ala/bin/ala.mjs' },
         bwrap: { source: '/data/tool-cache/bwrap/bin/bwrap', target: '/opt/bwrap' },
         channels: [{ source: '/data/runs/run-1/channels/human-input', target: '/workspace/human-input' }],
         soul: { source: '/data/robots/robot-one/run/soul', target: '/workspace/roboteam-soul' },
         folders: [{ source: '/skills/one', target: '/workspace/roboteam-skill-0' }],
-        args: ['--home', '/home/robot-one', '--cwd', workspaceRoot, '--ignore', '.data', '--ignore', '.ploinky', '--ignore', '.env'],
-        env: { PLOINKY_AGENT_SECRET: 'secret', TOKEN: 'secret', HOME: '/wrong', PATH: '/wrong', ALA_SESSIONS: `${workspaceRoot}/.roboteam/.ala`, LANG: 'C.UTF-8' } };
+        args: ['--home', '/home/robot-one', '--cwd', cwd, '--ignore', `${cwd}/.roboteam`],
+        env: { PLOINKY_AGENT_SECRET: 'secret', TOKEN: 'secret', HOME: '/wrong', PATH: '/wrong', ALA_SESSIONS: `${cwd}/.roboteam/.ala`, LANG: 'C.UTF-8' } };
 }
 
 test('each step builds a fresh disposable image container with only its mapped resources and cleared env', async t => {
@@ -146,20 +149,20 @@ test('each step builds a fresh disposable image container with only its mapped r
     assert.equal(args[args.indexOf('--security-opt') + 1], 'unmask=/proc/*');
     assert.equal(args[args.indexOf('--entrypoint') + 1], '/usr/bin/env');
     assert.ok(args.includes(`${options.home}:/home/robot-one:rw`));
-    assert.ok(args.includes(`${options.workspaceRoot}:${options.workspaceRoot}:ro`));
-    assert.ok(args.includes(`${options.workspaceRoot}:${options.workspaceRoot}:rw`));
+    assert.ok(args.includes(`${options.cwd}:${options.cwd}:rw`));
     assert.ok(args.includes('/data/tool-cache:/data/tool-cache:ro'));
     assert.ok(args.includes('/Agent/linked/AdvancedLanguageAgent:/opt/ala:ro'));
     assert.ok(args.includes('/data/tool-cache/bwrap/bin/bwrap:/opt/bwrap:ro'));
     assert.ok(args.includes('/data/runs/run-1/channels/human-input:/workspace/human-input:rw'));
     assert.ok(args.includes('/data/robots/robot-one/run/soul:/workspace/roboteam-soul:ro'));
     assert.ok(args.includes('/skills/one:/workspace/roboteam-skill-0:ro'));
-    for (const hidden of ['.data', '.ploinky']) {
-        const masks = args.filter((value, index) => args[index - 1] === '--tmpfs' && value.startsWith(`${options.workspaceRoot}/${hidden}:`));
-        assert.deepEqual(masks, [`${options.workspaceRoot}/${hidden}:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`]);
-        assert.ok(args.indexOf(masks[0]) > args.indexOf(`${options.workspaceRoot}:${options.workspaceRoot}:rw`));
-    }
-    assert.ok(args.includes(`/dev/null:${options.workspaceRoot}/.env:ro`));
+    // The workspace root and a sibling project are not mounted, so nothing inside the workspace needs a mask.
+    const volumes = args.flatMap((value, index) => args[index - 1] === '--volume' ? [value] : []);
+    assert.equal(volumes.some(value => value.startsWith(`${options.workspaceRoot}:`) || value.includes(`${options.workspaceRoot}/sibling`)), false);
+    assert.deepEqual(volumes.filter(value => value.includes(options.workspaceRoot)), [`${options.cwd}:${options.cwd}:rw`]);
+    assert.equal(args.includes('--tmpfs'), false);
+    assert.equal(args.some(value => value.includes('/.env')), false);
+    assert.equal(args[args.indexOf('--workdir') + 1], options.cwd);
     const imageIndex = args.indexOf('image:node');
     assert.equal(args[imageIndex + 1], '-i');
     assert.ok(args.includes('PATH=/image/bin:/usr/bin'));
@@ -179,9 +182,13 @@ test('builder rejects private cwd, symlink escapes and invalid mount vectors bef
     const options = await launchFixture(t);
     const { manager } = fixture();
     await fs.symlink(path.dirname(options.workspaceRoot), path.join(options.workspaceRoot, 'escape'));
-    for (const cwd of [path.join(options.workspaceRoot, '.data'), path.join(options.workspaceRoot, 'escape')]) {
+    for (const cwd of [options.workspaceRoot, path.join(options.workspaceRoot, '.data'), path.join(options.workspaceRoot, 'escape')]) {
         await assert.rejects(manager.buildLaunch({ ...options, cwd }), { code: 'ENVIRONMENT_PATH_INVALID' });
     }
+    // Without a cwd the container starts in the robot home and mounts no workspace folder.
+    const homeOnly = (await manager.buildLaunch({ ...options, cwd: null })).args;
+    assert.equal(homeOnly[homeOnly.indexOf('--workdir') + 1], '/home/robot-one');
+    assert.equal(homeOnly.some((value, index) => homeOnly[index - 1] === '--volume' && value.includes(options.workspaceRoot)), false);
     await assert.rejects(manager.buildLaunch({ ...options, home: '/bad:mount' }), { code: 'ENVIRONMENT_PATH_INVALID' });
     await assert.rejects(manager.buildLaunch({ ...options, robotId: '../robot' }), { code: 'ENVIRONMENT_INVALID' });
 });

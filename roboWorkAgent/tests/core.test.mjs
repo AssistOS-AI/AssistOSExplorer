@@ -63,6 +63,32 @@ test('cwd and folder grants reject private storage, ancestors and symlink aliase
     assert.equal(await paths.grant(input.cwd, 'cwd'), input.cwd);
 });
 
+test('the workspace root is refused as a working folder or grant even before private storage exists', async t => {
+    const { paths, manager, input } = await fixture(t);
+    await assert.rejects(paths.grant(paths.workspaceRoot, 'cwd'), { code: 'CWD_REFUSED', message: /workspace root/u });
+    await assert.rejects(paths.grant(paths.workspaceRoot), { code: 'FOLDER_REFUSED', message: /workspace root/u });
+    await assert.rejects(manager.start({ ...input, cwd: paths.workspaceRoot }), { code: 'CWD_REFUSED' });
+    await assert.rejects(manager.start({ ...input, folders: [{ source: paths.workspaceRoot }] }), { code: 'FOLDER_REFUSED' });
+});
+
+test('native ALA arguments grant the working folder and named folders, never the workspace or a sibling project', async t => {
+    const { manager, paths, input } = await fixture(t);
+    const sibling = path.join(paths.workspaceRoot, 'sibling'); const shared = path.join(paths.workspaceRoot, 'shared');
+    await fs.mkdir(sibling); await fs.mkdir(shared);
+    await fs.mkdir(path.join(paths.workspaceRoot, '.data'), { recursive: true }); await fs.mkdir(path.join(paths.workspaceRoot, '.ploinky'));
+    await fs.writeFile(path.join(paths.workspaceRoot, '.env'), 'fixture');
+    let launched;
+    manager.buildLaunch = async options => { launched = options; return { command: process.execPath, args: ['-e', "process.stdin.on('data',()=>{});"], options: { detached: true, stdio: ['pipe', 'pipe', 'pipe'] } }; };
+    await startReady(manager, { ...input, folders: [{ source: shared }], ignore: [] });
+    const folders = launched.args.flatMap((value, index) => value === '--folder' ? [launched.args[index + 1]] : []);
+    assert.equal(folders[0], shared);
+    for (const hidden of [paths.workspaceRoot, sibling, path.join(paths.workspaceRoot, '.data'), path.join(paths.workspaceRoot, '.ploinky'), path.join(paths.workspaceRoot, '.env')]) {
+        assert.ok(!launched.args.includes(hidden), `Unexpected ALA argument: ${hidden}`);
+    }
+    assert.deepEqual(launched.args.flatMap((value, index) => value === '--ignore' ? [launched.args[index + 1]] : []), [path.join(input.cwd, '.roboteam')]);
+    assert.equal(launched.args[launched.args.indexOf('--cwd') + 1], input.cwd);
+});
+
 test('concurrent run_start is idempotent; stdin/output, durable replay and unknown ids', async t => {
     const { manager, input, spawns, paths } = await fixture(t);
     const starts = await Promise.all([manager.start(input), manager.start(input)]);
@@ -229,6 +255,7 @@ test('Environment ALA arguments use mounted sources for skills, callbacks and So
     const { manager, paths, input } = await fixture(t);
     const skills = path.join(paths.workspaceRoot, '.data', 'roboTeamAgent', 'skills');
     const plain = path.join(paths.workspaceRoot, 'public-files');
+    await fs.mkdir(path.join(paths.workspaceRoot, 'sibling'));
     for (const directory of [skills, plain, manager.toolCache.root, paths.home(input.robotId), paths.soul(input.robotId)]) await fs.mkdir(directory, { recursive: true });
     const environment = new EnvironmentManager();
     environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/local/bin:/usr/bin:/bin' });
@@ -259,7 +286,7 @@ test('Environment ALA arguments use mounted sources for skills, callbacks and So
         folderArguments.push(folder);
     }
     assert.deepEqual(folderArguments, [
-        [paths.workspaceRoot], ['/workspace/roboteam-skill-0', 'as', 'roboteam-skill-0', 'expose'],
+        ['/workspace/roboteam-skill-0', 'as', 'roboteam-skill-0', 'expose'],
         [exported, 'at', exported, 'expose'], [repeated, 'at', repeated, 'expose'], [plain],
         ['/workspace/ploinky-runtime', 'as', 'ploinky-runtime'], ['/workspace/roboflow-human-input', 'as', 'roboflow-human-input'],
         ['/workspace/own-task-failure', 'as', 'own-task-failure'], ['/workspace/roboteam-soul', 'as', 'roboteam-soul'],
@@ -269,6 +296,11 @@ test('Environment ALA arguments use mounted sources for skills, callbacks and So
     assert.equal(args[args.indexOf('--home') + 1], '/home/aaa');
     assert.ok(command.args.includes(`ALA_SESSIONS=${path.join(input.cwd, '.roboteam', '.ala')}`));
     assert.ok(args.some((value, index) => value === '--ignore' && args[index + 1] === path.join(input.cwd, '.roboteam')));
+    // The workspace is neither mounted nor named, and no private child needs a mask.
+    assert.ok(!mounts.some(([source, target]) => source === paths.workspaceRoot || target === paths.workspaceRoot));
+    assert.ok(!mounts.some(([source]) => source === path.join(paths.workspaceRoot, 'sibling')));
+    assert.ok(!command.args.includes('--tmpfs'));
+    assert.deepEqual(args.flatMap((value, index) => value === '--ignore' ? [args[index + 1]] : []), [path.join(input.cwd, '.roboteam')]);
 });
 
 test('native ALA host receives the controller-derived transcript directory through the actual launch allowlist', async t => {

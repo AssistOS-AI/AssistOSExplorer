@@ -42,6 +42,8 @@ export class RobotPaths {
         try { resolved = await fs.realpath(value); }
         catch { throw fail(code, 'Directory is unavailable'); }
         if (!(await fs.stat(resolved)).isDirectory()) throw fail(code, 'A directory is required');
+        // The root holds every project; a robot receives a folder below it.
+        if (resolved === await fs.realpath(this.workspaceRoot).catch(() => this.workspaceRoot)) throw fail(code, 'The workspace root is not available to a robot');
         for (const requestedRoot of [this.dataDir, '/data', this.privateRoot]) {
             const protectedRoot = await fs.realpath(requestedRoot).catch(() => requestedRoot);
             if (within(protectedRoot, resolved) || within(resolved, protectedRoot)) throw fail(code, 'Directory contains protected storage');

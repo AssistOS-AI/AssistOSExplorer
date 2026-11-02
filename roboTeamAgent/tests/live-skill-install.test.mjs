@@ -42,22 +42,30 @@ async function fixture(t, { projectSkills = true } = {}) {
     return { root, cwd, local, sources, entries, input };
 }
 
+// A skill link names its sandbox mount target; the mount supplies the source the sandbox shows there.
+async function viewed(snapshot, name, file = 'SKILL.md') {
+    const target = await fs.readlink(path.join(snapshot.skillsDirectory, name));
+    const mount = snapshot.mounts.find(entry => entry.target === target);
+    assert.ok(mount, `Skill link ${name} has no mount for ${target}`);
+    return fs.readFile(path.join(mount.source, file), 'utf8');
+}
+
 test('concurrent robot sessions publish separate links and preserve the working folder', async t => {
     const { cwd, local, sources, entries, input } = await fixture(t);
     const first = input(0), second = input(1);
     const [a, b] = await Promise.all([installLiveSkills(first), installLiveSkills(second)]);
     assert.notEqual(a.skillsDirectory, b.skillsDirectory);
     assert.equal(a.skillsDirectory, path.join(cwd, '.roboteam/sessions', first.sessionId, 'skills'));
-    assert.equal(await fs.readFile(path.join(a.skillsDirectory, 'example/SKILL.md'), 'utf8'), 'first');
-    assert.equal(await fs.readFile(path.join(b.skillsDirectory, 'example/SKILL.md'), 'utf8'), 'second');
-    assert.equal(await fs.readlink(path.join(a.skillsDirectory, 'example')), sources[0]);
+    assert.equal(await viewed(a, 'example'), 'first');
+    assert.equal(await viewed(b, 'example'), 'second');
+    assert.equal(await fs.readlink(path.join(a.skillsDirectory, 'example')), a.mounts.find(mount => mount.source === sources[0]).target);
     assert.ok(a.mounts.some(mount => mount.source === local));
     assert.deepEqual(await fs.readdir(path.join(cwd, '.agents/skills')), ['local']);
     await assert.rejects(fs.lstat(path.join(cwd, '.agents/.roboteam-links.json')), { code: 'ENOENT' });
     entries[0] = [];
     await installLiveSkills(first);
     assert.deepEqual(await fs.readdir(a.skillsDirectory), ['local']);
-    assert.equal(await fs.readFile(path.join(b.skillsDirectory, 'example/SKILL.md'), 'utf8'), 'second');
+    assert.equal(await viewed(b, 'example'), 'second');
     assert.equal(await fs.readFile(path.join(local, 'SKILL.md'), 'utf8'), 'project skill');
 });
 
@@ -66,7 +74,7 @@ test('robot selection overrides a project name only in its session, including no
     await fs.mkdir(path.join(cwd, '.agents/skills/example'));
     await fs.writeFile(path.join(cwd, '.agents/skills/example/SKILL.md'), 'project example');
     const prepared = await installLiveSkills(input(0));
-    assert.equal(await fs.readFile(path.join(prepared.skillsDirectory, 'example/SKILL.md'), 'utf8'), 'first');
+    assert.equal(await viewed(prepared, 'example'), 'first');
     assert.equal(await fs.readFile(path.join(cwd, '.agents/skills/example/SKILL.md'), 'utf8'), 'project example');
 });
 
@@ -82,19 +90,27 @@ test('bundled skills resolve to the workspace checkout', async t => {
     const request = input(0);
     request.client.listRepositories = async () => [{ name: 'AchillesIDE', source, origin: 'workspace' }];
     const prepared = await installLiveSkills(request);
-    assert.equal(await fs.readFile(path.join(prepared.skillsDirectory, 'bash/SKILL.md'), 'utf8'), 'current bundled skill');
+    assert.equal(await viewed(prepared, 'bash'), 'current bundled skill');
 });
 
-test('RoboTeam arguments use the real ALA parser and avoid redundant human-report mounts', async t => {
+test('RoboTeam arguments use the real ALA parser and mount every skill source, wherever it sits in the workspace', async t => {
     const { root, cwd, input, entries } = await fixture(t);
     const humanReport = path.join(root, 'DocumentationSkills/skills/human-report');
     await fs.mkdir(humanReport, { recursive: true });
     await fs.writeFile(path.join(humanReport, 'SKILL.md'), 'required report');
     entries[0].push({ name: 'human-report', sourcePath: humanReport, enabled: true });
     const snapshot = await installLiveSkills(input(0));
-    const args = ['--folder', root, ...alaSkillMountArguments({ snapshot, workspaceRoot: root, cwd }),
-        '--ignore', path.join(cwd, '.roboteam')];
-    assert.ok(!args.includes(humanReport), 'Read-only workspace already exposes human-report');
+    const skillArguments = alaSkillMountArguments({ snapshot, cwd });
+    const args = [...skillArguments, '--ignore', path.join(cwd, '.roboteam')];
+    // No workspace folder is passed, so a source inside the workspace is reachable only through its own mount.
+    assert.ok(!args.includes(root));
+    for (const mount of snapshot.mounts) {
+        const index = args.findIndex((value, at) => value === mount.source && args[at - 1] === '--folder');
+        assert.notEqual(index, -1, `Skill source is not mounted: ${mount.source}`);
+        assert.deepEqual(args.slice(index + 1, index + 3), ['at', mount.target]);
+        assert.equal(args[index + 3], 'expose');
+    }
+    assert.ok(args.includes(humanReport), 'human-report is mounted like every other source');
     const options = parseArguments(args);
     assert.deepEqual(options.instructionParts, []);
     const mounts = resolveFolderMounts(options.folders);
@@ -102,10 +118,11 @@ test('RoboTeam arguments use the real ALA parser and avoid redundant human-repor
         [{ source: cwd, target: cwd }, ...mounts], cwd), [path.join(cwd, '.roboteam')]);
     assert.ok(mounts.some(mount => mount.target.startsWith('/workspace/roboteam-skill-')),
         'Project skills retain their read-only relocated source');
-    const aliased = alaSkillMountArguments({ snapshot, workspaceRoot: root, cwd, includeClaude: false });
+    const aliased = alaSkillMountArguments({ snapshot, cwd, includeClaude: false });
     assert.ok(!aliased.includes(path.join(cwd, '.claude/skills')));
-    const sameRoot = alaSkillMountArguments({ snapshot, workspaceRoot: cwd, cwd });
-    assert.ok(sameRoot.includes(humanReport), 'Without a read-only parent, retain the source bind');
+    // A source that would sit at its own path inside a former workspace view is still mounted.
+    const sameRoot = alaSkillMountArguments({ snapshot: { ...snapshot, mounts: [{ source: humanReport, target: humanReport }] }, workspaceRoot: root, cwd });
+    assert.ok(sameRoot.some((value, at) => value === humanReport && sameRoot[at - 1] === '--folder' && sameRoot[at + 1] === 'at'));
 });
 
 test('two Bubblewrap processes see their own skills while private configuration stays hidden', {
@@ -114,10 +131,10 @@ test('two Bubblewrap processes see their own skills while private configuration 
     const { root, cwd, input } = await fixture(t);
     const snapshots = await Promise.all([installLiveSkills(input(0)), installLiveSkills(input(1))]);
     await fs.writeFile(path.join(cwd, '.roboteam', 'secret.json'), 'private');
-    const results = await Promise.all(snapshots.map(async snapshot => {
-        const options = parseArguments(['--folder', root,
-            ...alaSkillMountArguments({ snapshot, workspaceRoot: root, cwd })]);
+    const results = await Promise.all(snapshots.map(async (snapshot, index) => {
+        const options = parseArguments(alaSkillMountArguments({ snapshot, cwd }));
         const folders = options.folders;
+        const target = snapshot.mounts.find(mount => mount.source === path.join(root, index ? 'second' : 'first', 'skills/example')).target;
         return runProcess({ binary: process.execPath, cwd, args: ['-e', `
             const fs = require('node:fs');
             const read = name => fs.readFileSync('.agents/skills/' + name + '/SKILL.md', 'utf8');
@@ -126,8 +143,8 @@ test('two Bubblewrap processes see their own skills while private configuration 
             process.stdout.write(JSON.stringify({ example: read('example'), local: read('local'), writable,
                 claude: fs.readFileSync('.claude/skills/example/SKILL.md', 'utf8'),
                 privateFiles: fs.readdirSync('.roboteam'),
-                sourceWritable: (() => { try { fs.writeFileSync(${JSON.stringify(path.join(root, 'first/skills/example'))}
-                    + '/new', 'x'); return true; } catch { return false; } })() }));
+                sourceWritable: (() => { try { fs.writeFileSync(${JSON.stringify(target)} + '/new', 'x'); return true; } catch { return false; } })(),
+                workspaceSourcesVisible: ['first', 'second'].some(name => fs.existsSync(${JSON.stringify(root)} + '/' + name)) }));
         `], sandbox: { backend: 'codex', hostWorkspace: cwd, workspaceTarget: cwd, folders,
             ignoredPaths: [path.join(cwd, '.roboteam')] } });
     }));
@@ -135,7 +152,7 @@ test('two Bubblewrap processes see their own skills while private configuration 
         assert.equal(result.code, 0, result.stderr);
         assert.deepEqual(JSON.parse(result.stdout), { example: index ? 'second' : 'first',
             local: 'project skill', claude: index ? 'second' : 'first', writable: false, privateFiles: [],
-            sourceWritable: false });
+            sourceWritable: false, workspaceSourcesVisible: false });
     }
     assert.deepEqual(await fs.readdir(path.join(cwd, '.agents/skills')), ['local']);
     assert.equal(await fs.readFile(path.join(cwd, '.roboteam/secret.json'), 'utf8'), 'private');
@@ -150,8 +167,7 @@ test('generation in a fresh working folder exposes human-report with the real sa
     await fs.writeFile(path.join(source, 'SKILL.md'), 'required report');
     entries[0].push({ name: 'human-report', sourcePath: source, enabled: true });
     const snapshot = await installLiveSkills(input(0));
-    const options = parseArguments(['--folder', root,
-        ...alaSkillMountArguments({ snapshot, workspaceRoot: root, cwd })]);
+    const options = parseArguments(alaSkillMountArguments({ snapshot, cwd }));
     const result = await runProcess({ binary: process.execPath, cwd, args: ['-e', `
         const fs = require('node:fs');
         process.stdout.write(JSON.stringify({
@@ -173,8 +189,7 @@ test('an existing Claude symlink sees the same session overlay without a duplica
     const { root, cwd, input } = await fixture(t);
     await fs.symlink('.agents', path.join(cwd, '.claude'));
     const snapshot = await installLiveSkills(input(0));
-    const options = parseArguments(['--folder', root,
-        ...alaSkillMountArguments({ snapshot, workspaceRoot: root, cwd, includeClaude: false })]);
+    const options = parseArguments(alaSkillMountArguments({ snapshot, cwd, includeClaude: false }));
     const result = await runProcess({ binary: process.execPath, cwd, args: ['-e', `
         const fs = require('node:fs');
         process.stdout.write(fs.readFileSync('.claude/skills/example/SKILL.md', 'utf8'));

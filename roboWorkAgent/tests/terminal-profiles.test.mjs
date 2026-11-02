@@ -76,8 +76,7 @@ test('prepare confines home writes, records only protected metadata and deduplic
     assert.doesNotMatch(JSON.stringify(descriptor), /PLOINKY_|TOKEN|SECRET/u);
     const loaded = await readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub);
     assert.equal(loaded.descriptor.cwd, null);
-    const root = await readTerminalDescriptor(f.paths, PROFILE, f.stub, f.paths.workspaceRoot);
-    assert.equal(root.descriptor.cwd, f.paths.workspaceRoot);
+    await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, f.stub, f.paths.workspaceRoot), { code: 'CWD_REFUSED' });
     await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, f.root, f.root));
     const saved = f.stub + '-saved';
     await fs.rename(f.stub, saved); await fs.mkdir(f.stub);
@@ -97,8 +96,7 @@ test('descriptor accepts only an exact owned stub identity through a canonical R
     assert.notEqual(await fs.realpath(alias), f.stub);
     const loaded = await readTerminalDescriptor(f.paths, PROFILE, alias, alias);
     assert.equal(loaded.descriptor.cwd, null);
-    const root = await readTerminalDescriptor(f.paths, PROFILE, alias, f.paths.workspaceRoot);
-    assert.equal(root.descriptor.cwd, f.paths.workspaceRoot);
+    await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, alias, f.paths.workspaceRoot), { code: 'CWD_REFUSED' });
     const project = path.join(f.paths.workspaceRoot, 'project');
     await fs.mkdir(project);
     const clicked = await readTerminalDescriptor(f.paths, PROFILE, alias, project);
@@ -180,7 +178,7 @@ test('default launch uses private pasta with no forwarding, inherited TTY and no
     await fs.rm(launch.directory, { recursive: true, force: true });
 });
 
-test('shell sandbox requires private proc, one layer, own home, masks and newSession false before profile evaluation', async t => {
+test('shell sandbox requires private proc, one layer, own home, service mounts only and newSession false before profile evaluation', async t => {
     const f = await fixture(t);
     await f.api.prepare(PROFILE);
     const { descriptor } = await readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub);
@@ -193,10 +191,30 @@ test('shell sandbox requires private proc, one layer, own home, masks and newSes
     } });
     assert.equal(options.newSession, false); assert.equal(options.privateProc, true);
     assert.equal(options.home, f.paths.home('robot-a')); assert.equal(options.chdir, '/home/robot-a');
-    assert.deepEqual(options.ignoredPaths, ['.data', '.ploinky', '.env'].map(name => path.join(f.paths.workspaceRoot, name)));
-    assert.ok(options.folders.some(folder => folder.source === f.paths.workspaceRoot && !folder.writable));
+    // Only service mounts are passed: no workspace view and nothing to mask inside one.
+    assert.equal(options.ignoredPaths, undefined);
+    assert.deepEqual(options.folders.map(folder => folder.target), [descriptor.cacheRoot, '/workspace/roboteam-soul']);
+    assert.equal(options.folders.some(folder => folder.source === f.paths.workspaceRoot), false);
     assert.ok(launch.args.indexOf('--setenv') < launch.args.indexOf('--'));
     await assert.rejects(buildShellSandbox(descriptor, { loadSandbox: async () => ({ canMountPrivateProc: () => false }) }), { code: 'SANDBOX_UNAVAILABLE' });
+});
+
+test('shell sandbox in a project folder grants that folder only, never the workspace or a sibling', async t => {
+    const f = await fixture(t);
+    await f.api.prepare(PROFILE);
+    const project = path.join(f.paths.workspaceRoot, 'project'), sibling = path.join(f.paths.workspaceRoot, 'sibling');
+    await fs.mkdir(project); await fs.mkdir(sibling);
+    const { descriptor } = await readTerminalDescriptor(f.paths, PROFILE, f.stub, project);
+    assert.equal(descriptor.cwd, project);
+    const previous = process.env.ALA_SANDBOX_HOME;
+    t.after(() => { if (previous === undefined) delete process.env.ALA_SANDBOX_HOME; else process.env.ALA_SANDBOX_HOME = previous; });
+    let options;
+    await buildShellSandbox(descriptor, { loadSandbox: async () => ({ canMountPrivateProc: () => true,
+        buildSandboxArgs: input => { options = input; return ['--', '/bin/bash']; } }) });
+    assert.equal(options.workspace, project); assert.equal(options.chdir, project);
+    assert.deepEqual(options.folders.map(folder => folder.target), [descriptor.cacheRoot, '/workspace/roboteam-soul']);
+    assert.equal(options.folders.some(folder => [f.paths.workspaceRoot, sibling].includes(folder.source)), false);
+    assert.equal(options.ignoredPaths, undefined);
 });
 
 test('environment terminal creates an interactive new image launch and never executes in a live agent', async t => {
@@ -207,7 +225,7 @@ test('environment terminal creates an interactive new image launch and never exe
     const environment = { require: f.environment.require, buildLaunch: async input => { options = input; return { command: 'podman', args: ['run', '-it'], options: {} }; } };
     const launch = await buildTerminalLaunch(descriptor, f.paths, { environment });
     assert.equal(options.environment, 'repo/agent'); assert.equal(options.tty, true); assert.equal(options.home, f.paths.home('robot-a'));
-    assert.equal(options.cwd, f.paths.workspaceRoot); assert.deepEqual(options.env, {});
+    assert.equal(options.cwd, null); assert.deepEqual(options.env, {});
     assert.equal(options.args[0], '--inner'); assert.equal(JSON.parse(options.args[1]).cwd, null);
     assert.equal(launch.options.stdio, 'inherit'); assert.equal(launch.options.detached, false);
     assert.ok(!launch.args.includes('exec'));

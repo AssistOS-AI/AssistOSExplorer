@@ -148,7 +148,7 @@ test('actual skill overlays in a public workspace under home survive schema and 
     paths.privateRoot = path.join(workspace, '.data', '.private');
     paths.grant = (value, kind) => kind === 'cwd' && value === cwd ? Promise.resolve(cwd) : sourceGrant(value, kind);
     const source = input.folders[0].source;
-    const skillArgs = alaSkillMountArguments({ workspaceRoot: workspace, cwd, snapshot: { skillsDirectory: source,
+    const skillArgs = alaSkillMountArguments({ cwd, snapshot: { skillsDirectory: source,
         mounts: [0, 1, 2].map(index => ({ source, target: `/workspace/roboteam-skill-${index}` })) } });
     const folders = [];
     for (let index = 0; index < skillArgs.length; index += 5) {

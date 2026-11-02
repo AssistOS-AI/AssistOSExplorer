@@ -50,8 +50,9 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
 export async function publicDirectory(paths, directory) {
     const actual = await fs.realpath(directory);
     if (!within(paths.workspaceRoot, actual)) throw fail('CWD_REFUSED', 'Terminal directory is outside the workspace');
-    // Root itself is permitted; its protected children are masked before the shell starts.
-    if (actual !== paths.workspaceRoot) await paths.grant(actual, 'cwd');
+    // The workspace root holds every project and is never visible to a robot.
+    if (actual === paths.workspaceRoot || actual === await fs.realpath(paths.workspaceRoot)) throw fail('CWD_REFUSED', 'Terminal directory is the workspace root');
+    await paths.grant(actual, 'cwd');
     return actual;
 }
 
@@ -68,16 +69,10 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
     const folders = [{ source: descriptor.cacheRoot, target: descriptor.cacheRoot },
         { source: descriptor.innerEnvironment ? '/workspace/roboteam-soul' : path.join(descriptor.dataDir, 'robots', descriptor.id, 'run/soul'),
             target: '/workspace/roboteam-soul' }];
-    if (descriptor.cwd !== descriptor.workspaceRoot) folders.push({ source: descriptor.workspaceRoot, target: descriptor.workspaceRoot });
-    const ignoredPaths = [];
-    for (const name of ['.data', '.ploinky', '.env']) {
-        const candidate = path.join(descriptor.workspaceRoot, name);
-        if (await fs.lstat(candidate).catch(error => { if (error.code !== 'ENOENT') throw error; return null; })) ignoredPaths.push(candidate);
-    }
     const env = nativeEnvironment({ PATH: '/usr/local/bin:/usr/bin:/bin', TERM: descriptor.term || 'xterm-256color', LANG: 'C.UTF-8' }, target);
     const args = api.buildSandboxArgs({ workspace: descriptor.cwd || home, workspaceTarget: cwd,
         binary: shell, args: shell.endsWith('/bash') ? ['--login', '-i'] : ['-i'], env, bwrap,
-        privateProc: true, home, folders, ignoredPaths, chdir: cwd, newSession: false });
+        privateProc: true, home, folders, chdir: cwd, newSession: false });
     // Tool paths are service-selected. Every parent credential and environment value is discarded.
     const boundary = args.indexOf('--');
     args.splice(boundary, 0, '--setenv', 'PATH', `${descriptor.binPath}:/usr/local/bin:/usr/bin:/bin`,
@@ -89,7 +84,7 @@ export async function buildTerminalLaunch(descriptor, paths, { environment = new
     if (descriptor.environment) {
         const entry = await environment.require(descriptor.environment, { retry: true });
         const launch = await environment.buildLaunch({ environment: entry.ref, runId: 'terminal-' + randomUUID(), robotId: descriptor.id,
-            home: paths.home(descriptor.id), workspaceRoot: paths.workspaceRoot, cwd: descriptor.cwd || paths.workspaceRoot,
+            home: paths.home(descriptor.id), workspaceRoot: paths.workspaceRoot, cwd: descriptor.cwd,
             toolCache: { source: descriptor.cacheRoot, target: descriptor.cacheRoot },
             ala: { source: codeRoot, target: '/opt/robowork-terminal', entry: '/opt/robowork-terminal/scripts/robot-shell.mjs' },
             bwrap: { source: descriptor.bwrap, target: '/opt/robowork-bwrap' },
@@ -150,8 +145,10 @@ export async function main() {
             launch = await buildTerminalLaunch(descriptor, paths);
         }
         process.exitCode = await run(launch, { inner });
-    } catch {
-        process.stderr.write('Robot terminal could not start safely. Close this tab and retry.\n');
+    } catch (error) {
+        process.stderr.write(error?.code === 'CWD_REFUSED'
+            ? 'A robot terminal cannot open here. Open it in a project folder below the workspace root, or in the robot home.\n'
+            : 'Robot terminal could not start safely. Close this tab and retry.\n');
         process.exitCode = 124;
     } finally {
         if (launch?.directory) await fs.rm(launch.directory, { recursive: true, force: true });
