@@ -74,6 +74,26 @@ test('a granted folder or cwd swapped for a link during preparation never starts
     }
 });
 
+test('a folder or cwd swapped while an Environment image is prepared never starts the run', async t => {
+    for (const swapped of ['folder', 'cwd']) {
+        const f = await runsFixture(t);
+        const folder = path.join(f.input.cwd, 'skill'), sibling = path.join(f.paths.workspaceRoot, 'sibling');
+        await fs.mkdir(folder); await fs.mkdir(sibling);
+        const held = deferred(), reached = deferred();
+        f.manager.runtimeBundle = { prepare: async () => ({ ala: { path: '/ala' }, bwrap: { bin: '/bwrap' } }) };
+        f.manager.environment = { buildLaunch: async () => { reached.resolve(); await held.promise;
+            return { command: process.execPath, args: ['-e', ''], options: { detached: true, stdio: ['pipe', 'pipe', 'pipe'] } }; } };
+        await f.manager.start({ ...f.input, environment: { agent: 'a' }, folders: [{ source: folder, alias: 'skill' }] });
+        f.gate.resolve({}); await reached.promise;
+        const target = swapped === 'folder' ? folder : f.input.cwd;
+        await fs.rename(target, `${target}-moved`); await fs.symlink(sibling, target);
+        held.resolve(); await f.manager.get(f.input.runId).preparing;
+        assert.equal(f.spawns(), 0, swapped);
+        const result = await f.manager.read({ runId: f.input.runId, after: 0 });
+        assert.ok(result.records.some(record => record.stream === 'stderr' && Buffer.from(record.data, 'base64').includes('preparation ended: FOLDER_REFUSED')), swapped);
+    }
+});
+
 test('pending input is bounded without starting a child', async t => {
     const f = await runsFixture(t); await promptly(f.manager.start(f.input));
     const data = Buffer.alloc(600000).toString('base64');
