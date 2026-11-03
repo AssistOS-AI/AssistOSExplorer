@@ -48,7 +48,7 @@ test('terminal cancels missing, read-only, ambiguous and wrong-provider rows wit
 
 test('terminal refuses a discovery not bound to the exact robot and environment', async () => {
     for (const profile of [null, { provider: 'roboWorkAgent', id: ROBOT },
-        { provider: 'roboWorkAgent', id: `${ROBOT}.other` }, { provider: 'roboTeamAgent', id: PROFILE }, { id: PROFILE }]) {
+        { provider: 'roboWorkAgent', id: `${ROBOT}.other` }, { provider: 'roboWorkAgent', id: 'analyst-ffffff.default' }, { provider: 'roboTeamAgent', id: PROFILE }, { id: PROFILE }]) {
         const calls = [];
         await assert.rejects(discoverRobotTerminal(ROOT, PROFILE, { cookie: '', fetchImpl: async (...args) => {
             calls.push(args); return { ok: true, json: async () => discovery([target], profile) };
@@ -108,7 +108,7 @@ test('card prepares and discovers the default RoboWork profile; wrong replies ne
     assert.deepEqual(requests, [PROFILE]);
     assert.deepEqual(discovered, [[ROOT, PROFILE]]);
     assert.equal(anchor.clicked, true);
-    for (const answer of [{ id: ROBOT, root: ROOT }, { id: PROFILE }, { id: PROFILE, root: '' }, {}, null]) {
+    for (const answer of [{ id: ROBOT, root: ROOT }, { id: 'analyst-ffffff.default', root: ROOT }, { id: 'analyst-ffffff', root: ROOT }, { id: PROFILE }, { id: PROFILE, root: '' }, {}, null]) {
         await assert.rejects(openRobotTerminal({ id: ROBOT, name: 'Analyst' }, null, {
             windowRef: { open: () => ({ opener: {}, document: { body: {} } }) }, prepare: async () => answer,
             discover: async () => assert.fail('must not discover'),

@@ -1,6 +1,6 @@
 ---
 title: DS000-vision
-summary: Defines RoboTeam as one Ploinky-hosted nested-container manager for persistent robots with browser and desktop runs.
+summary: Defines RoboTeam as the Ploinky-hosted manager of persistent robots, whose browser and desktop runs RoboWork hosts.
 ---
 
 ## Introduction
@@ -11,7 +11,7 @@ summary: Defines RoboTeam as one Ploinky-hosted nested-container manager for per
 
 RoboTeam remains exactly one [Ploinky agent](wiki.html#definition-ploinky-agent). Robots are records and directories inside that agent, not additional Ploinky agents or public services.
 
-The Ploinky-hosted outer container owns a release-pinned stable Podman 5.8.7 inner engine through Ploinky's bounded `nestedPodman` capability. A robot may run visible `browser` or `desktop` tasks and non-GUI simple ALA tasks. One ALA process runs per robot, and additional requests wait in that robot's FIFO queue. A robot retains at most one GUI container independently from the ALA process lifetime.
+The RoboWork container, hosted by Ploinky, owns a release-pinned stable Podman 5.8.7 inner engine through Ploinky's bounded `nestedPodman` capability. RoboTeam runs no nested Podman and asks RoboWork for every robot process and GUI container. A robot may run visible `browser` or `desktop` tasks and non-GUI simple ALA tasks. One ALA process runs per robot, and additional requests wait in that robot's FIFO queue. A robot retains at most one GUI container independently from the ALA process lifetime.
 
 Every robot retains its metadata in RoboTeam and its home in RoboWork after its runs stop. RoboWork holds the home, the durable installation and application-state boundary for that robot, as DS004 defines.
 

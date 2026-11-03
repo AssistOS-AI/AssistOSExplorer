@@ -132,6 +132,32 @@ test('concurrent run_start is idempotent; stdin/output, durable replay and unkno
     assert.deepEqual(restored.list()[0].tag, input.tag);
 });
 
+test('ALA receives an explicit coding agent, the GUI endpoint of the run and nothing for automatic selection', async t => {
+    const { manager, input } = await fixture(t);
+    const launches = [], guiRequests = [];
+    manager.buildLaunch = async launch => { launches.push(launch); return { command: process.execPath, args: ['-e', ''], options: { detached: true, stdio: ['pipe', 'pipe', 'pipe'] } }; };
+    manager.gui = { ensureReady: async request => { guiRequests.push(request); return { mcpPort: 8100 }; } };
+    const value = (args, flag) => args[args.indexOf(flag) + 1];
+    const launch = async (runId, extra) => {
+        await manager.start({ ...input, runId, ...extra });
+        await manager.get(runId).preparing;
+        return launches.at(-1);
+    };
+    const explicit = await launch('run-explicit', { ala: { sessionId: 'session-1', ca: 'codex' }, gui: { mode: 'desktop' } });
+    assert.equal(value(explicit.args, '--ca'), 'codex');
+    assert.equal(value(explicit.args, '--MCPServers'), 'desktop=http://127.0.0.1:8100/mcp');
+    assert.equal(explicit.guiPort, 8100);
+    assert.deepEqual(guiRequests.map(request => [request.robotId, request.mode, request.codingAgents]), [['aaa', 'desktop', ['opencode']]]);
+    const automatic = await launch('run-automatic', { ala: { sessionId: 'session-2' } });
+    assert.equal(automatic.args.includes('--ca'), false);
+    assert.equal(automatic.args.includes('--MCPServers'), false);
+    assert.equal(automatic.guiPort, undefined);
+    assert.equal(guiRequests.length, 1, 'a run without a GUI never asks for one');
+    const both = await launch('run-both', { ala: { sessionId: 'session-3', mcpServers: ['docs=http://127.0.0.1:1/mcp'] }, gui: { mode: 'browser' } });
+    assert.equal(value(both.args, '--MCPServers'), 'docs=http://127.0.0.1:1/mcp,browser=http://127.0.0.1:8100/mcp');
+    assert.equal(both.args.includes('--ca'), false);
+});
+
 test('read accepts interface wait values but never holds more than 100 ms plus scheduler tolerance', async t => {
     const { manager, input } = await fixture(t);
     await startReady(manager, input);
@@ -234,6 +260,129 @@ test('full robot ensure still prepares native tools and plugin templates before 
     assert.deepEqual(calls.slice(0, 2), [['tools', ['opencode']], ['plugin', '1.2.3']]);
     assert.equal(calls[2][3].openCodePlugin, template);
     assert.equal(calls[2][3].binPath, tools.binPath);
+});
+
+test('a robot home replaced by a link to another robot home is refused and that home is left untouched', async t => {
+    const { paths } = await fixture(t);
+    await fs.mkdir(path.join(paths.workspaceRoot, '.data'), { recursive: true });
+    const calls = [];
+    const robots = new RobotManager({ paths, toolCache: { root: path.join(paths.dataDir, 'tool-cache'), prepareShellTools: async () => ({}) },
+        homeOperation: async (id, operation) => { calls.push([id, operation]); },
+        soulGateway: { prepare: async () => {} } });
+    await robots.initialize();
+    await robots.ensure({ robotId: 'bbb', name: 'other', codingAgents: ['opencode'], seed: false });
+    await fs.writeFile(path.join(paths.home('bbb'), 'secret'), 'robot-b data');
+    calls.length = 0;
+    const before = await fs.readdir(paths.home('bbb'));
+    await fs.mkdir(paths.robot('aaa'), { recursive: true });
+    await fs.symlink(paths.home('bbb'), paths.home('aaa'));
+    await assert.rejects(robots.ensure({ robotId: 'aaa', name: 'first', codingAgents: ['opencode'], seed: false }), { code: 'UNSAFE_STORAGE' });
+    await assert.rejects(robots.delete({ robotId: 'aaa' }), { code: 'UNSAFE_STORAGE' });
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await fs.readdir(paths.home('bbb')), before);
+    assert.equal(await fs.readFile(path.join(paths.home('bbb'), 'secret'), 'utf8'), 'robot-b data');
+    // The robot directory itself may not be a link either.
+    await fs.rm(paths.robot('aaa'), { recursive: true });
+    await fs.symlink(paths.robot('bbb'), paths.robot('aaa'));
+    await assert.rejects(robots.ensure({ robotId: 'aaa', name: 'first', codingAgents: ['opencode'], seed: false }), { code: 'UNSAFE_STORAGE' });
+    await assert.rejects(robots.delete({ robotId: 'aaa' }), { code: 'UNSAFE_STORAGE' });
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await fs.readdir(paths.home('bbb')), before);
+});
+
+test('status reports the configured agent when enabled and otherwise the first enabled one', async t => {
+    const { paths } = await fixture(t);
+    await fs.mkdir(path.join(paths.home('aaa'), '.ala'), { recursive: true });
+    const file = path.join(paths.home('aaa'), '.ala', 'config.json');
+    await fs.writeFile(file, JSON.stringify({ codingAgent: 'pi', models: {}, efforts: {} }));
+    const status = codingAgents => homeOperation('status', { codingAgents }, paths.home('aaa'));
+    assert.equal((await status(['opencode', 'pi'])).activeAgent, 'pi');
+    assert.equal((await status(['codex', 'opencode'])).activeAgent, 'codex');
+    assert.equal((await status(['claude'])).activeAgent, 'claude');
+    assert.equal((await homeOperation('status', {}, paths.home('aaa'))).activeAgent, 'pi');
+});
+
+test('an unavailable ALA leaves the status listing answering with every login absent, logged once, and nothing else', async t => {
+    const { paths } = await fixture(t);
+    await fs.mkdir(path.join(paths.home('aaa'), '.ala'), { recursive: true });
+    const file = path.join(paths.home('aaa'), '.ala', 'config.json');
+    await fs.writeFile(file, JSON.stringify({ codingAgent: 'pi', models: {}, efforts: {} }));
+    const previous = process.env.ROBOWORK_ALA_ENTRY;
+    t.after(() => { if (previous === undefined) delete process.env.ROBOWORK_ALA_ENTRY; else process.env.ROBOWORK_ALA_ENTRY = previous; });
+    const logged = [];
+    t.mock.method(console, 'error', (...args) => logged.push(args));
+    const robots = new RobotManager({ paths, toolCache: {}, soulGateway: {},
+        homeOperation: async (id, operation, input) => homeOperation(operation, input, paths.home(id)) });
+    await robots.write({ id: 'aaa', name: 'a', codingAgents: ['opencode', 'pi'] });
+    const logins = { codex: false, opencode: false, pi: false, claude: false };
+    process.env.ROBOWORK_ALA_ENTRY = path.join(paths.dataDir, 'missing', 'bin', 'ala.mjs');
+    for (let round = 0; round < 2; round++) {
+        assert.deepEqual((await robots.status({ robotIds: ['aaa'], includeLogins: true })).robots,
+            [{ id: 'aaa', activeAgent: 'pi', logins, gui: { state: 'stopped', mode: null, sessionUrl: null, cwd: null } }]);
+    }
+    assert.equal(logged.length, 1);
+    assert.deepEqual((await robots.status({ robotIds: ['aaa'] })).robots[0].logins, undefined);
+    // Only the status path tolerates it.
+    await assert.rejects(homeOperation('config', {}, paths.home('aaa')));
+    // What ALA accepts stays accepted.
+    for (const accepted of ['{"codingAgent":null,"models":null}', '{"codingAgent":"omp"}', '{"models":{"pi":"m"},"efforts":{"pi":"high"}}']) {
+        await fs.writeFile(file, accepted);
+        assert.equal((await robots.status({ robotIds: ['aaa'] })).robots.length, 1, accepted);
+    }
+    // A refused or unreadable home is not an empty one.
+    for (const invalid of ['{ not json', '[]', '5', '{"unknownField":1}', '{"codingAgent":"bogus"}', '{"codingAgent":"pi","models":5}', '{"efforts":{"pi":1}}',
+        '{"models":{"bogus":"x"}}', '{"models":{"pi":"  "}}', '{"efforts":{"pi":"high"}}', '{"models":{"pi":"m"},"efforts":{"bogus":"high"}}', '{"models":{"pi":"m"},"efforts":{"pi":"a b"}}']) {
+        await fs.writeFile(file, invalid);
+        await assert.rejects(robots.status({ robotIds: ['aaa'] }), undefined, invalid);
+    }
+    await fs.rm(file);
+    await fs.writeFile(file + '.target', '{}');
+    await fs.symlink(file + '.target', file);
+    await assert.rejects(robots.status({ robotIds: ['aaa'] }), /Unsafe ALA model configuration path/u);
+    // ALA answering again clears the condition, so a later failure is logged again.
+    await fs.rm(file);
+    if (previous === undefined) delete process.env.ROBOWORK_ALA_ENTRY; else process.env.ROBOWORK_ALA_ENTRY = previous;
+    assert.equal((await robots.status({ robotIds: ['aaa'] })).robots.length, 1);
+    process.env.ROBOWORK_ALA_ENTRY = path.join(paths.dataDir, 'missing', 'bin', 'ala.mjs');
+    await robots.status({ robotIds: ['aaa'] });
+    assert.equal(logged.length, 2);
+});
+
+test('only a robot with OpenCode is seeded, and deleting a robot waits for the setup in flight', async t => {
+    const { paths } = await fixture(t);
+    await fs.mkdir(path.join(paths.workspaceRoot, '.data'), { recursive: true });
+    const cacheRoot = path.join(paths.dataDir, 'tool-cache');
+    const calls = [];
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const tools = names => ({ binPath: path.join(cacheRoot, 'bin'), agents: Object.fromEntries(names.map(name =>
+        [name, { binPath: path.join(cacheRoot, name), versions: { [name]: '1.2.3' } }])) });
+    const robots = new RobotManager({ paths, toolCache: { root: cacheRoot,
+        prepareShellTools: async names => { calls.push(['tools', names]); await gate; return tools(names); },
+        prepareOpenCodePlugin: async version => { calls.push(['plugin', version]); return { path: path.join(cacheRoot, 'plugin'), version }; } },
+    homeOperation: async (id, operation, input) => { calls.push([operation, id, input.openCodePlugin ? 'template' : 'none']); return {}; },
+    soulGateway: { prepare: async () => {}, remove: async () => {} } });
+    robots.runs = { list: () => [] };
+    await robots.initialize();
+    release();
+    await robots.ensure({ robotId: 'aaa', name: 'plain', codingAgents: ['codex', 'pi'] });
+    assert.deepEqual(calls, [['tools', ['codex', 'pi']], ['ensure', 'aaa', 'none']], 'no plugin template without OpenCode');
+    calls.length = 0;
+    await robots.ensure({ robotId: 'aaa', name: 'plain', codingAgents: ['codex', 'opencode'] });
+    assert.deepEqual(calls, [['tools', ['codex', 'opencode']], ['plugin', '1.2.3'], ['ensure', 'aaa', 'template']]);
+    // A slow setup holds the robot's queue, so the removal starts only after it ends.
+    calls.length = 0;
+    let open;
+    robots.toolCache.prepareShellTools = async names => { calls.push(['tools', names]); await new Promise(resolve => { open = resolve; }); return tools(names); };
+    const setup = robots.ensure({ robotId: 'aaa', name: 'plain', codingAgents: ['opencode'] });
+    await fs.mkdir(paths.home('aaa'), { recursive: true });
+    const removal = robots.delete({ robotId: 'aaa' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(calls, [['tools', ['opencode']]], 'the removal has not touched the home');
+    open();
+    await setup; await removal;
+    assert.deepEqual(calls.map(call => call[0]), ['tools', 'plugin', 'ensure', 'delete']);
+    await assert.rejects(fs.lstat(paths.robot('aaa')), { code: 'ENOENT' });
 });
 
 test('delete cleans a robot with a bad label, keeps the active check and reports an unknown robot only when its directory is absent', async t => {

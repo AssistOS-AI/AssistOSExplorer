@@ -96,3 +96,40 @@ exit 17
     assert.notEqual(await run(), 17);
     await assert.rejects(fs.access(seen), { code: 'ENOENT' });
 });
+
+test('a missing or failing Podman initializer stops startup before the service or AgentServer starts', async t => {
+    const root = await fs.realpath(await fs.mkdtemp('/tmp/rw-init-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, 'bin'), runtime = path.join(root, 'runtime'), marker = name => path.join(root, name);
+    await fs.mkdir(bin);
+    await fs.symlink(process.execPath, path.join(bin, 'node'));
+    await fs.writeFile(path.join(root, 'service.mjs'), `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker('service'))}, 'started'); setInterval(() => {}, 1000);\n`);
+    await fs.writeFile(path.join(root, 'agent-server.sh'), `echo started > ${marker('agent-server')}\nexec sleep 30\n`);
+    await fs.writeFile(path.join(root, 'check.mjs'), 'process.exit(0);\n');
+    const initializer = path.join(bin, 'roboteam-podman-init');
+    const start = () => spawn('/bin/sh', [fileURLToPath(new URL('../scripts/startAgent.sh', import.meta.url))], {
+        env: { PATH: `${bin}:/usr/bin:/bin`, XDG_RUNTIME_DIR: runtime, ROBOWORK_SERVICE_MAIN: path.join(root, 'service.mjs'),
+            ROBOWORK_AGENT_SERVER_SCRIPT: path.join(root, 'agent-server.sh'), ROBOWORK_SERVICE_CHECK: path.join(root, 'check.mjs') }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const finished = child => new Promise(resolve => { child.stdout.resume(); child.stderr.resume(); child.on('exit', code => resolve(code)); });
+    const absent = name => assert.rejects(fs.access(marker(name)), { code: 'ENOENT' });
+    // No initializer on the path.
+    const missing = await finished(start());
+    assert.equal(missing, 127);
+    await absent('service'); await absent('agent-server');
+    // An initializer that fails.
+    await fs.writeFile(initializer, '#!/bin/sh\nexit 17\n', { mode: 0o700 });
+    assert.equal(await finished(start()), 17);
+    await absent('service'); await absent('agent-server');
+    // Positive control: a working initializer lets both processes start, so the markers above could have appeared.
+    await fs.writeFile(initializer, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    const running = start();
+    const closed = finished(running);
+    for (let attempt = 0; attempt < 100; attempt++) {
+        if (await fs.access(marker('service')).then(() => fs.access(marker('agent-server')).then(() => true, () => false), () => false)) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    running.kill('SIGTERM');
+    await closed;
+    await fs.access(marker('service')); await fs.access(marker('agent-server'));
+});

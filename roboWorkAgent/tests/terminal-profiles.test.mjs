@@ -398,3 +398,21 @@ test('chosen terminal preparation returns retry immediately and default preparat
     const ready = await prepareReady(f.api, 'robot-a.YWdlbnQ');
     assert.equal(ready.ok, true); assert.equal(ready.id, 'robot-a.YWdlbnQ');
 });
+
+test('the real shell sandbox arguments bind robot-a home and never another robot home or the robots directory', async t => {
+    const f = await fixture(t);
+    const other = path.join(f.paths.dataDir, 'robots', 'robot-b', 'home');
+    await fs.mkdir(other, { recursive: true });
+    await f.api.prepare(PROFILE);
+    const { descriptor } = await readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub);
+    const previous = process.env.ALA_SANDBOX_HOME;
+    t.after(() => { if (previous === undefined) delete process.env.ALA_SANDBOX_HOME; else process.env.ALA_SANDBOX_HOME = previous; });
+    const { packageRoot } = await resolveAlaInstallation();
+    const sandbox = await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/sandbox.mjs')).href);
+    const launch = await buildShellSandbox(descriptor, { loadSandbox: async () => ({ ...sandbox, canMountPrivateProc: () => true }) });
+    assert.ok(launch.args.includes(f.paths.home('robot-a')), 'the robot own home is bound');
+    const sources = launch.args.flatMap((value, index) => ['--bind', '--ro-bind'].includes(value) ? [launch.args[index + 1]] : []);
+    assert.deepEqual(sources.filter(source => source.startsWith(f.paths.dataDir)).sort(),
+        [f.paths.home('robot-a'), f.paths.home('robot-a'), f.paths.soul('robot-a'), path.join(f.paths.dataDir, 'tool-cache')].sort());
+    assert.ok(!launch.args.some(value => value.includes('robot-b')), 'no argument names another robot');
+});

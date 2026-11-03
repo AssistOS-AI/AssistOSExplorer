@@ -18,7 +18,7 @@ const present = file => fs.lstat(file).then(() => true, error => { if (error.cod
 export class RobotManager {
     constructor({ paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch = capturePrivateLaunch }) {
         Object.assign(this, { paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch });
-        this.operations = new Map(); this.runs = null; this.gui = null;
+        this.operations = new Map(); this.runs = null; this.gui = null; this.alaUnavailable = false;
     }
 
     async initialize() {
@@ -97,7 +97,10 @@ export class RobotManager {
             // One registry entry RoboWork does not know must not take every other robot's status with it.
             const record = await this.require(id).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; return null; });
             if (!record) continue;
-            const status = await this.homeOperation(id, 'status', { includeLogins, codingAgents: record.codingAgents });
+            const { alaUnavailable = false, ...status } = await this.homeOperation(id, 'status', { includeLogins, codingAgents: record.codingAgents });
+            // Logins are reported as absent while ALA is unavailable; the failure is logged once until ALA answers again.
+            if (alaUnavailable && !this.alaUnavailable) console.error('RoboWork: ALA is unavailable, so robot logins are reported as absent');
+            this.alaUnavailable = alaUnavailable;
             robots.push({ id, ...status, gui: this.gui ? await this.gui.status(id) : { state: 'stopped', mode: null, sessionUrl: null, cwd: null } });
         }
         return { robots };
@@ -130,6 +133,9 @@ export class RobotManager {
         return this.serialized(id, async () => {
             // The label may be missing or corrupt, so the robot directory decides whether the robot exists. A repeat delete finds nothing to remove.
             if (!await present(this.paths.robot(id))) throw fail('UNKNOWN_ROBOT', 'Unknown robotId', 404);
+            // A link in place of the robot or its home must not send the removal into what it points at.
+            await realDirectory(this.paths.robot(id));
+            if (await present(this.paths.home(id))) await realDirectory(this.paths.home(id));
             if (this.runs?.list({ robotId: id }).some(run => ['starting', 'running', 'stopping'].includes(run.state))
                 || this.gui && (await this.gui.status(id)).state !== 'stopped') throw fail('ROBOT_ACTIVE', 'Stop robot activity before deleting it', 409);
             // A lease that cannot be released for a robot without a label is pruned by the next proxy listing.

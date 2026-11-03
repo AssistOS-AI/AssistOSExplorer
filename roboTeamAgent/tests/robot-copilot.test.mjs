@@ -43,6 +43,28 @@ test('copilot context preparation is silent but RoboWork failures remain visible
     assert.deepEqual(output, []);
 });
 
+test('copilot context asks RoboWork not to seed only when told to, and the catalog tool tells it to', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-catalog-seed-'));
+    const keys = ['ROBOTEAM_DATA_DIR', 'ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID',
+        'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME', 'ACHILLES_ALA_COMMAND', 'PLOINKY_WORKSPACE_ROOT'];
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    t.after(async () => {
+        for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; }
+        await fs.rm(root, { recursive: true, force: true });
+    });
+    process.env.ROBOTEAM_DATA_DIR = root;
+    process.env.PLOINKY_WORKSPACE_ROOT = root;
+    await new RobotStore({ dataDir: root, roboWork: { call: async () => ({}) } }).ensureDefaultRobot();
+    const inputs = [];
+    const roboWork = { call: async (method, input) => { inputs.push(input); return {}; } };
+    await prepareCopilotContext('default', { dataDir: root, roboWork });
+    await prepareCopilotContext('default', { dataDir: root, roboWork, seed: false });
+    assert.equal('seed' in inputs[0], false);
+    assert.equal(inputs[1].seed, false);
+    const catalog = await fs.readFile(new URL('../tools/copilot-catalog.mjs', import.meta.url), 'utf8');
+    assert.match(catalog, /prepareCopilotContext\([^)]*\{ seed: false \}\)/u);
+});
+
 test('chat history belongs to the project, survives robot deletion and is shared across robot selection', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-chat-scope-'));
     const keys = ['ROBOTEAM_DATA_DIR', 'ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID',

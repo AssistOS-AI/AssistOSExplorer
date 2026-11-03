@@ -318,3 +318,124 @@ test('session HTTP forwards verified bytes and projects baseline browser headers
     assert.equal(received.headers.cookie, 'session=browser');
     assert.equal(received.body, 'verified');
 });
+
+const LEASE = { upstream: { id: 'proxy', host: 'proxy.invalid', port: 80 }, locale: { timezone: 'Europe/Bucharest', locale: 'ro_RO.UTF-8', lang: 'ro-RO' } };
+const pasta = args => args[args.indexOf('--network') + 1];
+const mounts = args => args.filter((value, index) => args[index - 1] === '-v');
+
+test('a retained container is replaced only when asked to, for another mode or another working folder', async t => {
+    const { manager, calls, workspaceRoot } = await fixture(t);
+    const project = path.join(workspaceRoot, 'project');
+    await fs.mkdir(project);
+    const removed = () => calls.filter(([, args]) => args[0] === 'rm').map(([, args]) => args.at(-1));
+    const started = () => calls.filter(([, args]) => args[0] === 'run').length;
+    await manager.ensureReady({ robotId: 'robot-a', mode: 'desktop' });
+    for (const other of [{ mode: 'browser' }, { mode: 'desktop', cwd: project }]) {
+        await assert.rejects(manager.ensureReady({ robotId: 'robot-a', ...other }), /robot slot is occupied/u);
+        await assert.rejects(manager.ensure({ robotId: 'robot-a', ...other, allowReplace: false }), /robot slot is occupied/u);
+    }
+    assert.deepEqual(removed(), []); assert.equal(started(), 1);
+    assert.equal(manager.status('robot-a').mode, 'desktop');
+    const browser = await manager.ensureReady({ robotId: 'robot-a', mode: 'browser', allowReplace: true });
+    assert.equal(browser.mode, 'browser');
+    assert.deepEqual(removed(), ['robowork-desktop-robot-a']); assert.equal(started(), 2);
+    const moved = await manager.ensureReady({ robotId: 'robot-a', mode: 'browser', cwd: project, allowReplace: true });
+    assert.equal(moved.cwd, project);
+    assert.deepEqual(removed(), ['robowork-desktop-robot-a', 'robowork-browser-robot-a']); assert.equal(started(), 3);
+    // The folder is bound through a descriptor held until the container starts.
+    assert.ok(mounts(calls.filter(([, args]) => args[0] === 'run').at(-1)[1]).some(value => value.endsWith(`:${project}:rw`)));
+    // The same request needs no replacement, even when replacement is allowed.
+    await manager.ensureReady({ robotId: 'robot-a', mode: 'browser', cwd: project, allowReplace: true });
+    assert.equal(started(), 3);
+});
+
+test('a container is not replaced while a run of the robot is active', async t => {
+    const { manager, calls } = await fixture(t, { hasActiveRun: () => true });
+    await manager.ensureReady({ robotId: 'robot-a', mode: 'desktop' });
+    await assert.rejects(manager.ensureReady({ robotId: 'robot-a', mode: 'browser', allowReplace: true }), /stop the robot run/u);
+    assert.equal(calls.some(([, args]) => args[0] === 'rm'), false);
+    assert.equal(manager.status('robot-a').mode, 'desktop');
+});
+
+test('GUI logs come only from the robot own active container', async t => {
+    const { manager, calls } = await fixture(t, { execFileImpl: undefined });
+    const logged = [];
+    manager.execFileImpl = async (command, args) => {
+        calls.push([command, args]);
+        if (args[0] === 'logs') { logged.push(args.at(-1)); return { stdout: `log of ${args.at(-1)}`, stderr: '' }; }
+        return { stdout: args[0] === 'port' ? '127.0.0.1:4567' : '', stderr: '' };
+    };
+    assert.deepEqual(await manager.logs({ robotId: 'robot-a' }), { logs: '' });
+    await manager.ensureReady({ robotId: 'robot-a', mode: 'desktop' });
+    await manager.ensureReady({ robotId: 'robot-b', mode: 'browser' });
+    assert.deepEqual(await manager.logs({ robotId: 'robot-a' }), { logs: 'log of robowork-desktop-robot-a' });
+    assert.deepEqual(await manager.logs({ robotId: 'robot-b', tail: 5 }), { logs: 'log of robowork-browser-robot-b' });
+    assert.deepEqual(logged, ['robowork-desktop-robot-a', 'robowork-browser-robot-b']);
+    assert.deepEqual(await manager.logs({ robotId: 'robot-c' }), { logs: '' });
+    await assert.rejects(manager.logs({ robotId: '../robot-a' }), /Invalid robot ID/u);
+    await manager.stop({ robotId: 'robot-a' });
+    assert.deepEqual(await manager.logs({ robotId: 'robot-a' }), { logs: '' });
+    assert.equal(logged.length, 2);
+});
+
+test('a proxied workstation mounts the Chromium policy it wrote, and a Desktop keeps its network', async t => {
+    const nft = [];
+    const { manager, calls } = await fixture(t, { proxyPool: { lease: async () => LEASE }, createRelay: () => ({ listen: async () => 4567, close: async () => {} }) });
+    const original = manager.execFileImpl;
+    manager.execFileImpl = async (command, args, options) => {
+        if (command !== manager.podmanCommand) nft.push(command);
+        return args[0] === 'inspect' ? { stdout: '/run/netns/owned' } : original(command, args, options);
+    };
+    const policy = path.join(manager.dataDir, 'proxy-pool');
+    for (const mode of ['desktop', 'browser']) {
+        calls.length = 0;
+        await manager.ensureReady({ robotId: 'robot-a', mode });
+        const plan = calls.find(([, args]) => ['run', 'create'].includes(args[0]))[1];
+        const policyMount = mounts(plan).find(value => value.endsWith(':/etc/chromium/policies/managed/roboteam-proxy.json:ro'));
+        assert.ok(policyMount, `${mode} mounts the policy`);
+        const file = policyMount.split(':')[0];
+        assert.equal(path.dirname(file), policy);
+        assert.equal((await fs.stat(file)).isFile(), true, 'the mounted policy exists');
+        assert.equal(pasta(plan), 'pasta:--no-map-gw,-T,3128:4567');
+        assert.equal(plan[0], mode === 'browser' ? 'create' : 'run');
+        await manager.stop({ robotId: 'robot-a' });
+    }
+    // Only the Browser is cut off from everything but its relay; the Desktop is started normally with no firewall.
+    assert.equal(nft.length, 1);
+});
+
+test('without a proxy lease the workstation mounts no policy and uses the service timezone and no locale', async t => {
+    const { manager, calls } = await fixture(t, { timezone: 'Europe/Paris', proxyPool: { lease: async () => null } });
+    await manager.ensureReady({ robotId: 'robot-a', mode: 'desktop' });
+    const plan = calls.find(([, args]) => args[0] === 'run')[1];
+    assert.ok(plan.includes('TZ=Europe/Paris'));
+    assert.equal(plan.some(value => /^(LC_ALL|LANG|LANGUAGE)=/u.test(value)), false);
+    assert.equal(mounts(plan).some(value => value.includes('roboteam-proxy.json')), false);
+    assert.equal(pasta(plan), 'pasta:--no-map-gw');
+    await assert.rejects(fs.access(path.join(manager.dataDir, 'proxy-pool', 'chromium-policy.json')), { code: 'ENOENT' });
+});
+
+test('initialization removes only containers whose label and name prove RoboWork owns them, and a failed listing stops it', async t => {
+    const detail = (name, gui = '1') => [{ Name: `/${name}`, Config: { Labels: gui === null ? {} : { 'io.assistos.robowork.gui': gui } } }];
+    const containers = {
+        owned1: detail('robowork-desktop-robot-a'), owned2: detail('robowork-browser-robot-b'),
+        unlabelled: detail('robowork-desktop-robot-c', null), otherLabel: detail('robowork-desktop-robot-d', '0'),
+        foreign: detail('someone-browser-robot-e'), badRobot: detail('robowork-desktop-Robot_F'), otherMode: detail('robowork-terminal-robot-g'),
+    };
+    const removed = [];
+    let failList = false;
+    const { manager } = await fixture(t, { execFileImpl: async (_command, args) => {
+        if (args[0] === 'ps') {
+            if (failList) throw new Error('podman unavailable');
+            return { stdout: JSON.stringify([...Object.keys(containers).map(Id => ({ Id })), {}, { ID: 'owned3' }]) };
+        }
+        if (args[0] === 'inspect') return { stdout: JSON.stringify(containers[args[1]] || detail('robowork-browser-robot-h')) };
+        if (args[0] === 'rm') { removed.push(args.slice(1)); return { stdout: '' }; }
+        throw new Error(`unexpected ${args[0]}`);
+    } });
+    await manager.initialize();
+    assert.deepEqual(removed, [['-f', 'owned1'], ['-f', 'owned2'], ['-f', 'owned3']]);
+    removed.length = 0; failList = true;
+    await assert.rejects(manager.initialize(), /podman unavailable/u);
+    assert.deepEqual(removed, []);
+});
