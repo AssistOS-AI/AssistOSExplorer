@@ -100,14 +100,17 @@ function sameStat(before, after) {
 
 // Staging copies all Agent entries except its root dependency adapter. This
 // digest includes directories, symlink targets, file bytes and executable bits.
-function agentTreeDigest(root, fsApi) {
+// With `linked`, the digest also leaves out the root link-install directory that
+// Ploinky adds to the copy; verifyStagedLinkInstall proves that directory.
+function agentTreeDigest(root, fsApi, { linked = false } = {}) {
   const entries = [];
   const visit = (relative = '') => {
     const file = path.join(root, relative);
     const before = fsApi.lstatSync(file);
     if (before.isDirectory()) {
       entries.push([relative, 'directory', before.mode & 0o111]);
-      const names = fsApi.readdirSync(file).sort().filter(name => relative || name !== 'node_modules');
+      const names = fsApi.readdirSync(file).sort()
+        .filter(name => relative || (name !== 'node_modules' && !(linked && name === 'linked')));
       for (const name of names) visit(relative ? `${relative}/${name}` : name);
     } else if (before.isFile()) {
       if (before.size > 128 * 1024 * 1024) throw new Error('Local snapshot Agent entry is too large to verify.');
@@ -126,6 +129,76 @@ function agentTreeDigest(root, fsApi) {
   }
   visit();
   return sha256(JSON.stringify(entries));
+}
+
+// The link names Ploinky derives from an agent manifest's `link-install` Git URLs
+// (cli/utils/linkInstall.mjs, linkInstallDeclarations): the last URL path segment,
+// one entry per name, and a name declared for two repositories is refused.
+const LINK_INSTALL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/u;
+function linkInstallNames(manifest, name) {
+  const values = manifest?.['link-install'];
+  if (values === undefined) return [];
+  const invalid = () => new Error(`${name} manifest has an unverifiable link-install declaration.`);
+  if (!Array.isArray(values)) throw invalid();
+  const identities = new Map();
+  for (const value of values) {
+    const raw = typeof value === 'string' ? value.trim().replace(/^git\+/, '').replace(/^git@([^:]+):/, 'ssh://git@$1/') : '';
+    let url;
+    try { url = new URL(raw); } catch { throw invalid(); }
+    const repoPath = url.pathname.replace(/\/+$/, '').replace(/\.git$/, '');
+    const repo = path.posix.basename(repoPath);
+    const host = url.hostname.toLowerCase();
+    const identity = `${host}${url.port ? `:${url.port}` : ''}${host === 'github.com' ? repoPath.toLowerCase() : repoPath}`;
+    if (!['https:', 'ssh:'].includes(url.protocol) || url.password || url.search || url.hash
+        || (url.username && (url.protocol !== 'ssh:' || url.username !== 'git'))
+        || !LINK_INSTALL_NAME.test(repo) || repo === 'node_modules'
+        || (identities.has(repo) && identities.get(repo) !== identity)) {
+      throw invalid();
+    }
+    identities.set(repo, identity);
+  }
+  return [...identities.keys()].sort();
+}
+
+// The links Ploinky stages in /Agent/linked for the agent's verified manifest
+// (cli/sandbox/docker/agentServiceManager.js, ensurePodmanStagedAgentLibDir). Each
+// is the relative path ensureRepositoryLink writes from the runtime parent
+// /Agent/linked to the workspace checkout, which keeps its workspace path in the
+// agent container. A cloned checkout is <workspace>/<name>; an adopted checkout
+// under any other directory name cannot be proven without running Git on a
+// Box-writable repository, so it is rejected.
+function expectedLinkInstall(name, source, workspace, fsApi) {
+  let manifest;
+  try {
+    manifest = JSON.parse(fsApi.readFileSync(path.join(source, 'manifest.json'), 'utf8'));
+  } catch {
+    throw new Error(`${name} link-install declarations cannot be read from its verified manifest.`);
+  }
+  return linkInstallNames(manifest, name).map(repo => {
+    const checkout = workspacePath(workspace, `${workspace}/${repo}`);
+    return Object.freeze({ name: repo, checkout, link: path.posix.relative('/Agent/linked', checkout) });
+  });
+}
+
+// The staged linked directory holds exactly the expected links, each spelled
+// exactly as Ploinky writes it, and nothing else.
+function verifyStagedLinkInstall(name, agentRoot, links, fsApi) {
+  const directory = path.join(agentRoot, 'linked');
+  const fail = detail => new Error(`${name} staged /Agent/linked ${detail}.`);
+  let before;
+  try { before = fsApi.lstatSync(directory); } catch { throw fail('is not the staged link-install directory'); }
+  if (!before.isDirectory()) throw fail('is not the staged link-install directory');
+  const names = fsApi.readdirSync(directory).sort();
+  if (JSON.stringify(names) !== JSON.stringify(links.map(link => link.name))) {
+    throw fail('does not hold exactly the declared link-install repositories');
+  }
+  for (const link of links) {
+    const file = path.join(directory, link.name);
+    if (!fsApi.lstatSync(file).isSymbolicLink() || fsApi.readlinkSync(file) !== link.link) {
+      throw fail(`entry ${link.name} does not link to its same-path workspace checkout`);
+    }
+  }
+  if (!sameStat(before, fsApi.lstatSync(directory))) throw new Error('Local snapshot Agent tree changed while being verified.');
 }
 
 // The Box's bounded core exec always supplies the selected physical host ports
@@ -292,9 +365,27 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
     allowedInner.push(requireMount(container.mounts, dependencyTarget, dependencyTarget, { readOnly: true }));
     protectedInner.push(dependencyTarget);
     protectedOuter.push(dependencyTarget);
+    // Each link-install checkout is a real workspace directory bound at its own
+    // path: writable for a global or development agent, read-only for an isolated
+    // one (prepareLinkedRepositories, readOnly: !writable). No other mount may
+    // shadow it inside the agent container or in the Box.
+    const links = expectedLinkInstall(name, identity.source, workspace, fsApi);
+    for (const link of links) {
+      let checkout = null;
+      try { checkout = fsApi.lstatSync(link.checkout).isDirectory() ? fsApi.realpathSync(link.checkout) : null; } catch { checkout = null; }
+      if (checkout !== link.checkout) throw new Error(`${name} link-install checkout ${link.name} is not the exact workspace directory.`);
+      allowedInner.push(requireMount(container.mounts, link.checkout, link.checkout));
+      protectedInner.push(link.checkout);
+      protectedOuter.push(link.checkout);
+    }
     rejectShadows(container.mounts, protectedInner, allowedInner);
     rejectShadows(outerMounts, protectedOuter, allowedOuter);
-    if (agentTreeDigest(agentRuntimeRoot, fsApi) !== agentDigest) throw new Error(`${name} staged /Agent differs from the verified Ploinky Agent source.`);
+    // Everything except the declared link-install directory matches Ploinky's
+    // Agent source byte for byte. Without declarations a linked directory is extra.
+    if (agentTreeDigest(agentRuntimeRoot, fsApi, { linked: links.length > 0 }) !== agentDigest) {
+      throw new Error(`${name} staged /Agent differs from the verified Ploinky Agent source.`);
+    }
+    if (links.length) verifyStagedLinkInstall(name, agentRuntimeRoot, links, fsApi);
     result[name] = Object.freeze({ active: true, ...identity, containerId: container.id,
       codeRoot: identity.runtimeSource, agentRuntimeRoot,
       routeKey, instanceId: record.instanceId, enableGeneration: record.enableGeneration });

@@ -14,6 +14,14 @@ const bind = (Source, Destination, RW = false) => ({ Type: 'bind', Source, Desti
 // workspace that Ploinky uses in place (here under the folder name of its origin).
 const MANAGED = '.ploinky/repos/AchillesIDE';
 const CHECKOUT = 'AssistOSExplorer';
+// roboTeamAgent/manifest.json declares these link-install repositories; Explorer declares none.
+const LINKED = ['AdvancedLanguageAgent', 'DocumentationSkills'];
+const MANIFESTS = {
+  explorer: { agent: 'node /code/server.mjs' },
+  roboTeamAgent: { 'link-install': LINKED.map(name => `https://github.com/AssistOS-AI/${name}.git`) },
+};
+// Ploinky's ensureRepositoryLink writes each link relative to its runtime parent /Agent/linked.
+const ploinkyLink = checkout => path.posix.relative('/Agent/linked', checkout);
 
 // The Box mounts the workspace at its own host path, so every runtime path below is the host path itself.
 // Each container carries the mounts Ploinky's agentServiceManager.js emits for a Podman agent: the agent folder
@@ -42,7 +50,19 @@ function fixture(t, prefix = 'snapshot-bindings-', { checkout = MANAGED } = {}) 
     // Ploinky creates the empty /code/node_modules mount point inside the agent source.
     fs.mkdirSync(path.join(source, 'node_modules'), { recursive: true });
     fs.writeFileSync(path.join(source, 'index.mjs'), 'example');
+    fs.writeFileSync(path.join(source, 'manifest.json'), JSON.stringify(MANIFESTS[name]));
     fs.cpSync(agentSource, path.join(staging, 'Agent'), { recursive: true });
+    // RoboTeam's staged copy gains linked/<name> for each link-install checkout, which is bound at its own path.
+    const linkedMounts = [];
+    if (MANIFESTS[name]['link-install']) {
+      fs.mkdirSync(path.join(staging, 'Agent/linked'));
+      for (const repo of LINKED) {
+        const linkedCheckout = path.join(root, repo);
+        fs.mkdirSync(linkedCheckout);
+        fs.symlinkSync(ploinkyLink(linkedCheckout), path.join(staging, 'Agent/linked', repo));
+        linkedMounts.push(bind(linkedCheckout, linkedCheckout, true));
+      }
+    }
     const dependencies = `${root}/.ploinky/deps/store/objects/${name}/payload/node_modules`;
     fs.symlinkSync(dependencies, path.join(staging, 'Agent/node_modules'));
     repositories.explorer = { repositoryPath, treeSha256: hash('a') };
@@ -60,6 +80,7 @@ function fixture(t, prefix = 'snapshot-bindings-', { checkout = MANAGED } = {}) 
       bind(`${staging}/Agent`, '/Agent'),
       bind(dependencies, dependencies),
       bind(dependencies, '/code/node_modules'),
+      ...linkedMounts,
     ] });
   }
   const outerMounts = [
@@ -521,6 +542,161 @@ test('root node_modules is excluded from the Agent copy proof', t => {
   fs.writeFileSync(path.join(f.agentSource, 'node_modules/dependency.mjs'), 'not copied');
   assert.equal(collect(f).explorer.active, true);
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// link-install: Ploinky adds /Agent/linked/<name> to the staged copy for each repository the agent manifest
+// declares, and binds each workspace checkout at its own path. Everything else still matches byte for byte.
+// ---------------------------------------------------------------------------------------------------------
+const stagedAgent = (f, name = 'roboTeamAgent') => path.join(f.root, '.ploinky/container-runtime', name, 'Agent');
+const linkedEntry = (f, repo) => path.join(stagedAgent(f), 'linked', repo);
+const checkoutOf = (f, repo) => path.join(f.root, repo);
+const relink = (f, repo, text) => {
+  fs.rmSync(linkedEntry(f, repo), { recursive: true, force: true });
+  fs.symlinkSync(text, linkedEntry(f, repo));
+};
+const writeManifest = (f, name, manifest) => fs.writeFileSync(
+  path.join(f.options.repositories.explorer.repositoryPath, name, 'manifest.json'),
+  typeof manifest === 'string' ? manifest : JSON.stringify(manifest));
+const checkoutMountIndex = (f, repo) => f.containers[1].mounts.findIndex(mount => mount.Destination === checkoutOf(f, repo));
+
+test('link-install: RoboTeam staged /Agent accepts exactly the relative links Ploinky creates to same-path checkouts', t => {
+  const f = fixture(t, 'fresh workspace ü ');
+  for (const repo of LINKED) {
+    const text = fs.readlinkSync(linkedEntry(f, repo));
+    assert.equal(path.posix.isAbsolute(text), false);
+    assert.equal(path.posix.resolve('/Agent/linked', text), checkoutOf(f, repo));
+  }
+  const result = collect(f);
+  assert.equal(result.roboTeamAgent.active, true);
+  // The links are proven, not reported: the evidence shape is unchanged.
+  assert.deepEqual(Object.keys(result.roboTeamAgent).sort(), Object.keys(result.explorer).sort());
+  // An isolated profile binds the checkouts read-only; that is equally Ploinky's layout.
+  for (const repo of LINKED) f.containers[1].mounts[checkoutMountIndex(f, repo)].RW = false;
+  assert.equal(collect(f).roboTeamAgent.active, true);
+});
+
+test('link-install: link names follow Ploinky\'s Git URL forms, one link per repository', t => {
+  const f = fixture(t);
+  writeManifest(f, 'roboTeamAgent', { 'link-install': [
+    'https://github.com/AssistOS-AI/AdvancedLanguageAgent',
+    'git+https://github.com/AssistOS-AI/AdvancedLanguageAgent.git/',
+    'git@github.com:AssistOS-AI/DocumentationSkills.git',
+  ] });
+  assert.equal(collect(f).roboTeamAgent.active, true);
+});
+
+for (const [label, declaration] of [
+  ['a declaration that is not an array', 'https://github.com/AssistOS-AI/AdvancedLanguageAgent.git'],
+  ['an empty entry', ['']],
+  ['a non-string entry', [42]],
+  ['a plain HTTP URL', ['http://github.com/AssistOS-AI/AdvancedLanguageAgent.git']],
+  ['an embedded credential', ['https://user:secret@github.com/AssistOS-AI/AdvancedLanguageAgent.git']],
+  ['a ref fragment', ['https://github.com/AssistOS-AI/AdvancedLanguageAgent.git#main']],
+  ['a node_modules repository name', ['https://github.com/AssistOS-AI/node_modules.git']],
+  ['one name for two repositories', ['https://github.com/AssistOS-AI/AdvancedLanguageAgent.git', 'https://gitlab.com/other/AdvancedLanguageAgent.git']],
+]) {
+  test(`link-install: a manifest with ${label} is rejected`, t => {
+    const f = fixture(t);
+    writeManifest(f, 'roboTeamAgent', { 'link-install': declaration });
+    assert.throws(() => collect(f), /roboTeamAgent manifest has an unverifiable link-install declaration/);
+  });
+}
+
+test('link-install: a missing or unreadable verified manifest is rejected', t => {
+  const f = fixture(t);
+  writeManifest(f, 'roboTeamAgent', '{ not json');
+  assert.throws(() => collect(f), /roboTeamAgent link-install declarations cannot be read/);
+  fs.unlinkSync(path.join(f.options.repositories.explorer.repositoryPath, 'roboTeamAgent/manifest.json'));
+  assert.throws(() => collect(f), /roboTeamAgent link-install declarations cannot be read/);
+});
+
+for (const [label, mutate, message] of [
+  ['a missing link', f => fs.unlinkSync(linkedEntry(f, 'DocumentationSkills')), 'does not hold exactly the declared'],
+  ['an extra link to another workspace checkout', f => {
+    fs.mkdirSync(checkoutOf(f, 'Extra'));
+    fs.symlinkSync(ploinkyLink(checkoutOf(f, 'Extra')), linkedEntry(f, 'Extra'));
+  }, 'does not hold exactly the declared'],
+  ['an extra regular file', f => fs.writeFileSync(linkedEntry(f, 'notes.txt'), 'unverified'), 'does not hold exactly the declared'],
+  ['a link swapped to the other declared checkout', f => relink(f, 'AdvancedLanguageAgent', ploinkyLink(checkoutOf(f, 'DocumentationSkills'))), 'entry AdvancedLanguageAgent does not link'],
+  ['an absolute spelling of the checkout', f => relink(f, 'AdvancedLanguageAgent', checkoutOf(f, 'AdvancedLanguageAgent')), 'entry AdvancedLanguageAgent does not link'],
+  ['a link relative to the host staging directory', f => relink(f, 'AdvancedLanguageAgent', path.relative(path.dirname(linkedEntry(f, 'AdvancedLanguageAgent')), checkoutOf(f, 'AdvancedLanguageAgent'))), 'entry AdvancedLanguageAgent does not link'],
+  ['a link to a prefix-lookalike outside the workspace', f => relink(f, 'AdvancedLanguageAgent', ploinkyLink(`${f.root}-evil/AdvancedLanguageAgent`)), 'entry AdvancedLanguageAgent does not link'],
+  ['a link into a subdirectory of the checkout', f => relink(f, 'AdvancedLanguageAgent', ploinkyLink(`${checkoutOf(f, 'AdvancedLanguageAgent')}/src`)), 'entry AdvancedLanguageAgent does not link'],
+  ['a copied directory instead of a link', f => {
+    fs.unlinkSync(linkedEntry(f, 'AdvancedLanguageAgent'));
+    fs.mkdirSync(linkedEntry(f, 'AdvancedLanguageAgent'));
+  }, 'entry AdvancedLanguageAgent does not link'],
+  ['a linked directory that is itself a symlink', f => {
+    fs.renameSync(path.join(stagedAgent(f), 'linked'), `${f.root}/linked-elsewhere`);
+    fs.symlinkSync(`${f.root}/linked-elsewhere`, path.join(stagedAgent(f), 'linked'));
+  }, 'is not the staged link-install directory'],
+  ['a missing linked directory', f => fs.rmSync(path.join(stagedAgent(f), 'linked'), { recursive: true }), 'is not the staged link-install directory'],
+]) {
+  test(`link-install: staged /Agent/linked rejects ${label}`, t => {
+    const f = fixture(t, 'fresh workspace ü ');
+    mutate(f);
+    assert.throws(() => collect(f), new RegExp(`roboTeamAgent staged /Agent/linked ${message}`));
+  });
+}
+
+test('link-install: a new declaration without its staged link is rejected', t => {
+  const f = fixture(t);
+  fs.mkdirSync(checkoutOf(f, 'Extra'));
+  f.containers[1].mounts.push(bind(checkoutOf(f, 'Extra'), checkoutOf(f, 'Extra'), true));
+  writeManifest(f, 'roboTeamAgent', { 'link-install': [...MANIFESTS.roboTeamAgent['link-install'], 'https://github.com/AssistOS-AI/Extra.git'] });
+  assert.throws(() => collect(f), /roboTeamAgent staged \/Agent\/linked does not hold exactly the declared/);
+});
+
+test('link-install: without declarations a staged linked directory is extra Agent content', t => {
+  const f = fixture(t);
+  writeManifest(f, 'roboTeamAgent', {});
+  assert.throws(() => collect(f), /roboTeamAgent staged \/Agent differs/);
+  const g = fixture(t);
+  fs.cpSync(path.join(stagedAgent(g), 'linked'), path.join(stagedAgent(g, 'explorer'), 'linked'), { recursive: true, verbatimSymlinks: true });
+  assert.throws(() => collect(g), /explorer staged \/Agent differs/);
+});
+
+test('link-install: every other staged entry still matches the Ploinky Agent source byte for byte', t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(stagedAgent(f), 'index.mjs'), 'stale');
+  assert.throws(() => collect(f), /roboTeamAgent staged \/Agent differs/);
+  // Only the root linked directory is set aside; a nested one is ordinary Agent content.
+  const g = fixture(t);
+  fs.mkdirSync(path.join(stagedAgent(g), 'nested/linked'));
+  assert.throws(() => collect(g), /roboTeamAgent staged \/Agent differs/);
+  // Ploinky never stages over a root linked entry of its own Agent source, so that source cannot pass.
+  const h = fixture(t);
+  fs.mkdirSync(path.join(h.agentSource, 'linked'));
+  fs.writeFileSync(path.join(h.agentSource, 'linked/readme.txt'), 'source');
+  fs.cpSync(path.join(h.agentSource, 'linked'), path.join(stagedAgent(h, 'explorer'), 'linked'), { recursive: true });
+  assert.throws(() => collect(h), /roboTeamAgent staged \/Agent differs/);
+});
+
+for (const [label, mutate, message] of [
+  ['a missing checkout mount', f => f.containers[1].mounts.splice(checkoutMountIndex(f, 'DocumentationSkills'), 1), /exact verified source mount/],
+  ['a duplicated checkout mount', f => f.containers[1].mounts.push(bind(checkoutOf(f, 'DocumentationSkills'), checkoutOf(f, 'DocumentationSkills'), true)), /exact verified source mount/],
+  ['a checkout mount from a foreign source', f => { f.containers[1].mounts[checkoutMountIndex(f, 'AdvancedLanguageAgent')].Source = `${f.root}/foreign`; }, /exact verified source mount/],
+  ['checkout mounts swapped between repositories', f => { f.containers[1].mounts[checkoutMountIndex(f, 'AdvancedLanguageAgent')].Source = checkoutOf(f, 'DocumentationSkills'); }, /exact verified source mount/],
+  ['a checkout mount that is not a bind', f => { f.containers[1].mounts[checkoutMountIndex(f, 'AdvancedLanguageAgent')].Type = 'volume'; }, /exact verified source mount/],
+  ['a missing checkout directory', f => fs.rmSync(checkoutOf(f, 'AdvancedLanguageAgent'), { recursive: true }), /checkout AdvancedLanguageAgent is not the exact workspace directory/],
+  ['a checkout that is a symlink to another directory', f => {
+    fs.renameSync(checkoutOf(f, 'AdvancedLanguageAgent'), `${f.root}/elsewhere`);
+    fs.symlinkSync(`${f.root}/elsewhere`, checkoutOf(f, 'AdvancedLanguageAgent'));
+  }, /checkout AdvancedLanguageAgent is not the exact workspace directory/],
+  ['a checkout that is a regular file', f => {
+    fs.rmSync(checkoutOf(f, 'AdvancedLanguageAgent'), { recursive: true });
+    fs.writeFileSync(checkoutOf(f, 'AdvancedLanguageAgent'), 'not a checkout');
+  }, /checkout AdvancedLanguageAgent is not the exact workspace directory/],
+  ['an inner mount shadowing inside a checkout', f => f.containers[1].mounts.push(bind(`${f.root}/foreign`, `${checkoutOf(f, 'AdvancedLanguageAgent')}/src`)), /mount shadowing/],
+  ['an inner mount over a staged link', f => f.containers[1].mounts.push(bind(`${f.root}/foreign`, '/Agent/linked/AdvancedLanguageAgent')), /mount shadowing/],
+  ['an outer mount shadowing a checkout in the Box', f => f.outerMounts.push(bind(`${f.root}-foreign`, checkoutOf(f, 'DocumentationSkills'))), /mount shadowing/],
+]) {
+  test(`link-install: checkout binding rejects ${label}`, t => {
+    const f = fixture(t, 'fresh workspace ü ');
+    mutate(f);
+    assert.throws(() => collect(f), message);
+  });
+}
 
 test('missing /Agent mount, writable AgentLib, and substituted code are rejected', t => {
   const f = fixture(t);
