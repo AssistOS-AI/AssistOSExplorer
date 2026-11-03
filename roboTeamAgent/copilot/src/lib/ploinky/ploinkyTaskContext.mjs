@@ -29,9 +29,10 @@ export async function createPloinkyTaskContext({ context, robotId = null, env = 
                 const given = body.payload ?? {};
                 if (!given || typeof given !== 'object' || Array.isArray(given)) throw refused();
                 // The relay sets these itself and replaces whatever a robot sends: the run's own working folder, and the calling
-                // robot as the only one a workflow it starts may use.
+                // robot as the only one a workflow it starts may use and, from the server-side context only, the run's owner.
                 if (body.tool === 'roboflow_start_flow' && !robotId) throw refused();
-                const forced = { roboflow_start_flow: { folder: context.workingDir, restrictToRobot: robotId }, start_research: { workingDir: context.workingDir } }[body.tool];
+                const forced = { roboflow_start_flow: { folder: context.workingDir, restrictToRobot: robotId,
+                    ownerPrincipal: typeof context.ownerPrincipal === 'string' && /^user:.+/u.test(context.ownerPrincipal) ? context.ownerPrincipal : null }, start_research: { workingDir: context.workingDir } }[body.tool];
                 const payload = forced ? { ...given, ...forced } : given;
                 const result = await runWithSkillRuntimeOrigin(context, async () =>
                     (await clientFor(body.agent)).callToolWithoutWait(body.tool, payload));

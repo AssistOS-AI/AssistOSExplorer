@@ -72,3 +72,23 @@ test('the start tool passes the relay\'s robot constraint to RoboFlow', { timeou
     assert.equal((await posted.promise).restrictToRobot, 'robot-one');
     f.child.kill('SIGTERM');
 });
+
+test('the start tool forwards the relay\'s owner only when the call has no user identity', { timeout: 10000 }, async t => {
+    for (const [metadata, expected] of [[undefined, 'user:alice'], [{ user: { id: 'bob' } }, undefined]]) {
+        const posted = deferred();
+        const server = http.createServer(async (req, res) => {
+            res.setHeader('content-type', 'application/json');
+            if (req.method === 'POST' && req.url === '/api/roboflow/flows') {
+                let text = ''; for await (const chunk of req) text += chunk;
+                posted.resolve(JSON.parse(text));
+            }
+            res.end(JSON.stringify({ flow: { id: 'flow_123456789012345678901234', status: 'running' } }));
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        const child = spawn(process.execPath, [entry, 'start-flow'], { env: { ...process.env, ROBOTEAM_SERVICE_PORT: String(server.address().port),
+            ROBOTEAM_INTERNAL_TOKEN: 'test', ROBOTEAM_TASK_POLL_INTERVAL_MS: '50' }, stdio: ['pipe', 'pipe', 'pipe'] });
+        child.stdin.end(JSON.stringify({ input: { workflowTypeId: 'example', ownerPrincipal: 'user:alice' }, ...(metadata ? { metadata } : {}) }));
+        assert.equal((await posted.promise).ownerPrincipal, expected);
+        child.kill('SIGKILL'); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    }
+});

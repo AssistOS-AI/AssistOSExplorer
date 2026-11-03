@@ -162,6 +162,10 @@ test('workflow launches, Cron saves and Run now take the owner from the signed p
     const internal = { 'x-roboteam-internal-token': TOKEN, 'x-roboteam-user-id': 'member-1', 'x-roboteam-user-roles': '["admin"]' };
     assert.equal((await post(fixture.baseUrl, '/api/roboflow/flows', { workflowTypeId: 'w', ownerPrincipal: 'user:mallory' }, internal)).status, 201);
     assert.equal(calls.flows[1].ownerPrincipal, null);
+    // The relay is an internal call with no user identity: it may name the run's owner, a caller with one may not.
+    const relay = { 'x-roboteam-internal-token': TOKEN };
+    assert.equal((await post(fixture.baseUrl, '/api/roboflow/flows', { workflowTypeId: 'w', ownerPrincipal: 'user:alice' }, relay)).status, 201);
+    assert.equal(calls.flows[2].ownerPrincipal, 'user:alice');
     const cron = `cron_${'a'.repeat(24)}`;
     assert.equal((await post(fixture.baseUrl, '/api/roboflow/schedules', { workflowTypeId: 'w', ownerPrincipal: 'user:mallory' }, admin)).status, 201);
     assert.equal((await post(fixture.baseUrl, `/api/roboflow/schedules/${cron}`, { revision: 1 }, admin)).status, 200);

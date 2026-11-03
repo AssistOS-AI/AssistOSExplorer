@@ -116,9 +116,21 @@ test('task context forces the folder of tools that start work to the run working
     await assert.rejects(anonymous.dispatch({ path: '/agent-call', body: { agent: 'roboTeamAgent', tool: 'roboflow_start_flow', payload: {} } }), { statusCode: 403 });
     await context.dispatch({ path: '/agent-call', body: { agent: 'GPTResearcher', tool: 'start_research',
         payload: { query: 'q', workingDir: '/workspace/other-robot' } } });
-    assert.deepEqual(calls.map(call => call.input), [{ workflowTypeId: 'default', folder: '/workspace/project', restrictToRobot: 'robot-one' },
-        { workflowTypeId: 'default', folder: '/workspace/project', restrictToRobot: 'robot-one' }, { query: 'q', workingDir: '/workspace/project' }]);
+    assert.deepEqual(calls.map(call => call.input), [{ workflowTypeId: 'default', folder: '/workspace/project', restrictToRobot: 'robot-one', ownerPrincipal: null },
+        { workflowTypeId: 'default', folder: '/workspace/project', restrictToRobot: 'robot-one', ownerPrincipal: null }, { query: 'q', workingDir: '/workspace/project' }]);
     await assert.rejects(context.dispatch({ path: '/agent-call', body: { agent: 'roboTeamAgent', tool: 'roboflow_start_flow', payload: 'x' } }), { statusCode: 403 });
+});
+
+test('the relay stamps a started workflow with the run owner and overwrites a robot-sent one', async () => {
+    const calls = [];
+    const createClient = async () => ({ callToolWithoutWait: async (tool, input) => { calls.push(input); return {}; } });
+    const send = (context, payload) => createPloinkyTaskContext({ context: { workingDir: '/workspace/project', ...context }, robotId: 'robot-one', env: {}, createClient })
+        .then(relay => relay.dispatch({ path: '/agent-call', body: { agent: 'roboTeamAgent', tool: 'roboflow_start_flow', payload } }));
+    await send({ ownerPrincipal: 'user:alice' }, { workflowTypeId: 'w' });
+    await send({ ownerPrincipal: 'user:alice' }, { workflowTypeId: 'w', ownerPrincipal: 'user:mallory' });
+    await send({}, { workflowTypeId: 'w', ownerPrincipal: 'user:mallory' });
+    await send({ ownerPrincipal: 'mallory' }, { workflowTypeId: 'w' });
+    assert.deepEqual(calls.map(call => call.ownerPrincipal), ['user:alice', 'user:alice', null, null]);
 });
 
 test('extracts visible coding-agent messages from the ALA event stream', () => {

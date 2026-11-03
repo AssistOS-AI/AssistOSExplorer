@@ -232,6 +232,15 @@ function signedOwner(req) {
     return access?.internal === false && typeof access.principal === 'string' ? access.principal : null;
 }
 
+// A workflow the robot relay starts for a user's own run carries that run's owner: only an internal-token call with no
+// user identity of its own may name it. Every other caller gets its own signed principal, or none.
+function flowOwner(req, body) {
+    const signed = signedOwner(req);
+    if (signed) return signed;
+    const relayed = req[ACCESS]?.internal === true && !req.headers['x-roboteam-user-id'];
+    return relayed && typeof body?.ownerPrincipal === 'string' ? body.ownerPrincipal : null;
+}
+
 function isLiveSessionsPath(pathname) {
     return pathname === '/api/live-sessions' || pathname.startsWith('/api/live-sessions/') || pathname.startsWith('/live-sessions/');
 }
@@ -486,7 +495,7 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     }
     if (pathname === '/api/roboflow/flows' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: actor.id, ownerPrincipal: signedOwner(req) }) });
+        sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: actor.id, ownerPrincipal: flowOwner(req, body) }) });
         return true;
     }
     const eventsId = pathname.match(new RegExp(`^${FLOW_PATH}/events$`))?.[1];

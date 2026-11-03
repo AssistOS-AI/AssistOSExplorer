@@ -114,7 +114,9 @@ async function main() {
     if (operation === 'update-workflow') return output(await request(`/api/roboflow/workflows/${encodeURIComponent(String(input.workflowId || ''))}`, { method: 'PUT', body: input, user }));
     if (operation === 'delete-workflow') return output(await request(`/api/roboflow/workflows/${encodeURIComponent(String(input.workflowId || ''))}`, { method: 'DELETE', user }));
     if (operation === 'start-flow') {
-        const result = await startFlowUntilTerminal({ body: { workflowTypeId: input.workflowTypeId, objective: input.objective, folder: input.folder, executionType: input.executionType, restrictToRobot: input.restrictToRobot }, user });
+        const result = await startFlowUntilTerminal({ body: { workflowTypeId: input.workflowTypeId, objective: input.objective, folder: input.folder, executionType: input.executionType, restrictToRobot: input.restrictToRobot,
+            // Only the relay (no user identity of its own) names the run's owner; a user's own call cannot.
+            ...(!user.id && typeof input.ownerPrincipal === 'string' ? { ownerPrincipal: input.ownerPrincipal } : {}) }, user });
         return output(result);
     }
     if (operation === 'flow-state') {
