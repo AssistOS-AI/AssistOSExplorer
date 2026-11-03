@@ -10,8 +10,16 @@ import { collectCopilotReleaseEvidence } from './copilot-release-evidence.mjs';
 const hash = character => character.repeat(64);
 const bind = (Source, Destination, RW = false) => ({ Type: 'bind', Source, Destination, RW });
 
+// The two repository sources Ploinky selects for AchillesIDE: the managed copy, or a checkout directly inside the
+// workspace that Ploinky uses in place (here under the folder name of its origin).
+const MANAGED = '.ploinky/repos/AchillesIDE';
+const CHECKOUT = 'AssistOSExplorer';
+
 // The Box mounts the workspace at its own host path, so every runtime path below is the host path itself.
-function fixture(t, prefix = 'snapshot-bindings-') {
+// Each container carries the mounts Ploinky's agentServiceManager.js emits for a Podman agent: the agent folder
+// bound at its own path and directly read-only at /code, the staged /Agent copy, the AgentLib grant, and the prepared
+// dependency tree read-only at its own path and over /code/node_modules.
+function fixture(t, prefix = 'snapshot-bindings-', { checkout = MANAGED } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const repositories = {
@@ -27,19 +35,15 @@ function fixture(t, prefix = 'snapshot-bindings-') {
   const containers = [];
   const active = { generation: `sha256:${hash('1')}`, activationId: 'activation-1', bindings: {} };
   for (const [name, dir] of [['explorer', 'explorer'], ['roboTeamAgent', 'roboTeamAgent']]) {
-    const repositoryPath = path.join(root, '.ploinky/repos/AchillesIDE');
+    const repositoryPath = path.join(root, checkout);
     const source = path.join(repositoryPath, dir);
     const runtimeSource = source;
     const staging = path.join(root, '.ploinky/container-runtime', name);
-    const code = path.join(staging, 'code');
-    fs.mkdirSync(source, { recursive: true });
-    fs.mkdirSync(code, { recursive: true });
+    // Ploinky creates the empty /code/node_modules mount point inside the agent source.
+    fs.mkdirSync(path.join(source, 'node_modules'), { recursive: true });
     fs.writeFileSync(path.join(source, 'index.mjs'), 'example');
-    fs.symlinkSync(`${runtimeSource}/index.mjs`, path.join(code, 'index.mjs'));
     fs.cpSync(agentSource, path.join(staging, 'Agent'), { recursive: true });
-    // Production staged node_modules resolves through a separate self mount.
-    const dependencies = `${root}/.ploinky/cache/${name}/node_modules`;
-    fs.symlinkSync(dependencies, path.join(code, 'node_modules'));
+    const dependencies = `${root}/.ploinky/deps/store/objects/${name}/payload/node_modules`;
     fs.symlinkSync(dependencies, path.join(staging, 'Agent/node_modules'));
     repositories.explorer = { repositoryPath, treeSha256: hash('a') };
     const containerId = hash(name === 'explorer' ? 'b' : 'c');
@@ -52,9 +56,10 @@ function fixture(t, prefix = 'snapshot-bindings-') {
     containers.push({ id: containerId, running: true, mounts: [
       bind(runtimeSource, runtimeSource),
       bind('/opt/ploinky-agentlib', '/opt/ploinky-agentlib'),
-      bind(`${root}/.ploinky/container-runtime/${name}/code`, '/code'),
-      bind(`${root}/.ploinky/container-runtime/${name}/Agent`, '/Agent'),
+      bind(runtimeSource, '/code'),
+      bind(`${staging}/Agent`, '/Agent'),
       bind(dependencies, dependencies),
+      bind(dependencies, '/code/node_modules'),
     ] });
   }
   const outerMounts = [
@@ -194,14 +199,122 @@ test('RoboTeam rejects foreign source mounts, shadows and stale staged bytes', t
   assert.throws(() => collect(f), /staged \/Agent differs/);
 });
 
-test('primary: a canonical same-path workspace containing a space and Unicode is accepted end to end', t => {
-  const f = fixture(t, 'fresh workspace ü ');
-  assert.match(f.root, / ü /);
+for (const checkout of [MANAGED, CHECKOUT]) {
+  test(`primary: a canonical same-path workspace containing a space and Unicode is accepted end to end (${checkout})`, t => {
+    const f = fixture(t, 'fresh workspace ü ', { checkout });
+    assert.match(f.root, / ü /);
+    const result = collect(f);
+    for (const name of ['explorer', 'roboTeamAgent']) {
+      assert.equal(result[name].active, true);
+      assert.equal(result[name].runtimeSource, path.join(f.root, checkout, name));
+      // /code is the verified agent folder itself; only /Agent is staged.
+      assert.equal(result[name].codeRoot, result[name].runtimeSource);
+      assert.equal(result[name].agentRuntimeRoot, path.join(f.root, '.ploinky/container-runtime', name, 'Agent'));
+      assert.equal('mappingSha256' in result[name], false);
+    }
+    assert.equal(result.achillesAgentLib.source, path.join(f.root, 'achillesAgentLib'));
+  });
+}
+
+// The observed failure: workspace root /home/user, Explorer used in place from /home/user/AssistOSExplorer as
+// AchillesIDE. Explorer (the static agent) and global RoboTeam both receive the workspace bind, so Ploinky also emits
+// the read-only `<root>/.ploinky` controller pin, the writable `.ploinky/repos` root and the controller data guard.
+test('a workspace checkout used in place is accepted with the mounts Ploinky emits beside a workspace bind', t => {
+  const f = fixture(t, 'snapshot-bindings-', { checkout: CHECKOUT });
+  fs.mkdirSync(path.join(f.root, '.ploinky/repos'), { recursive: true });
+  for (const container of f.containers) {
+    container.mounts.push(
+      bind(f.root, f.root, true),
+      bind(`${f.root}/.ploinky`, `${f.root}/.ploinky`),
+      bind(`${f.root}/.ploinky/repos`, `${f.root}/.ploinky/repos`, true),
+      bind('/tmp/ploinky-runtime-guards/0123456789abcdef01234567/data', `${f.root}/.ploinky/data`),
+    );
+  }
   const result = collect(f);
-  assert.equal(result.explorer.active, true);
-  assert.equal(result.explorer.runtimeSource, path.join(f.root, '.ploinky/repos/AchillesIDE/explorer'));
-  assert.equal(result.explorer.codeRoot, path.join(f.root, '.ploinky/container-runtime/explorer/code'));
-  assert.equal(result.achillesAgentLib.source, path.join(f.root, 'achillesAgentLib'));
+  assert.equal(result.explorer.codeRoot, path.join(f.root, 'AssistOSExplorer/explorer'));
+  assert.equal(result.roboTeamAgent.codeRoot, path.join(f.root, 'AssistOSExplorer/roboTeamAgent'));
+  assert.equal(result.explorer.treeSha256, f.options.repositories.explorer.treeSha256);
+  // The pin is accepted only as Ploinky emits it: read-only and backed by the workspace's own controller root.
+  const pin = f.containers[0].mounts.find(mount => mount.Destination === `${f.root}/.ploinky`);
+  pin.RW = true;
+  assert.throws(() => collect(f), /mount shadowing a verified source or runtime/);
+  pin.RW = false;
+  pin.Source = `${f.root}/foreign`;
+  assert.throws(() => collect(f), /mount shadowing a verified source or runtime/);
+});
+
+for (const checkout of [MANAGED, CHECKOUT]) {
+  for (const [label, codeSource] of [
+    ['the retired staged code tree', root => `${root}/.ploinky/container-runtime/explorer/code`],
+    ['the unresolved .ploinky/code link', root => `${root}/.ploinky/code/explorer`],
+    ['the other repository source', root => `${root}/${checkout === MANAGED ? CHECKOUT : MANAGED}/explorer`],
+    ['the checkout root', root => `${root}/${checkout}`],
+    ['the sibling agent folder', root => `${root}/${checkout}/roboTeamAgent`],
+    ['a folder below the agent source', root => `${root}/${checkout}/explorer/code`],
+    ['a prefix-lookalike of the agent source', root => `${root}/${checkout}/explorer-old`],
+    ['a source outside the admitted root', root => `${root}-evil/${checkout}/explorer`],
+  ]) {
+    test(`/code must be the verified agent folder: ${label} is rejected (${checkout})`, t => {
+      const f = fixture(t, 'snapshot-bindings-', { checkout });
+      f.containers[0].mounts[2].Source = codeSource(f.root);
+      assert.throws(() => collect(f), /explorer has an unverified runtime mount at \/code/);
+    });
+  }
+
+  test(`/code must be one read-only bind of the verified agent folder (${checkout})`, t => {
+    const f = fixture(t, 'snapshot-bindings-', { checkout });
+    const code = f.containers[0].mounts[2];
+    code.RW = true;
+    assert.throws(() => collect(f), /exact verified read-only source mount at \/code/);
+    code.RW = false;
+    code.Type = 'volume';
+    assert.throws(() => collect(f), /exact verified read-only source mount at \/code/);
+    code.Type = 'bind';
+    f.containers[0].mounts.push(structuredClone(code));
+    assert.throws(() => collect(f), /unverified runtime mount at \/code/);
+    f.containers[0].mounts.pop();
+    f.containers[0].mounts.splice(2, 1);
+    assert.throws(() => collect(f), /unverified runtime mount at \/code/);
+  });
+}
+
+for (const [label, checkout, message] of [
+  ['nested below a workspace folder', 'work/AssistOSExplorer', /neither a workspace checkout nor the managed repository copy/],
+  ['a hidden workspace entry', '.AssistOSExplorer', /neither a workspace checkout nor the managed repository copy/],
+  ['the workspace node_modules entry', 'node_modules', /neither a workspace checkout nor the managed repository copy/],
+  ['a managed copy of another repository', '.ploinky/repos/OtherIDE', /neither a workspace checkout nor the managed repository copy/],
+]) {
+  test(`the verified checkout must be a source Ploinky selects: ${label} is rejected`, t => {
+    // Route and mounts agree with the checkout, so only its location can reject it.
+    const f = fixture(t, 'snapshot-bindings-', { checkout });
+    assert.throws(() => collect(f), message);
+    assert.equal(f.calls.filter(args => args.includes('podman')).length, 0, 'No nested inspection runs for an unselectable checkout.');
+  });
+}
+
+test('the verified checkout must hold each agent folder itself, not a link to another workspace tree', t => {
+  const f = fixture(t, 'snapshot-bindings-', { checkout: CHECKOUT });
+  const source = path.join(f.root, CHECKOUT, 'explorer');
+  fs.renameSync(source, path.join(f.root, 'elsewhere'));
+  fs.symlinkSync(path.join(f.root, 'elsewhere'), source);
+  for (const mount of f.containers[0].mounts) {
+    if (mount.Source === source) mount.Source = path.join(f.root, 'elsewhere');
+    if (mount.Destination === source) mount.Destination = path.join(f.root, 'elsewhere');
+  }
+  f.active.bindings.explorer.route.hostPath = path.join(f.root, 'elsewhere');
+  assert.throws(() => collect(f), /explorer source is not an agent folder of the verified checkout/);
+});
+
+test('/code/node_modules must be the read-only dependency tree the staged /Agent links', t => {
+  const f = fixture(t);
+  const dependencies = f.containers[0].mounts[5];
+  dependencies.RW = true;
+  assert.throws(() => collect(f), /exact verified read-only source mount at \/code\/node_modules/);
+  dependencies.RW = false;
+  dependencies.Source = `${f.root}/.ploinky/deps/store/objects/other/payload/node_modules`;
+  assert.throws(() => collect(f), /explorer dependency adapters do not share the prepared workspace dependency tree/);
+  f.containers[0].mounts.splice(5, 1);
+  assert.throws(() => collect(f), /explorer dependency adapters do not share the prepared workspace dependency tree/);
 });
 
 test('the active-generation probe carries the exact selected Router and media host ports verified in the live Box', t => {
@@ -348,7 +461,9 @@ test('RoboTeam lifecycle changes preserve stable source evidence and full Explor
   const after = collect(f);
   for (const key of ['source', 'runtimeSource', 'treeSha256']) assert.equal(after.roboTeamAgent[key], before.roboTeamAgent[key]);
   assert.notEqual(after.roboTeamAgent.containerId, before.roboTeamAgent.containerId);
-  assert.notEqual(after.roboTeamAgent.codeRoot, before.roboTeamAgent.codeRoot);
+  // A new container gets a new staged /Agent, while /code stays the verified source folder.
+  assert.notEqual(after.roboTeamAgent.agentRuntimeRoot, before.roboTeamAgent.agentRuntimeRoot);
+  assert.equal(after.roboTeamAgent.codeRoot, before.roboTeamAgent.codeRoot);
   for (const key of ['explorer', 'ploinkyAgent', 'achillesAgentLib']) assert.deepEqual(after[key], before[key]);
 });
 
@@ -415,10 +530,11 @@ test('missing /Agent mount, writable AgentLib, and substituted code are rejected
   f.outerMounts[2].RW = true;
   assert.throws(() => collect(f), /exact verified read-only/);
   f.outerMounts[2].RW = false;
-  const code = path.join(f.root, '.ploinky/container-runtime/explorer/code/index.mjs');
-  fs.unlinkSync(code);
-  fs.writeFileSync(code, 'substitute');
-  assert.throws(() => collect(f), /not linked to the verified source/);
+  // A byte-identical copy of the verified agent folder is still another source.
+  const copy = path.join(f.root, 'copy/explorer');
+  fs.cpSync(path.join(f.options.repositories.explorer.repositoryPath, 'explorer'), copy, { recursive: true });
+  f.containers[0].mounts[2].Source = copy;
+  assert.throws(() => collect(f), /unverified runtime mount at \/code/);
 });
 
 test('a same-commit alternate mount and a symlinked staging directory are rejected', t => {
@@ -487,13 +603,20 @@ test('verified sources must lie inside the admitted root, lexically and canonica
 });
 
 for (const [name, mutate, message] of [
-  ['a /code staged outside the admitted root', f => { f.containers[0].mounts[2].Source = `${f.root}-evil/.ploinky/container-runtime/explorer/code`; }, /unverified runtime mount at \/code/],
-  ['a /code outside the container-runtime staging root', f => { f.containers[0].mounts[2].Source = `${f.root}/.ploinky/other/code`; }, /unverified runtime mount at \/code/],
+  ['a /code bound outside the admitted root', f => { f.containers[0].mounts[2].Source = `${f.root}-evil/.ploinky/repos/AchillesIDE/explorer`; }, /unverified runtime mount at \/code/],
+  ['a /code from the retired container-runtime code staging', f => { f.containers[0].mounts[2].Source = `${f.root}/.ploinky/container-runtime/explorer/code`; }, /unverified runtime mount at \/code/],
   ['an /Agent staged outside the admitted root', f => { f.containers[0].mounts[3].Source = `${f.root}-evil/.ploinky/container-runtime/explorer/Agent`; }, /unverified runtime mount at \/Agent/],
   ['a duplicated source bind', f => { f.containers[0].mounts.push(structuredClone(f.containers[0].mounts[0])); }, /exact verified source mount/],
   ['a source bind sourced from a foreign directory', f => { f.containers[0].mounts[0].Source = `${f.root}-evil/explorer`; }, /exact verified source mount/],
   ['a foreign source mounted at /code', f => { f.containers[0].mounts.push(bind(`${f.root}/foreign`, '/code')); }, /unverified runtime mount at \/code/],
-  ['a dependency tree outside the admitted root', f => { fs.rmSync(path.join(f.root, '.ploinky/container-runtime/explorer/code/node_modules')); fs.symlinkSync(`${f.root}-evil/.ploinky/cache/explorer/node_modules`, path.join(f.root, '.ploinky/container-runtime/explorer/code/node_modules')); fs.rmSync(path.join(f.root, '.ploinky/container-runtime/explorer/Agent/node_modules')); fs.symlinkSync(`${f.root}-evil/.ploinky/cache/explorer/node_modules`, path.join(f.root, '.ploinky/container-runtime/explorer/Agent/node_modules')); }, /do not share the prepared workspace dependency tree/],
+  ['a dependency tree outside the admitted root', f => {
+    const outside = `${f.root}-evil/.ploinky/deps/store/objects/explorer/payload/node_modules`;
+    const adapter = path.join(f.root, '.ploinky/container-runtime/explorer/Agent/node_modules');
+    fs.rmSync(adapter);
+    fs.symlinkSync(outside, adapter);
+    for (const index of [4, 5]) f.containers[0].mounts[index].Source = outside;
+    f.containers[0].mounts[4].Destination = outside;
+  }, /do not share the prepared workspace dependency tree/],
 ]) {
   test(`inner mounts reject ${name}`, t => {
     const f = fixture(t, 'fresh workspace ü ');

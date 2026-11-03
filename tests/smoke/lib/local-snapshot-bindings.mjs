@@ -80,6 +80,20 @@ function inspectedWorkspaceSource(workspace, source) {
   return source;
 }
 
+// Ploinky selects one source per repository (cli/utils/agentRepositorySource.mjs): a checkout directly inside the
+// workspace (a non-hidden entry other than node_modules), otherwise the managed `.ploinky/repos/<repository>` copy.
+// The verified checkout must be one of them, so every runtime path below is derived from the source Ploinky runs.
+const REPOSITORY = 'AchillesIDE';
+function verifiedCheckout(workspace, repositoryPath, fsApi) {
+  const checkout = inspectedWorkspaceSource(workspace, fsApi.realpathSync(repositoryPath));
+  const name = path.posix.basename(checkout);
+  if (checkout !== `${workspace}/.ploinky/repos/${REPOSITORY}`
+      && (path.posix.dirname(checkout) !== workspace || name.startsWith('.') || name === 'node_modules')) {
+    throw new Error(`Local snapshot ${REPOSITORY} checkout is neither a workspace checkout nor the managed repository copy.`);
+  }
+  return checkout;
+}
+
 function sameStat(before, after) {
   return ['dev', 'ino', 'mode', 'size', 'mtimeMs', 'ctimeMs'].every(key => before[key] === after[key]);
 }
@@ -170,9 +184,11 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
     allowedOuter.push(requireMount(outerMounts, '/opt/ploinky/node_modules',
       fsApi.realpathSync(path.join(workspace, '.ploinky/box/dependencies')), { fsApi }));
   }
+  const checkout = verifiedCheckout(workspace, repositories.explorer.repositoryPath, fsApi);
   const sources = Object.fromEntries(['explorer', 'roboTeamAgent'].map(routeKey => {
-    const source = fsApi.realpathSync(path.join(repositories.explorer.repositoryPath, routeKey));
-    return [routeKey, { source, runtimeSource: inspectedWorkspaceSource(workspace, source), treeSha256: repositories.explorer.treeSha256, routeKey }];
+    const source = inspectedWorkspaceSource(workspace, fsApi.realpathSync(path.join(checkout, routeKey)));
+    if (source !== `${checkout}/${routeKey}`) throw new Error(`Local snapshot ${routeKey} source is not an agent folder of the verified checkout.`);
+    return [routeKey, { source, runtimeSource: source, treeSha256: repositories.explorer.treeSha256, routeKey }];
   }));
   const protectedOuter = ['/opt/ploinky', '/opt/ploinky-agentlib', libAlias, ...Object.values(sources).map(value => value.runtimeSource)];
   rejectShadows(outerMounts, protectedOuter, allowedOuter);
@@ -197,8 +213,8 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
       continue;
     }
     const record = selected.record;
-    if (route.draining === true || route.hostPath !== identity.runtimeSource || !route.container || route.repo !== 'AchillesIDE' || route.agent !== routeKey
-        || record?.type !== 'agent' || record.repoName !== 'AchillesIDE' || record.agentName !== route.agent
+    if (route.draining === true || route.hostPath !== identity.runtimeSource || !route.container || route.repo !== REPOSITORY || route.agent !== routeKey
+        || record?.type !== 'agent' || record.repoName !== REPOSITORY || record.agentName !== route.agent
         || routeKey !== (record.alias || record.agentName) || (route.alias || '') !== (record.alias || '')
         || (record.runtime !== undefined && !['docker', 'podman'].includes(record.runtime))
         || typeof record.instanceId !== 'string' || !record.instanceId.trim()
@@ -223,25 +239,36 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
       requireMount(container.mounts, identity.runtimeSource, identity.runtimeSource),
       requireMount(container.mounts, '/opt/ploinky-agentlib', '/opt/ploinky-agentlib', { readOnly: true }),
     ];
-    const roots = {};
-    for (const [mountPath, field, readOnly] of [['/code', 'codeRoot', false], ['/Agent', 'agentRuntimeRoot', true]]) {
-      const mounts = container.mounts.filter(mount => mount.Destination === mountPath);
-      if (mounts.length !== 1 || !mounts[0].Source?.startsWith(`${workspace}/.ploinky/container-runtime/`)) {
-        throw new Error(`${name} has an unverified runtime mount at ${mountPath}.`);
-      }
-      const mount = requireMount(container.mounts, mountPath, mounts[0].Source, { readOnly });
-      const host = workspacePath(workspace, mount.Source);
-      if (!fsApi.lstatSync(host).isDirectory() || fsApi.realpathSync(host) !== host) throw new Error(`${name} runtime staging is not a real workspace directory.`);
-      roots[field] = host;
-      protectedOuter.push(mount.Source);
-      allowedInner.push(mount);
+    // Ploinky binds the agent folder of the selected checkout directly at /code, read-only in every profile
+    // (agentServiceManager.js startAgentContainer, profileService.js getDefaultMountModes). Whether the checkout is
+    // a workspace checkout or the managed copy, that folder is the verified source itself; nothing else may be /code.
+    const codeMounts = container.mounts.filter(mount => mount.Destination === '/code');
+    if (codeMounts.length !== 1 || codeMounts[0].Source !== identity.runtimeSource) {
+      throw new Error(`${name} has an unverified runtime mount at /code.`);
     }
-    // Explorer mounts its repository parent for browsing. A self-mounted
+    allowedInner.push(requireMount(container.mounts, '/code', identity.runtimeSource, { readOnly: true }));
+    // Only /Agent is still staged, as a copy below the workspace's container-runtime root.
+    const agentMounts = container.mounts.filter(mount => mount.Destination === '/Agent');
+    if (agentMounts.length !== 1 || !agentMounts[0].Source?.startsWith(`${workspace}/.ploinky/container-runtime/`)) {
+      throw new Error(`${name} has an unverified runtime mount at /Agent.`);
+    }
+    const agentMount = requireMount(container.mounts, '/Agent', agentMounts[0].Source, { readOnly: true });
+    const agentRuntimeRoot = workspacePath(workspace, agentMount.Source);
+    if (!fsApi.lstatSync(agentRuntimeRoot).isDirectory() || fsApi.realpathSync(agentRuntimeRoot) !== agentRuntimeRoot) {
+      throw new Error(`${name} runtime staging is not a real workspace directory.`);
+    }
+    protectedOuter.push(agentRuntimeRoot);
+    allowedInner.push(agentMount);
+    // Explorer mounts its repository parent for browsing, and a workspace bind
+    // brings Ploinky's read-only `<root>/.ploinky` controller pin, which holds
+    // the dependency tree even when the checkout lies outside it. A self-mounted
     // workspace ancestor preserves the exact path only if the outer namespace
     // also proves that whole parent is backed by the verified workspace.
+    const controllerPin = `${workspace}/.ploinky`;
     for (const mount of container.mounts) {
       if (allowedInner.includes(mount) || mount.Type !== 'bind' || mount.Source !== mount.Destination
-          || !inside(workspace, mount.Destination) || !inside(mount.Destination, identity.runtimeSource)) continue;
+          || !inside(workspace, mount.Destination)) continue;
+      if (!inside(mount.Destination, identity.runtimeSource) && !(mount.Destination === controllerPin && mount.RW === false)) continue;
       const host = mount.Destination === workspace ? workspace : workspacePath(workspace, mount.Destination);
       if (!fsApi.lstatSync(host).isDirectory() || fsApi.realpathSync(host) !== host) {
         throw new Error(`${name} source ancestor mount is not the exact workspace directory.`);
@@ -250,39 +277,27 @@ export function collectLocalSnapshotSourceBindings({ liveBox, repositories, requ
       protectedOuter.push(mount.Destination);
     }
     const protectedInner = ['/code', '/Agent', '/opt/ploinky-agentlib', identity.runtimeSource];
-    // Podman stages both dependency adapters as links to one read-only self
-    // mount. The excluded dependency tree must not hide a second code mount.
-    const dependencyTargets = Object.values(roots).map(root => {
-      const adapter = path.join(root, 'node_modules');
-      if (!fsApi.lstatSync(adapter).isSymbolicLink()) throw new Error(`${name} dependency adapter is not a staged symbolic link.`);
-      return fsApi.readlinkSync(adapter);
-    });
-    if (dependencyTargets[0] !== dependencyTargets[1]
-        || !dependencyTargets[0].startsWith(`${workspace}/.ploinky/`)) {
+    // The staged /Agent links node_modules to the prepared dependency tree,
+    // which Ploinky mounts read-only at its own path and over /code/node_modules.
+    // No other mount may hide either of them.
+    const adapter = path.join(agentRuntimeRoot, 'node_modules');
+    if (!fsApi.lstatSync(adapter).isSymbolicLink()) throw new Error(`${name} dependency adapter is not a staged symbolic link.`);
+    const dependencyTarget = fsApi.readlinkSync(adapter);
+    const codeDependencies = container.mounts.filter(mount => mount.Destination === '/code/node_modules' && mount.Source === dependencyTarget);
+    if (!dependencyTarget.startsWith(`${workspace}/.ploinky/`) || codeDependencies.length !== 1) {
       throw new Error(`${name} dependency adapters do not share the prepared workspace dependency tree.`);
     }
-    const dependencyTarget = dependencyTargets[0];
     workspacePath(workspace, dependencyTarget);
+    allowedInner.push(requireMount(codeDependencies, '/code/node_modules', dependencyTarget, { readOnly: true }));
     allowedInner.push(requireMount(container.mounts, dependencyTarget, dependencyTarget, { readOnly: true }));
     protectedInner.push(dependencyTarget);
     protectedOuter.push(dependencyTarget);
     rejectShadows(container.mounts, protectedInner, allowedInner);
     rejectShadows(outerMounts, protectedOuter, allowedOuter);
-    const mappings = [];
-    for (const entry of fsApi.readdirSync(identity.source).filter(entry => entry !== 'node_modules').sort()) {
-      const codeFile = path.join(roots.codeRoot, entry);
-      if (!fsApi.lstatSync(codeFile).isSymbolicLink() || fsApi.readlinkSync(codeFile) !== `${identity.runtimeSource}/${entry}`) {
-        throw new Error(`${name} runtime code is not linked to the verified source: ${entry}`);
-      }
-      mappings.push([entry, `${identity.runtimeSource}/${entry}`]);
-    }
-    if (fsApi.readdirSync(roots.codeRoot).some(entry => entry !== 'node_modules' && !mappings.some(([name]) => name === entry))) {
-      throw new Error(`${name} runtime code has unexpected source entries.`);
-    }
-    if (agentTreeDigest(roots.agentRuntimeRoot, fsApi) !== agentDigest) throw new Error(`${name} staged /Agent differs from the verified Ploinky Agent source.`);
-    result[name] = Object.freeze({ active: true, ...identity, containerId: container.id, ...roots,
-      routeKey, instanceId: record.instanceId, enableGeneration: record.enableGeneration,
-      mappingSha256: sha256(JSON.stringify(mappings)) });
+    if (agentTreeDigest(agentRuntimeRoot, fsApi) !== agentDigest) throw new Error(`${name} staged /Agent differs from the verified Ploinky Agent source.`);
+    result[name] = Object.freeze({ active: true, ...identity, containerId: container.id,
+      codeRoot: identity.runtimeSource, agentRuntimeRoot,
+      routeKey, instanceId: record.instanceId, enableGeneration: record.enableGeneration });
   }
   const current = readActiveGeneration(run, outerId, ports, workspace);
   if (current.generation !== active.generation || current.activationId !== active.activationId) {
