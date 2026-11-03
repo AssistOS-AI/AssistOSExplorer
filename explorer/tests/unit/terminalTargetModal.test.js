@@ -874,7 +874,7 @@ function pageHarness(t, { sources = [PROFILE_SOURCE], robots = ROBOTS, respond =
             return popup;
         },
     };
-    const names = ['Directory', 'Status', 'Warning', 'Notice', 'List', 'Retry', 'Refresh', 'RobotNote', 'Disclosure', 'Open'];
+    const names = ['Directory', 'Status', 'Warning', 'Notice', 'List', 'Retry', 'Refresh', 'RobotNote', 'Disclosure', 'Open', 'Environment', 'EnvironmentLabel'];
     const fields = new Map(names.map((name) => [`#terminalTarget${name}`, new FakeElement(name === 'List' ? 'ul' : 'div')]));
     const select = new FakeElement('select');
     select.value = '';
@@ -1336,4 +1336,118 @@ test('a discovery replaced while the robot is prepared voids the launch: no navi
     await page.settle();
     const deletes = fetchLog(page.log, 'DELETE').slice(before).map((entry) => entry[2].split('/').pop());
     assert.deepEqual(deletes, [replacement]);
+});
+
+const WORK_BASE = '/base-agent-additional-server/roboWorkAgent/3001/api/terminal-profiles';
+const WORK_SOURCE = { ...PROFILE_SOURCE, agent: 'roboWorkAgent', id: 'robowork-terminal-profiles', label: 'RoboWork',
+    terminalProfiles: { version: 1, base: WORK_BASE, environments: true } };
+const ENVIRONMENTS = [
+    { key: 'default', label: 'RoboWork (default)', available: true, reason: '' },
+    { key: 'YWdlbnQ', label: 'Chosen agent', available: true, reason: '' },
+    { key: 'unavailable', label: 'Unavailable agent', available: false, reason: 'image cannot be pulled' },
+];
+
+test('environment declaration survives plugin normalization and validates exact environment payloads', async () => {
+    const runtime = normalizeRuntimePlugins({ application: { 'terminal-profiles:source': [WORK_SOURCE] } });
+    const sources = discoverTerminalProfileSources(runtime.application);
+    assert.equal(sources.length, 1); assert.equal(sources[0].environments, true);
+    const source = sources[0];
+    const request = body => requestTerminalProfiles(source, { fetchImpl: async () => ({ ok: true, json: async () => body }) });
+    const profiles = await request({ ok: true, profiles: ROBOTS, environments: ENVIRONMENTS });
+    assert.deepEqual(profiles.environments, ENVIRONMENTS);
+    for (const environments of [[ENVIRONMENTS[0], ENVIRONMENTS[0]], [{ ...ENVIRONMENTS[0], key: '../bad' }],
+        [{ ...ENVIRONMENTS[0], available: 'true' }], [{ ...ENVIRONMENTS[0], home: '/home/robot' }]]) {
+        await assert.rejects(request({ ok: true, profiles: ROBOTS, environments }), /Invalid/);
+    }
+    assert.equal(normalizeRuntimePlugins({ application: { 'terminal-profiles:source': [{ ...WORK_SOURCE,
+        terminalProfiles: { ...WORK_SOURCE.terminalProfiles, environments: false } }] } }).application['terminal-profiles:source'].length, 0);
+});
+
+function environmentPage(t, workTargets = null, environments = ENVIRONMENTS) {
+    let sequence = 0;
+    return pageHarness(t, { sources: [WORK_SOURCE], respond: async ({ method, url, body }) => {
+        if (method === 'GET') return { body: { ok: true, profiles: ROBOTS, environments } };
+        if (url !== '/webtty/target-discoveries' || method !== 'POST') return null;
+        const request = JSON.parse(body);
+        if (!request.profile) return null;
+        sequence++;
+        const row = { ...profiledTargets()[1], launch: id32('work-row'), detail: 'AchillesIDE/roboWorkAgent', label: 'RoboWork' };
+        return { body: profiledPayload({ ...request.profile, label: 'Robot A' },
+            [...profiledTargets(), ...(workTargets ? workTargets(row) : [row])], id32(`work${sequence}`)) };
+    } });
+}
+
+test('environment picker launches only RoboWork and binds preparation to robot plus chosen environment', async t => {
+    const page = environmentPage(t);
+    page.modal.afterRender(); await page.settle();
+    assert.equal(page.$('Environment').hidden, true);
+    await page.chooseRobot('Robot A');
+    assert.equal(page.$('Environment').hidden, false);
+    assert.deepEqual(page.$('Environment').children.map(option => option.textContent),
+        ['RoboWork (default)', 'Chosen agent', 'Unavailable agent (image cannot be pulled; retry download)']);
+    assert.equal(page.$('Environment').children[2].disabled, false);
+    assert.equal(page.rows().length, 1); assert.match(textTree(page.rows()[0]), /RoboWork/);
+    assert.equal(page.modal.targetsByLaunch.has(id32('box')), false);
+    assert.deepEqual(page.modal.currentDiscovery.profile, { provider: 'roboWorkAgent', id: 'robot-a.default', label: 'Robot A' });
+    await page.chooseRow(/RoboWork/);
+    page.modal.handleChange({ target: { id: 'terminalTargetEnvironment', value: 'YWdlbnQ' } });
+    await page.settle();
+    assert.equal(page.$('Open').disabled, true, 'changing environment clears the selected launch');
+    assert.deepEqual(page.modal.currentDiscovery.profile, { provider: 'roboWorkAgent', id: 'robot-a.YWdlbnQ', label: 'Robot A' });
+    await page.chooseRow(/RoboWork/);
+    assert.equal(await page.modal.openTerminal(), true);
+    const prepare = page.log.find(entry => entry[2] === `${WORK_BASE}/robot-a.YWdlbnQ/prepare`);
+    assert.equal(prepare[1], 'POST'); assert.equal(prepare[3], '{}');
+    assert.ok(!page.log.some(entry => String(entry[3]).includes('/home/')));
+});
+
+test('environment flow refuses read-only, absent and ambiguous RoboWork rows', async t => {
+    for (const workTargets of [() => [], row => [{ ...row, access: 'ro' }],
+        row => [row, { ...row, launch: id32('work-duplicate') }]]) {
+        const page = environmentPage(t, workTargets);
+        page.modal.afterRender(); await page.settle(); await page.chooseRobot('Robot A');
+        assert.ok(page.rows().every(row => row.disabled));
+        assert.equal(page.$('Open').disabled, true);
+        assert.equal(await page.modal.openTerminal(), false);
+        assert.ok(!page.log.some(entry => String(entry[2]).endsWith('/prepare')));
+    }
+});
+
+test('cached image pull failure remains visible and can launch a retry from the terminal picker', async t => {
+    const page = environmentPage(t);
+    page.modal.afterRender(); await page.settle(); await page.chooseRobot('Robot A');
+    const retry = page.$('Environment').children.find(option => option.value === 'unavailable');
+    assert.equal(retry.disabled, false);
+    assert.match(retry.textContent, /image cannot be pulled.*retry download/u);
+    page.modal.handleChange({ target: { id: 'terminalTargetEnvironment', value: 'unavailable' } });
+    await page.settle();
+    assert.equal(page.modal.selectedProfile().id, 'robot-a.unavailable');
+    await page.chooseRow(/RoboWork/);
+    assert.equal(await page.modal.openTerminal(), true);
+    assert.ok(page.log.some(entry => entry[2] === `${WORK_BASE}/robot-a.unavailable/prepare`));
+});
+
+test('terminal picker keeps malformed and missing images disabled', async t => {
+    for (const reason of ['manifest unavailable', 'templated or invalid image', 'image unavailable', 'other failure']) {
+        const environments = ENVIRONMENTS.map(entry => entry.key === 'unavailable' ? { ...entry, reason } : entry);
+        const page = environmentPage(t, null, environments);
+        page.modal.afterRender(); await page.settle(); await page.chooseRobot('Robot A');
+        assert.equal(page.$('Environment').children[2].disabled, true);
+        page.modal.selectedEnvironmentKey = 'unavailable';
+        assert.equal(page.modal.selectedProfile(), null);
+    }
+});
+
+test('a preparing Environment closes the reserved popup and tells the user to retry Open', async t => {
+    const page = pageHarness(t, {
+        respond: async ({ url }) => url.endsWith('/prepare')
+            ? { status: 409, body: { ok: false, error: 'TERMINAL_PREPARING' } } : null,
+    });
+    page.modal.afterRender(); await page.settle();
+    await page.chooseRobot('Robot A'); await page.chooseRow(/Ploinky Box/);
+    assert.equal(await page.modal.openTerminal(), false);
+    assert.equal(page.popups[0].closed, true);
+    assert.equal(page.$('Warning').textContent, "Robot A's terminal environment is preparing. Try Open again shortly.");
+    assert.equal(page.$('Open').disabled, false);
+    assert.ok(!page.log.some(entry => entry[0] === 'navigate' || entry[0] === 'closeModal'));
 });

@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { MODELS_FRESH_WINDOW_MS, createOpenCodeModelCache, openCodeVersionOf } from '../server/opencode-model-cache.mjs';
+import { MODELS_FRESH_WINDOW_MS, createOpenCodeModelCache, openCodeVersionOf } from '../../roboWorkAgent/server/opencode-model-cache.mjs';
 
 const CACHE_DIR = f => path.join(f.root, 'data', 'server-state', 'model-catalog', 'robot-a1b2c3');
 const CACHE_FILE = f => path.join(CACHE_DIR(f), 'model-listing.json');

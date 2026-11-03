@@ -7,13 +7,13 @@ import { once } from 'node:events';
 
 const entry = fileURLToPath(new URL('../tools/roboflow.mjs', import.meta.url));
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { resolve, promise }; }
-async function fixture(t, operation, handler) {
+async function fixture(t, operation, handler, extra = {}) {
     const server = http.createServer(handler);
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const child = spawn(process.execPath, [entry, operation], { env: { ...process.env,
         ROBOTEAM_SERVICE_PORT: String(server.address().port), ROBOTEAM_INTERNAL_TOKEN: 'test', ROBOTEAM_TASK_POLL_INTERVAL_MS: '50' }, stdio: ['pipe', 'pipe', 'pipe'] });
     const exited = once(child, 'exit');
-    child.stdin.end(JSON.stringify({ input: { workflowTypeId: 'example', objective: 'Work', description: 'Generate' } }));
+    child.stdin.end(JSON.stringify({ input: { workflowTypeId: 'example', objective: 'Work', description: 'Generate', ...extra } }));
     t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
     return { child, exited };
 }
@@ -57,4 +57,41 @@ test('the start tool publishes a flow-page details link on stderr', { timeout: 1
     assert.deepEqual(JSON.parse(line.slice('@@PLOINKY_TASK_CONTROL@@'.length)), {
         details: { url: link, label: 'Open workflow page', logsLabel: 'View workflow logs' },
     });
+});
+
+test('the start tool passes the relay\'s robot constraint to RoboFlow', { timeout: 10000 }, async t => {
+    const posted = deferred();
+    const f = await fixture(t, 'start-flow', async (req, res) => {
+        res.setHeader('content-type', 'application/json');
+        if (req.method === 'POST' && req.url === '/api/roboflow/flows') {
+            let text = ''; for await (const chunk of req) text += chunk;
+            posted.resolve(JSON.parse(text));
+        }
+        res.end(JSON.stringify({ flow: { id: 'flow_123456789012345678901234', status: 'running' } }));
+    }, { restrictToRobot: 'robot-one' });
+    assert.equal((await posted.promise).restrictToRobot, 'robot-one');
+    f.child.kill('SIGTERM');
+});
+
+test('the start tool forwards the relay\'s owner only from RoboTeam acting for itself', { timeout: 10000 }, async t => {
+    const own = 'agent:AchillesIDE/roboTeamAgent';
+    const grant = (sub) => ({ invocation: { sub, actor: { kind: 'agent', id: sub } } });
+    for (const [metadata, expected] of [[grant(own), 'user:alice'], [grant('agent:other/agent'), undefined],
+        [undefined, undefined], [{ ...grant(own), user: { id: 'bob' } }, undefined]]) {
+        const posted = deferred();
+        const server = http.createServer(async (req, res) => {
+            res.setHeader('content-type', 'application/json');
+            if (req.method === 'POST' && req.url === '/api/roboflow/flows') {
+                let text = ''; for await (const chunk of req) text += chunk;
+                posted.resolve(JSON.parse(text));
+            }
+            res.end(JSON.stringify({ flow: { id: 'flow_123456789012345678901234', status: 'running' } }));
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        const child = spawn(process.execPath, [entry, 'start-flow'], { env: { ...process.env, ROBOTEAM_SERVICE_PORT: String(server.address().port),
+            ROBOTEAM_INTERNAL_TOKEN: 'test', ROBOTEAM_TASK_POLL_INTERVAL_MS: '50' }, stdio: ['pipe', 'pipe', 'pipe'] });
+        child.stdin.end(JSON.stringify({ input: { workflowTypeId: 'example', ownerPrincipal: 'user:alice' }, ...(metadata ? { metadata } : {}) }));
+        assert.equal((await posted.promise).ownerPrincipal, expected);
+        child.kill('SIGKILL'); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    }
 });

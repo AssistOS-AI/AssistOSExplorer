@@ -91,13 +91,33 @@ export class RoboFlowService {
         // this agent until it is ready (for example during a reinstall). They are loaded in the
         // background so startup never waits for or fails on them.
         this.presetReady = this._loadPresets();
-        for (const flow of await this.store.list()) if (flow.status !== 'pending' && !terminal(flow.status)) await this.store.update(flow.id, current => {
-            current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
-            for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'paused'; instance.error = current.error; instance.endedAt = current.finishedAt; }
-            current.status = deriveFlowStatus(current.instances);
-        });
+        for (const flow of await this.store.list()) {
+            if (['pending', 'completed', 'failed', 'terminated'].includes(flow.status)) continue;
+            const recovered = new Map();
+            for (const instance of flow.instances) {
+                const task = this.runtimeManager?.recoveredTask?.(instance.runtimeTaskId);
+                if (!task || task.robotId !== instance.robotId || task.request.workflowRunId !== flow.id
+                    || task.request.workflowInstanceId !== instance.id) continue;
+                recovered.set(instance.id, task);
+                this.bindings.set(task.taskId, { flowId: flow.id, instanceId: instance.id, manual: true });
+            }
+            await this.store.update(flow.id, current => {
+                for (const instance of current.instances) {
+                    if (['completed', 'failed', 'terminated'].includes(instance.state)) continue;
+                    const task = recovered.get(instance.id);
+                    if (task && ['starting', 'running', 'stopping'].includes(task.remoteState)) {
+                        if (current.humanInput?.status !== 'pending' || current.humanInput.runtimeTaskId !== task.taskId) instance.state = 'running';
+                        instance.error = null;
+                    } else if (!terminal(instance.state)) {
+                        instance.state = 'paused'; instance.error = 'interrupted by service restart'; instance.endedAt = new Date().toISOString();
+                    }
+                }
+                this._derive(current);
+            });
+        }
         for (const flow of await this.store.list()) if (flow.humanInput?.status === 'pending') await this.store.update(flow.id, current => {
-            current.humanInput.executionEnded = true;
+            const task = this.runtimeManager?.recoveredTask?.(current.humanInput.runtimeTaskId);
+            current.humanInput.executionEnded = !task || !['starting', 'running', 'stopping'].includes(task.remoteState);
             current.status = 'paused';
             const instance = current.instances.find(item => item.id === current.humanInput.instanceId);
             if (instance) { instance.state = 'paused'; instance.endedAt ||= new Date().toISOString(); }
@@ -197,6 +217,16 @@ export class RoboFlowService {
         const flow = await this.scheduler.runNow(id, revision, createdBy, { ownerPrincipal: ownerPrincipalOf(ownerPrincipal) });
         return { flow, schedule: (await this.listSchedules()).find(job => job.id === id) || null };
     }
+    // A workflow a robot started may use only that robot. Every task is checked before anything starts.
+    async assertRestrictedRobot(graph, executionType, restrictToRobot) {
+        if (!restrictToRobot) return;
+        const robot = (await this.robotStore.list()).find(item => item.id === restrictToRobot);
+        const usable = node => robot && (graph.kind !== 'default' || robot.name === 'default') && matchRobot(robot, node)
+            && ((graph.kind === 'default' ? executionType : node.executionType) === 'terminal' || GUI_CODING_AGENTS.some(agent => robotCodingAgents(robot).includes(agent)));
+        if (!graph.tasks.filter(node => !isCoordinator(node)).every(usable)) {
+            throw invalid('A workflow started by a robot can only use that robot. Start it from the RoboTeam screen to use other robots.');
+        }
+    }
     async startFlow(input, { onCreated, scheduleId, scheduledAt } = {}) {
         const graph = await this.registry.get(input.workflowTypeId);
         if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
@@ -204,13 +234,15 @@ export class RoboFlowService {
         if (graph.kind === 'default' ? !EXECUTION_TYPES.includes(input.executionType) : input.executionType !== undefined) throw invalid('executionType is required only for the default workflow');
         const objective = textField(input.objective, 'objective', 32768);
         resolveWorkflowObjective(graph, objective);
+        const restrictToRobot = typeof input.restrictToRobot === 'string' && input.restrictToRobot ? input.restrictToRobot : null;
+        await this.assertRestrictedRobot(graph, input.executionType, restrictToRobot);
         const allocated = Boolean(scheduleId) || !input.folder;
         const folder = scheduleId ? await this.runFolders.forJob(input.folder, graph.id, scheduleId)
             : allocated ? await this.runFolders.create(input.folder) : await this.runtimeManager.resolveCwd(input.folder);
         let flow;
         try {
             flow = await this.store.createFromWorkflow(this.registry, graph.id, { folder, objective, createdBy: input.createdBy || '',
-                ownerPrincipal: ownerPrincipalOf(input.ownerPrincipal),
+                ownerPrincipal: ownerPrincipalOf(input.ownerPrincipal), ...(restrictToRobot ? { restrictToRobot } : {}),
                 ...(scheduleId ? { scheduleId, scheduledAt } : {}),
                 ...(graph.kind === 'default' ? { executionType: input.executionType } : {}) }, onCreated);
         } catch (error) {
@@ -243,7 +275,8 @@ export class RoboFlowService {
             if (flow.instances.length > this.maxVisits) throw new Error('maximum task visits reached');
             if (isCoordinator(node)) return await this.subflows.dispatch(flow, instance);
             const mode = flow.graph.kind === 'default' ? flow.executionType : node.executionType;
-            const robots = (await this.robotStore.list()).filter(robot => (flow.graph.kind !== 'default' || robot.name === 'default') && matchRobot(robot, node));
+            const robots = (await this.robotStore.list()).filter(robot => (!flow.restrictToRobot || robot.id === flow.restrictToRobot)
+                && (flow.graph.kind !== 'default' || robot.name === 'default') && matchRobot(robot, node));
             if (!robots.length) throw new Error(`No robot has matching skillsets for task ${node.id}`);
             const eligible = robots.filter(robot => mode === 'terminal' || GUI_CODING_AGENTS.some(agent => robotCodingAgents(robot).includes(agent)));
             if (!eligible.length) throw new Error(`No matching robot supports ${mode} for task ${node.id}`);
@@ -499,6 +532,7 @@ export class RoboFlowService {
     onRuntimeTaskEvent(event) {
         // Admission and other observation-only events are for Live Sessions.
         if (!OBSERVED_TASK_EVENTS.has(event?.kind)) return;
+        if (event.kind === 'progress' && event.replayed) return;
         const generation = this.generations.get(event?.taskId);
         if (generation) { if (event.kind === 'terminal') { this.generations.delete(event.taskId); event.state === 'completed' && !event.error ? generation.resolve(event.result) : generation.reject(new Error(event.error || 'Graph generation failed')); } return; }
         const binding = this.bindings.get(event?.taskId);

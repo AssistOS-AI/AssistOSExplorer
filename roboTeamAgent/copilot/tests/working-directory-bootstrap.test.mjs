@@ -54,3 +54,23 @@ test('directory bootstrap rejects paths outside the workspace before creating fi
     await assert.rejects(fs.stat(path.join(outside, 'new')), { code: 'ENOENT' });
     await assert.rejects(fs.stat(path.join(outside, 'existing', 'new')), { code: 'ENOENT' });
 });
+
+test('a WebChat at the workspace root works in achilles-cli/<robot>; a project folder and terminal CLI do not move', async t => {
+    const root = await fixture(t);
+    const realRoot = await fs.realpath(root);
+    const project = path.join(realRoot, 'project');
+    await fs.mkdir(project);
+    const env = (name) => ({ ...process.env, PLOINKY_WORKSPACE_ROOT: root, ...(name === undefined ? {} : { ROBOTEAM_COPILOT_ROBOT_NAME: name }) });
+    const web = ['--sso-user=test'];
+    const at = (dir, name, extra = web) => initializeCliOptions([`--dir=${dir}`, ...extra], { env: env(name) }).workingDir;
+    assert.equal(at(root), path.join(realRoot, 'achilles-cli', 'default'));
+    assert.equal(at(root, 'Research & Review'), path.join(realRoot, 'achilles-cli', 'Research%20%26%20Review'));
+    assert.equal(at(project, 'Research'), project);
+    assert.equal(at(root, 'Research', []), realRoot);
+    for (const hostile of ['..', '.', '../x', 'a/../../b', '/etc', 'a\\b', '%2e%2e', '..%2f']) {
+        const dir = at(root, hostile);
+        assert.equal(path.dirname(dir), path.join(realRoot, 'achilles-cli'), hostile);
+        assert.equal(path.basename(dir).includes('/'), false);
+    }
+    assert.notEqual(at(root, 'a/b'), at(root, 'a%2Fb'));
+});

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-    LIVE_SKILLS_CONTRACT_FILES, createLiveSkillsRuntimeReader, normalizeLiveSkillsImageId, program, readLiveSkillsCodeHashes, readLiveSkillsSnapshot,
+    LIVE_SKILLS_CONTRACT_FILES, LIVE_SKILLS_CONTRACTS, createLiveSkillsRuntimeReader, normalizeLiveSkillsImageId, program, readLiveSkillsCodeHashes, readLiveSkillsSnapshot, readLiveSkillsHomeBinding,
     readRegistryAndRuntime, validateLiveSkillsRuntimeBinding,
 } from './copilot-live-skills-runtime.mjs';
 import { createLiveSkillsFixture, liveSkillsHash, liveSkillSources, liveSkillsPrompt, policyEvidence, validateLiveSkillsTurn } from './copilot-live-skills.mjs';
@@ -17,6 +17,8 @@ import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.
 
 const digest = 'a'.repeat(64);
 const files = LIVE_SKILLS_CONTRACT_FILES;
+const homeEvidence = ({ robotId, robotName }) => ({ robotId, robotName, homeTarget: `/home/${robotId}`,
+    identity: { dev: '1', ino: '2', uid: '0', gid: '0', mode: '16832' } });
 
 function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'AchillesIDE') {
     const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -31,6 +33,13 @@ function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'Achill
         fs.writeFileSync(path.join(source, file), data);
         expected[file] = createHash('sha256').update(data).digest('hex');
     }
+    const workSource = path.join(repository, 'roboWorkAgent'), workExpected = {};
+    for (const file of LIVE_SKILLS_CONTRACTS.roboWorkAgent) {
+        fs.mkdirSync(path.dirname(path.join(workSource, file)), { recursive: true });
+        const data = `export const selected = ${JSON.stringify(file)};\n`;
+        fs.writeFileSync(path.join(workSource, file), data);
+        workExpected[file] = liveSkillsHash(data);
+    }
     const descriptors = new Map();
     // macOS has no /proc. Map only its descriptor observation; actual files, symlinks,
     // O_NOFOLLOW reads, inode metadata, and mutations all use the real filesystem.
@@ -42,7 +51,7 @@ function fixture(t, prefix = 'live-skill-runtime-', repositoryRelative = 'Achill
             return fs.realpathSync(file);
         },
     };
-    const result = { directory, repository, source, code, expected, fsApi };
+    const result = { directory, repository, source, code, expected, workSource, workExpected, fsApi };
     result.read = (overrides = {}) => readLiveSkillsCodeHashes({ expectedRepository: repository, contractFiles: files }, { codeRoot: result.code, fsApi, ...overrides });
     return result;
 }
@@ -86,9 +95,22 @@ function readerSetup(f, { root = f.directory, image = 'sha256:' + digest } = {})
         ] };
     const state = { image, nestedReads: 0, programs: [], outerMounts: [{ Type: 'bind', Source: root, Destination: root, RW: true }],
         outerEnv: [`PLOINKY_WORKSPACE_ROOT=${root}`], outerWorkingDir: root };
+    const workRuntime = structuredClone(runtime);
+    workRuntime.containerId = 'e'.repeat(64);
+    fs.mkdirSync(`${root}/.data/.private/roboWorkAgent`, { recursive: true });
+    for (const mount of workRuntime.mounts) {
+        if (mount.Destination === '/data') mount.Source = `${root}/.data/.private/roboWorkAgent`;
+        if (mount.Source === f.source) mount.Source = f.workSource;
+        if (mount.Destination === f.source) mount.Destination = f.workSource;
+    }
     const runCommand = async (args, input) => {
         if (args[0] === 'inspect') return [{ Id: release.liveBox.box.containerId, Image: state.image, State: { Running: true, StartedAt: startedAt },
             Config: { Env: state.outerEnv, WorkingDir: state.outerWorkingDir }, Mounts: state.outerMounts }];
+        const work = input?.includes('"agentName":"roboWorkAgent"');
+        const homePrefix = `(${readLiveSkillsHomeBinding.toString()})(`;
+        if (input?.startsWith(homePrefix)) return homeEvidence(JSON.parse(input.slice(homePrefix.length, input.indexOf(').catch('))));
+        if (input?.startsWith(`(${readLiveSkillsCodeHashes.toString()})`)) return structuredClone(work ? f.workExpected : f.expected);
+        if (work) return structuredClone(workRuntime);
         state.nestedReads += 1; state.programs.push(input); return structuredClone(runtime);
     };
     const alaRoot = path.join(root, 'AdvancedLanguageAgent');
@@ -537,7 +559,7 @@ test('the reader accepts the exact AgentLib alias outer mount in local-AgentLib 
     const f = fixture(t, 'fresh workspace ü ');
     const setup = readerSetup(f);
     const alias = `${f.directory}/achillesAgentLib`;
-    setup.release.agentLib = { mode: 'local', sourceRelativePath: 'achillesAgentLib' };
+    setup.release.agentLib = { mode: 'local', sourceRelativePath: 'achillesAgentLib', commit: 'f'.repeat(40) };
     setup.state.outerMounts.push(bindMount(alias, alias, false));
     assert.equal((await setup.create()).workspaceRoot, f.directory);
     // The alias must be one exact read-only same-path bind.
@@ -596,9 +618,11 @@ test('capture hands the admitted root to the in-Box reader as structured JSON an
     fixtureValue.robotId = 'owned-live-robot';
     const sessionId = randomUUID();
     const original = setup.runCommand;
-    let snapshot = { workspaceRoot: f.directory, codeHashes: f.expected, alaBinding: setup.expectedAla };
+    let snapshot = { workspaceRoot: f.directory, codeHashes: f.expected, alaBinding: setup.expectedAla, homeBinding: homeEvidence(fixtureValue), sourceMapping: 'aliases' };
     // Only the in-Box snapshot read is `exec ... <box> podman exec ...`; every other command is answered by the shared stub.
-    const run = async (args, input) => (args[0] === 'exec' && args[5] === 'podman' ? snapshot : original(args, input));
+    const run = async (args, input) => (args[0] === 'exec' && args[5] === 'podman'
+        && !input.startsWith(`(${readLiveSkillsCodeHashes.toString()})`)
+        && !input.startsWith(`(${readLiveSkillsHomeBinding.toString()})`) ? snapshot : original(args, input));
     const reading = await createLiveSkillsRuntimeReader(setup.input, { collectRelease: async () => setup.release, runCommand: run });
     const captured = await reading.capture({ sessionId, fixture: fixtureValue });
     assert.equal(captured, snapshot);
@@ -714,7 +738,7 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
     const userText = liveTurn ? liveSkillsPrompt({ phase, selected }) : 'Current user request';
     const finalText = liveTurn ? selected.flatMap(skill => [skill.descriptorMarker, skill.helperMarker]).join('\n') : 'Current final answer';
     const metadata = { version: 2, sessionId, cwd: workspace, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-        engine: { type: 'ala', version: 1, sessionId, cwd: workspace, home: path.join(robot, 'home'), backend: 'codex', robotId: owned.robotId },
+        engine: { type: 'ala', version: 1, sessionId, cwd: workspace, home: `/home/${owned.robotId}`, backend: 'codex', robotId: owned.robotId },
         turns: [{ turnId, userMessageId: randomUUID(), assistantMessageId: randomUUID(), timestamp: new Date().toISOString(), status: 'completed', tasks: [] }],
         skillPolicyRef: sessionId, skillExecution: { live: true, active: false, entries, revision: liveSkillsHash(links), policyVersion: 1, diagnostics: [],
             skillsDirectory, mounts: links.map(link => ({ source: link.source, target: link.target, expose: true })) } };
@@ -738,7 +762,7 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
     })();
     const args = { sessionId, folder, skillNames: [owned.control.name, owned.probe.name, owned.added.name], contractFiles: files,
         expectedRepository: f.repository, workspaceRoot: f.directory, robotId: owned.robotId, robotName: owned.robotName,
-        repositoryName: owned.repositoryName, repositoryRoot: owned.repositoryRoot, expectedAla };
+        repositoryName: owned.repositoryName, repositoryRoot: owned.repositoryRoot, expectedAla, expectedHome: homeEvidence(owned), sourceMapping: 'canonical' };
     const read = async (overrides = {}, options = {}) => {
         await initialized;
         process.env.PLOINKY_WORKSPACE_ROOT = f.directory;
@@ -835,6 +859,25 @@ test('SET2 real links expose helper byte edits with unchanged installed-link rev
     assert.equal(after.catalog.revision, before.catalog.revision);
     assert.notEqual(after.capturedFiles[c.owned.probe.name].helperSha256, before.capturedFiles[c.owned.probe.name].helperSha256);
     assert.deepEqual(after.capturedFiles[c.owned.control.name], before.capturedFiles[c.owned.control.name]);
+});
+
+test('controller snapshot reads canonical fixture bytes through the exact declared native alias mapping', async t => {
+    const c = snapshotCase(t); await c.initialized;
+    const links = c.metadata.skillExecution.entries.map((entry, index) => ({ name: entry.name, source: entry.sourcePath, target: `/workspace/roboteam-skill-${index}` }));
+    for (const link of links) { fs.unlinkSync(`${c.skillsDirectory}/${link.name}`); fs.symlinkSync(link.target, `${c.skillsDirectory}/${link.name}`); }
+    c.metadata.skillExecution.mounts = links.map(link => ({ source: link.source, target: link.target, expose: true }));
+    c.metadata.skillExecution.revision = liveSkillsHash(links); c.writeSession();
+    const captured = await c.read({ sourceMapping: 'aliases' });
+    assert.equal(captured.sourceMapping, 'aliases'); assert.deepEqual(captured.catalog.links, links);
+    for (const link of links) {
+        const stat = fs.lstatSync(`${link.source}/receipt.mjs`, { bigint: true });
+        assert.deepEqual(captured.capturedFiles[link.name].sourceIdentity, Object.fromEntries(['dev', 'ino', 'uid', 'gid', 'mode'].map(key => [key, String(stat[key])])));
+        assert.equal(captured.liveLinks[link.name].linkTarget, link.target);
+        assert.equal(captured.liveLinks[link.name].resolvedSource, link.source);
+    }
+    await assert.rejects(c.read({ sourceMapping: 'canonical' }), /Execution mounts differ/);
+    fs.unlinkSync(`${c.skillsDirectory}/${links[0].name}`); fs.symlinkSync(links[1].target, `${c.skillsDirectory}/${links[0].name}`);
+    await assert.rejects(c.read({ sourceMapping: 'aliases' }), /retargeted/);
 });
 
 for (const [name, corrupt] of Object.entries({
@@ -956,7 +999,7 @@ test('serialized observer and cleanup include the self-contained native link gua
         // Execute the actual serialized helper, with no module imports or ambient bindings.
         const guard = serialized.slice(serialized.indexOf('const inspectSessionSkillLinks = '), serialized.indexOf(`(${fn.toString()})`));
         const result = spawnSync(process.execPath, ['--input-type=module', '-'], {
-            input: guard + `\nconst result = await inspectSessionSkillLinks(${JSON.stringify({ workspace: c.workspace, sessionId: c.sessionId, execution: c.metadata.skillExecution })}); result.recheck(); console.log(JSON.stringify(result.links));`,
+            input: guard + `\nconst result = await inspectSessionSkillLinks(${JSON.stringify({ workspace: c.workspace, sessionId: c.sessionId, execution: c.metadata.skillExecution })}, { sourceMapping: 'canonical' }); result.recheck(); console.log(JSON.stringify(result.links));`,
             encoding: 'utf8', timeout: 10_000,
         });
         assert.equal(result.status, 0, result.stderr);

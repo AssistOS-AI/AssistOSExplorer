@@ -32,4 +32,10 @@ export function normalizeLiveSessionSource(config, agent) {
 }
 
 // A terminal profile source declares {version: 1, base} under the same owning-agent rules as a Live Session source.
-export const normalizeTerminalProfileSource = normalizeLiveSessionSource;
+export function normalizeTerminalProfileSource(config, agent) {
+    if (!config || typeof config !== 'object' || Array.isArray(config)
+        || Object.keys(config).some(key => !['version', 'base', 'environments'].includes(key))
+        || (config.environments !== undefined && config.environments !== true)) return null;
+    const source = normalizeLiveSessionSource({ version: config.version, base: config.base }, agent);
+    return source ? Object.freeze({ ...source, ...(config.environments ? { environments: true } : {}) }) : null;
+}

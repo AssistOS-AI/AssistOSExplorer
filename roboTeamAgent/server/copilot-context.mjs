@@ -1,60 +1,29 @@
 import { requireWorkspaceRoot } from './workspace-root.mjs';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { RobotStore } from './robot-store.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
-import { ToolCache } from './tool-cache.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
-import { prepareRobotShell } from './robot-shell.mjs';
 import { DATA_DIR } from './constants.mjs';
-import { CODING_AGENT_NAMES, robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
+import { robotCodingAgents } from './coding-agents.mjs';
+import { RoboWorkClient } from './run-client.mjs';
 
-// One CLI process owns one robot context; browser input cannot change its home.
-export async function prepareCopilotContext(robotName = 'default', { prepareTools = true, usePreparedTools = false, holdUsage = false,
-    dataDir = DATA_DIR, alaCommand, toolCache } = {}) {
+// CLI wrappers own registry/conversation state, never native homes or tools.
+export async function prepareCopilotContext(robotName = 'default', { holdUsage = false,
+    dataDir = DATA_DIR, alaCommand, roboWork = new RoboWorkClient() } = {}) {
     const workspaceRoot = requireWorkspaceRoot();
-    const store = new RobotStore({ dataDir });
+    const store = new RobotStore({ dataDir, roboWork });
     await store.initialize();
     const robot = await store.getByName(robotName);
     if (!robot) throw new Error(`Robot not found: ${robotName}`);
     const releaseUsage = holdUsage ? await store.acquireCliUsage(robot.id) : null;
     try {
-        const robotRoot = store.robotPath(robot.id);
-        const home = path.join(robotRoot, 'home');
-        for (const directory of [robotRoot, home]) {
-            const stat = await fs.lstat(directory);
-            if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe robot home.');
-        }
+        await roboWork.call('robot_ensure', { robotId: robot.id, name: robot.name, codingAgents: robotCodingAgents(robot) });
         delete process.env.ROBOTEAM_COPILOT_ROOT;
         process.env.ROBOTEAM_COPILOT_ROBOT_ID = robot.id;
         process.env.ROBOTEAM_COPILOT_ROBOT_NAME = robot.name;
-        process.env.ACHILLES_ALA_HOME = await fs.realpath(home);
-        await prepareRobotShell(home);
         process.env.ACHILLES_ALA_COMMAND = resolveAlaCommand(alaCommand);
-        if (process.env.PLOINKY_AGENTLIB_DIR) {
-            process.env.ACHILLES_AGENT_LIB_PATH = process.env.PLOINKY_AGENTLIB_DIR;
-        }
+        delete process.env.ACHILLES_ALA_HOME;
         delete process.env.ROBOTEAM_INTERNAL_TOKEN;
-        if (prepareTools) {
-            // CLI output is consumed as conversation content. Routine cache diagnostics
-            // must not enter that channel; preparation failures still propagate below.
-            const cache = toolCache || new ToolCache({ dataDir: store.dataDir,
-                log: () => {} });
-            const codingAgents = robotCodingAgents(robot);
-            // Listing-only callers reuse the generation the service already prepared;
-            // it is re-validated here on every call, else we prepare as before.
-            const tools = (usePreparedTools && await cache.peekShellTools()) || await cache.prepareShellTools();
-            const selected = Object.fromEntries(codingAgents.map(name => [name, tools.agents[name]]));
-            const environment = codingAgentEnvironment(selected, process.env, cache.root);
-            for (const name of CODING_AGENT_NAMES) delete process.env[`${name.toUpperCase()}_BIN`];
-            Object.assign(process.env, environment);
-            // This process is spawned per call, outside the server's per-robot chain, so it never
-            // seeds the OpenCode plugin dependency: a copy here could race the deletion of the robot.
-            // Only the service seeds (startup, creation, task, GUI, Terminal, model listing).
-            await prepareRobotShell(home, { codingAgents, binPath: tools.binPath, cacheRoot: cache.root });
-        }
-        const skillsets = new RobotSkillsets({ robotStore: store,
-            workspaceRoot, alaCommand: process.env.ACHILLES_ALA_COMMAND });
+        const skillsets = new RobotSkillsets({ robotStore: store, workspaceRoot, alaCommand: process.env.ACHILLES_ALA_COMMAND });
         return { robot: await store.get(robot.id), store, skillsets, releaseUsage };
     } catch (error) {
         await releaseUsage?.();

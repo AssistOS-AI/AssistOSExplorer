@@ -11,11 +11,14 @@ export async function withLiveSkillsProjection({ fixture, workspaceRoot, session
     fs.mkdirSync(parent, { recursive: true });
     assert.equal(fs.realpathSync(parent), parent);
     assert.equal(fs.lstatSync(destination, { throwIfNoEntry: false }), undefined, 'Offline projection requires absent project skills.');
-    await inspectSessionSkillLinks({ workspace: fixture.workspace, sessionId, execution });
-    const args = alaSkillMountArguments({ snapshot: execution, workspaceRoot, cwd: fixture.workspace, includeClaude: false });
-    assert.deepEqual(args, ['--folder', execution.skillsDirectory, 'at', destination, 'expose'],
-        'Offline projection cannot represent auxiliary source mounts.');
-    fs.symlinkSync(args[1], args[3]);
+    await inspectSessionSkillLinks({ workspace: fixture.workspace, sessionId, execution }, { sourceMapping: execution.mounts.some(mount => mount.source === mount.target) ? 'canonical' : 'aliases' });
+    const args = alaSkillMountArguments({ snapshot: execution, cwd: fixture.workspace, includeClaude: false });
+    // Canonical mounts keep their real path in the offline projection; an alias mount cannot be represented.
+    const canonical = execution.mounts.filter(mount => mount.source === mount.target);
+    assert.deepEqual(args, [...canonical.flatMap(mount => ['--folder', mount.source, 'at', mount.target, 'expose']),
+        '--folder', execution.skillsDirectory, 'at', destination, 'expose'],
+    'Offline projection cannot represent auxiliary source mounts.');
+    fs.symlinkSync(execution.skillsDirectory, destination);
     const installed = fs.lstatSync(destination);
     try { return await callback(); }
     finally {
@@ -49,10 +52,10 @@ export function currentLiveSkillsCase({ disabled = false, root = '/srv/fresh wor
     const prompt = liveSkillsPrompt({ phase, selected });
     const final = selected.flatMap(skill => [skill.descriptorMarker, skill.helperMarker]).join('\n');
     const now = new Date().toISOString();
-    const native = { id: sessionId, home: `${robotRoot}/home`, workspace: fixture.workspace,
+    const native = { id: sessionId, home: `/home/${fixture.robotId}`, workspace: fixture.workspace,
         agent: 'codex', continuation: { threadId: randomUUID() }, turns: [{ turnId, user: prompt, final,
             status: 'completed', startedAt: now, endedAt: now }] };
-    const snapshot = { robotRoot, workspaceRoot: root,
+    const snapshot = { robotRoot, workspaceRoot: root, sourceMapping: 'canonical',
         robot: { id: fixture.robotId, name: fixture.robotName, repository: { name: fixture.repositoryName,
             source: fixture.repositoryRoot, generation: randomUUID() } }, native, capturedAt: now,
         session: { sessionId, cwd: fixture.workspace, skillPolicyRef: sessionId,

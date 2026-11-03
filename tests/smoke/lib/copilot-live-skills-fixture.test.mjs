@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
-import { createLiveSkillsFixture, liveSkillSources, liveSkillsHash, liveSkillsPrompt, policyEvidence, validateLiveSkillsTurn } from './copilot-live-skills.mjs';
+import { createLiveSkillsFixture, liveSkillSources, liveSkillsHash, liveSkillsPrompt, policyEvidence, validateLiveSkillsTurn, inspectSessionSkillLinks } from './copilot-live-skills.mjs';
 import { readLiveSkillsSnapshot } from './copilot-live-skills-runtime.mjs';
 import { createOwnedLiveSkillsFixture, liveSkillsPhasePlan, defaultRobotEvidence, assertLiveSkillsLivePreflight, liveSkillsOwnedLaunchURL } from './copilot-live-skills-fixture.mjs';
 import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.mjs';
@@ -84,7 +84,7 @@ async function harness(t) {
     const contractFiles = ['server/robot-skillsets.mjs', 'copilot/src/lib/storage/conversationSessionStore.mjs', 'copilot/src/lib/execution/alaTranscript.mjs'];
     const contractHashes = Object.fromEntries(contractFiles.map(file => [file, liveSkillsHash(fs.readFileSync(`${codeRoot}/${file}`))]));
     const operate = async action => { let result; await operateLiveSkillsFixture({ action, fixture, workspaceRoot: root, expectedRepository: repository, contractHashes },
-        { codeRoot, dataRoot, service, emit: value => { result = value; } }); return result; };
+        { codeRoot, dataRoot, service, fsApi, emit: value => { result = value; } }); return result; };
     const makeController = overrides => createOwnedLiveSkillsFixture({ fixture, workspaceRoot: root, api, listRepositories, fsTool, operate, ...overrides });
     const controller = makeController();
     const inventory = id => skillCatalogRequest({ skillsets: service, robot: robots.get(fixture.robotId), input: id ? { sessionId: id } : {} });
@@ -124,7 +124,10 @@ test('seven offline phases use real current policies, Ploinky links, helper rece
     const ownedDefaults = policyEvidence(await h.inventory(), null, h.fixture.robotName);
     const untouched = await h.service.policies.read(robot.id, untouchedId);
     const metadata = { version: 2, sessionId, cwd: h.fixture.workspace, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), turns: [],
-        skillPolicyRef: sessionId, engine: { type: 'ala', version: 1, sessionId, home: `${h.dataRoot}/robots/${robot.id}/home`, cwd: h.fixture.workspace, backend: 'codex', robotId: robot.id } };
+        skillPolicyRef: sessionId, engine: { type: 'ala', version: 1, sessionId, home: `/home/${robot.id}`, cwd: h.fixture.workspace, backend: 'codex', robotId: robot.id } };
+    const homeStat = fs.statSync(`${h.dataRoot}/robots/${robot.id}/home`, { bigint: true });
+    const expectedHome = { robotId: robot.id, robotName: robot.name, homeTarget: `/home/${robot.id}`,
+        identity: Object.fromEntries(['dev', 'ino', 'uid', 'gid', 'mode'].map(key => [key, String(homeStat[key])])) };
     const sessions = `${h.fixture.workspace}/.roboteam/sessions`;
     for (const id of [untouchedId, sessionId]) fs.mkdirSync(`${sessions}/${id}`, { recursive: true });
     fs.writeFileSync(`${sessions}/${untouchedId}/config.json`, JSON.stringify({ version: 2, sessionId: untouchedId, cwd: h.fixture.workspace,
@@ -161,40 +164,70 @@ test('seven offline phases use real current policies, Ploinky links, helper rece
         }
         const startedAt = Date.now() - 1, challenge = randomUUID(), turnId = randomUUID();
         const execution = await h.installLiveSkills({ service: installationService, robot, policyId: sessionId, sessionId, cwd: h.fixture.workspace, client: h.client });
-        const { release, ...record } = execution; await release(); metadata.skillExecution = { ...record, active: false };
-        const turn = { turnId, userMessageId: randomUUID(), assistantMessageId: randomUUID(), timestamp: new Date().toISOString(), status: 'completed', tasks: [] };
-        turn.thinkingUrl = `/base-agent-additional-server/roboTeamAgent/3001/webchat-logs/${sessionId}/${turn.assistantMessageId}`; metadata.turns.push(turn);
-        const recorder = h.createTranscriptRecorder({ append }, turnId); recorder.user(liveSkillsPrompt({ phase: challenge, selected: phase.selected }));
-        await withLiveSkillsProjection({ fixture: h.fixture, workspaceRoot: h.root, sessionId, execution, alaSkillMountArguments: h.alaSkillMountArguments }, async () => {
-          for (const skill of phase.selected) {
-            const helper = `${h.fixture.workspace}/.agents/skills/${skill.name}/receipt.mjs`;
-            assert.ok(fs.lstatSync(path.dirname(helper)).isSymbolicLink());
-            const child = spawnSync(process.execPath, [helper, challenge], { cwd: h.fixture.workspace, env: process.env, encoding: 'utf8', timeout: 10_000 });
-            assert.equal(child.status, 0, child.stderr); assert.equal(child.stdout.trim(), skill.helperMarker);
-          }
-        });
-        assert.equal(fs.lstatSync(`${h.fixture.workspace}/.agents/skills`, { throwIfNoEntry: false }), undefined);
-        assert.equal(fs.lstatSync(`${h.fixture.workspace}/.agents/.roboteam-links.json`, { throwIfNoEntry: false }), undefined);
-        recorder.observe({ type: 'agentlib-tool', tool: 'PRIVATE_TOOL_SENTINEL', reason: 'PRIVATE_REASON_SENTINEL' });
-        await recorder.finish({ result: phase.selected.flatMap(skill => [skill.descriptorMarker, skill.helperMarker]).join('\n'), status: 'completed' });
-        fs.writeFileSync(file, JSON.stringify(metadata));
-        let snapshot; await readLiveSkillsSnapshot({ sessionId, folder: h.fixture.folder, skillNames: [h.fixture.control.name, h.fixture.probe.name, h.fixture.added.name],
-            robotId: robot.id, robotName: robot.name, repositoryName: h.fixture.repositoryName, repositoryRoot: h.fixture.repositoryRoot,
-            contractFiles: h.contractFiles, expectedRepository: h.repository, workspaceRoot: h.root, expectedAla: h.expectedAla },
-        { codeRoot: h.codeRoot, dataRoot: h.dataRoot, fsApi: h.fsApi, emit: value => { snapshot = value; } });
-        assert.deepEqual(snapshot.catalog.links.map(link => link.name), execution.entries.filter(entry => !entry.executionOnly).map(entry => entry.name));
-        assert.equal(liveSkillsHash(snapshot.catalog.links), execution.revision);
-        assert.ok(Object.values(snapshot.liveLinks).every(link => link.destination.startsWith(execution.skillsDirectory + '/')));
-        const inventory = await h.inventory(sessionId), proof = validateLiveSkillsTurn({ snapshot, inventory, fixture: h.fixture, workspaceRoot: h.root,
-            sessionId, phase: challenge, ...phase, baselineIds: priorIds, priorTurnIds: proofs.map(proof => proof.turnId), nativeIdentity: identity,
-            expectedPolicy: policyEvidence(inventory, sessionId, h.fixture.robotName), priorRevision: revision,
-            priorReceiptNames: Object.keys(priorReceipts), priorReceiptHashes: priorReceipts, startedAt, finishedAt: Date.now() + 1 });
-        assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE_(TOOL|REASON)_SENTINEL/);
-        proofs.push(proof); identity = proof.identity; revision = proof.revision; priorIds.push(proof.messageId);
-        Object.assign(priorReceipts, Object.fromEntries(Object.entries(snapshot.receipts).map(([name, receipt]) => [name, liveSkillsHash(receipt)])));
-        assert.deepEqual(policyEvidence(await h.inventory(), null, h.fixture.robotName), ownedDefaults);
-        assert.deepEqual(await h.service.policies.read(robot.id, untouchedId), untouched);
-        assert.deepEqual(policyEvidence(await h.inventory(untouchedId), untouchedId, h.fixture.robotName), untouchedEvidence); assert.deepEqual(await h.defaultEvidence(), defaultBefore);
+        const { release, ...nativeRecord } = execution; await release();
+        const nativeLinks = await inspectSessionSkillLinks({ workspace: h.fixture.workspace, sessionId, execution });
+        nativeLinks.recheck();
+        assert.deepEqual(execution.mounts, [...new Set(nativeLinks.links.map(link => link.source))].map((source, index) =>
+            ({ source, target: `/workspace/roboteam-skill-${index}`, expose: true })));
+        // Only this disposable offline fixture uses canonical links to execute real helpers on Mac.
+        // Native alias mapping is checked before projection and restored/rechecked afterwards.
+        const canonicalLinks = nativeLinks.links.map(link => ({ ...link, target: link.source }));
+        for (const link of nativeLinks.links) {
+            const file = `${execution.skillsDirectory}/${link.name}`;
+            assert.ok(fs.lstatSync(file).isSymbolicLink()); assert.equal(fs.readlinkSync(file), link.target);
+            fs.unlinkSync(file); fs.symlinkSync(link.source, file);
+        }
+        const record = { ...nativeRecord, mounts: [...new Set(canonicalLinks.map(link => link.source))].map(source => ({ source, target: source, expose: true })),
+            revision: liveSkillsHash(canonicalLinks) };
+        metadata.skillExecution = { ...record, active: false };
+        const offlineExecution = { ...execution, ...record };
+        try {
+            const turn = { turnId, userMessageId: randomUUID(), assistantMessageId: randomUUID(), timestamp: new Date().toISOString(), status: 'completed', tasks: [] };
+            turn.thinkingUrl = `/base-agent-additional-server/roboTeamAgent/3001/webchat-logs/${sessionId}/${turn.assistantMessageId}`; metadata.turns.push(turn);
+            const recorder = h.createTranscriptRecorder({ append }, turnId); recorder.user(liveSkillsPrompt({ phase: challenge, selected: phase.selected }));
+            await withLiveSkillsProjection({ fixture: h.fixture, workspaceRoot: h.root, sessionId, execution: offlineExecution, alaSkillMountArguments: h.alaSkillMountArguments }, async () => {
+              for (const skill of phase.selected) {
+                const helper = `${h.fixture.workspace}/.agents/skills/${skill.name}/receipt.mjs`;
+                assert.ok(fs.lstatSync(path.dirname(helper)).isSymbolicLink());
+                const child = spawnSync(process.execPath, [helper, challenge], { cwd: h.fixture.workspace, env: process.env, encoding: 'utf8', timeout: 10_000 });
+                assert.equal(child.status, 0, child.stderr); assert.equal(child.stdout.trim(), skill.helperMarker);
+              }
+            });
+            assert.equal(fs.lstatSync(`${h.fixture.workspace}/.agents/skills`, { throwIfNoEntry: false }), undefined);
+            assert.equal(fs.lstatSync(`${h.fixture.workspace}/.agents/.roboteam-links.json`, { throwIfNoEntry: false }), undefined);
+            recorder.observe({ type: 'agentlib-tool', tool: 'PRIVATE_TOOL_SENTINEL', reason: 'PRIVATE_REASON_SENTINEL' });
+            await recorder.finish({ result: phase.selected.flatMap(skill => [skill.descriptorMarker, skill.helperMarker]).join('\n'), status: 'completed' });
+            fs.writeFileSync(file, JSON.stringify(metadata));
+            let snapshot; await readLiveSkillsSnapshot({ sessionId, folder: h.fixture.folder, skillNames: [h.fixture.control.name, h.fixture.probe.name, h.fixture.added.name],
+                robotId: robot.id, robotName: robot.name, repositoryName: h.fixture.repositoryName, repositoryRoot: h.fixture.repositoryRoot,
+                contractFiles: h.contractFiles, expectedRepository: h.repository, workspaceRoot: h.root, expectedAla: h.expectedAla, expectedHome, sourceMapping: 'canonical' },
+            { codeRoot: h.codeRoot, dataRoot: h.dataRoot, fsApi: h.fsApi, emit: value => { snapshot = value; } });
+            assert.deepEqual(snapshot.catalog.links.map(link => link.name), execution.entries.filter(entry => !entry.executionOnly).map(entry => entry.name));
+            assert.equal(liveSkillsHash(snapshot.catalog.links), offlineExecution.revision);
+            assert.ok(Object.values(snapshot.liveLinks).every(link => link.destination.startsWith(execution.skillsDirectory + '/')));
+            const inventory = await h.inventory(sessionId), proof = validateLiveSkillsTurn({ snapshot, inventory, fixture: h.fixture, workspaceRoot: h.root,
+                sessionId, phase: challenge, ...phase, baselineIds: priorIds, priorTurnIds: proofs.map(proof => proof.turnId), nativeIdentity: identity,
+                expectedPolicy: policyEvidence(inventory, sessionId, h.fixture.robotName), priorRevision: revision,
+                priorReceiptNames: Object.keys(priorReceipts), priorReceiptHashes: priorReceipts, startedAt, finishedAt: Date.now() + 1 });
+            assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE_(TOOL|REASON)_SENTINEL/);
+            proofs.push(proof); identity = proof.identity; revision = proof.revision; priorIds.push(proof.messageId);
+            Object.assign(priorReceipts, Object.fromEntries(Object.entries(snapshot.receipts).map(([name, receipt]) => [name, liveSkillsHash(receipt)])));
+            assert.deepEqual(policyEvidence(await h.inventory(), null, h.fixture.robotName), ownedDefaults);
+            assert.deepEqual(await h.service.policies.read(robot.id, untouchedId), untouched);
+            assert.deepEqual(policyEvidence(await h.inventory(untouchedId), untouchedId, h.fixture.robotName), untouchedEvidence); assert.deepEqual(await h.defaultEvidence(), defaultBefore);
+        } finally {
+            assert.equal(fs.realpathSync(execution.skillsDirectory), execution.skillsDirectory);
+            assert.deepEqual(fs.readdirSync(execution.skillsDirectory).sort(), canonicalLinks.map(link => link.name).sort());
+            for (const link of nativeLinks.links) {
+                const file = `${execution.skillsDirectory}/${link.name}`;
+                assert.ok(fs.lstatSync(file).isSymbolicLink()); assert.equal(fs.readlinkSync(file), link.source);
+                fs.unlinkSync(file); fs.symlinkSync(link.target, file);
+            }
+            metadata.skillExecution = { ...nativeRecord, active: false }; fs.writeFileSync(file, JSON.stringify(metadata));
+            const restored = await inspectSessionSkillLinks({ workspace: h.fixture.workspace, sessionId, execution }); restored.recheck();
+            assert.deepEqual(restored.links, nativeLinks.links);
+            assert.equal(liveSkillsHash(restored.links), nativeRecord.revision);
+        }
     }
     assert.equal(proofs.length, 7); assert.equal(new Set(proofs.map(proof => proof.turnId)).size, 7);
     assert.equal(Object.keys(priorReceipts).length, 12);

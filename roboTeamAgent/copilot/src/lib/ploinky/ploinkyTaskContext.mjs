@@ -1,36 +1,68 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { loadAgentClient } from '../../../../server/run-client.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
-import { createTaskEventSocket } from '../tasks/taskEventSocket.mjs';
-import { preparePloinkyRuntimeFiles } from './ploinkyRuntimeFiles.mjs';
+import { runWithSkillRuntimeOrigin } from '../skills/skillTaskOrigin.mjs';
 
-export async function createPloinkyTaskContext({ context, env, onTask, agentRoot, baseDir = '' }) {
-    // Keep the Unix socket address below Linux's 108-byte limit, independent of robot home paths.
-    // `baseDir` places it where another container can reach it (a robot phase in another agent).
-    const directory = await fs.realpath(await fs.mkdtemp(baseDir ? path.join(baseDir, 'ploinky-runtime-') : '/tmp/ploinky-runtime-'));
-    await fs.chmod(directory, 0o700);
+const TOOLS = new Map([
+    ['roboTeamAgent', new Set(['roboflow_start_flow', 'roboflow_list_workflows'])],
+    ['GPTResearcher', new Set(['start_research'])],
+]);
+const REFS = new Set(['AchillesIDE/roboTeamAgent', 'legacy-agents/GPTResearcher', 'legacy-agents/searchAgent']);
+const refused = () => Object.assign(new Error('Task callback is not permitted'), { statusCode: 403 });
+
+// Only noncredential context crosses into a robot. The controller relays the
+// narrow skill calls using its own verified MCP identity.
+export async function createPloinkyTaskContext({ context, robotId = null, env = process.env, onTask, createClient = null }) {
     const sanitize = createSanitizer(context, env);
-    const token = randomBytes(32).toString('hex');
-    let channel;
-    try {
-        const filtered = Object.fromEntries(Object.entries(env).filter(([key]) =>
-            key.startsWith('PLOINKY_') && !/MASTER|PRIVATE_SECRET|SUBJECT|PASSWORD/i.test(key)));
-        const sdkEnv = await preparePloinkyRuntimeFiles(directory, filtered, agentRoot);
-        const value = { version: 2, env: sdkEnv, workingDir: context.workingDir,
-            resources: context.resources || [], paths: context.paths || [], origin: context.origin || {},
-            userDelegationToken: context.userDelegationToken || '', eventToken: token };
-        await fs.writeFile(path.join(directory, 'context.json'), JSON.stringify(value), { mode: 0o600, flag: 'wx' });
-        channel = await createTaskEventSocket({ socketPath: path.join(directory, 'tasks.sock'), token,
-            onTask: task => onTask?.(sanitize(task)) });
-    } catch (error) {
-        await channel?.close();
-        await fs.rm(directory, { recursive: true, force: true });
-        throw error;
-    }
-    let closing;
-    return { directory, close() { return closing ||= (async () => {
-        try { await channel.close(); }
-        finally { await fs.rm(directory, { recursive: true, force: true }); }
-    })(); } };
+    const clients = new Map();
+    const clientFor = async agent => {
+        if (!clients.has(agent)) clients.set(agent, await (createClient || await loadAgentClient())(agent));
+        return clients.get(agent);
+    };
+    const launched = new Map();
+    return {
+        context: sanitize({ version: 3, workingDir: context.workingDir,
+            resources: context.resources || [], paths: context.paths || [], origin: context.origin || {} }),
+        async dispatch({ path, body }) {
+            if (!body || typeof body !== 'object' || Array.isArray(body)) throw refused();
+            if (path === '/agent-call') {
+                if (!TOOLS.get(body.agent)?.has(body.tool)) throw refused();
+                const given = body.payload ?? {};
+                if (!given || typeof given !== 'object' || Array.isArray(given)) throw refused();
+                // The relay sets these itself and replaces whatever a robot sends: the run's own working folder, and the calling
+                // robot as the only one a workflow it starts may use and, from the server-side context only, the run's owner.
+                if (body.tool === 'roboflow_start_flow' && !robotId) throw refused();
+                const forced = { roboflow_start_flow: { folder: context.workingDir, restrictToRobot: robotId,
+                    ownerPrincipal: typeof context.ownerPrincipal === 'string' && /^user:.+/u.test(context.ownerPrincipal) ? context.ownerPrincipal : null }, start_research: { workingDir: context.workingDir } }[body.tool];
+                const payload = forced ? { ...given, ...forced } : given;
+                const result = await runWithSkillRuntimeOrigin(context, async () =>
+                    (await clientFor(body.agent)).callToolWithoutWait(body.tool, payload));
+                const taskId = result?.metadata?.taskId || result?.result?.metadata?.taskId;
+                if (taskId) {
+                    const task = { agentName: body.agent, taskId, toolName: body.tool,
+                        arguments: payload, metadata: result.metadata || {} };
+                    launched.set(task.taskId, task);
+                    await onTask?.(sanitize(task));
+                }
+                return result;
+            }
+            if (path === '/ensure-agent') {
+                if (!REFS.has(body.ref)) throw refused();
+                return (await clientFor(body.ref.split('/').at(-1))).ensureAgentRunning(body.ref);
+            }
+            if (path === '/task-status') {
+                if (!TOOLS.has(body.agent) || typeof body.taskId !== 'string') throw refused();
+                return (await clientFor(body.agent)).getTaskStatus(body.taskId);
+            }
+            if (path === '/task-started') {
+                const task = body.task;
+                if (!task || !TOOLS.get(task.agentName)?.has(task.toolName) || typeof task.taskId !== 'string') throw refused();
+                const status = await (await clientFor(task.agentName)).getTaskStatus(task.taskId);
+                if (!status || status.status === 'not_found' || status.isError || status.ok === false) throw refused();
+                await onTask?.(sanitize({ ...(launched.get(task.taskId) || task), metadata: task.metadata || {} }));
+                return { ok: true };
+            }
+            throw refused();
+        },
+        async close() {},
+    };
 }

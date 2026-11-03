@@ -300,6 +300,7 @@ function profileFailure(error, robot) {
 }
 
 function prepareFailure(error, robot) {
+    if (error?.code === 'TERMINAL_PREPARING') return `${robot.label}'s terminal environment is preparing. Try Open again shortly.`;
     if (error?.status === 401) return 'Your authentication session has expired.';
     if (error?.status === 403) return 'Administrator access is required.';
     return `${robot.label} could not be prepared. No terminal was opened.`;
@@ -324,6 +325,7 @@ export function discoverTerminalProfileSources(appPlugins = globalThis.assistOS?
             agent: source.agent,
             label: displayLabel(source.label, source.agent),
             base: config.base,
+            ...(config.environments ? { environments: true } : {}),
         }));
     }
     return sources;
@@ -353,7 +355,22 @@ export async function requestTerminalProfiles(source, options = {}) {
         cache: 'no-store',
         signal: options.signal,
     });
-    return normalizeTerminalProfilesPayload(await readJsonResponse(response));
+    const payload = await readJsonResponse(response);
+    if (!source.environments) return normalizeTerminalProfilesPayload(payload);
+    if (!hasExactKeys(payload, ['ok', 'profiles', 'environments']) || !Array.isArray(payload.environments)
+        || payload.environments.length > MAX_PROFILES) throw new Error('Invalid terminal environments.');
+    const profiles = [...normalizeTerminalProfilesPayload({ ok: payload.ok, profiles: payload.profiles })];
+    const keys = new Set();
+    profiles.environments = Object.freeze(payload.environments.map(entry => {
+        if (!hasExactKeys(entry, ['key', 'label', 'available', 'reason'])
+            || !/^[A-Za-z0-9_-]{1,96}$/.test(entry.key) || keys.has(entry.key)
+            || typeof entry.available !== 'boolean' || typeof entry.reason !== 'string' || entry.reason.length > 256) {
+            throw new Error('Invalid terminal environment.');
+        }
+        keys.add(entry.key);
+        return Object.freeze({ ...entry, label: safeDisplayText(entry.label, 128, 'environment label') });
+    }));
+    return Object.freeze(profiles);
 }
 
 // Prepares the profile on its owning agent with the same browser mutation proof Explorer sends to every agent route.
@@ -414,6 +431,7 @@ export class TerminalTargetModal {
         this.robotsLoaded = false;
         this.profileController = null;
         this.selectedRobotKey = '';
+        this.selectedEnvironmentKey = 'default';
         this.selectedLaunch = '';
         this.opening = false;
         this.prepareController = null;
@@ -435,6 +453,8 @@ export class TerminalTargetModal {
         this.retryButton = this.element.querySelector('#terminalTargetRetry');
         this.refreshButton = this.element.querySelector('#terminalTargetRefresh');
         this.robotSelect = this.element.querySelector('#terminalTargetRobot');
+        this.environmentSelect = this.element.querySelector('#terminalTargetEnvironment');
+        this.environmentLabel = this.element.querySelector('#terminalTargetEnvironmentLabel');
         this.robotNote = this.element.querySelector('#terminalTargetRobotNote');
         this.disclosureElement = this.element.querySelector('#terminalTargetDisclosure');
         this.openButton = this.element.querySelector('#terminalTargetOpen');
@@ -492,6 +512,16 @@ export class TerminalTargetModal {
         return this.robots.find((robot) => robot.key === this.selectedRobotKey) || null;
     }
 
+    selectedProfile() {
+        const robot = this.selectedRobot();
+        if (!robot) return null;
+        if (!robot.environments) return { provider: robot.agent, id: robot.id };
+        const environment = robot.environments.find(entry => entry.key === this.selectedEnvironmentKey
+            && (entry.available || entry.reason === 'image cannot be pulled'));
+        const id = environment ? `${robot.id}.${environment.key}` : '';
+        return PROFILE_ID_PATTERN.test(id) ? { provider: robot.agent, id } : null;
+    }
+
     async loadRobots() {
         const sources = discoverTerminalProfileSources();
         this.profileSources = sources;
@@ -531,6 +561,7 @@ export class TerminalTargetModal {
                     id: profile.id,
                     label: profile.label,
                     display: sources.length > 1 ? `${profile.label} (${source.label})` : profile.label,
+                    ...(source.environments ? { environments: profiles.environments } : {}),
                 });
             }
         });
@@ -571,6 +602,13 @@ export class TerminalTargetModal {
     rowState(target) {
         const robot = this.selectedRobot();
         if (!robot) return { disabled: true, reason: 'Choose a robot first' };
+        if (robot.environments && (!this.selectedProfile() || target.kind !== 'agent'
+            || target.detail !== `AchillesIDE/${robot.agent}`)) return { disabled: true, reason: 'Choose the robot environment' };
+        if (robot.environments && target.access !== 'rw') return { disabled: true, reason: 'This terminal can only read the robot home' };
+        if (robot.environments && this.currentDiscovery?.targets.filter(row => row.kind === 'agent'
+            && row.detail === `AchillesIDE/${robot.agent}` && row.access === 'rw').length !== 1) {
+            return { disabled: true, reason: 'No unique RoboWork terminal is available' };
+        }
         if (target.unavailable === 'home-unreachable') {
             return { disabled: true, reason: `This container cannot see ${robot.label}'s home folder` };
         }
@@ -584,8 +622,10 @@ export class TerminalTargetModal {
         const robot = this.selectedRobot();
         const target = this.targetsByLaunch.get(this.selectedLaunch);
         const discovery = this.currentDiscovery;
+        const profile = this.selectedProfile();
         if (this.closed || this.handedOff || this.opening || this.viewState !== 'ready' || !robot || !target
-            || !discovery?.profile || discovery.profile.provider !== robot.agent || discovery.profile.id !== robot.id
+            || !profile || !discovery?.profile || discovery.profile.provider !== profile.provider || discovery.profile.id !== profile.id
+            || this.rowState(target).disabled
             || Date.now() >= discovery.expiresAt) {
             return null;
         }
@@ -596,6 +636,11 @@ export class TerminalTargetModal {
         const robot = this.selectedRobot();
         const target = this.targetsByLaunch.get(this.selectedLaunch) || null;
         if (this.robotSelect) this.robotSelect.disabled = this.opening || !this.robots.length;
+        if (this.environmentSelect) {
+            this.environmentSelect.hidden = !robot?.environments;
+            this.environmentSelect.disabled = this.opening || !robot?.environments;
+        }
+        if (this.environmentLabel) this.environmentLabel.hidden = !robot?.environments;
         if (this.openButton) this.openButton.disabled = !this.openGate();
         if (this.refreshButton) this.refreshButton.disabled = this.opening || this.viewState !== 'ready';
         if (this.retryButton) this.retryButton.disabled = this.opening;
@@ -701,7 +746,10 @@ export class TerminalTargetModal {
         this.targetsByLaunch.clear();
         this.listElement.replaceChildren();
         const fragment = document.createDocumentFragment();
-        for (const target of discovery.targets) {
+        const robot = this.selectedRobot();
+        const targets = robot?.environments ? discovery.targets.filter(target =>
+            target.kind === 'agent' && target.detail === `AchillesIDE/${robot.agent}`) : discovery.targets;
+        for (const target of targets) {
             if (target.launch) this.targetsByLaunch.set(target.launch, target);
             fragment.appendChild(this.renderTarget(target));
         }
@@ -749,7 +797,7 @@ export class TerminalTargetModal {
         const controller = new AbortController();
         this.discoveryController = controller;
         const robot = this.selectedRobot();
-        const profile = robot ? { provider: robot.agent, id: robot.id } : null;
+        const profile = this.selectedProfile();
         let timedOut = false;
         const timeout = setTimeout(() => {
             timedOut = true;
@@ -821,9 +869,13 @@ export class TerminalTargetModal {
     }
 
     handleChange(event) {
+        if (this.closed || this.handedOff || this.opening) return;
         const field = event?.target;
         if (field?.id === 'terminalTargetRobot') {
             this.chooseRobot(String(field.value || ''));
+        } else if (field?.id === 'terminalTargetEnvironment') {
+            this.selectedEnvironmentKey = String(field.value || '');
+            void this.refreshTargets();
         }
     }
 
@@ -832,6 +884,18 @@ export class TerminalTargetModal {
         if (this.closed || this.handedOff || this.opening) return false;
         const robot = this.robots.find((candidate) => candidate.key === key) || null;
         this.selectedRobotKey = robot ? robot.key : '';
+        this.selectedEnvironmentKey = 'default';
+        if (this.environmentSelect) {
+            this.environmentSelect.replaceChildren(...(robot?.environments || []).map(entry => {
+                const option = document.createElement('option');
+                option.value = entry.key;
+                const retry = !entry.available && entry.reason === 'image cannot be pulled';
+                option.textContent = entry.reason ? `${entry.label} (${entry.reason}${retry ? '; retry download' : ''})` : entry.label;
+                option.disabled = !entry.available && !retry;
+                option.selected = entry.key === this.selectedEnvironmentKey;
+                return option;
+            }));
+        }
         void this.refreshTargets();
         return Boolean(robot);
     }
@@ -885,7 +949,7 @@ export class TerminalTargetModal {
         const timer = setTimeout(() => controller.abort(), PREPARE_TIMEOUT_MS);
         let failure = '';
         try {
-            await prepareTerminalProfile(robot, robot.id, { signal: controller.signal });
+            await prepareTerminalProfile(robot, this.selectedProfile().id, { signal: controller.signal });
         } catch (error) {
             failure = prepareFailure(error, robot);
         } finally {

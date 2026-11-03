@@ -59,7 +59,7 @@ async function fixture(t) {
         await fs.writeFile(path.join(folder, 'helper.txt'), 'original helper');
     }
     await fs.writeFile(path.join(source, 'skillsets.md'), '# reports\n\n## Description\nRead and write reports\n\n## Skills\n- read-pdf\n- write-doc\n\n# reading\n## Description\nRead reports\n## Skills\n- read-pdf\n');
-    const store = new RobotStore({ dataDir });
+    const store = new RobotStore({ dataDir, roboWork: { call: async () => ({}) } });
     const robot = await store.create({ name: 'Analyst' });
     // The required human-report skill comes from the workspace DocumentationSkills repository.
     const documentation = path.join(workspaceRoot, 'DocumentationSkills');

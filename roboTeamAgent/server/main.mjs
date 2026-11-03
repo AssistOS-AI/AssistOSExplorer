@@ -5,11 +5,10 @@ import { RuntimeManager } from './runtime-manager.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
 import { RoboFlowService } from './roboflow/roboflow-service.mjs';
 import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
-import { ProxyAgentClient } from './proxy-pool/proxy-client.mjs';
-import { removeLegacyStorage } from './legacy-storage-cleanup.mjs';
 import { LiveSessionsRegistry } from './live-sessions/registry.mjs';
 import { startLiveSessionsIpc } from './live-sessions/ipc-server.mjs';
 import { RuntimeLiveSource, composeTaskObservers } from './live-sessions/runtime-source.mjs';
+import { RoboWorkClient } from './run-client.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
@@ -22,26 +21,28 @@ if (!internalToken) {
 }
 
 const publicBasePath = PUBLIC_BASE_PATH;
-await removeLegacyStorage({ dataDir, workspaceRoot, log: (line) => console.log(line) });
-const robotStore = new RobotStore({ dataDir });
+const roboWork = new RoboWorkClient({ startupRetry: true });
+const robotStore = new RobotStore({ dataDir, roboWork });
 await robotStore.initialize();
 await robotStore.ensureDefaultRobot();
-
-// The shared proxy pool lives in the optional proxyAgent; without it robots connect directly.
-const proxyPool = new ProxyAgentClient();
 
 const runtimeManager = new RuntimeManager({
     dataDir,
     publicBasePath,
     workspaceRoot,
-    proxyPool,
     ownerKey: internalToken,
+    robotStore,
+    roboWork,
 });
 runtimeManager.skillsets = new RobotSkillsets({ robotStore,
     workspaceRoot, alaCommand: runtimeManager.alaCommand });
-await runtimeManager.initialize();
 // Shell and socket only: seeding copies thousands of files per robot and runs after the service is listening.
-for (const robot of await robotStore.list()) await runtimeManager.prepareOpenCode(robot.id, { seed: false });
+for (const robot of await robotStore.list()) {
+    try { await runtimeManager.prepareOpenCode(robot.id, { seed: false }); }
+    catch (error) { console.error('[roboTeamAgent] robot preparation failed:', robot.id, error?.code || 'PREPARATION_FAILED'); }
+}
+await runtimeManager.initialize();
+roboWork.finishStartup();
 
 const roboflow = new RoboFlowService({
     robotStore,
@@ -65,7 +66,6 @@ const server = createRoboTeamServer({
     robotStore,
     runtimeManager,
     roboflow,
-    proxyPool,
     internalToken,
     mcpPort: process.env.ROBOTEAM_MCP_PORT,
     publicBasePath,
@@ -90,11 +90,7 @@ server.listen(port, host, () => {
     console.log(`RoboTeamAgent listening on ${host}:${port}`);
     roboflow.scheduler.start();
     // Downloads must not delay service readiness; requests share this cache's pending preparations.
-    void runtimeManager.toolCache.warmup()
-        .then(async () => runtimeManager.warmOpenCodePlugins(await robotStore.list()))
-        .catch(error => {
-            console.error(`[tool-cache] startup preparation failed: ${error.message}`);
-        });
+    runtimeManager.resumeAttachedTasks();
 });
 
 let shuttingDown = false;

@@ -100,7 +100,7 @@ function lockKey(context, suffix = '') {
 function snapshot(context, suffix = '') {
     let fd;
     try {
-        fd = fs.openSync(context.safePath(suffix), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        fd = fs.openSync(context.safePath(suffix), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
         const stat = fs.fstatSync(fd);
         if (!stat.isFile() || stat.size > 4096) {
             throw lockError('WORKSPACE_STATE_LOCK_AMBIGUOUS', 'Workspace lock is not a valid owner record.');

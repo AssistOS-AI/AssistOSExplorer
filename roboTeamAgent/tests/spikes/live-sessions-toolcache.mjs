@@ -55,7 +55,7 @@ export async function collectToolCache({ mountinfo, mountNamespace, toolCache, r
     const mounts = parseMountInfo(mountinfo);
     const { codingAgentEnvironment } = await import('../../server/coding-agents.mjs');
     if (!toolCache) {
-        const { ToolCache } = await import('../../server/tool-cache.mjs');
+        const { ToolCache } = await import('../../../roboWorkAgent/server/tool-cache.mjs');
         toolCache = new ToolCache({ log: () => {} });
     }
     const record = { kind: 'toolcache-probe', collectorSha256: await sha256File(fileURLToPath(import.meta.url)),

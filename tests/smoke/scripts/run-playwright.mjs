@@ -197,7 +197,7 @@ if (profile.ledgerCoverage && profile.cases.length && !profile.listing) {
   if (discovery.error) throw discovery.error;
   if (discovery.status !== 0) throw new Error('Smoke ledger discovery failed.');
   const report = JSON.parse(fs.readFileSync(path.join(childEnv.SMOKE_ARTIFACT_DIR, 'ledger-discovery_codex.json'), 'utf8'));
-  if (report.coverage !== 'selected-ledger-identities') throw new Error('Discovery belongs to a separate profile and cannot close ledger coverage.');
+  if (report.coverage !== profile.coverage) throw new Error('Discovery belongs to a separate profile and cannot close selected coverage.');
   assertLedgerResults(profile.cases, report.records);
 }
 if (screenGate && !profile.listing) {
@@ -254,7 +254,7 @@ terminate(xvfb);
 if (profile.ledgerCoverage && profile.cases.length && !profile.listing) {
   try {
     const report = JSON.parse(fs.readFileSync(path.join(childEnv.SMOKE_ARTIFACT_DIR, 'ledger-outcomes_codex.json'), 'utf8'));
-    if (report.coverage !== 'selected-ledger-identities') throw new Error('Terminal outcomes belong to a separate profile and cannot close ledger coverage.');
+    if (report.coverage !== profile.coverage) throw new Error('Terminal outcomes belong to a separate profile and cannot close selected coverage.');
     if (report.status !== 'passed') throw new Error('Smoke terminal run did not pass.');
     assertLedgerResults(profile.cases, report.records, { terminal: true });
   } catch (error) {

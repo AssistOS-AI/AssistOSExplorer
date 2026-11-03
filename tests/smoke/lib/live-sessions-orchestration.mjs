@@ -181,11 +181,21 @@ export function projectOrchestrationRecords(records, options) {
         && execution.flowId === flow.id && execution.instanceId === phase.id) : [];
     if (workers.length > 1) fail('duplicate runtime execution');
     const execution = workers[0] || null;
-    if (execution && (phase.robotId !== robotId || execution.turns.length !== 1
+    const resumed = options.resumedExecution;
+    if (resumed) {
+        for (const key of ['sessionId', 'previousTaskId', 'previousTurnId', 'currentTurnId']) id(resumed[key]);
+        if (!execution || execution.alaSessionId !== resumed.sessionId || execution.taskId === resumed.previousTaskId
+            || execution.turns.length !== 2 || execution.turns[0].turnId !== resumed.previousTurnId
+            || execution.turns[1].turnId !== resumed.currentTurnId || resumed.currentTurnId === resumed.previousTurnId) fail('inconsistent resumed worker identity');
+        const previous = executions.filter(row => row.taskId === resumed.previousTaskId && row.alaSessionId === resumed.sessionId);
+        if (previous.length !== 1 || previous[0].flowId !== flow.id || previous[0].instanceId !== phase.id
+            || previous[0].ownerPrincipal !== ownerPrincipal || previous[0].state !== 'paused') fail('missing interrupted execution before resume');
+    }
+    if (execution && (phase.robotId !== robotId || !resumed && execution.turns.length !== 1
         || execution.ownerPrincipal !== ownerPrincipal)) fail('inconsistent worker identity');
     if (execution) {
         const conversation = sessions.find(session => session.sessionId === execution.alaSessionId);
-        if (!conversation?.metadataObserved || !conversation.turns.some(turn => turn.turnId === execution.turns[0]?.turnId)) fail('runtime conversation/turn link missing');
+        if (!conversation?.metadataObserved || !execution.turns.every(native => conversation.turns.some(turn => turn.turnId === native.turnId))) fail('runtime conversation/turn link missing');
     }
     if (requirePhase && (!phase || !execution || !execution.turns[0])) fail('phase runtime or native turn missing');
     return { census, front, task, flow, phase, execution };
@@ -370,7 +380,13 @@ export async function readLiveSessionOrchestration(options, { fsApi, codeRoot = 
             assert.equal(record.alaSessionId, entry.name);
             assert.equal(record.taskId, execution.name.slice(0, -5));
             assert.equal(record.robotId, definition.robotId);
-            for (const key of ['cwd', 'workflowRunId', 'workflowInstanceId', 'runtimeTaskId', 'ownerPrincipal']) assert.equal(record.request[key], definition.request[key]);
+            for (const key of ['cwd', 'workflowRunId', 'workflowInstanceId', 'runtimeTaskId', 'ownerPrincipal']) {
+                if (key === 'runtimeTaskId' && options.resumedExecution?.sessionId === entry.name
+                    && record.taskId !== options.resumedExecution.previousTaskId) {
+                    assert.equal(record.request[key], record.taskId);
+                    assert.equal(definition.request[key], options.resumedExecution.previousTaskId);
+                } else assert.equal(record.request[key], definition.request[key]);
+            }
             const native = nativeSessions.get(entry.name);
             executions.push({ taskId: record.taskId, alaSessionId: record.alaSessionId, robotId: record.robotId, state: record.state, backend: native?.agent || null,
                 cwd: record.request.cwd, flowId: record.request.workflowRunId, instanceId: record.request.workflowInstanceId, ownerPrincipal: record.request.ownerPrincipal,
@@ -705,6 +721,18 @@ export async function createOrchestrationReader({ release, evidence, runtime, cw
 }
 
 export async function terminateOwnedFlow(page, snapshot, expected) {
+    return mutateOwnedFlow(page, snapshot, expected, 'terminate');
+}
+
+export async function pauseOwnedFlow(page, snapshot, expected) {
+    return mutateOwnedFlow(page, snapshot, expected, 'pause');
+}
+
+export async function resumeOwnedFlow(page, snapshot, expected) {
+    return mutateOwnedFlow(page, snapshot, expected, 'resume');
+}
+
+async function mutateOwnedFlow(page, snapshot, expected, action) {
     assert.equal(snapshot.flow?.folder, expected.cwd);
     assert.equal(snapshot.flow?.ownerPrincipal, expected.ownerPrincipal);
     assert.equal(snapshot.task?.flowId, snapshot.flow?.id);
@@ -714,8 +742,8 @@ export async function terminateOwnedFlow(page, snapshot, expected) {
     const { browserMutation: proof } = await proofResponse.json();
     assert.equal(proof?.routeKey, 'roboTeamAgent'); assert.equal(proof?.origin, new URL(page.url()).origin);
     assert.ok(proof.csrfToken);
-    const response = await page.request.post(`/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/flows/${snapshot.flow.id}/terminate`, {
+    const response = await page.request.post(`/base-agent-additional-server/roboTeamAgent/3001/api/roboflow/flows/${snapshot.flow.id}/${action}`, {
         headers: { origin: proof.origin, 'x-ploinky-browser-csrf-token': proof.csrfToken }, data: {}, maxRedirects: 0, timeout: 45000,
     });
-    assert.equal(response.status(), 200, 'Exact owned workflow termination must settle.');
+    assert.equal(response.status(), 200, `Exact owned workflow ${action} must settle.`);
 }

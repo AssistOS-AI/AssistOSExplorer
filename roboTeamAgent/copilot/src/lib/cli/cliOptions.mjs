@@ -1,6 +1,7 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { getPermissionMode } from '../config/achillesSettings.mjs';
-import { ensureAchillesWorkingDirectory } from '../storage/privateDataRoot.mjs';
+import { ensureAchillesWorkingDirectory, resolveAchillesWorkspaceRoot } from '../storage/privateDataRoot.mjs';
 import { normalizePermissionMode, PERMISSION_MODES } from '../../permissions/protocol.mjs';
 
 export function parseCliOptions(args, { env = process.env, cwd = process.cwd() } = {}) {
@@ -60,9 +61,31 @@ export function parseCliOptions(args, { env = process.env, cwd = process.cwd() }
     return options;
 }
 
+// One folder segment for a robot name: only [A-Za-z0-9_-] stay, every other byte (including `.`, `/` and `%`) becomes
+// `%XX`, so the segment cannot be `.`/`..`, cannot leave its parent and cannot collide with another name.
+export function robotFolderName(name) {
+    const text = String(name ?? '').trim();
+    if (!text) return 'default';
+    const segment = [...Buffer.from(text)].map((byte) => (/[A-Za-z0-9_-]/.test(String.fromCharCode(byte))
+        ? String.fromCharCode(byte) : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`)).join('');
+    if (segment.length > 200) throw new Error('The robot name is too long for a working folder.');
+    return segment;
+}
+
 export function initializeCliOptions(args, options = {}) {
     const parsed = parseCliOptions(args, options);
     if (parsed.help || parsed.version) return parsed;
+    const env = options.env ?? process.env;
+    // A robot cannot work in the workspace root, so a WebChat opened there works in `achilles-cli/<robot>`.
+    // Terminal CLI use keeps the directory it was given.
+    if (isWebchatRuntime(args, env)) {
+        const root = resolveAchillesWorkspaceRoot(parsed.workingDir, env);
+        let selected = path.resolve(parsed.workingDir);
+        try { selected = fs.realpathSync(selected); } catch { /* a missing directory is not the root */ }
+        if (selected === root) {
+            parsed.workingDir = path.join(root, 'achilles-cli', robotFolderName(env.ROBOTEAM_COPILOT_ROBOT_NAME));
+        }
+    }
     parsed.workingDir = ensureAchillesWorkingDirectory(parsed.workingDir, options.env ?? process.env);
     parsed.permissionMode = parsed.requestedPermissionMode || getPermissionMode(parsed.workingDir);
     return parsed;

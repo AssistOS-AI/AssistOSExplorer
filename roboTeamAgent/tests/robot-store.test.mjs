@@ -24,12 +24,28 @@ test('concurrent CLI users do not serialize execution but prevent deletion until
         const robot = await store.create({ name: 'Worker' });
         const releaseFirst = await store.acquireCliUsage(robot.id);
         const releaseSecond = await store.acquireCliUsage(robot.id);
+        await assert.rejects(store.assertDeletable(robot.id), { code: 'ROBOT_BUSY', statusCode: 409 });
         await assert.rejects(store.delete(robot.id), /close the robot chat/);
         await releaseFirst();
         await assert.rejects(store.delete(robot.id), /close the robot chat/);
         await releaseSecond();
         assert.equal(await store.delete(robot.id), true);
         await assert.rejects(store.acquireCliUsage(robot.id), /not found/);
+    });
+});
+
+test('a CLI owner file released while the scan runs does not refuse a delete', async (t) => {
+    await withStore(async (store) => {
+        const root = store.robotPath('worker-a1b2c3');
+        await fs.mkdir(root, { recursive: true });
+        const file = path.join(root, '.cli-0123abcd-0123.json');
+        await fs.writeFile(file, '{}');
+        const open = fs.open;
+        t.mock.method(fs, 'open', async (target, ...rest) => {
+            if (target === file) throw Object.assign(new Error('released'), { code: 'ENOENT' });
+            return open.call(fs, target, ...rest);
+        });
+        await store.assertDeletable('worker-a1b2c3');
     });
 });
 

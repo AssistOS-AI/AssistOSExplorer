@@ -3,9 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DATA_DIR } from './constants.mjs';
-import { prepareRobotShell } from './robot-shell.mjs';
+import { RoboWorkClient } from './run-client.mjs';
 import { normalizeCodingAgents } from './coding-agents.mjs';
-import { ensureAgentConfig } from './agent-model-config.mjs';
 
 const ROBOT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
@@ -125,6 +124,7 @@ export class RobotStore {
     constructor(options = {}) {
         this.dataDir = path.resolve(options.dataDir || DATA_DIR);
         this.robotsDir = path.join(this.dataDir, 'robots');
+        this.roboWork = options.roboWork || new RoboWorkClient();
     }
 
     async initialize() {
@@ -149,15 +149,11 @@ export class RobotStore {
     }
 
     async _ensureLayout(robotRoot, codingAgents) {
-        for (const directory of ['home', 'workspace', 'downloads', 'logs', 'runtime']) {
+        for (const directory of ['runtime']) {
             const target = path.join(robotRoot, directory);
             await fs.mkdir(target, { recursive: true, mode: 0o700 });
             await fs.chmod(target, 0o700);
         }
-        const codexHome = path.join(robotRoot, 'home', '.codex');
-        await fs.mkdir(codexHome, { recursive: true, mode: 0o700 });
-        await fs.chmod(codexHome, 0o700);
-        await prepareRobotShell(path.join(robotRoot, 'home'), { codingAgents });
     }
 
     async _readMetadata(robotId) {
@@ -274,6 +270,7 @@ export class RobotStore {
             updatedAt: now,
         };
         await this._writeMetadata(robotRoot, metadata);
+        await this.roboWork.call('robot_ensure', { robotId, name: normalizedName, codingAgents: selectedAgents, seed: false });
         return metadata;
     }
 
@@ -281,7 +278,8 @@ export class RobotStore {
         const selected = normalizeCodingAgents(codingAgents);
         return this.withRobot(robotId, async (robot, save) => {
             // ALA reads the robot's agent from its config in the robot home.
-            await ensureAgentConfig(path.join(this.robotPath(robotId), 'home'), { codingAgents: selected, codingAgent: selected[0], model, effort });
+            await this.roboWork.call('robot_config_set', { robotId, codingAgents: selected, codingAgent: selected[0],
+                ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}) });
             await save({ ...robot, codingAgents: selected });
             return { ...robot, codingAgents: selected };
         });
@@ -292,23 +290,30 @@ export class RobotStore {
         return withRegistryMutation(this.robotsDir, async () => {
             const robot = await this.get(robotId);
             if (!robot) return false;
-            const root = this.robotPath(robotId);
-            const boot = (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
-            for (const name of await fs.readdir(root)) {
-                if (!/^\.cli-[a-f0-9-]+\.json$/.test(name)) continue;
-                const { owner } = await readRegistryOwner(path.join(root, name));
-                if (owner.boot !== boot) continue;
-                try {
-                    if (await processStart(owner.pid) === owner.start) {
-                        throw new Error('close the robot chat and stop its CLI tasks before deleting it');
-                    }
-                } catch (error) {
-                    if (error.code !== 'ENOENT') throw error;
-                }
-            }
+            await this.assertDeletable(robotId);
             await fs.rm(this.robotPath(robotId), { recursive: true, force: true });
             return true;
         });
+    }
+
+    // Checked again before RoboWork removes the home, so the common case is refused early. A CLI user who opens the robot
+    // between this check and the removal is not prevented.
+    async assertDeletable(robotId) {
+        const root = this.robotPath(robotId);
+        const names = await fs.readdir(root).catch((error) => { if (error.code !== 'ENOENT') throw error; return []; });
+        for (const name of names) {
+            if (!/^\.cli-[a-f0-9-]+\.json$/.test(name)) continue;
+            try {
+                const { owner } = await readRegistryOwner(path.join(root, name));
+                if (owner.boot !== (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim()) continue;
+                if (await processStart(owner.pid) === owner.start) {
+                    throw Object.assign(new Error('close the robot chat and stop its CLI tasks before deleting it'), { code: 'ROBOT_BUSY', statusCode: 409 });
+                }
+            } catch (error) {
+                // The owner file of a CLI user who closed meanwhile, or a process that has exited, is gone.
+                if (error.code !== 'ENOENT') throw error;
+            }
+        }
     }
 
     async acquireCliUsage(robotId) {

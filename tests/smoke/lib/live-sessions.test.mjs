@@ -263,6 +263,23 @@ test('native evidence binds full source/Box/workspace/config/initial runtime and
     assert.throws(() => validateNativeEvidence({ ...record, native: { ...record.native, model: 'fallback' } }, replacement));
 });
 
+test('native evidence keeps the execution container binding across a controller replacement', () => {
+    const { record, options } = nativeFixture();
+    const executionRuntime = { containerId: 'work', containerName: 'roboWork', instanceId: 'work-instance', enableGeneration: 4 };
+    const nativeRecord = { ...record, initialRoboWork: { ...executionRuntime } };
+    const input = { ...options, executionRuntime };
+    validateNativeEvidence(nativeRecord, input);
+    for (const key of ['containerId', 'containerName', 'instanceId', 'enableGeneration']) {
+        const wrong = structuredClone(nativeRecord); wrong.initialRoboWork[key] = 'wrong';
+        assert.throws(() => validateNativeEvidence(wrong, input));
+    }
+    assert.throws(() => validateNativeEvidence(record, input), /RoboWork/u);
+    assert.throws(() => validateNativeEvidence(nativeRecord, { ...input, executionRuntime: options.runtime }), /separate containers/u);
+    const replacement = { ...input, runtime: { ...input.runtime, containerId: 'replacement' }, initial: false };
+    validateNativeEvidence(nativeRecord, replacement);
+    assert.throws(() => validateNativeEvidence(nativeRecord, { ...replacement, executionRuntime: { ...executionRuntime, containerId: 'other' } }));
+});
+
 test('observer execution oracle distinguishes turn workers from observer/read-only inspection processes', () => {
     const worker = '123 12 node ala --turn-id real --control-stdin --cwd /fixture';
     assert.deepEqual(activeTurnProcesses([worker, '22 1 node server/main.mjs', '23 1 node --eval inspect']), [worker]);

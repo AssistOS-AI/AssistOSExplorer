@@ -25,6 +25,7 @@ import { getRobotContext } from './lib/execution/robotContext.mjs';
 import { createRobotSkillCatalog } from './lib/skills/robotSkillCatalog.mjs';
 import { createCopilotPublisher } from './lib/liveSessions/publisher.mjs';
 import { logDiagnostic } from './lib/storage/copilotDiagnostics.mjs';
+import { loadOwnerVerifier } from '../../server/live-sessions/ipc-server.mjs';
 
 export { REPLSession } from './repl/REPLSession.mjs';
 export { SlashCommandHandler } from './repl/SlashCommandHandler.mjs';
@@ -92,9 +93,10 @@ export async function createCliRuntime(options, { webchat = false, reattachExist
             execution: { ...options.execution, robotId: robotContext?.robot.id },
             webchatLogsBase: `${PUBLIC_BASE_PATH.replace(/\/+$/, '')}/webchat-logs`, livePublisher });
         const historyManager = new HistoryManager({ workingDir });
+        const ownerVerifier = await loadOwnerVerifier(process.env, { log: () => {} });
         return {
             ...options, installation, skillCatalog, sessionStore, initialSession, engine,
-            historyManager, settings, interactions, webchatController, backgroundTasks, livePublisher,
+            historyManager, settings, interactions, webchatController, backgroundTasks, livePublisher, ownerVerifier,
             listRobots: async () => {
                 if (!robotContext) throw new Error('Robot discovery requires the RoboTeam runtime.');
                 return (await robotContext.store.list()).map(({ name }) => ({ name }));

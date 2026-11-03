@@ -19,6 +19,7 @@ AchillesIDE provides the Explorer workspace shell and its coupled domain agents.
 - `gitAgent/` — workspace Git operations, MCP tooling, auth integration.
 - `emailAgent/`, `userPersistoAgent/`, `workspaceMonitorAgent/` — domain-specific workflows.
 - `roboTeamAgent/` — RoboTeam, the workspace robot and Copilot agent (moved here from AchillesCLI, with history). Its tests are `roboTeamAgent/tests/`, `roboTeamAgent/copilot/tests/` and the former AchillesCLI root tests in `roboTeamAgent/tests/cli/`.
+- `roboWorkAgent/` — Resident execution and private homes for RoboTeam robots. Read its `AGENTS.md` and `docs/index.html` before changing robot storage, native launch, GUI, Environment or terminal boundaries. RoboTeam keeps registry, UI, workflows and conversations; RoboWork alone starts robot processes and owns nested Podman.
 - `soul-gateway/` — Soul Gateway, the local LLM hub (moved here from `proxies`, with history). Its MIT `LICENSE` is in the folder.
 - `shared/` — shared runtime utilities.
 - `docs/index.html` (documentation entry point), `docs/wiki.html` (canonical terminology), `docs/specs/` (normative design specifications), and each agent's `docs/specs/`.

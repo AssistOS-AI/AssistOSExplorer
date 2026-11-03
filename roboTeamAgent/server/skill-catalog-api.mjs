@@ -1,15 +1,16 @@
-import { findProjectRecord } from './project-storage.mjs';
+import { findProjectRecord, projectForSessionRecord } from './project-storage.mjs';
 import fs from 'node:fs/promises';
 import { skillError } from './skill-files.mjs';
 
 export const CONVERSATION_ROBOT_MISMATCH = 'This conversation uses another robot. Open it with that robot, or create a new session.';
 
 export async function skillCatalogRequest({ skillsets, robot, input = {}, mutate = false }) {
-    let session, policyId, policy, result;
+    let session, policyId, policy, result, project;
     if (input.sessionId) {
         if (!/^[a-f0-9-]{36}$/.test(input.sessionId)) throw skillError('invalid conversation id');
         const file = findProjectRecord({ dataDir: skillsets.robotStore.dataDir, workspaceRoot: skillsets.workspaceRoot }, 'session', input.sessionId);
         if (!file) throw Object.assign(skillError('Conversation is unavailable in registered projects'), { statusCode: 404 });
+        project = projectForSessionRecord(file);
         const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
         try { session = JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
         if (session.sessionId !== input.sessionId) throw skillError('invalid conversation record');
@@ -21,7 +22,7 @@ export async function skillCatalogRequest({ skillsets, robot, input = {}, mutate
         policyId = session.skillPolicyRef || session.sessionId;
         policy = await skillsets.policies.read(robot.id, policyId) || await skillsets.policies.make(robot, {}, session.skillSelection || session.legacySkillSelection);
     } else ({ policyId, policy } = await skillsets.defaults(robot));
-    const cwd = session?.engine?.cwd || session?.cwd || input.dir || policy.scopeRoot;
+    const cwd = project || input.dir || policy.scopeRoot;
     if (mutate) {
         if (!Number.isSafeInteger(input.policyVersion)) throw skillError('policyVersion is required');
         if (policy.policyVersion !== input.policyVersion) throw Object.assign(skillError('skill policy changed; reload before updating'), { statusCode: 409 });

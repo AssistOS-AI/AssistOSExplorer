@@ -9,6 +9,12 @@ export function skillSelectionLabel(id, selection) {
     return id.split('/').filter(Boolean).slice(-2).join('/');
 }
 
+export function workflowEnvironmentChoice(entry) {
+    const retry = !entry.available && entry.reason === 'image cannot be pulled';
+    return { value: entry.ref, label: entry.available ? entry.ref : `${entry.ref} (${entry.reason}${retry ? '; retry download' : ''})`,
+        disabled: !entry.available && !retry, title: entry.about || entry.ref };
+}
+
 export function createTaskEffortSelect(task, onChange, ownerDocument = document) {
     const select = ownerDocument.createElement('select');
     select.name = 'effort';
@@ -557,16 +563,14 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
         const mode = node('select');
         for (const value of task.supportedExecutionTypes ? ['terminal / desktop / browser'] : ['terminal', 'desktop', 'browser']) mode.add(new Option(value, value));
         mode.value = task.executionType || 'terminal / desktop / browser';
-        // Terminal tasks may run in another global-mode Ploinky agent's container; empty is RoboTeam itself.
-        // Only agents enabled in global mode are offered; one that is not running is shown but cannot be chosen.
+        // A selected environment starts a new container from the agent's image.
         const environmentChoices = [{ value: '', label: 'RoboTeam (default)',
             title: 'The Ploinky agent whose container runs this terminal task: its system files, tools and Node.js. RoboTeam provides Bubblewrap, ALA and the coding agents.' }];
         for (const entry of environments) {
-            environmentChoices.push({ value: entry.ref, label: entry.available ? entry.ref : `${entry.ref} (${entry.reason})`,
-                disabled: !entry.available && entry.ref !== task.environment, title: entry.about || entry.ref });
+            environmentChoices.push(workflowEnvironmentChoice(entry));
         }
         if (task.environment && !environments.some(entry => entry.ref === task.environment)) {
-            environmentChoices.push({ value: task.environment, label: `${task.environment} (missing)`, title: 'Not enabled in global mode any more' });
+            environmentChoices.push({ value: task.environment, label: `${task.environment} (missing)`, title: 'Not enabled in global mode any more', disabled: true });
         }
         const environment = createEnvironmentPicker(environmentChoices, task.environment || '');
         const syncEnvironment = () => { environment.disabled = readonly() || (task.executionType || 'terminal') !== 'terminal'; };

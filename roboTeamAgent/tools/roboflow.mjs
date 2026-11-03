@@ -28,6 +28,15 @@ function invocationUser(payload) {
     };
 }
 
+// The relay's call: the verified grant names RoboTeam itself acting for itself, with no delegated or forwarded user.
+// Another deployed agent can reach this internal tool but cannot name an owner.
+function roboTeamOwnBehalf(payload) {
+    const expected = 'agent:AchillesIDE/roboTeamAgent';
+    const grant = payload?.metadata?.invocation;
+    return Boolean(grant) && grant.sub === expected && grant.actor?.kind === 'agent' && grant.actor.id === expected
+        && !grant.usr && !grant.user && !grant.delegation && !payload.metadata.user;
+}
+
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -114,7 +123,9 @@ async function main() {
     if (operation === 'update-workflow') return output(await request(`/api/roboflow/workflows/${encodeURIComponent(String(input.workflowId || ''))}`, { method: 'PUT', body: input, user }));
     if (operation === 'delete-workflow') return output(await request(`/api/roboflow/workflows/${encodeURIComponent(String(input.workflowId || ''))}`, { method: 'DELETE', user }));
     if (operation === 'start-flow') {
-        const result = await startFlowUntilTerminal({ body: { workflowTypeId: input.workflowTypeId, objective: input.objective, folder: input.folder, executionType: input.executionType }, user });
+        const result = await startFlowUntilTerminal({ body: { workflowTypeId: input.workflowTypeId, objective: input.objective, folder: input.folder, executionType: input.executionType, restrictToRobot: input.restrictToRobot,
+            // Only the relay (RoboTeam acting for itself) names the run's owner; a user's own call cannot.
+            ...(roboTeamOwnBehalf(payload) && !user.id && typeof input.ownerPrincipal === 'string' ? { ownerPrincipal: input.ownerPrincipal } : {}) }, user });
         return output(result);
     }
     if (operation === 'flow-state') {

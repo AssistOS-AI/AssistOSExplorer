@@ -1,0 +1,27 @@
+{
+  "container": "docker.io/assistos/roboteam-agent:runtime",
+  "about": "Owns isolated robot homes and resident coding, GUI and environment runs.",
+  "containerSecurity": { "nestedPodman": true },
+  "agent": "exec sh /code/scripts/startAgent.sh",
+  "enable": ["soul-gateway no-wait"],
+  "readiness": { "protocol": "mcp", "timeoutSeconds": 45 },
+  "health": { "readiness": { "interval": 1, "timeout": 1, "failureThreshold": 45, "successThreshold": 1 } },
+  "webtty": {
+    "homeProfiles": {
+      "version": 1,
+      "resolve": "/base-agent-additional-server/roboWorkAgent/3001/api/terminal-profiles/resolve"
+    }
+  },
+  "routerAccess": {
+    "httpRoutes": [{ "path": "/base-agent-additional-server/roboWorkAgent/3001/*", "access": "authenticated" }]
+  },
+  "volumes": { ".data/.private/roboWorkAgent": "/data" },
+  "profiles": {
+    "default": {
+      "openPorts": ["17100:7000", "13101:3001"],
+      "install": "sh /code/scripts/install.sh",
+      "env": ["ROBOTEAM_CODEX_VERSION", "ROBOTEAM_OPENCODE_VERSION", "ROBOTEAM_PI_VERSION", "ROBOTEAM_CLAUDE_VERSION"]
+    }
+  },
+  "link-install": ["https://github.com/AssistOS-AI/AdvancedLanguageAgent.git"]
+}

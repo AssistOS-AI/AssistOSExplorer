@@ -1,0 +1,613 @@
+{
+  "tools": [
+    {
+      "name": "robot_ensure",
+      "description": "Internal robot runtime operation: robot_ensure.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "robot_ensure"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "codingAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "seed": {
+          "type": "boolean",
+          "optional": true
+        }
+      }
+    },
+    {
+      "name": "robot_delete",
+      "description": "Internal robot runtime operation: robot_delete.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "robot_delete"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "name": "robot_status",
+      "description": "Internal robot runtime operation: robot_status.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "robot_status"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "optional": true
+        },
+        "includeLogins": {
+          "type": "boolean",
+          "optional": true
+        }
+      }
+    },
+    {
+      "name": "robot_config",
+      "description": "Internal robot runtime operation: robot_config.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "robot_config"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "name": "robot_config_set",
+      "description": "Internal robot runtime operation: robot_config_set.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "robot_config_set"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        },
+        "codingAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "codingAgent": {
+          "type": "string",
+          "optional": true
+        },
+        "model": {
+          "type": "string",
+          "optional": true,
+          "nullable": true
+        },
+        "effort": {
+          "type": "string",
+          "optional": true,
+          "nullable": true
+        }
+      }
+    },
+    {
+      "name": "robot_models",
+      "description": "Internal robot runtime operation: robot_models.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "robot_models"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 95000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string",
+          "optional": true
+        }
+      }
+    },
+    {
+      "name": "run_start",
+      "description": "Internal robot runtime operation: run_start.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "run_start"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "runId": {
+          "type": "string"
+        },
+        "robotId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "ala": {
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string",
+              "optional": true
+            },
+            "permissions": {
+              "type": "string",
+              "enum": [
+                "full-access",
+                "ask-for-approval"
+              ],
+              "optional": true
+            },
+            "model": {
+              "type": "string",
+              "optional": true
+            },
+            "effort": {
+              "type": "string",
+              "optional": true
+            },
+            "ca": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "codex",
+                "opencode",
+                "pi",
+                "claude"
+              ],
+              "optional": true
+            },
+            "resume": {
+              "type": "boolean",
+              "optional": true
+            },
+            "workflowExecution": {
+              "type": "boolean",
+              "optional": true
+            },
+            "mcpServers": {
+              "type": "any",
+              "description": "Existing MCP server string or array; retained for ALA validation.",
+              "optional": true
+            }
+          }
+        },
+        "folders": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "alias": {
+                "type": "string",
+                "optional": true
+              },
+              "at": {
+                "type": "string",
+                "optional": true
+              },
+              "expose": {
+                "type": "boolean",
+                "optional": true
+              }
+            }
+          }
+        },
+        "ignore": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "enum": [
+                  "ploinky-runtime",
+                  "human-input",
+                  "task-failure"
+                ]
+              },
+              "alias": {
+                "type": "string",
+                "optional": true
+              },
+              "context": {
+                "type": "object",
+                "additionalProperties": true,
+                "optional": true
+              }
+            }
+          }
+        },
+        "gui": {
+          "type": "object",
+          "optional": true,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "browser",
+                "desktop"
+              ]
+            },
+            "cwd": {
+              "type": "string",
+              "optional": true
+            },
+            "allowReplace": {
+              "type": "boolean",
+              "optional": true
+            }
+          }
+        },
+        "environment": {
+          "type": "string",
+          "optional": true
+        },
+        "tag": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    {
+      "name": "run_read",
+      "description": "Internal robot runtime operation: run_read.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "run_read"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "runId": {
+          "type": "string"
+        },
+        "after": {
+          "type": "number"
+        },
+        "waitMs": {
+          "type": "number",
+          "maximum": 5000,
+          "optional": true
+        },
+        "maxBytes": {
+          "type": "number",
+          "maximum": 1048576,
+          "optional": true
+        }
+      }
+    },
+    {
+      "name": "run_input",
+      "description": "Internal robot runtime operation: run_input.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "run_input"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "runId": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string",
+          "optional": true
+        },
+        "close": {
+          "type": "boolean",
+          "optional": true
+        },
+        "reply": {
+          "type": "object",
+          "optional": true,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "status": {
+              "type": "number",
+              "optional": true
+            },
+            "body": {
+              "type": "any",
+              "description": "Opaque JSON callback response, including object, array, scalar or null.",
+              "optional": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "run_stop",
+      "description": "Internal robot runtime operation: run_stop.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "run_stop"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "runId": {
+          "type": "string"
+        },
+        "signal": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "name": "run_list",
+      "description": "Internal robot runtime operation: run_list.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "run_list"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string",
+          "optional": true
+        }
+      }
+    },
+    {
+      "name": "run_release",
+      "description": "Internal robot runtime operation: run_release.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "run_release"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "runId": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "name": "gui_ensure",
+      "description": "Internal robot runtime operation: gui_ensure.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "gui_ensure"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string",
+          "optional": true
+        },
+        "codingAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowReplace": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "name": "gui_stop",
+      "description": "Internal robot runtime operation: gui_stop.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "gui_stop"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "optional": true
+        }
+      }
+    },
+    {
+      "name": "gui_logs",
+      "description": "Internal robot runtime operation: gui_logs.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "gui_logs"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        },
+        "tail": {
+          "type": "number",
+          "optional": true
+        }
+      }
+    },
+    {
+      "name": "proxy_settings_set",
+      "description": "Internal robot runtime operation: proxy_settings_set.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "proxy_settings_set"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "useProxy": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "name": "environment_list",
+      "description": "Internal robot runtime operation: environment_list.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "environment_list"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {}
+    },
+    {
+      "name": "proxy_assignments",
+      "description": "Internal robot proxy operation: proxy_assignments.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "proxy_assignments"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 30000,
+      "inputSchema": {}
+    },
+    {
+      "name": "proxy_release",
+      "description": "Internal robot proxy operation: proxy_release.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "proxy_release"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        }
+      }
+    }
+  ]
+}

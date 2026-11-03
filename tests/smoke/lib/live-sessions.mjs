@@ -8,15 +8,30 @@ import { inspectNestedContainer, workspaceHash } from './webtty-runtime-evidence
 import { assertBoxWorkspacePath } from './box-workspace.mjs';
 import { collectSecrets, createRedactor, findSecretLeaks } from './security.mjs';
 import { redactTraceText, findTraceCredentialResidue } from './redacted-trace.mjs';
+import { buildResidentRunProgram, processRuntimeFence } from './robowork-run-evidence.mjs';
+import { buildControllerProducerProgram, buildControllerProducerCensusProgram } from './robowork-process-evidence.mjs';
+import { buildBoxProcReadProgram, residentProcReadBridge } from './robowork-proc-evidence.mjs';
 
 export const ROBOTEAM_BASE = '/base-agent-additional-server/roboTeamAgent/3001';
 export const LIVE_BASE = `${ROBOTEAM_BASE}/api/live-sessions`;
 export const ENDED = ['finished', 'failed', 'stopped', 'lost'];
+const retainedResidentProofs = new WeakSet();
+
+function sealResidentProof(proof) {
+    const freeze = value => {
+        if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); }
+        return value;
+    };
+    const retained = freeze(proof);
+    retainedResidentProofs.add(retained);
+    return retained;
+}
 const execute = promisify(execFile);
 const REFUSAL = /\[input error\]|\[error\]|unauthenticated|authentication (?:failed|required)|not logged in|please (?:log|sign) in|invalid.api.key|insufficient.quota|quota.exceeded|rate.limit|tier.exhausted|all models.*exhausted|provider.*(?:error|failure)|billing|credit balance|backend.*unavailable|Agent process exited repeatedly|bwrap:/i;
 
 export function requiresCopilotSourceVerification(specs) {
-    return specs.length === 0 || specs.some(spec => ['specs/05-copilot-folder-launch.spec.mjs', 'specs/07-live-sessions.spec.mjs']
+    return specs.length === 0 || specs.some(spec => ['specs/05-copilot-folder-launch.spec.mjs', 'specs/07-live-sessions.spec.mjs',
+        'specs/08-robowork-restart.spec.mjs']
         .includes(String(spec).replaceAll('\\', '/')));
 }
 
@@ -249,8 +264,16 @@ export async function detachWatchIfShown(page) {
 }
 
 export async function restartRoboTeam({ executable, workspaceRoot, timeoutMs = 300_000 }) {
+    return restartResidentAgent('roboTeamAgent', { executable, workspaceRoot, timeoutMs });
+}
+
+export async function restartRoboWork({ executable, workspaceRoot, timeoutMs = 300_000 }) {
+    return restartResidentAgent('roboWorkAgent', { executable, workspaceRoot, timeoutMs });
+}
+
+async function restartResidentAgent(agent, { executable, workspaceRoot, timeoutMs }) {
     assert.ok(path.isAbsolute(executable) && path.isAbsolute(workspaceRoot), 'Restart requires exact absolute fixture paths.');
-    const result = await execute(executable, ['restart', 'roboTeamAgent'], {
+    const result = await execute(executable, ['restart', agent], {
         cwd: workspaceRoot, env: { ...process.env, PLOINKY_CWD: workspaceRoot }, timeout: timeoutMs,
         killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024,
     });
@@ -259,7 +282,7 @@ export async function restartRoboTeam({ executable, workspaceRoot, timeoutMs = 3
     return { completed: true };
 }
 
-export function validateNativeEvidence(record, { release, runtime, workspaceRoot, config, initial = true }) {
+export function validateNativeEvidence(record, { release, runtime, executionRuntime, workspaceRoot, config, initial = true }) {
     assert.equal(record?.schemaVersion, 1, 'Native evidence schema must be version 1.');
     assert.match(record.robotId, /^[a-z0-9][a-z0-9-]{2,63}$/);
     assert.equal(record.workspaceRoot, workspaceRoot);
@@ -269,6 +292,12 @@ export function validateNativeEvidence(record, { release, runtime, workspaceRoot
     if (initial) {
         for (const key of ['containerId', 'containerName', 'instanceId', 'enableGeneration']) {
             assert.equal(record.initialRoboTeam?.[key], runtime[key], `Native evidence initial RoboTeam ${key} must match.`);
+        }
+    }
+    if (executionRuntime) {
+        assert.notEqual(executionRuntime.containerId, runtime.containerId, 'Controller and execution evidence must name separate containers.');
+        for (const key of ['containerId', 'containerName', 'instanceId', 'enableGeneration']) {
+            assert.equal(record.initialRoboWork?.[key], executionRuntime[key], `Native evidence RoboWork ${key} must match.`);
         }
     }
     const native = record.native;
@@ -338,7 +367,7 @@ export function validateNativeAlaBinding(binding) {
 }
 
 export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd, io = fs, selection = null) {
-    if (!Number.isSafeInteger(rootPid) || rootPid <= 1
+    if (!Number.isSafeInteger(rootPid) || !(rootPid > 1 || rootPid === 1 && Array.isArray(selection?.residentRecords))
         || typeof expectedCwd !== 'string' || !expectedCwd.startsWith('/')
         || expectedCwd === '/' || /[\u0000-\u001f\u007f]/.test(expectedCwd)
         || expectedCwd.split('/').some((part, index) => index > 0 && ['', '.', '..'].includes(part))) {
@@ -452,8 +481,8 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
         if (!/(?:^|\/)(?:node|nodejs|bun)$/.test(executable)) throw new Error('invalid deployed producer interpreter');
         return executable;
     }
-    function hashAlaEntrypoint(pid) {
-        const file = `/proc/${pid}/root${selection.alaBinding.command}`;
+    function hashEntrypoint(pid, command, expectedHash) {
+        const file = `/proc/${pid}/root${command}`;
         const fd = io.openSync(file, io.constants.O_RDONLY | io.constants.O_NOFOLLOW | io.constants.O_NONBLOCK);
         try {
             const before = io.fstatSync(fd, { bigint: true }), keys = ['dev', 'ino', 'mode', 'uid', 'gid', 'nlink', 'size', 'mtimeNs', 'ctimeNs'];
@@ -468,11 +497,31 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
             const after = io.fstatSync(fd, { bigint: true }), bound = io.lstatSync(file, { bigint: true });
             if (BigInt(length) !== before.size || !bound.isFile() || keys.some(key => before[key] !== after[key] || after[key] !== bound[key])) throw new Error('ALA entrypoint changed during snapshot');
             const sha256 = hash.digest('hex');
-            if (sha256 !== selection.alaBinding.hashes['bin/ala.mjs']) throw new Error('frozen ALA entrypoint hash drift');
+            if (sha256 !== expectedHash) throw new Error('frozen ALA entrypoint hash drift');
             return { sha256, stat: Object.fromEntries(keys.map(key => [key, before[key]])) };
         } finally { io.closeSync(fd); }
     }
+    const hashAlaEntrypoint = pid => hashEntrypoint(pid, selection.alaBinding.command, selection.alaBinding.hashes['bin/ala.mjs']);
+    const resident = selection.residentRecords;
+    if (resident !== undefined) {
+        if (!Array.isArray(resident) || resident.length > 512 || !/^[a-f0-9]{64}$/.test(selection.serviceSha256 || '')) throw new Error('invalid trusted resident inventory');
+        if (new Set(resident.map(record => record.runId)).size !== resident.length) throw new Error('ambiguous trusted resident run');
+    }
+    function namespacePids(pid) {
+        const text = readBounded(`/proc/${pid}/status`).toString('utf8');
+        const matches = [...text.matchAll(/^NSpid:\s*([0-9]+(?:[\t ]+[0-9]+)*)\s*$/gmu)];
+        if (matches.length !== 1) throw new Error('invalid resident namespace PID');
+        const pids = matches[0][1].trim().split(/\s+/u).map(Number);
+        if (pids.length > 32 || pids.some(value => !Number.isSafeInteger(value) || value <= 0)) throw new Error('invalid resident namespace PID');
+        return pids;
+    }
+    const namespacePid = pid => {
+        const pids = namespacePids(pid);
+        if (pids.length < namespaceDepth) throw new Error('resident process is outside its container PID namespace');
+        return pids[namespaceDepth - 1];
+    };
     const init = readProcess(rootPid);
+    const namespaceDepth = resident ? namespacePids(init.pid).length : 0;
     const rows = new Map();
     for (const entry of entries) {
         const pid = Number(entry);
@@ -485,8 +534,16 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
         } catch (error) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error; }
     }
     const candidates = [], wrappers = [];
+    function belowInit(row) {
+        const seen = new Set();
+        while (row && !seen.has(row.pid) && seen.size < 256) {
+            if (row.pid === init.pid) return true;
+            seen.add(row.pid); row = rows.get(row.ppid);
+        }
+        return false;
+    }
     for (const row of rows.values()) {
-        if (row.pidNamespace !== init.pidNamespace) continue;
+        if (resident ? !belowInit(row) : row.pidNamespace !== init.pidNamespace) continue;
         let observed;
         try { observed = readProcess(row.pid); }
         catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) continue; throw error; }
@@ -505,6 +562,40 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
         else candidates.push({ ...observed, context, executable, entrypoint: hashAlaEntrypoint(observed.pid) });
     }
     function producerProof(candidate) {
+        if (resident) {
+            const records = resident.filter(record => record.cwd === expectedCwd && record.sessionId === candidate.context.sessionId
+                && record.turnId === candidate.context.turnId);
+            if (records.length !== 1) throw new Error('missing or ambiguous trusted resident run');
+            const record = records[0];
+            if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(record.runId || '') || !['copilot', 'task'].includes(record.kind)) throw new Error('resident run identity mismatch');
+            let launch = namespacePid(candidate.pid) === record.pid && candidate.startToken === record.pidStamp ? candidate : null;
+            const chain = [], seen = new Set([candidate.pid]); let pid = candidate.ppid;
+            while (rows.has(pid) && !seen.has(pid) && chain.length < 256) {
+                seen.add(pid); const row = readProcess(pid), prior = rows.get(pid);
+                if (row.startToken !== prior.startToken || row.ppid !== prior.ppid || row.pidNamespace !== prior.pidNamespace) throw new Error('resident service ancestry changed');
+                chain.push(row);
+                if (namespacePid(pid) === record.pid && row.startToken === record.pidStamp) {
+                    if (launch) throw new Error('ambiguous resident launch incarnation');
+                    launch = row;
+                }
+                if (row.pidNamespace === init.pidNamespace && namespacePid(pid) === record.servicePid) {
+                    const script = '/code/server/main.mjs';
+                    if (row.argv[1] !== script || !belowInit(row) || !launch || launch.pid === row.pid) throw new Error('wrong resident service or launch identity');
+                    const executable = interpreter(row), entrypoint = hashEntrypoint(pid, script, selection.serviceSha256);
+                    const rootChain = [row], roots = new Set([row.pid]); let ancestor = row;
+                    while (ancestor.pid !== init.pid) {
+                        if (!rows.has(ancestor.ppid) || roots.has(ancestor.ppid) || rootChain.length >= 256) throw new Error('resident service lost init ancestry');
+                        ancestor = readProcess(ancestor.ppid); const original = rows.get(ancestor.pid);
+                        if (ancestor.startToken !== original.startToken || ancestor.ppid !== original.ppid
+                            || ancestor.pidNamespace !== init.pidNamespace) throw new Error('resident service init ancestry changed');
+                        roots.add(ancestor.pid); rootChain.push(ancestor);
+                    }
+                    return { kind: record.kind === 'task' ? 'workflow' : 'copilot', script, row, chain, rootChain, launch, executable, entrypoint, record };
+                }
+                pid = row.ppid;
+            }
+            throw new Error('missing exact resident service ancestry');
+        }
         const chain = [], seen = new Set([candidate.pid]), proofs = [];
         let pid = candidate.ppid;
         while (rows.has(pid) && !seen.has(pid) && chain.length < 256) {
@@ -518,8 +609,13 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
                 if (row.argv[1] !== script) continue;
                 const executable = interpreter(row);
                 const value = flag => {
-                    if (row.argv.filter(argument => argument === flag || argument.startsWith(flag + '=')).length !== 1) throw new Error('invalid producer arguments');
-                    const offset = row.argv.indexOf(flag);
+                    const hits = row.argv.map((argument, index) => [argument, index]).filter(([argument]) => argument === flag || argument.startsWith(flag + '='));
+                    if (hits.length !== 1) throw new Error('invalid producer arguments');
+                    const [argument, offset] = hits[0];
+                    if (argument !== flag) {
+                        if (offset < 2 || argument.length === flag.length + 1) throw new Error('invalid producer value');
+                        return argument.slice(flag.length + 1);
+                    }
                     if (offset < 0 || !row.argv[offset + 1] || row.argv[offset + 1].startsWith('--')) throw new Error('invalid producer value');
                     return row.argv[offset + 1];
                 };
@@ -544,20 +640,27 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
         candidate.producer = producerProof(candidate);
         if (candidate.producer.kind === 'workflow') associated.add(candidate.producer.row.pid);
     }
+    if (resident && candidates.length !== resident.length) throw new Error('trusted resident run is missing its exact ALA process');
     function finalAla(candidate) {
         const current = hashAlaEntrypoint(candidate.pid);
         if (Object.keys(current.stat).some(key => current.stat[key] !== candidate.entrypoint.stat[key])
             || interpreter(candidate) !== candidate.executable) throw new Error('ALA entrypoint or interpreter changed during final fence');
+        if (resident) {
+            const proof = candidate.producer, currentService = hashEntrypoint(proof.row.pid, proof.script, selection.serviceSha256);
+            if (Object.keys(currentService.stat).some(key => currentService.stat[key] !== proof.entrypoint.stat[key])
+                || namespacePid(proof.launch.pid) !== proof.record.pid || namespacePid(proof.row.pid) !== proof.record.servicePid) throw new Error('resident identity changed during final fence');
+        }
     }
     if (selection.kind === 'census') {
         if (candidates.length + wrappers.filter(wrapper => !associated.has(wrapper.pid)).length > 512) throw new Error('bounded native census exceeded');
         const census = candidates.map(candidate => {
             const producer = candidate.producer;
-            for (const row of [init, candidate, ...producer.chain]) if (!same(row, readProcess(row.pid))) throw new Error('census identity changed during final fence');
+            for (const row of [init, candidate, ...producer.chain, ...(producer.rootChain || [])]) if (!same(row, readProcess(row.pid))) throw new Error('census identity changed during final fence');
             finalAla(candidate);
             if (interpreter(producer.row) !== producer.executable) throw new Error('producer executable changed during final fence');
             return { kind: 'ala-turn', ...identity(candidate), ...candidate.context, producerKind: producer.kind,
-                entrypoint: selection.alaBinding.command, sha256: candidate.entrypoint.sha256 };
+                entrypoint: selection.alaBinding.command, sha256: candidate.entrypoint.sha256,
+                ...(resident ? { runId: producer.record.runId, launch: identity(producer.launch) } : {}) };
         });
         for (const wrapper of wrappers) if (!associated.has(wrapper.pid)) {
             if (!same(init, readProcess(init.pid)) || !same(wrapper, readProcess(wrapper.pid))
@@ -612,7 +715,7 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
     if (matches.length !== 1) throw new Error('expected exactly one frozen native CLI process');
     const selected = matches[0];
     hashExecutable(selected.row.pid);
-    for (const row of [init, ala, ...selected.proof, ...(producer?.chain || [])]) {
+    for (const row of [init, ala, ...selected.proof, ...(producer?.chain || []), ...(producer?.rootChain || [])]) {
         if (!same(row, readProcess(row.pid))) throw new Error('native identity changed during final fence');
     }
     if (io.readlinkSync('/proc/' + selected.row.pid + '/exe') !== selected.executable) throw new Error('native executable changed during final fence');
@@ -620,6 +723,7 @@ export async function collectNativeProcessSnapshot(rootPid, native, expectedCwd,
     finalAla(ala);
     return { containerInit: identity(init), ala: { ...identity(ala), ...ala.context,
         entrypoint: selection.alaBinding.command, sha256: ala.entrypoint.sha256 },
+        ...(resident ? { runId: producer.record.runId, launch: identity(producer.launch), serviceAncestry: producer.rootChain.map(identity) } : {}),
         ...(producer ? { producer: { ...identity(producer.row), kind: producer.kind, script: producer.script }, producerAncestry: producer.chain.map(identity) } : {}),
         native: { ...identity(selected.row), executable: native.realpath, actualExecutable: selected.executable,
             scriptPath: selected.scriptPath, sha256: selected.sha256 }, ancestry: selected.proof.map(identity) };
@@ -630,9 +734,12 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 ${validateNativeAlaBinding.toString()}
 ${collectNativeProcessSnapshot.toString()}
+${residentProcReadBridge.toString()}
 if (!/^[1-9][0-9]*$/.test(process.argv[1] || '')) throw new Error('invalid exact init PID argument');
-const identity = await collectNativeProcessSnapshot(Number(process.argv[1]), JSON.parse(process.argv[2]), process.argv[3], fs, process.argv[4] ? JSON.parse(process.argv[4]) : null);
-process.stdout.write(JSON.stringify(identity));
+const selection = process.argv[4] ? JSON.parse(process.argv[4]) : null;
+const bridge = residentProcReadBridge(fs, selection?.procReadProofs);
+const identity = await collectNativeProcessSnapshot(Number(process.argv[1]), JSON.parse(process.argv[2]), process.argv[3], bridge.io, selection);
+process.stdout.write(JSON.stringify(selection?.procReadProofs ? { identity, ownerInit: bridge.identity(1), procReads: [...bridge.used] } : identity));
 `;
 
 // Inspect only process identity, argv and the selected public executable. Never
@@ -698,6 +805,7 @@ export function normalizeNativeProcessError(error, { env = process.env } = {}) {
 }
 
 export async function nativeProcessIdentity(evidence, runtime, native, directoryName, selection) {
+    if (selection?.residentBinding) return residentNativeProcessIdentity(evidence, runtime, native, directoryName, selection);
     validateNativeAlaBinding(selection?.alaBinding);
     assert.match(directoryName, /^[A-Za-z0-9_-]+$/);
     const workspaceRoot = assertBoxWorkspacePath(evidence?.workspaceRoot);
@@ -725,22 +833,172 @@ export async function nativeProcessIdentity(evidence, runtime, native, directory
     return identity;
 }
 
+export async function residentNativeProcessIdentity(evidence, runtime, native, directoryName, selection, {
+    executeImpl = execute, inspect = inspectNestedContainer,
+} = {}) {
+    validateNativeAlaBinding(selection.alaBinding);
+    assert.match(directoryName, /^[A-Za-z0-9_-]+$/u);
+    const workspaceRoot = assertBoxWorkspacePath(evidence.workspaceRoot), cwd = path.posix.join(workspaceRoot, directoryName);
+    assert.equal(evidence.workspaceHash, workspaceHash(workspaceRoot));
+    const binding = selection.residentBinding;
+    assert.equal(binding.controller.id, runtime.containerId);
+    assert.equal(binding.execution.id, binding.owner.containerId);
+    assert.notEqual(binding.execution.id, binding.controller.id);
+    const fence = () => {
+        const controller = processRuntimeFence(inspect(evidence.outerContainerId, runtime.containerId));
+        const execution = processRuntimeFence(inspect(evidence.outerContainerId, binding.owner.containerId));
+        assert.deepEqual(controller, binding.controller, 'RoboTeam process container generation, source or mounts changed.');
+        assert.deepEqual(execution, binding.execution, 'RoboWork process container generation, source or mounts changed.');
+    };
+    fence();
+    const run = async args => {
+        const result = await executeImpl('podman', args, { timeout: 30000, maxBuffer: 65536, killSignal: 'SIGKILL' })
+            .catch(error => { throw normalizeNativeProcessError(error); });
+        return JSON.parse(result.stdout);
+    };
+    const read = () => run(['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', binding.owner.containerId,
+        '/usr/local/bin/node', '--input-type=module', '--eval', buildResidentRunProgram({ expectedRepository: binding.repository,
+            contractFiles: binding.contractFiles, contractHashes: binding.codeHashes, robotId: native.robotId, cwd })]);
+    const metadata = await read();
+    assert.deepEqual(metadata.codeHashes, binding.codeHashes);
+    const controllerCensusCommand = ['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', runtime.containerId,
+        '/usr/local/bin/node', '--input-type=module', '--eval', buildControllerProducerCensusProgram(1, {
+            cwd, codeRoot: selection.codeRoot, workflowCodeRoot: selection.workflowCodeRoot,
+            scriptSha256: binding.controllerHashes['server/robot-task.mjs'],
+        })];
+    const controllerCensus = await run(controllerCensusCommand);
+    assertNativeProcessCensus(controllerCensus, { cwd, ...selection });
+    assert.ok(controllerCensus.every(row => row.kind === 'producer-pending'), 'Controller census cannot assert native authority.');
+    const retained = selection.retainedProofs || [];
+    assert.ok(Array.isArray(retained) && retained.length <= 512);
+    for (const proof of retained) assert.ok(retainedResidentProofs.has(proof), 'Continuity requires the original in-memory verified proof, never project or JSON authority.');
+    assert.equal(new Set(retained.map(proof => proof.runId)).size, retained.length);
+    const { residentBinding: _binding, retainedProofs: _retained, ...selected } = selection;
+    const nativeSelection = { ...selected, residentRecords: metadata.records.filter(record => record.state !== 'starting'),
+        serviceSha256: binding.codeHashes['server/main.mjs'] };
+    const controllerProofs = new Map();
+    const controllerCommands = new Map();
+    for (const record of metadata.records) {
+        const prior = retained.find(proof => proof.runId === record.runId);
+        if (prior) {
+            assert.deepEqual(record, prior.residentRecord, 'Reattachment must use the same authoritative resident run and owner.');
+            assert.deepEqual(binding.execution, prior.executionRuntime, 'Reattachment changed RoboWork generation or mounts.');
+            assert.notEqual(binding.controller.id, prior.controllerRuntime.id, 'Reattachment must prove the replacement RoboTeam generation.');
+            assert.equal(record.kind, 'task');
+        }
+        const relative = `server/${record.kind === 'task' ? 'robot-task' : 'robot-cli'}.mjs`;
+        const command = ['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', runtime.containerId,
+            '/usr/local/bin/node', '--input-type=module', '--eval',
+            buildControllerProducerProgram(1, record,
+                { codeRoot: selection.codeRoot, workflowCodeRoot: selection.workflowCodeRoot,
+                    scriptSha256: binding.controllerHashes[relative], ...(prior ? { attach: true } : {}) })];
+        controllerCommands.set(record.runId, command);
+        const proof = await run(command);
+        assert.equal(proof.runId, record.runId);
+        assert.equal(proof.containerInit.pid, 1);
+        if (prior) {
+            assert.equal(proof.attachRun, record.runId, 'Replacement producer must name the exact resident run.');
+            assert.notDeepEqual(proof.containerInit, prior.controller.containerInit, 'Replacement controller process incarnation is unchanged.');
+        } else assert.equal(proof.producer.startToken, record.producer.startStamp);
+        assert.equal(proof.producer.sha256, binding.controllerHashes[relative]);
+        assert.equal(proof.producer.script, `${record.kind === 'task' ? selection.workflowCodeRoot || selection.codeRoot : selection.codeRoot}/${relative}`);
+        assert.equal(proof.producer.kind, record.kind === 'task' ? 'workflow' : 'copilot');
+        assert.ok(Array.isArray(proof.producerAncestry) && proof.producerAncestry.length > 0 && proof.producerAncestry.length <= 256);
+        for (const [index, row] of proof.producerAncestry.entries()) {
+            assert.equal(row.pidNamespace, proof.containerInit.pidNamespace);
+            assert.equal(index ? proof.producerAncestry[index - 1].ppid : proof.producer.pid, row.pid);
+        }
+        // A copilot producer exec'd into the container by WebChat has ppid 0; tasks keep the descent proof.
+        const top = proof.producerAncestry.at(-1).ppid;
+        if (!(record.kind === 'copilot' && proof.producerAncestry.length === 1 && top === 0)) assert.equal(top, proof.containerInit.pid);
+        controllerProofs.set(record.runId, proof);
+    }
+    // The source and native process roots live in RoboWork's user namespace.
+    // The outer Box cannot ptrace those roots even when their stat is visible.
+    const procCommand = ['exec', evidence.outerContainerId, '/usr/local/bin/node', '--input-type=module', '--eval',
+        buildBoxProcReadProgram(binding.execution.pid)];
+    const procBefore = await run(procCommand);
+    assert.equal(procBefore.init.boxPid, binding.execution.pid);
+    assert.equal(procBefore.init.namespacePids.at(-1), 1);
+    nativeSelection.procReadProofs = procBefore.processes;
+    const observed = await run(['exec', evidence.outerContainerId, '/usr/bin/podman', 'exec', binding.owner.containerId,
+        '/usr/local/bin/node', '--input-type=module', '--eval',
+        NATIVE_PROCESS_SNAPSHOT_SOURCE, '1', JSON.stringify(native), cwd, JSON.stringify(nativeSelection)]);
+    const identity = observed.identity;
+    assert.deepEqual(observed.ownerInit, { pid: 1, ppid: 0, startToken: procBefore.init.startToken, pidNamespace: procBefore.init.pidNamespace });
+    const procAfter = await run(procCommand);
+    assert.deepEqual(procAfter.init, procBefore.init, 'RoboWork init changed during owner process reads.');
+    assert.ok(Array.isArray(observed.procReads) && observed.procReads.length <= 512 && new Set(observed.procReads).size === observed.procReads.length);
+    for (const pid of observed.procReads) {
+        const first = procBefore.processes.find(row => row.pid === pid), last = procAfter.processes.find(row => row.pid === pid);
+        assert.ok(first && last, 'Missing exact Box process-link incarnation.');
+        assert.deepEqual(last, first, 'Box process-link namespace or incarnation changed during owner reads.');
+    }
+    if (selection.kind === 'census') {
+        assertNativeProcessCensus(identity, { cwd, ...nativeSelection });
+        for (const row of identity) assert.ok(controllerProofs.has(row.runId), 'Census is missing its exact controller proof.');
+    } else {
+        assertNativeProcessIdentity(identity, native, { initPid: 1, cwd, ...nativeSelection });
+        assert.ok(controllerProofs.has(identity.runId), 'Native process has no exact controller proof.');
+    }
+    assert.deepEqual(await read(), metadata, 'Authoritative run identity changed during the two-container proof.');
+    for (const [runId, command] of controllerCommands) {
+        assert.deepEqual(await run(command), controllerProofs.get(runId), 'Exact controller producer changed before native proof settlement.');
+    }
+    assert.deepEqual(await run(controllerCensusCommand), controllerCensus, 'Controller pending-wrapper census changed during native proof settlement.');
+    fence();
+    const finish = row => {
+        const record = metadata.records.find(value => value.runId === row.runId);
+        const prior = retained.find(proof => proof.runId === row.runId);
+        if (prior) {
+            if (selection.kind === 'census') {
+                for (const key of ['pid', 'ppid', 'startToken', 'pidNamespace', 'cwd', 'sessionId', 'turnId', 'entrypoint', 'sha256']) {
+                    assert.deepEqual(row[key], prior.ala[key], 'The resident ALA process changed across controller restart.');
+                }
+                assert.deepEqual(row.launch, prior.launch);
+            } else {
+                for (const key of ['runId', 'containerInit', 'ala', 'launch', 'producer', 'producerAncestry', 'serviceAncestry', 'native', 'ancestry']) {
+                    assert.deepEqual(row[key], prior[key], 'The native process or source identity changed across controller restart.');
+                }
+            }
+        }
+        return sealResidentProof({ ...row, controller: controllerProofs.get(row.runId), residentRecord: record,
+            controllerRuntime: binding.controller, executionRuntime: binding.execution });
+    };
+    if (selection.kind === 'census') {
+        const pending = controllerCensus.filter(row => ![...controllerProofs].some(([runId, proof]) => {
+            const record = metadata.records.find(value => value.runId === runId);
+            return row.cwd === record.cwd && row.sessionId === record.sessionId
+                && ['pid', 'ppid', 'startToken', 'pidNamespace', 'script'].every(key => row[key] === proof.producer[key]);
+        }));
+        const starting = metadata.records.filter(record => record.state === 'starting').map(record => ({
+            kind: 'resident-pending', runId: record.runId, robotId: record.robotId, cwd: record.cwd,
+            sessionId: record.sessionId, turnId: record.turnId, ownerPrincipal: record.ownerPrincipal,
+        }));
+        assert.ok(identity.length + pending.length + starting.length <= 512, 'Bounded combined resident census exceeded.');
+        return [...identity.map(finish), ...pending, ...starting];
+    }
+    return finish(identity);
+}
+
 export function assertNativeProcessIdentity(identity, native, expectedContext) {
     const alaBinding = validateNativeAlaBinding(expectedContext?.alaBinding);
-    assert.ok(Number.isSafeInteger(expectedContext?.initPid) && expectedContext.initPid > 1);
+    const residentInit = expectedContext?.residentRecords && expectedContext.initPid === 1;
+    assert.ok(Number.isSafeInteger(expectedContext?.initPid) && (expectedContext.initPid > 1 || residentInit));
     assert.ok(typeof expectedContext.cwd === 'string' && path.posix.isAbsolute(expectedContext.cwd)
         && expectedContext.cwd !== '/' && path.posix.normalize(expectedContext.cwd) === expectedContext.cwd
         && !/[\u0000-\u001f\u007f]/.test(expectedContext.cwd));
-    const processIdentity = value => {
-        assert.ok(Number.isSafeInteger(value?.pid) && value.pid > 1);
+    const processIdentity = (value, init = false) => {
+        assert.ok(Number.isSafeInteger(value?.pid) && (value.pid > 1 || init && residentInit && value.pid === 1));
         assert.ok(Number.isSafeInteger(value.ppid) && value.ppid >= 0);
         assert.match(value.startToken, /^[1-9][0-9]{0,19}$/);
         assert.match(value.pidNamespace, /^pid:\[[1-9][0-9]{0,19}\]$/);
     };
-    for (const value of [identity?.containerInit, identity?.ala, identity?.native]) processIdentity(value);
+    processIdentity(identity?.containerInit, true);
+    for (const value of [identity?.ala, identity?.native]) processIdentity(value);
     assert.equal(identity.containerInit.pid, expectedContext?.initPid);
     assert.equal(identity.ala.cwd, expectedContext?.cwd);
-    assert.equal(identity.ala.pidNamespace, identity.containerInit.pidNamespace);
+    if (!expectedContext.residentRecords) assert.equal(identity.ala.pidNamespace, identity.containerInit.pidNamespace);
     assert.equal(identity.ala.entrypoint, alaBinding.command);
     assert.equal(identity.ala.sha256, alaBinding.hashes['bin/ala.mjs']);
     for (const key of ['sessionId', 'turnId']) {
@@ -753,7 +1011,8 @@ export function assertNativeProcessIdentity(identity, native, expectedContext) {
         processIdentity(identity.producer);
         assert.equal(identity.producer.kind, expectedContext.kind);
         const root = expectedContext.kind === 'workflow' ? expectedContext.workflowCodeRoot || expectedContext.codeRoot : expectedContext.codeRoot;
-        assert.equal(identity.producer.script, `${root}/server/${expectedContext.kind === 'copilot' ? 'robot-cli.mjs' : 'robot-task.mjs'}`);
+        assert.equal(identity.producer.script, expectedContext.residentRecords ? '/code/server/main.mjs'
+            : `${root}/server/${expectedContext.kind === 'copilot' ? 'robot-cli.mjs' : 'robot-task.mjs'}`);
         assert.equal(identity.producer.pidNamespace, identity.containerInit.pidNamespace);
         assert.ok(Array.isArray(identity.producerAncestry) && identity.producerAncestry.length > 0);
         identity.producerAncestry.forEach((row, index) => {
@@ -761,6 +1020,23 @@ export function assertNativeProcessIdentity(identity, native, expectedContext) {
             assert.equal(index ? identity.producerAncestry[index - 1].ppid : identity.ala.ppid, row.pid);
         });
         assert.equal(identity.producerAncestry.at(-1).pid, identity.producer.pid);
+        if (expectedContext.residentRecords) {
+            const records = expectedContext.residentRecords.filter(record => record.runId === identity.runId);
+            assert.equal(records.length, 1, 'Native proof must identify exactly one trusted resident run.');
+            assert.equal(records[0].sessionId, identity.ala.sessionId); assert.equal(records[0].turnId, identity.ala.turnId);
+            processIdentity(identity.launch);
+            assert.equal(records[0].pidStamp, identity.launch.startToken); assert.equal(records[0].cwd, identity.ala.cwd);
+            const launchPath = [identity.ala, ...identity.producerAncestry];
+            assert.ok(launchPath.some(row => ['pid', 'ppid', 'startToken', 'pidNamespace'].every(key => row[key] === identity.launch[key])),
+                'Trusted launch must be ALA or an exact ancestor between ALA and the resident service.');
+            assert.ok(Array.isArray(identity.serviceAncestry) && identity.serviceAncestry.length > 1 && identity.serviceAncestry.length <= 256);
+            identity.serviceAncestry.forEach((row, index) => {
+                processIdentity(row, index === identity.serviceAncestry.length - 1); assert.equal(row.pidNamespace, identity.containerInit.pidNamespace);
+                if (index) assert.equal(identity.serviceAncestry[index - 1].ppid, row.pid);
+            });
+            assert.equal(identity.serviceAncestry[0].pid, identity.producer.pid);
+            assert.equal(identity.serviceAncestry.at(-1).pid, identity.containerInit.pid);
+        }
     }
     assert.notEqual(identity.ala.pid, identity.containerInit.pid);
     assert.notEqual(identity.ala.pid, identity.native.pid);
@@ -793,7 +1069,7 @@ export function assertNativeProcessCensus(rows, expectedContext) {
         assert.ok(row && typeof row === 'object' && !Array.isArray(row));
         assert.ok(['ala-turn', 'producer-pending'].includes(row.kind));
         const keys = ['kind', 'pid', 'ppid', 'startToken', 'pidNamespace', 'cwd', 'sessionId',
-            ...(row.kind === 'ala-turn' ? ['turnId', 'producerKind', 'entrypoint', 'sha256'] : ['script'])];
+            ...(row.kind === 'ala-turn' ? ['turnId', 'producerKind', 'entrypoint', 'sha256', ...(expectedContext.residentRecords ? ['runId', 'launch'] : [])] : ['script'])];
         assert.deepEqual(Object.keys(row).sort(), keys.sort(), 'Unexpected native census authority fields.');
         assert.ok(Number.isSafeInteger(row.pid) && row.pid > 1 && row.pid > previous && !pids.has(row.pid));
         assert.ok(Number.isSafeInteger(row.ppid) && row.ppid >= 0);
@@ -803,6 +1079,14 @@ export function assertNativeProcessCensus(rows, expectedContext) {
         if (row.kind === 'ala-turn') {
             assert.match(row.turnId, /^[A-Za-z0-9_-]{1,128}$/); assert.ok(['copilot', 'workflow'].includes(row.producerKind));
             assert.equal(row.entrypoint, binding.command); assert.equal(row.sha256, binding.hashes['bin/ala.mjs']);
+            if (expectedContext.residentRecords) {
+                assert.deepEqual(Object.keys(row.launch || {}).sort(), ['pid', 'pidNamespace', 'ppid', 'startToken']);
+                assert.ok(Number.isSafeInteger(row.launch.pid) && row.launch.pid > 1 && Number.isSafeInteger(row.launch.ppid) && row.launch.ppid >= 0);
+                assert.match(row.launch.startToken, /^[1-9][0-9]{0,19}$/u); assert.match(row.launch.pidNamespace, /^pid:\[[1-9][0-9]{0,19}\]$/u);
+                const matches = expectedContext.residentRecords.filter(record => record.runId === row.runId
+                    && record.sessionId === row.sessionId && record.turnId === row.turnId && record.pidStamp === row.launch?.startToken);
+                assert.equal(matches.length, 1, 'Census row must bind one trusted resident run.');
+            }
         } else {
             const root = expectedContext.workflowCodeRoot || expectedContext.codeRoot;
             assert.equal(row.script, `${root}/server/robot-task.mjs`);

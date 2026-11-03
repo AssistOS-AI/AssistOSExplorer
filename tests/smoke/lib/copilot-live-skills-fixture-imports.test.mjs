@@ -8,8 +8,10 @@ import { createLiveSkillsFixture, liveSkillsHash } from './copilot-live-skills.m
 import { LIVE_SKILLS_CONTRACT_FILES } from './copilot-live-skills-runtime.mjs';
 import { operateLiveSkillsFixture } from './copilot-live-skills-fixture-runtime.mjs';
 
-const imports = ['server/soul-gateway-service.mjs', 'server/soul-gateway-opencode.mjs',
-    'server/soul-gateway-connection.mjs', 'server/agent-model-config.mjs'];
+// These modules are actually evaluated by the current controller-side fixture branch.
+// Moved RoboWork sources are fenced by the companion reader before that branch is entered.
+const imports = ['server/robot-skillsets.mjs', 'server/skill-policy.mjs',
+    'server/coding-agents.mjs', 'server/run-client.mjs'];
 
 function productionCase(t) {
     assert.ok(process.env.SET2_ACHILLES_SOURCE, 'Pin the disposable source to SET2_ACHILLES_SOURCE.');
@@ -44,6 +46,15 @@ function productionCase(t) {
     fs.writeFileSync(`${robotRoot}/runtime/skill-policies/existing-policy_codex.json`, '{"owned-existing-policy":true}\n');
     const contractHashes = Object.fromEntries(LIVE_SKILLS_CONTRACT_FILES.map(file => [file, liveSkillsHash(fs.readFileSync(`${codeRoot}/${file}`))]));
     const marker = `${root}/evaluation_codex.json`;
+    const descriptors = new Map();
+    const fsApi = { ...fs,
+        openSync(file, flags) { const fd = fs.openSync(file, flags); descriptors.set(fd, file); return fd; },
+        closeSync(fd) { descriptors.delete(fd); return fs.closeSync(fd); },
+        realpathSync(file) {
+            if (process.platform !== 'linux' && /^\/proc\/self\/fd\/\d+$/.test(file)) return fs.realpathSync(descriptors.get(Number(path.basename(file))));
+            return fs.realpathSync(file);
+        },
+    };
     function ownedState() {
         const entries = [];
         function visit(file) {
@@ -70,7 +81,7 @@ function productionCase(t) {
     const run = async () => {
         try {
             await operateLiveSkillsFixture({ action: 'seed-defaults', fixture, workspaceRoot: root,
-                expectedRepository: repository, contractHashes }, { codeRoot, dataRoot,
+                expectedRepository: repository, contractHashes }, { codeRoot, dataRoot, fsApi,
                 emit: () => assert.fail('The existing-policy control must never reach mutation success.') });
             assert.fail('Expected the normal existing-policy refusal or the earlier source guard.');
         } catch (error) { return error; }
@@ -110,7 +121,7 @@ for (const file of imports) {
         assert.equal(c.ownedState(), before, 'Owned policy/link state changed.');
         assert.equal(fs.existsSync(c.marker), false, 'Foreign source alias evaluated before the source guard.');
         assert.equal(error.code, 'ERR_ASSERTION');
-        assert.match(error.message, /Expected values to be strictly equal/);
+        assert.match(error.message, /Contract path must remain canonical without symlinks/);
         assert.doesNotMatch(error.message, /existing owned robot policy/);
     });
 }

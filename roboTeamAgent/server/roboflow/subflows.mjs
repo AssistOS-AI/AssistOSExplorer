@@ -27,6 +27,7 @@ export class Subflows {
             if (!graph || hasCreators(graph) || graph.tasks.some(isCoordinator)) throw invalid('Child workflow must exist and contain no tasks that allow sub-flows');
             assertRunnable(graph);
             if (graph.kind === 'default' ? !EXECUTION_TYPES.includes(item.executionType) : item.executionType !== undefined) throw invalid('executionType is required only for default child workflows');
+            await this.service.assertRestrictedRobot(graph, item.executionType, flow.restrictToRobot);
             plans.push({ graph, objective: textField(item.prompt, 'child prompt', 32768, true),
                 ...(graph.kind === 'default' ? { executionType: item.executionType } : {}) });
         }
@@ -39,7 +40,7 @@ export class Subflows {
         coordinator.afterEdgeId = plan.afterEdgeId;
         let previousChildFlowId = null;
         coordinator.childFlowIds = plan.plans.map(({ graph, ...input }) => {
-            const child = store.createRecord(graph, { ...input, folder: flow.folder, createdBy: flow.createdBy, ownerPrincipal: flow.ownerPrincipal || null,
+            const child = store.createRecord(graph, { ...input, folder: flow.folder, createdBy: flow.createdBy, ownerPrincipal: flow.ownerPrincipal || null, ...(flow.restrictToRobot ? { restrictToRobot: flow.restrictToRobot } : {}),
                 parentFlowId: flow.id, parentInstanceId: coordinator.id, creatorInstanceId: creator.id });
             child.previousChildFlowId = previousChildFlowId;
             child.status = 'pending'; child.activeSince = null;

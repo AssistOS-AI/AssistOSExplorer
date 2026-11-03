@@ -305,6 +305,6 @@ test('canonical execution and registered helper paths preserve the robot runtime
         assert.ok(receipt.invokedPath.startsWith(input.fixture.workspace + '/.agents/skills/'));
         assert.ok(receipt.resolvedSource.startsWith(input.fixture.repositoryRoot + '/skills/'));
         assert.equal(input.snapshot.robotRoot, `/data/robots/${input.fixture.robotId}`);
-        assert.equal(input.snapshot.session.engine.home, `${input.snapshot.robotRoot}/home`);
+        assert.equal(input.snapshot.session.engine.home, `/home/${input.fixture.robotId}`);
     }
 });

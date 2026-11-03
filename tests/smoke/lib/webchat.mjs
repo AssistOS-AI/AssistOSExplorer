@@ -102,37 +102,22 @@ export async function cancelWebchatGenerationIfActive(page, {timeout = smokeConf
   await waitForWebchatIdle(page);
 }
 
+// Observe the upload response without intercepting it: a route.fulfill replacement leaves the client's progress
+// indicator showing, while the real response settles it. The body is requested inside the response event itself,
+// before the page can navigate or refresh and evict it from the inspector cache.
 async function captureNextUploadResponse(page) {
-  const pattern = '**/uploads**';
-  let handler;
-  const promise = new Promise((resolve, reject) => {
-    handler = async (route) => {
-      if (route.request().method() !== 'POST') {
-        await route.continue();
-        return;
-      }
-
-      try {
-        const response = await route.fetch();
-        const body = await response.text();
-        let payload = null;
-        try {
-          payload = JSON.parse(body);
-        } catch (error) {
-          reject(error);
-        }
-        resolve({ status: response.status(), payload, body });
-        await route.fulfill({ response, body });
-      } catch (error) {
-        reject(error);
-        await route.abort().catch(() => {});
-      } finally {
-        await page.unroute(pattern, handler).catch(() => {});
-      }
+  let listener, timer;
+  const captured = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('The WebChat upload response was not observed.')), smokeConfig.timeouts.navigation);
+    listener = (response) => {
+      if (response.request().method() !== 'POST' || !new URL(response.url()).pathname.includes('/uploads')) return;
+      page.off('response', listener);
+      const status = response.status();
+      response.text().then((body) => ({ status, payload: JSON.parse(body), body })).then(resolve, reject);
     };
+    page.on('response', listener);
   });
-  await page.route(pattern, handler);
-  return promise;
+  return captured.finally(() => { clearTimeout(timer); page.off('response', listener); });
 }
 
 export async function setComposer(page, value) {

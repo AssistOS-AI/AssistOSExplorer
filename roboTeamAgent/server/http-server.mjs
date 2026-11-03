@@ -6,18 +6,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
-import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
 import { ROBOFLOW_ENTITLEMENT_ERROR, ROBOTEAM_ENTITLEMENT_ERROR, authorizeRobotListing, authorizeWorkspaceRequest, liveSessionsAccess } from './listing-access.mjs';
 import { projectRobotView } from './robot-projection.mjs';
 import { importEmailRobots } from './robot-import.mjs';
-import { createCodingAgentStatus } from './coding-agent-status.mjs';
-import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
-import { listTerminalProfiles, resolveTerminalProfile, robotTerminalDirectory, terminalProfileAccess } from './robot-terminal.mjs';
-import { prepareRobotShell } from './robot-shell.mjs';
 import { robotCodingAgents } from './coding-agents.mjs';
 import { findProjectRecord, projectForSessionRecord } from './project-storage.mjs';
 import { matchConversationSkillsPath, readConversationSkills, setConversationSkill } from './conversation-skills-api.mjs';
@@ -209,78 +204,6 @@ function proxyAgentServer(req, res, mcpPort) {
     req.pipe(upstream);
 }
 
-function sessionHeaders(req, port) {
-    const headers = { host: `127.0.0.1:${port}` };
-    for (const name of ['accept', 'accept-encoding', 'accept-language', 'cache-control', 'content-length', 'content-type', 'cookie', 'origin', 'pragma', 'range', 'user-agent']) {
-        if (req.headers[name] !== undefined) headers[name] = req.headers[name];
-    }
-    headers['x-forwarded-proto'] = 'https';
-    return headers;
-}
-
-function sessionUpstreamPath(req, publicBasePath) {
-    const relative = String(req.url || '/').startsWith('/') ? String(req.url || '/') : `/${req.url}`;
-    return `${publicBasePath.slice(0, -1)}${relative}`;
-}
-
-function proxySessionHttp(req, res, port, publicBasePath) {
-    const upstream = http.request({
-        host: '127.0.0.1',
-        port,
-        method: req.method,
-        path: sessionUpstreamPath(req, publicBasePath),
-        headers: sessionHeaders(req, port),
-    }, (response) => {
-        const headers = { ...response.headers, 'cache-control': 'no-store' };
-        res.writeHead(response.statusCode || 502, headers);
-        response.pipe(res);
-    });
-    upstream.once('error', () => sendError(res, 502, 'robot session is unavailable'));
-    // The gate already consumed the stream; send the bytes it verified.
-    if (Buffer.isBuffer(req[RAW_BODY])) upstream.end(req[RAW_BODY]);
-    else req.pipe(upstream);
-}
-
-function websocketFailure(socket, status, reason) {
-    socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-    socket.destroy();
-}
-
-const DENIAL_REASONS = Object.freeze({ 401: 'Unauthorized', 403: 'Forbidden', 503: 'Service Unavailable' });
-
-// Gate refusal for an upgrade: a JSON body like the HTTP refusals. Only the
-// status and the path are logged, never headers or the query string. The
-// socket is destroyed once the response has flushed, so a peer that never
-// closes its side cannot keep the connection open; the timer is a safety net.
-function websocketDenial(socket, status, error, pathname) {
-    console.warn(`[roboTeamAgent] WebSocket upgrade ${pathname} rejected (${status})`);
-    socket.on('error', () => {});
-    const payload = Buffer.from(JSON.stringify({ ok: false, error }));
-    socket.write(`HTTP/1.1 ${status} ${DENIAL_REASONS[status] || 'Forbidden'}\r\nConnection: close\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${payload.length}\r\n\r\n`);
-    const safety = setTimeout(() => socket.destroy(), 2000);
-    safety.unref();
-    socket.once('close', () => clearTimeout(safety));
-    socket.end(payload, () => socket.destroy());
-}
-
-function proxySessionWebSocket(req, socket, head, port, publicBasePath) {
-    const upstream = net.connect({ host: '127.0.0.1', port });
-    upstream.once('connect', () => {
-        const headers = [`GET ${sessionUpstreamPath(req, publicBasePath)} HTTP/1.1`, `Host: 127.0.0.1:${port}`];
-        for (const name of ['upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version', 'sec-websocket-protocol', 'origin', 'user-agent', 'cookie']) {
-            const value = req.headers[name];
-            if (value) headers.push(`${name}: ${value}`);
-        }
-        upstream.write(`${headers.join('\r\n')}\r\n\r\n`);
-        if (head?.length) upstream.write(head);
-        socket.pipe(upstream);
-        upstream.pipe(socket);
-    });
-    upstream.once('error', () => websocketFailure(socket, 502, 'Bad Gateway'));
-    socket.once('error', () => upstream.destroy());
-    socket.once('close', () => upstream.destroy());
-}
-
 // view: { privileged, workspaceRoot }. Without proven verified-admin context
 // every caller receives the restricted projection.
 function publicRobot(robot, run, view = {}) {
@@ -302,15 +225,20 @@ function matchRobotPath(pathname, suffix) {
     return pathname.match(new RegExp(`^/api/robots/(${ROBOT_ID})${escaped}$`))?.[1] || null;
 }
 
-function sessionRobotId(pathname) {
-    return pathname.match(new RegExp(`^/api/robots/(${ROBOT_ID})/session(?:/|$)`))?.[1] || null;
-}
-
 // Live Sessions owner of work started by this request: the signed principal
 // of a verified direct user. Internal-token callers start system work.
 function signedOwner(req) {
     const access = req[ACCESS];
     return access?.internal === false && typeof access.principal === 'string' ? access.principal : null;
+}
+
+// A workflow the robot relay starts for a user's own run carries that run's owner: only an internal-token call with no
+// user identity of its own may name it. Every other caller gets its own signed principal, or none.
+function flowOwner(req, body) {
+    const signed = signedOwner(req);
+    if (signed) return signed;
+    const relayed = req[ACCESS]?.internal === true && !req.headers['x-roboteam-user-id'];
+    return relayed && typeof body?.ownerPrincipal === 'string' ? body.ownerPrincipal : null;
 }
 
 function isLiveSessionsPath(pathname) {
@@ -567,7 +495,7 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     }
     if (pathname === '/api/roboflow/flows' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: actor.id, ownerPrincipal: signedOwner(req) }) });
+        sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: actor.id, ownerPrincipal: flowOwner(req, body) }) });
         return true;
     }
     const eventsId = pathname.match(new RegExp(`^${FLOW_PATH}/events$`))?.[1];
@@ -633,7 +561,7 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
 // the records name the outer infrastructure. Responses never carry credentials. Listing also
 // releases leases of robots deleted while proxyAgent was unreachable. useProxy is the global switch;
 // while it is off, workstations start with a direct connection and keep their leases.
-async function handleRobotProxies({ req, res, pathname, actor, proxyPool, robotStore, runtimeManager }) {
+async function handleRobotProxies({ req, res, pathname, actor, robotStore, runtimeManager }) {
     const releaseId = pathname.match(new RegExp(`^/api/robots/(${ROBOT_ID})/proxy$`))?.[1];
     if (pathname !== '/api/robot-proxies' && pathname !== '/api/proxy-settings' && !releaseId) return false;
     if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
@@ -644,76 +572,22 @@ async function handleRobotProxies({ req, res, pathname, actor, proxyPool, robotS
         sendJson(res, 200, { ok: true, useProxy: await settings.setUseProxy(body.useProxy) }); return true;
     }
     if (pathname === '/api/robot-proxies' && req.method === 'GET') {
-        const useProxy = settings ? await settings.useProxy() : true;
-        if (!proxyPool) { sendJson(res, 200, { ok: true, available: false, active: false, useProxy, proxies: {} }); return true; }
+        const listing = await runtimeManager.roboWork.call('proxy_assignments', {});
+        const useProxy = listing.useProxy;
         const robots = new Set((await robotStore.list()).map(robot => robot.id));
-        const listing = await proxyPool.assignments(null);
         const proxies = {};
         for (const assignment of listing.assignments) {
             if (robots.has(assignment.subject)) proxies[assignment.subject] = assignment;
-            else void proxyPool.release(assignment.subject);
+            else void runtimeManager.roboWork.call('proxy_release', { robotId: assignment.subject }).catch(() => {});
         }
         sendJson(res, 200, { ok: true, available: listing.available, active: listing.active, useProxy, proxies }); return true;
     }
     if (releaseId && req.method === 'DELETE') {
-        if (!proxyPool || !await robotStore.get(releaseId)) { sendError(res, 404, 'robot not found'); return true; }
+        if (!await robotStore.get(releaseId)) { sendError(res, 404, 'robot not found'); return true; }
         if (runtimeManager.status(releaseId).state !== 'stopped') {
             sendError(res, 409, 'stop the robot workstation before releasing its proxy'); return true;
         }
-        sendJson(res, 200, { ok: true, released: await proxyPool.release(releaseId) }); return true;
-    }
-    sendError(res, 404, 'not found');
-    return true;
-}
-
-// Terminal profiles let the Explorer and the Ploinky router pick a robot for a
-// WebTTY shell. All three routes are decided on the access that the family
-// gate verified for this very request; the compatibility actor and the
-// internal token never grant anything here. Bodies were read, size-limited and
-// signature-checked by the gate and are only parsed here.
-const TERMINAL_PROFILES_PATH = /^\/api\/terminal-profiles(?:\/|$)/;
-const TERMINAL_PROFILE_PREPARE = new RegExp(`^/api/terminal-profiles/(${ROBOT_ID})/prepare$`);
-
-function emptyJsonBody(raw) {
-    if (!raw.length) return true;
-    const parsed = JSON.parse(raw.toString('utf8'));
-    return Boolean(parsed) && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
-}
-
-async function handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager }) {
-    if (!TERMINAL_PROFILES_PATH.test(pathname)) return false;
-    const decision = terminalProfileAccess(access);
-    if (!decision.ok) { sendError(res, decision.status, decision.error); return true; }
-    const workspaceRoot = runtimeManager.workspaceRoot;
-    if (pathname === '/api/terminal-profiles' && req.method === 'GET') {
-        sendJson(res, 200, { ok: true, profiles: await listTerminalProfiles(robotStore) });
-        return true;
-    }
-    if (pathname === '/api/terminal-profiles/resolve' && req.method === 'POST') {
-        let body;
-        try { body = JSON.parse((await readRawBody(req)).toString('utf8')); } catch { body = null; }
-        const keys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : [];
-        if (keys.join() !== 'id,version' || body.version !== 1 || typeof body.id !== 'string') {
-            sendError(res, 400, 'a version 1 profile id is required');
-            return true;
-        }
-        sendJson(res, 200, await resolveTerminalProfile(robotStore, body.id, workspaceRoot));
-        return true;
-    }
-    const prepareId = pathname.match(TERMINAL_PROFILE_PREPARE)?.[1];
-    if (prepareId && req.method === 'POST') {
-        if (!emptyJsonBody(await readRawBody(req))) { sendError(res, 400, 'prepare takes an empty JSON object'); return true; }
-        const robot = await robotStore.get(prepareId);
-        if (!robot) { sendError(res, 404, 'robot not found'); return true; }
-        const root = await robotTerminalDirectory(robotStore, prepareId, workspaceRoot);
-        const codingAgents = robotCodingAgents(robot);
-        const tools = await runtimeManager.toolCache.prepareShellTools();
-        await prepareRobotShell(path.join(robotStore.robotPath(prepareId), 'home'), {
-            codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
-        });
-        await runtimeManager.prepareOpenCode?.(prepareId, { prepare: codingAgents.includes('opencode') });
-        sendJson(res, 200, { ok: true, id: robot.id, label: robot.name, root });
-        return true;
+        sendJson(res, 200, { ok: true, ...(await runtimeManager.roboWork.call('proxy_release', { robotId: releaseId })) }); return true;
     }
     sendError(res, 404, 'not found');
     return true;
@@ -723,7 +597,6 @@ export function createRoboTeamServer(options) {
     const robotStore = options.robotStore;
     const runtimeManager = options.runtimeManager;
     const roboflow = options.roboflow || null;
-    const proxyPool = options.proxyPool || runtimeManager.proxyPool || null;
     const robotModels = options.robotModels || new RobotModels({ robotStore, runtimeManager });
     const skillsets = options.skillsets || runtimeManager.skillsets || new RobotSkillsets({ robotStore,
         workspaceRoot: runtimeManager.workspaceRoot, alaCommand: runtimeManager.alaCommand });
@@ -733,9 +606,6 @@ export function createRoboTeamServer(options) {
     const routeKey = String(options.routeKey || 'roboTeamAgent');
     const publicDir = path.resolve(options.publicDir || DEFAULT_PUBLIC_DIR);
     const mcpPort = Number(options.mcpPort) || 7000;
-    const codingAgentStatus = options.codingAgentStatus || createCodingAgentStatus({
-        installation: () => resolveAlaInstallation({ env: { ...process.env, ACHILLES_ALA_COMMAND: runtimeManager.alaCommand || '' } }),
-    });
     const liveSessions = options.liveSessions || null;
     const liveStreamLifetimeMs = Number.isSafeInteger(options.liveSessionsStreamLifetimeMs) && options.liveSessionsStreamLifetimeMs > 0
         ? options.liveSessionsStreamLifetimeMs : LIVE_STREAM_LIFETIME_MS;
@@ -760,12 +630,13 @@ export function createRoboTeamServer(options) {
                 const listing = await authorizeRobotListing(req, url, { internalToken });
                 if (!listing.ok) return sendError(res, listing.status, listing.error);
                 const robots = await robotStore.list();
+                const remote = await runtimeManager.roboWork.call('robot_status', { robotIds: robots.map(robot => robot.id), includeLogins: listing.canAdmin });
+                const statuses = new Map(remote.robots.map(robot => [robot.id, robot]));
                 const views = await Promise.all(robots.map(async (robot) => {
                     const view = publicRobot(robot, runtimeManager.status(robot.id), { privileged: listing.canAdmin, workspaceRoot: runtimeManager.workspaceRoot });
-                    const home = path.join(robotStore.robotPath(robot.id), 'home');
-                    // Logins name the outer accounts a robot holds, so only administrators see them.
-                    return { ...view, codingAgent: await codingAgentStatus.activeAgent(home, view.codingAgents),
-                        ...(listing.canAdmin ? { codingAgentLogins: await codingAgentStatus.logins(home) } : {}) };
+                    const status = statuses.get(robot.id);
+                    return { ...view, codingAgent: status?.activeAgent || null,
+                        ...(listing.canAdmin ? { codingAgentLogins: status?.logins || {} } : {}) };
                 }));
                 return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: views });
             }
@@ -786,18 +657,9 @@ export function createRoboTeamServer(options) {
                 return await handleLiveSessions({ req, res, pathname, viewer: { principal: live.principal, canAdmin: live.canAdmin },
                     registry: liveSessions, publicDir, publicBasePath, streamLifetimeMs: liveStreamLifetimeMs });
             }
-            if (await handleTerminalProfiles({ req, res, pathname, access, robotStore, runtimeManager })) return;
             const actor = requestActor(req, internalToken);
             if (!actor) return sendError(res, 401, 'authenticated Ploinky user is required');
 
-            const sessionId = sessionRobotId(pathname);
-            if (sessionId && req.method === 'GET') {
-                const robot = await robotStore.get(sessionId);
-                if (!robot) return sendError(res, 404, 'robot not found');
-                const port = runtimeManager.activePort(robot.id);
-                if (!port) return sendError(res, 409, 'robot is not running');
-                return proxySessionHttp(req, res, port, publicBasePath);
-            }
             if (pathname === '/' && req.method === 'GET') return servePage(res, publicDir, 'index.html', publicBasePath);
             if (pathname === '/config.js' && req.method === 'GET') {
                 res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
@@ -1038,12 +900,16 @@ export function createRoboTeamServer(options) {
                 if (!robot) return sendError(res, 404, 'robot not found');
                 return sendJson(res, 200, { ok: true, logs: await runtimeManager.logs(robot.id, url.searchParams.get('tail')) });
             }
-            if (await handleRobotProxies({ req, res, pathname, actor, proxyPool, robotStore, runtimeManager })) return;
+            if (await handleRobotProxies({ req, res, pathname, actor, robotStore, runtimeManager })) return;
             if (roboflow && await handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath })) return;
             sendError(res, 404, 'not found');
         } catch (error) {
+            if (error.code === 'ROBOWORK_UNAVAILABLE' && error.retryable === true) {
+                return sendJson(res, 503, { ok: false, code: 'ROBOWORK_UNAVAILABLE', retryable: true,
+                    error: 'RoboWork is temporarily unavailable; retry this request.' });
+            }
             const message = String(error?.message || '');
-            const badRequest = error instanceof SyntaxError || /required|invalid|at most|too large|must be browser or desktop/.test(message);
+            const badRequest = error instanceof SyntaxError || /required|invalid|at most|too large|must be browser or desktop|^cwd /.test(message);
             const conflict = /already running|active robot limit|occupied|active task|different cwd|stop the|interrupted GUI/.test(message);
             const explicit = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode < 500;
             const status = explicit ? error.statusCode : badRequest ? 400 : conflict ? 409 : 500;
@@ -1052,30 +918,12 @@ export function createRoboTeamServer(options) {
             } else {
                 console.warn(`[roboTeamAgent] ${req.method} ${req.url} rejected (${status}): ${message}`);
             }
-            sendError(res, status, status < 500 ? message : 'request failed');
+            sendJson(res, status, { ok: false, error: status < 500 ? message : 'request failed', ...(status < 500 && error.code ? { code: error.code } : {}) });
         }
     });
 
-    server.on('upgrade', async (req, socket, head) => {
-        try {
-            const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-            // The Router mints upgrade auth-info over an empty body.
-            const access = await authorizeWorkspaceRequest(req, url, { internalToken, refusal: ROBOTEAM_ENTITLEMENT_ERROR });
-            if (!access.ok) return websocketDenial(socket, access.status, access.error, url.pathname);
-            const robotId = sessionRobotId(url.pathname);
-            if (!robotId) return websocketFailure(socket, 404, 'Not Found');
-            const actor = requestActor(req, internalToken);
-            if (!actor) return websocketFailure(socket, 401, 'Unauthorized');
-            const robot = await robotStore.get(robotId);
-            if (!robot) return websocketFailure(socket, 404, 'Not Found');
-            const port = runtimeManager.activePort(robot.id);
-            if (!port) return websocketFailure(socket, 409, 'Conflict');
-            proxySessionWebSocket(req, socket, head, port, publicBasePath);
-        } catch {
-            websocketFailure(socket, 500, 'Internal Server Error');
-        }
-    });
+
     return server;
 }
 
-export const httpServerInternals = { normalizeBasePath, sessionUpstreamPath, matchRobotPath, sessionRobotId, renderRecordedTurn, lookupRecordedTurn };
+export const httpServerInternals = { normalizeBasePath, matchRobotPath, renderRecordedTurn, lookupRecordedTurn };

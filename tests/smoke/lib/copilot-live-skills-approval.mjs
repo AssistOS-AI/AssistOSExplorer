@@ -78,7 +78,7 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
     assert.equal(snapshot.session.engine.cwd, workspace);
     assert.equal(snapshot.session.engine.robotId, fixture.robotId);
     assert.equal(snapshot.session.engine.backend, 'codex');
-    assert.equal(snapshot.native.home, `${snapshot.robotRoot}/home`);
+    assert.equal(snapshot.native.home, `/home/${fixture.robotId}`);
     const directory = url.searchParams.get('workspace-dir') || url.searchParams.get('dir');
     assert.ok([fixture.folder, workspace].includes(directory), 'Approval changed browser workspace.');
     assert.equal(snapshot.session.sessionId, sessionId);
@@ -115,19 +115,22 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
     const files = new Map();
     for (const skill of selected) {
         const source = liveSkillSources(fixture, skill, workspaceRoot);
-        assert.deepEqual(snapshot.capturedFiles[skill.name], { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 });
+        assert.deepEqual({ descriptorSha256: snapshot.capturedFiles[skill.name].descriptorSha256, helperSha256: snapshot.capturedFiles[skill.name].helperSha256 },
+            { descriptorSha256: source.descriptorSha256, helperSha256: source.helperSha256 });
         const entry = snapshot.catalog.entries.filter(entry => entry.name === skill.name);
         assert.equal(entry.length, 1);
         assert.equal(entry[0].identity, `${fixture.repositoryName}/${skill.name}`);
         assert.ok(snapshot.session.skillExecution.entries.some(item => item.identity === entry[0].identity));
         const destination = `${workspace}/.agents/skills/${skill.name}`;
         const sourcePath = `${fixture.repositoryRoot}/skills/${skill.name}`;
-        const links = snapshot.catalog.links.filter(link => link.destination === destination);
+        const links = snapshot.catalog.links.filter(link => link.name === skill.name);
         assert.equal(links.length, 1);
-        assert.equal(links[0].repoName, fixture.repositoryName);
-        assert.equal(links[0].sourcePath, `skills/${skill.name}`);
-        assert.equal(snapshot.liveLinks[skill.name].destination, destination);
-        assert.equal(snapshot.liveLinks[skill.name].linkTarget, links[0].linkTarget);
+        assert.equal(links[0].source, sourcePath);
+        const mapping = snapshot.session.skillExecution.mounts.filter(mount => mount.source === sourcePath);
+        assert.equal(mapping.length, 1);
+        assert.equal(mapping[0].target, links[0].target);
+        assert.equal(snapshot.liveLinks[skill.name].destination, `${snapshot.session.skillExecution.skillsDirectory}/${skill.name}`);
+        assert.equal(snapshot.liveLinks[skill.name].linkTarget, links[0].target);
         assert.equal(snapshot.liveLinks[skill.name].resolvedSource, sourcePath);
         assert.equal(entry[0].sourcePath, sourcePath);
         for (const directory of [destination, sourcePath]) {

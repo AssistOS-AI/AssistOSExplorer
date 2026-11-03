@@ -51,7 +51,7 @@ export async function action(invocation = {}) {
             ...(prompt ? { objective: prompt } : {}),
             folder,
         });
-        return 'RoboFlow workflow started. It keeps running as a background task in this conversation; open that task to follow the workflow, its phases and their logs.';
+        return 'RoboFlow workflow requested. Its task card in this conversation shows its progress, its phases and their logs, or why RoboFlow refused it. A refused workflow has started nothing.';
     } catch (error) {
         return `Could not start the workflow: ${error?.message || 'request failed'}`;
     }
