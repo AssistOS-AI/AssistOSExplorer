@@ -508,6 +508,21 @@ async function openPlainTerminalDiscovery(page, directoryPath) {
   return { page, chooser: null, discovery, context: page.context(), profiled: false };
 }
 
+// Ploinky allows 5 session creates per 60 s per browser session (429 webtty_creation_rate). Space ours to 4 per window,
+// leaving room for the negative-path attempts; each wait is recorded in the test annotations.
+const createStamps = [];
+async function spaceTerminalCreation(page) {
+  const windowMs = 61_000, budget = 4;
+  for (;;) {
+    while (createStamps.length && Date.now() - createStamps[0] >= windowMs) createStamps.shift();
+    if (createStamps.length < budget) break;
+    const wait = createStamps[0] + windowMs - Date.now();
+    test.info().annotations.push({ type: 'webtty-creation-wait', description: `${wait} ms` });
+    await page.waitForTimeout(wait);
+  }
+  createStamps.push(Date.now());
+}
+
 async function selectTerminalTarget(chooserState, predicate, terminals) {
   const selectedTarget = chooserState.discovery.targets.find(predicate);
   expect(selectedTarget, 'the requested terminal target must be present in the current discovery').toBeTruthy();
@@ -516,6 +531,7 @@ async function selectTerminalTarget(chooserState, predicate, terminals) {
   );
   if (selectedButton) await expect(selectedButton).toHaveCount(1);
   const { context } = chooserState;
+  await spaceTerminalCreation(chooserState.page);
   // Waiters that lose to a retry must not surface as unhandled rejections.
   const arm = () => {
     const waiters = {

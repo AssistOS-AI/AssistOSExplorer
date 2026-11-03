@@ -103,17 +103,21 @@ export async function cancelWebchatGenerationIfActive(page, {timeout = smokeConf
 }
 
 // Observe the upload response without intercepting it: a route.fulfill replacement leaves the client's progress
-// indicator showing, while the real response settles it.
+// indicator showing, while the real response settles it. The body is requested inside the response event itself,
+// before the page can navigate or refresh and evict it from the inspector cache.
 async function captureNextUploadResponse(page) {
-  const responsePromise = page.waitForResponse(
-    (response) => response.request().method() === 'POST' && new URL(response.url()).pathname.includes('/uploads'),
-    { timeout: smokeConfig.timeouts.navigation },
-  );
-  return (async () => {
-    const response = await responsePromise;
-    const body = await response.text();
-    return { status: response.status(), payload: JSON.parse(body), body };
-  })();
+  let listener, timer;
+  const captured = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('The WebChat upload response was not observed.')), smokeConfig.timeouts.navigation);
+    listener = (response) => {
+      if (response.request().method() !== 'POST' || !new URL(response.url()).pathname.includes('/uploads')) return;
+      page.off('response', listener);
+      const status = response.status();
+      response.text().then((body) => ({ status, payload: JSON.parse(body), body })).then(resolve, reject);
+    };
+    page.on('response', listener);
+  });
+  return captured.finally(() => { clearTimeout(timer); page.off('response', listener); });
 }
 
 export async function setComposer(page, value) {
