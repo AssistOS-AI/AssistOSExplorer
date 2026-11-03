@@ -19,7 +19,7 @@ async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'robot-repl-skills-')));
     const workingDir = path.join(root, 'workspace');
     await fs.mkdir(workingDir);
-    const store = new RobotStore({ dataDir: path.join(root, 'private') });
+    const store = new RobotStore({ dataDir: path.join(root, 'private'), roboWork: { call: async () => ({}) } });
     const robot = await store.create({ name: 'terminal-test' });
     const privateRoot = path.join(store.robotPath(robot.id), 'copilot');
     await fs.mkdir(privateRoot);

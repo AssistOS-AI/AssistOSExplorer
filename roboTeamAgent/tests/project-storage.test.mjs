@@ -12,7 +12,7 @@ async function fixture(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-project-storage-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const dataDir = path.join(root, '.data/roboTeamAgent');
-    const store = new RobotStore({ dataDir });
+    const store = new RobotStore({ dataDir, roboWork: { call: async () => ({}) } });
     const robot = await store.create({ name: 'worker' });
     const project = path.join(root, 'project');
     await fs.mkdir(project);

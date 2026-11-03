@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const AGENT_ROOT = join(TEST_DIR, '..');
+// RoboWork owns the nested Podman runtime, the storage initialization and the coding-agent version pins.
+const WORK_ROOT = join(AGENT_ROOT, '..', 'roboWorkAgent');
 
 function runScript(scriptPath, env) {
     return new Promise((resolve, reject) => {
@@ -183,11 +185,14 @@ test('manifest declares the MCP startup budget', async () => {
 });
 
 test('manifest requests the bounded nested Podman capability', async () => {
-    const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
+    const manifest = JSON.parse(await readFile(join(WORK_ROOT, 'manifest.json'), 'utf8'));
 
     assert.deepEqual(manifest.containerSecurity, { nestedPodman: true });
     assert.equal(manifest.network, undefined);
-    assert.deepEqual(manifest.profiles.default.openPorts, ['7000:7000', '3001:3001']);
+    assert.deepEqual(manifest.profiles.default.openPorts, ['17100:7000', '13101:3001']);
+    const roboTeam = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
+    assert.equal(roboTeam.containerSecurity, undefined);
+    assert.deepEqual(roboTeam.profiles.default.openPorts, ['7000:7000', '3001:3001']);
 });
 
 test('manifest stores RoboTeam state in the workspace private data tree', async () => {
@@ -207,7 +212,7 @@ test('manifest declares the required report repository alongside ALA', async () 
 });
 
 test('manifest selects runtime-only GUI images and the persistent tool cache', async () => {
-    const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
+    const manifest = JSON.parse(await readFile(join(WORK_ROOT, 'manifest.json'), 'utf8'));
     const constants = await import('../server/constants.mjs');
     // The manifest declares only the optional exact coding-agent version pins; proxy secrets live in proxyAgent.
     assert.deepEqual(manifest.profiles.default.env, [
@@ -221,7 +226,7 @@ test('manifest selects runtime-only GUI images and the persistent tool cache', a
 });
 
 test('install hook verifies the runtime and prepares the persistent tool-cache root', async () => {
-    const source = await readFile(join(AGENT_ROOT, 'scripts', 'install.sh'), 'utf8');
+    const source = await readFile(join(WORK_ROOT, 'scripts', 'install.sh'), 'utf8');
 
     assert.match(source, /\/opt\/roboteam-runtime\/contract-v6/);
     assert.match(source, /roboteam-runtime-v6/);
@@ -370,10 +375,10 @@ test('storage initialization failure stops startup before either service', async
     const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-storage-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const fixturePath = await storageInitFixture(directory);
-    const result = await runScript(join(AGENT_ROOT, 'scripts/startAgent.sh'), {
+    const result = await runScript(join(WORK_ROOT, 'scripts/startAgent.sh'), {
         PATH: fixturePath, STORAGE_INIT_EXIT: '19',
-        ROBOTEAM_AGENT_SERVER_SCRIPT: '/nonexistent-agent-server',
-        ROBOTEAM_SERVICE_MAIN: '/nonexistent-service',
+        ROBOWORK_AGENT_SERVER_SCRIPT: '/nonexistent-agent-server',
+        ROBOWORK_SERVICE_MAIN: '/nonexistent-service',
     });
     assert.equal(result.code, 19);
     assert.equal(result.stdout + result.stderr, '');

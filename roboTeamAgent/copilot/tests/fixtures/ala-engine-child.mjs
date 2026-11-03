@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
-import net from 'node:net';
-import { randomUUID } from 'node:crypto';
+import http from 'node:http';
 import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
@@ -15,12 +14,14 @@ if (!args.includes('--ignore') || value('--ignore') !== path.resolve(cwd, '.robo
     throw new Error('Missing private workspace directory mask.');
 }
 if (args.includes('--ploinky-task')) throw new Error('Legacy Ploinky option was forwarded.');
-const folder = args[args.indexOf('as') - 1];
+// RoboWork lists the folders granted for the run first and its own mounts after them.
+const runtimeAlias = args.findIndex((arg, index) => arg === 'as' && args[index + 1] === 'ploinky-runtime');
+const folder = args[runtimeAlias - 1];
 if (value('--cwd') !== cwd) throw new Error('Missing canonical writable cwd');
 if (args.includes('--external-workspace') || args.includes('--skill-catalog') || args.includes('--skill')) {
     throw new Error('Removed ALA skill options were forwarded.');
 }
-if (!folder || value('as') !== 'ploinky-runtime') throw new Error('Missing generic runtime mount.');
+if (runtimeAlias < 0) throw new Error('Missing generic runtime mount.');
 if (!(await fs.stat(path.join(folder, 'tasks.sock'))).isSocket()) throw new Error('Missing task notification socket.');
 if (args.includes('--taskFile') || args.includes('--user-message-file')) throw new Error('The turn prompt must arrive on stdin.');
 // Like ALA with --control-stdin: the first control record is the turn prompt.
@@ -101,6 +102,23 @@ if (prompt.includes('FORCED_FAILURE')) {
             break;
         }
     }
+    // A robot asking for a human answers through the human-input channel RoboWork mounts for the run.
+    let humanInput = null;
+    if (prompt.includes('HUMAN_INPUT_CALLBACK')) {
+        const mount = args.findIndex((arg, index) => arg === 'as' && args[index + 1] === 'roboflow-human-input');
+        const directory = args[mount - 1];
+        const { token } = JSON.parse(await fs.readFile(path.join(directory, 'context.json'), 'utf8'));
+        humanInput = await new Promise((resolve, reject) => {
+            const request = http.request({ socketPath: path.join(directory, 'request.sock'), path: '/require-human-input', method: 'POST',
+                headers: { 'x-task-capability': token } }, (response) => {
+                let body = '';
+                response.on('data', (chunk) => { body += chunk; });
+                response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(body) }));
+            });
+            request.on('error', reject);
+            request.end(JSON.stringify({ question: 'Which one?' }));
+        });
+    }
     let openCodeModels = [];
     if (backend === 'opencode') {
         const { SoulGateway } = await import(pathToFileURL(path.join(home, '.config/opencode/plugins/soul-gateway.js')));
@@ -112,7 +130,7 @@ if (prompt.includes('FORCED_FAILURE')) {
         } finally { await plugin.dispose(); }
     }
     const output = JSON.stringify({ prompt, skill: args.includes('--skill') ? value('--skill') : null, choice, resumed: args.includes('--resume-session'), config,
-        openCodeModels, folders: args.flatMap((value, index) => value === '--folder' ? [{ source: args[index + 1], alias: args[index + 2] === 'as' ? args[index + 3] : null,
+        openCodeModels, humanInput, folders: args.flatMap((value, index) => value === '--folder' ? [{ source: args[index + 1], alias: args[index + 2] === 'as' ? args[index + 3] : null,
             ...(args[index + 2] === 'at' ? { target: args[index + 3], expose: args[index + 4] === 'expose' } : {}) }] : []),
         effortOverride: value('--effort') ?? null, repositories: process.env.ALA_TASK_REPOSITORIES, model: value('--model') || config.models[backend] || null, modelOverride: value('--model') || null, ca: value('--ca') || null,
         credential: process.env.PLOINKY_AGENT_SECRET || process.env.SSO_ACCESS_TOKEN || null,
@@ -123,14 +141,12 @@ if (prompt.includes('FORCED_FAILURE')) {
         // without waiting for its acknowledgement: RoboTeam observes the task
         // while the turn is ending.
         const { eventToken } = JSON.parse(await fs.readFile(path.join(folder, 'context.json'), 'utf8'));
-        const socket = net.connect(path.join(folder, 'tasks.sock'));
-        await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
-        socket.on('error', () => {});
-        socket.write(`${JSON.stringify({ token: eventToken, id: randomUUID(), event: { type: 'task-started',
-            task: { agentName: 'otherAgent', taskId: 'remote-live-task', toolName: 'long_job' } } })}\n`);
+        const request = http.request({ socketPath: path.join(folder, 'request.sock'), path: '/task-started', method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-ploinky-event-token': eventToken } });
+        request.on('error', () => {});
+        request.end(JSON.stringify({ task: { agentName: 'GPTResearcher', taskId: 'remote-live-task', toolName: 'start_research' } }));
         await new Promise((resolve) => setTimeout(resolve, 100));
-        // The child exits without waiting for the acknowledgement.
-        socket.unref();
+        // The child exits without waiting for the answer.
     }
     if (prompt.includes('QUEUED_FOLLOWUP')) {
         emit({ type: 'message-accepted', id: 'queued-input', delivery: 'queued' });

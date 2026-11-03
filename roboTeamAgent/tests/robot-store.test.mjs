@@ -11,9 +11,11 @@ import { RobotStore } from '../server/robot-store.mjs';
 async function withStore(operation) {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-robot-test-'));
     try {
-        const store = new RobotStore({ dataDir });
+        const calls = [];
+        const roboWork = { call: async (method, input) => { calls.push({ method, input }); return {}; } };
+        const store = new RobotStore({ dataDir, roboWork });
         await store.initialize();
-        await operation(store, dataDir);
+        await operation(store, dataDir, calls);
     } finally {
         await fs.rm(dataDir, { recursive: true, force: true });
     }
@@ -55,10 +57,10 @@ test('creates a persistent workspace robot and exposes it in the shared listing'
         assert.match(robot.id, /^research-analyst-[a-f0-9]{6}$/);
         assert.equal(robot.schema, 'roboteam-robot-v1');
         assert.equal(Object.hasOwn(robot, 'ownerUserId'), false);
-        for (const directory of ['home', 'workspace', 'downloads', 'logs', 'runtime']) {
+        for (const directory of ['runtime']) {
             assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, directory))).isDirectory(), true);
         }
-        assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.codex'))).isDirectory(), true);
+        await assert.rejects(fs.stat(path.join(dataDir, 'robots', robot.id, 'home')), { code: 'ENOENT' });
         assert.equal((await store.list()).length, 1);
         assert.equal((await store.get(robot.id)).id, robot.id);
     });
@@ -75,19 +77,18 @@ test('enforces workspace-wide unique names and deletes by robot id', async () =>
 });
 
 test('startup reuses an ordinary default robot unchanged and ordinary deletion permits recreation', async () => {
-    await withStore(async (store, dataDir) => {
+    await withStore(async (store, dataDir, calls) => {
         const existing = await store.create({ name: 'default' });
-        const homeFile = path.join(dataDir, 'robots', existing.id, 'home', 'keep.txt');
         const metadataFile = path.join(dataDir, 'robots', existing.id, 'metadata.json');
-        await fs.writeFile(homeFile, 'keep this home');
         const before = await fs.readFile(metadataFile, 'utf8');
         assert.deepEqual(await store.ensureDefaultRobot(), existing);
-        assert.deepEqual(await new RobotStore({ dataDir }).ensureDefaultRobot(), existing);
+        assert.deepEqual(await new RobotStore({ dataDir, roboWork: store.roboWork }).ensureDefaultRobot(), existing);
         assert.equal(await fs.readFile(metadataFile, 'utf8'), before);
-        assert.equal(await fs.readFile(homeFile, 'utf8'), 'keep this home');
+        // The robot home belongs to RoboWork; reuse at startup asks it for nothing more.
+        assert.deepEqual(calls.map(call => call.method), ['robot_ensure']);
         assert.equal(await store.delete(existing.id), true);
         assert.equal(await store.getByName('default'), null);
-        const recreated = await new RobotStore({ dataDir }).ensureDefaultRobot();
+        const recreated = await new RobotStore({ dataDir, roboWork: store.roboWork }).ensureDefaultRobot();
         assert.equal(recreated.name, 'default');
         assert.deepEqual(Object.keys(recreated).sort(),
             ['codingAgents', 'createdAt', 'id', 'name', 'schema', 'updatedAt']);
@@ -99,7 +100,7 @@ test('concurrent startup and ordinary creation produce exactly one default acros
     await withStore(async (store, dataDir) => {
         const moduleUrl = new URL('../server/robot-store.mjs', import.meta.url).href;
         const source = `import { RobotStore } from ${JSON.stringify(moduleUrl)};
-const store = new RobotStore({dataDir:process.argv[1]});
+const store = new RobotStore({ dataDir:process.argv[1], roboWork: { call: async () => ({}) } });
 await store.initialize();
 if (process.argv[2] === 'create') {
     try { await store.create({name:'default'}); }

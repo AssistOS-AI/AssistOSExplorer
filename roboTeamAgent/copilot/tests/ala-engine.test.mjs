@@ -14,6 +14,8 @@ import { createCopilotPublisher } from '../src/lib/liveSessions/publisher.mjs';
 import { LiveSessionsIpcServer } from '../../server/live-sessions/ipc-server.mjs';
 import { LiveSessionsRegistry } from '../../server/live-sessions/registry.mjs';
 import { socketFixture } from '../../tests/helpers/live-sessions-ipc-client.mjs';
+import { createHumanInputChannel } from '../../server/human-input-channel.mjs';
+import { createRunManagerRoboWork } from './helpers/robowork-run-stand-in.mjs';
 
 const childEntry = fileURLToPath(new URL('./fixtures/ala-engine-child.mjs', import.meta.url));
 
@@ -31,12 +33,9 @@ test('queued native input permits another final event and returns the last execu
     assert.equal(JSON.parse(result.outputText).prompt.includes('QUEUED_FOLLOWUP'), true);
 });
 
-test('the workspace root itself is a valid robot working directory', async (t) => {
+test('the workspace root itself is refused as a robot working directory', async (t) => {
     const h = await harness(t, {}, { workspaceAtRoot: true });
-    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'ROOT_WORKSPACE' });
-    const output = JSON.parse(result.outputText);
-    assert.equal(output.prompt.includes('ROOT_WORKSPACE'), true);
-    assert.equal(output.resumed, false);
+    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'ROOT_WORKSPACE' }), /workspace root is not available to a robot/);
 });
 function deferred() {
     let resolve;
@@ -68,12 +67,16 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false, executio
         saveConfig() { throw new Error('Execution must not write an ALA config'); },
         async discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; },
     };
+    const robotId = 'robot-a';
+    // RoboWork runs the turn; its stand-in starts the fixture where ALA would start.
+    const standIn = roboWork ? null : await createRunManagerRoboWork({ workspaceRoot: process.env.PLOINKY_WORKSPACE_ROOT, home, childEntry,
+        robot: { config: () => installation.loadConfig(configFile), agents: () => installation.discoverCodingAgents({ env: process.env }) } });
     const engine = createAlaEngine({ workingDir, sessionStore: store, skillCatalog: catalog, installation,
-        execution, webchatLogsBase, livePublisher, backgroundTasks, roboWork,
+        execution: { robotId, ...execution }, webchatLogsBase, livePublisher, backgroundTasks, roboWork: roboWork || standIn,
         settings: { readAchillesSettings: () => ({}), getPermissionMode: () => 'ask-for-approval' },
         interactions: { cancelTurn() {}, resolve() {}, ...interactions } });
-    t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); await fs.rm(home, { recursive: true, force: true }); });
-    return { workingDir, engine, store, installation, sessionId: session.sessionId, home, configFile,
+    t.after(async () => { await engine.close(); await standIn?.close(); await fs.rm(workingDir, { recursive: true, force: true }); await fs.rm(home, { recursive: true, force: true }); });
+    return { workingDir, engine, store, installation, roboWork: standIn, sessionId: session.sessionId, home, configFile,
         setSkills: (next) => { records = next; }, setModels };
 }
 
@@ -139,7 +142,8 @@ test('stderr final and stdout produce one persisted answer; live selection is pr
     assert.equal(output.credential, null);
     assert.equal(output.model, 'native-first');
     assert.equal(output.modelOverride, null);
-    assert.equal(output.ca, null);
+    // RoboTeam resolves the robot's agent and names it to RoboWork.
+    assert.equal(output.ca, 'codex');
     assert.equal(result.session.messages[0].text, 'Original UI request');
     assert.equal(result.session.messages[1].text, result.outputText);
     // Progress is transient: it is emitted as events but never persisted on the message.
@@ -155,7 +159,8 @@ test('stderr final and stdout produce one persisted answer; live selection is pr
     const next = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Second' })).outputText);
     assert.equal(next.resumed, true);
     assert.equal(next.model, null);
-    assert.equal(next.repositories, '');
+    // RoboWork starts ALA with no task repositories at all.
+    assert.equal(next.repositories, undefined);
     assert.deepEqual(next.config.models, {});
     assert.equal(next.prompt.includes('PRIVATE_USER_PROMPT'), false);
 });
@@ -326,13 +331,33 @@ test('workflow human-input channel is mounted explicitly into the native sandbox
         else process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY = previous;
     });
     const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Check workflow callback mount' });
-    assert.ok(JSON.parse(result.outputText).folders.some(folder => folder.source === h.workingDir && folder.alias === 'roboflow-human-input'));
+    // RoboWork mounts the channel; the callbacks it carries are relayed to the directory named by the environment.
+    assert.ok(h.roboWork.starts[0].channels.some(channel => channel.name === 'human-input'));
+    assert.ok(JSON.parse(result.outputText).folders.some(folder => folder.alias === 'roboflow-human-input'));
+});
+
+test('a human-input callback from the run reaches the workflow channel named by the environment', async t => {
+    const received = [];
+    const channel = await createHumanInputChannel({ request: async (input) => { received.push(input); return { id: 'question-1' }; },
+        stop: async () => {}, graceMs: 600000 });
+    const previous = process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
+    process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY = channel.directory;
+    t.after(async () => {
+        if (previous === undefined) delete process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
+        else process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY = previous;
+        await channel.close();
+    });
+    const h = await harness(t);
+    const output = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'HUMAN_INPUT_CALLBACK' })).outputText);
+    assert.equal(output.humanInput.status, 200);
+    assert.equal(output.humanInput.body.id, 'question-1');
+    assert.deepEqual(received, [{ question: 'Which one?' }]);
 });
 
 test('an explicit task agent and model are passed to ALA; otherwise ALA reads them from the robot config', async t => {
     const plain = await harness(t);
     const fromConfig = JSON.parse((await plain.engine.executeTurn({ sessionId: plain.sessionId, prompt: 'Config' })).outputText);
-    assert.deepEqual([fromConfig.ca, fromConfig.modelOverride, fromConfig.model], [null, null, 'native-first']);
+    assert.deepEqual([fromConfig.ca, fromConfig.modelOverride, fromConfig.model], ['codex', null, 'native-first']);
     const task = await harness(t, {}, { execution: { backend: 'codex', model: 'task-model' } });
     const explicit = JSON.parse((await task.engine.executeTurn({ sessionId: task.sessionId, prompt: 'Task' })).outputText);
     assert.deepEqual([explicit.ca, explicit.modelOverride, explicit.model], ['codex', 'task-model', 'task-model']);
@@ -657,6 +682,17 @@ test('a task delegated during the turn starts its run before the turn\'s run end
         publisher.startRun({ kind: 'copilot-task', title: 'Delegated', owner: origin.liveOwner }).end({ status: 'finished' });
         return { id: 'task_local' };
     } };
+    // The turn relays the run's task callback; the delegated agent confirms the task through the Ploinky agent client.
+    const library = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-agent-lib-'));
+    await fs.mkdir(path.join(library, 'client'));
+    await fs.writeFile(path.join(library, 'client/AgentMcpClient.mjs'),
+        'export const createAgentClient = async () => ({ getTaskStatus: async id => ({ id, status: \'queued\' }) });\n');
+    const previousLibrary = process.env.PLOINKY_AGENT_LIB_DIR;
+    process.env.PLOINKY_AGENT_LIB_DIR = library;
+    t.after(async () => {
+        if (previousLibrary === undefined) delete process.env.PLOINKY_AGENT_LIB_DIR; else process.env.PLOINKY_AGENT_LIB_DIR = previousLibrary;
+        await fs.rm(library, { recursive: true, force: true });
+    });
     const h = await harness(t, {}, { livePublisher: publisher, backgroundTasks });
     const owner = Object.freeze({ claimId: 'c_turn' });
     await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'LIVE_TASK', context: { liveOwner: owner } });

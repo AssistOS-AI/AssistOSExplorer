@@ -145,9 +145,10 @@ test('prepares coding agents once and reuses persistent generations', async (t) 
 });
 
 test('removes Ploinky symlink options only from managed tool processes', () => {
-    const source = { PATH: '/usr/local/bin:/usr/bin', NODE_OPTIONS: '--preserve-symlinks --preserve-symlinks-main', KEEP: 'yes' };
+    const source = { PATH: '/usr/local/bin:/usr/bin', LANG: 'C.UTF-8', NODE_OPTIONS: '--preserve-symlinks --preserve-symlinks-main', KEEP: 'yes' };
     const sanitized = toolCacheInternals.toolProcessEnv(source);
-    assert.deepEqual(sanitized, { PATH: source.PATH, KEEP: 'yes' });
+    // Only the listed variables reach a managed tool process.
+    assert.deepEqual(sanitized, { PATH: source.PATH, LANG: 'C.UTF-8' });
     assert.equal(source.NODE_OPTIONS, '--preserve-symlinks --preserve-symlinks-main');
 });
 

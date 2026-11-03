@@ -14,7 +14,10 @@ test('managed MCP readiness declares its private container port', async () => {
     const manifest = JSON.parse(await readFile(join(packageRoot, '..', 'manifest.json'), 'utf8'));
     assert.equal(manifest.readiness.protocol, 'mcp');
     assert.equal(manifest.cli, 'node /code/server/robot-cli.mjs');
-    assert.deepEqual(manifest.containerSecurity, { nestedPodman: true });
+    // RoboWork owns the nested Podman runtime.
+    assert.equal(manifest.containerSecurity, undefined);
+    const roboWork = JSON.parse(await readFile(join(packageRoot, '..', '..', 'roboWorkAgent', 'manifest.json'), 'utf8'));
+    assert.deepEqual(roboWork.containerSecurity, { nestedPodman: true });
 });
 
 async function fixture(t) {

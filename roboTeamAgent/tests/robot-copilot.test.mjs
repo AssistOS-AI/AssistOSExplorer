@@ -9,16 +9,13 @@ import test from 'node:test';
 import { RobotStore } from '../server/robot-store.mjs';
 import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
-import { ToolCache } from '../../roboWorkAgent/server/tool-cache.mjs';
-import { robotCodingAgents } from '../server/coding-agents.mjs';
 import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 import { alaTranscript, alaSessionsRoot } from '../copilot/src/lib/execution/alaTranscript.mjs';
 
-test('copilot cache preparation is silent but preparation failures remain visible', async (t) => {
+test('copilot context preparation is silent but RoboWork failures remain visible', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-cache-output-'));
     const keys = ['ROBOTEAM_DATA_DIR', 'ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID',
-        'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME', 'ACHILLES_ALA_COMMAND',
-        'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'CLAUDE_BIN', 'PATH', 'PLOINKY_WORKSPACE_ROOT'];
+        'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME', 'ACHILLES_ALA_COMMAND', 'PLOINKY_WORKSPACE_ROOT'];
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
     t.after(async () => {
         for (const key of keys) {
@@ -28,23 +25,21 @@ test('copilot cache preparation is silent but preparation failures remain visibl
     });
     process.env.ROBOTEAM_DATA_DIR = root;
     process.env.PLOINKY_WORKSPACE_ROOT = root;
-    await new RobotStore({ dataDir: root }).ensureDefaultRobot();
+    await new RobotStore({ dataDir: root, roboWork: { call: async () => ({}) } }).ensureDefaultRobot();
     const output = [];
     for (const method of ['log', 'warn', 'error']) t.mock.method(console, method, (...args) => output.push(args));
     let fail = false;
-    t.mock.method(ToolCache.prototype, 'prepareShellTools', async function (names) {
-        for (const name of ['codex', 'pi', 'opencode']) this.log(`[tool-cache] using ${name} cache generation example`);
-        if (fail) throw new Error('cache preparation failed');
-        // Copilot preparation prepares every coding agent so any agent can be logged in before it is selected;
-        // the robot's configured agents are then chosen from the prepared set.
-        assert.equal(names, undefined);
-        return { binPath: '/cached/bin', agents: { opencode: { binPath: '/cached/bin' } } };
-    });
-    await prepareCopilotContext('default', { dataDir: root });
+    const calls = [];
+    const roboWork = { call: async (method, input) => {
+        calls.push([method, input.robotId]);
+        if (fail) throw new Error('RoboWork preparation failed');
+        return {};
+    } };
+    const { robot } = await prepareCopilotContext('default', { dataDir: root, roboWork });
     assert.deepEqual(output, []);
-    assert.equal(process.env.OPENCODE_BIN, '/cached/bin/opencode');
+    assert.deepEqual(calls, [['robot_ensure', robot.id]]);
     fail = true;
-    await assert.rejects(prepareCopilotContext('default', { dataDir: root }), /cache preparation failed/);
+    await assert.rejects(prepareCopilotContext('default', { dataDir: root, roboWork }), /RoboWork preparation failed/);
     assert.deepEqual(output, []);
 });
 
@@ -61,16 +56,16 @@ test('chat history belongs to the project, survives robot deletion and is shared
     process.env.PLOINKY_WORKSPACE_ROOT = root;
     const one = path.join(root, 'one'); const two = path.join(root, 'two');
     await Promise.all([fs.mkdir(one), fs.mkdir(two)]);
-    const store = new RobotStore({ dataDir: process.env.ROBOTEAM_DATA_DIR });
+    const store = new RobotStore({ dataDir: process.env.ROBOTEAM_DATA_DIR, roboWork: { call: async () => ({}) } });
     await store.ensureDefaultRobot(); await store.create({ name: 'analyst' });
-    await prepareCopilotContext('default', { prepareTools: false, dataDir: store.dataDir });
+    await prepareCopilotContext('default', { dataDir: store.dataDir, roboWork: { call: async () => ({}) } });
     const sessions = new ConversationSessionStore({ workingDir: one });
     const first = await sessions.ensureCurrentSession();
     const other = await new ConversationSessionStore({ workingDir: two }).ensureCurrentSession();
     assert.notEqual(first.sessionId, other.sessionId);
     assert.equal(other.cwd, two);
     assert.equal(sessions.listSessions().sessions.length, 1);
-    await prepareCopilotContext('analyst', { prepareTools: false, dataDir: store.dataDir });
+    await prepareCopilotContext('analyst', { dataDir: store.dataDir, roboWork: { call: async () => ({}) } });
     const analyst = new ConversationSessionStore({ workingDir: one });
     assert.equal(analyst.listSessions().sessions.length, 1);
     assert.equal((await analyst.resumeSession(first.sessionId)).sessionId, first.sessionId);
@@ -120,17 +115,35 @@ export const createRepositoryClient = () => ({
     },
     remove: async () => ({ conflicts: [] }),
 });`);
-    const store = new RobotStore({ dataDir });
+    // The robot's home and its runs belong to RoboWork. The task runner reaches it through the Ploinky agent client, which
+    // here starts the fixture in a RoboWork run manager.
+    const robotHome = path.join(root, 'robowork-home');
+    await fs.mkdir(path.join(robotHome, '.ala'), { recursive: true });
+    await fs.writeFile(path.join(robotHome, '.ala/config.json'), JSON.stringify({ codingAgent: 'codex', models: {}, efforts: {} }));
+    await fs.writeFile(path.join(root, 'ploinky/Agent/client/AgentMcpClient.mjs'), `import fs from 'node:fs/promises';
+import path from 'node:path';
+import { createRunManagerRoboWork } from ${JSON.stringify(new URL('../copilot/tests/helpers/robowork-run-stand-in.mjs', import.meta.url).href)};
+let roboWork;
+export const createAgentClient = async () => ({
+    callTool: async (tool, input) => {
+        roboWork ||= await createRunManagerRoboWork({ workspaceRoot: process.env.PLOINKY_WORKSPACE_ROOT, home: ${JSON.stringify(robotHome)},
+            childEntry: ${JSON.stringify(entry)}, robot: {
+                config: async () => JSON.parse(await fs.readFile(path.join(${JSON.stringify(robotHome)}, '.ala/config.json'), 'utf8')),
+                agents: async () => [{ name: 'codex', available: true }] } });
+        return roboWork.call(tool, input);
+    },
+});`);
+    const store = new RobotStore({ dataDir, roboWork: { call: async () => ({}) } });
     const robot = await store.create({ name: 'worker' });
     const sessionId = randomUUID();
     const run = async (prompt, resume = false) => {
         return new Promise((resolve, reject) => {
             const child = spawn(process.execPath, ['--input-type=module', '-e',
-                `import { runRobotTask } from ${JSON.stringify(new URL('../server/robot-task.mjs', import.meta.url).href)}; await runRobotTask(process.argv.slice(2), ${JSON.stringify({ dataDir, alaCommand: entry })});`,
+                `import { runRobotTask } from ${JSON.stringify(new URL('../server/robot-task.mjs', import.meta.url).href)}; await runRobotTask(process.argv.slice(2), { ...${JSON.stringify({ dataDir, alaCommand: entry })}, roboWork: { call: async () => ({}) } });`,
                 '--', fileURLToPath(import.meta.url), '--robot', robot.name, '--cwd', workspace, '--session-id', sessionId, '--ca', 'codex',
                 ...(resume ? ['--resume-session'] : [])], {
                 env: { ...process.env,
-                    PLOINKY_WORKSPACE_ROOT: root }, stdio: ['pipe', 'pipe', 'pipe'],
+                    PLOINKY_WORKSPACE_ROOT: root, PLOINKY_AGENT_LIB_DIR: path.join(root, 'ploinky/Agent') }, stdio: ['pipe', 'pipe', 'pipe'],
             });
             // The task prompt is the first record on the runner's stdin.
             child.stdin.end(`${JSON.stringify({ type: 'prompt', prompt })}\n`);
@@ -149,7 +162,7 @@ export const createRepositoryClient = () => ({
     assert.match(first.stderr, /session-ready/);
     const sessionPath = path.join(workspace, '.roboteam/sessions', sessionId, 'config.json');
     const firstSession = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
-    assert.equal(firstSession.engine.home, await fs.realpath(path.join(dataDir, 'robots', robot.id, 'home')));
+    assert.equal(firstSession.engine.home, await fs.realpath(robotHome));
     assert.equal(firstSession.cwd, workspace);
     const second = await run('Follow up', true);
     assert.equal(second.output.resumed, true);
@@ -174,78 +187,4 @@ export const createRepositoryClient = () => ({
     assert.deepEqual(firstSession.skillExecution.entries.map((entry) => entry.name), ['human-report']);
     assert.deepEqual(continued.skillExecution.entries, firstSession.skillExecution.entries);
     await assert.rejects(fs.stat(path.join(workspace, '.data/achilles-cli')), /ENOENT/);
-});
-
-test('catalog listing reuses a valid prepared shell generation without npm lookups and falls back otherwise', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-prepared-tools-'));
-    const keys = ['ROBOTEAM_DATA_DIR', 'ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID',
-        'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME', 'ACHILLES_ALA_COMMAND',
-        'CODEX_BIN', 'PI_BIN', 'OPENCODE_BIN', 'CLAUDE_BIN', 'PATH', 'PLOINKY_WORKSPACE_ROOT'];
-    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-    t.after(async () => {
-        for (const key of keys) {
-            if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
-        }
-        await fs.rm(root, { recursive: true, force: true });
-    });
-    process.env.ROBOTEAM_DATA_DIR = root;
-    process.env.PLOINKY_WORKSPACE_ROOT = root;
-    await new RobotStore({ dataDir: root }).ensureDefaultRobot();
-    const cacheRoot = path.join(root, 'tool-cache');
-    const generation = path.join(cacheRoot, 'shell-generations', 'g1');
-    let piBin;
-    await fs.mkdir(path.join(generation, 'bin'), { recursive: true });
-    await fs.mkdir(path.join(cacheRoot, 'shell-selections'), { recursive: true });
-    for (const name of ['codex', 'opencode', 'pi', 'claude']) {
-        const id = name[0].repeat(64).replace(/[^0-9a-f]/g, 'e');
-        const bin = path.join(cacheRoot, name, 'generations', id, 'bin');
-        await fs.mkdir(bin, { recursive: true });
-        await fs.writeFile(path.join(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-        const stamp = JSON.stringify({ schema: 'roboteam-tool-cache-v1', name, generation: id, versions: { [name]: '1.0.0' } });
-        await fs.writeFile(path.join(cacheRoot, name, 'generations', id, 'stamp.json'), stamp);
-        await fs.writeFile(path.join(cacheRoot, name, 'current.json'), stamp);
-        await fs.symlink(path.relative(path.join(generation, 'bin'), path.join(bin, name)), path.join(generation, 'bin', name));
-        if (name === 'pi') piBin = path.join(bin, name);
-    }
-    await fs.symlink('../shell-generations/g1', path.join(cacheRoot, 'shell-selections', 'shell'));
-
-    const calls = [];
-    const make = () => new ToolCache({ root: cacheRoot, log: () => {}, versionPins: {},
-        execFileImpl: async (command, args) => { calls.push([command, ...args]); return { stdout: '"9.9.9"' }; } });
-    delete process.env.ROBOTEAM_COPILOT_ROOT;
-
-    await prepareCopilotContext('default', { dataDir: root, usePreparedTools: true, toolCache: make() });
-    assert.deepEqual(calls, []);
-    const selected = robotCodingAgents(await new RobotStore({ dataDir: root }).getByName('default'));
-    assert.ok(selected.length > 0);
-    const generationBin = (name) => path.join(cacheRoot, name, 'generations', name[0].repeat(64).replace(/[^0-9a-f]/g, 'e'), 'bin');
-    for (const name of selected) assert.equal(process.env[`${name.toUpperCase()}_BIN`], path.join(generationBin(name), name));
-    // Only the robot's selected agents are visible; the aggregate selection bin is not on PATH.
-    const entries = process.env.PATH.split(path.delimiter);
-    assert.ok(!entries.includes(path.join(cacheRoot, 'shell-selections', 'shell', 'bin')));
-    for (const name of ['codex', 'opencode', 'pi', 'claude']) {
-        assert.equal(entries.includes(generationBin(name)), selected.includes(name), name);
-    }
-
-    // A single-agent robot must not see the other agents through the prepared path.
-    await new RobotStore({ dataDir: root }).create({ name: 'solo', codingAgents: ['opencode'] });
-    for (const name of ['codex', 'opencode', 'pi', 'claude']) delete process.env[`${name.toUpperCase()}_BIN`];
-    process.env.PATH = previous.PATH;
-    await prepareCopilotContext('solo', { dataDir: root, usePreparedTools: true, toolCache: make() });
-    const solo = process.env.PATH.split(path.delimiter);
-    for (const name of ['codex', 'opencode', 'pi', 'claude']) assert.equal(solo.includes(generationBin(name)), name === 'opencode', name);
-    assert.equal(process.env.CODEX_BIN, undefined);
-    assert.ok(!solo.includes(path.join(cacheRoot, 'shell-selections', 'shell', 'bin')));
-
-    // Validation runs on every call: a broken executable invalidates the generation.
-    await fs.rm(piBin);
-    assert.equal(await make().peekShellTools(), null);
-    await assert.rejects(prepareCopilotContext('default', { dataDir: root, usePreparedTools: true, toolCache: make() }));
-    assert.ok(calls.some((call) => call.includes('view')), 'npm lookup runs when no valid generation exists');
-
-    // Callers that do not opt in keep the existing preparation path.
-    calls.length = 0;
-    await fs.writeFile(piBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    await prepareCopilotContext('default', { dataDir: root, toolCache: make() });
-    assert.ok(calls.some((call) => call.includes('view')));
 });

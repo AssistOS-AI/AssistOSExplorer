@@ -35,7 +35,7 @@ async function fixture(t) {
     await fs.mkdir(path.join(documentation, 'skills', 'human-report'), { recursive: true });
     await fs.writeFile(path.join(documentation, 'skills', 'human-report', 'SKILL.md'), '---\nname: human-report\ndescription: Report\n---\n');
     await fs.mkdir(project, { recursive: true });
-    const store = new RobotStore({ dataDir: path.join(root, 'private') });
+    const store = new RobotStore({ dataDir: path.join(root, 'private'), roboWork: { call: async () => ({}) } });
     const skillsets = new RobotSkillsets({ robotStore: store, workspaceRoot, discoverSkills });
     skillsets.repositoriesClient = { listRepositories: async () => [{ name: 'DocumentationSkills', source: documentation, origin: 'workspace' }] };
     return { store, skillsets, project };

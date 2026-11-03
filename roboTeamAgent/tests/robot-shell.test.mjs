@@ -5,15 +5,16 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { RobotStore } from '../server/robot-store.mjs';
+import { homeRoboWork } from './helpers/robowork-home.mjs';
 import { prepareRobotShell } from '../../roboWorkAgent/server/robot-shell.mjs';
 import { ToolCache } from '../../roboWorkAgent/server/tool-cache.mjs';
 
 test('new robots have shell configuration, repeated preparation preserves user configuration', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-shell-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const store = new RobotStore({ dataDir: root });
+    const roboWork = homeRoboWork(root), store = new RobotStore({ dataDir: root, roboWork });
     const robot = await store.create({ name: 'analyst' });
-    const home = path.join(store.robotPath(robot.id), 'home');
+    const home = roboWork.home(robot.id);
     await fs.appendFile(path.join(home, '.bashrc'), '# user configuration\n');
     await prepareRobotShell(home);
     const profile = await fs.readFile(path.join(home, '.bashrc'), 'utf8');

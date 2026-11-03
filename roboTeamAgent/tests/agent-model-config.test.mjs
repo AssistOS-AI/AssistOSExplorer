@@ -6,6 +6,7 @@ import test from 'node:test';
 import { ensureAgentConfig, DEFAULT_OPENCODE_MODEL } from '../../roboWorkAgent/server/agent-model-config.mjs';
 import { prepareRobotShell } from '../../roboWorkAgent/server/robot-shell.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
+import { homeRoboWork } from './helpers/robowork-home.mjs';
 
 async function home(t) {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-model-'));
@@ -62,20 +63,20 @@ test('robot shell preparation records the robot agent; only OpenCode robots get 
 
 test('creating a robot and changing its coding agent update its ALA config', async (t) => {
     const dataDir = await home(t);
-    const store = new RobotStore({ dataDir });
+    const roboWork = homeRoboWork(dataDir), store = new RobotStore({ dataDir, roboWork });
     await store.initialize();
     const robot = await store.create({ name: 'Config Robot' });
-    const robotHome = path.join(store.robotPath(robot.id), 'home');
+    const robotHome = roboWork.home(robot.id);
     assert.equal((await readConfig(robotHome)).codingAgent, 'opencode');
     await store.setCodingAgents(robot.id, ['codex']);
     assert.deepEqual(await readConfig(robotHome), { codingAgent: 'codex', models: { opencode: DEFAULT_OPENCODE_MODEL }, efforts: {} });
 });
 
 test('model selections preserve other agents and clear effort only when changing the model', async t => {
-    const dataDir = await home(t), store = new RobotStore({ dataDir });
+    const dataDir = await home(t), roboWork = homeRoboWork(dataDir), store = new RobotStore({ dataDir, roboWork });
     await store.initialize();
     const robot = await store.create({ name: 'Model settings' });
-    const robotHome = path.join(store.robotPath(robot.id), 'home');
+    const robotHome = roboWork.home(robot.id);
     await fs.writeFile(configFile(robotHome), JSON.stringify({ codingAgent: 'opencode',
         models: { opencode: 'provider/old', codex: 'saved-model' }, efforts: { opencode: 'high', codex: 'low' } }));
     await store.setCodingAgents(robot.id, ['opencode'], { model: 'provider/old' });

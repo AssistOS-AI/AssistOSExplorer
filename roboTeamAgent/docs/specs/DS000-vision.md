@@ -13,7 +13,7 @@ RoboTeam remains exactly one [Ploinky agent](wiki.html#definition-ploinky-agent)
 
 The Ploinky-hosted outer container owns a release-pinned stable Podman 5.8.7 inner engine through Ploinky's bounded `nestedPodman` capability. A robot may run visible `browser` or `desktop` tasks and non-GUI simple ALA tasks. One ALA process runs per robot, and additional requests wait in that robot's FIFO queue. A robot retains at most one GUI container independently from the ALA process lifetime.
 
-Every robot retains metadata, home, workspace, downloads, and logs after its inner container stops. The home mounted at `/config` is the durable installation and application-state boundary for that robot.
+Every robot retains its metadata in RoboTeam and its home in RoboWork after its runs stop. RoboWork holds the home, the durable installation and application-state boundary for that robot, as DS004 defines.
 
 Ploinky owns outer-container hosting, volume attachment, authentication, mutation protection, identity, and routing. RoboTeam owns workspace robot records, administrator-only creation and deletion, asynchronous ALA lifecycle, inner-container lifecycle, loopback MCP bridges, the authenticated Selkies proxy, current-version tool caching (unless an operator pins an exact coding-agent version), and human takeover/resume arbitration. Desktop automation uses computer-use-linux; browser automation uses Playwright MCP connected to the same visible Chromium session.
 

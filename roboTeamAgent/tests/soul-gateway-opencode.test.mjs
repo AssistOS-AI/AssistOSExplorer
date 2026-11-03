@@ -27,11 +27,24 @@ test('catalog conversion preserves exact IDs and known metadata without inventin
     assert.throws(() => openCodeGatewayModels({ error: 'upstream error' }), /invalid model catalog/);
 });
 
+// RoboWork mounts the robot's soul directory at /workspace/roboteam-soul, where the installed plugin looks for the socket.
+// Outside the sandbox the plugin is pointed at the directory the service listens in.
+async function mountPlugin(home, soul) {
+    const file = path.join(home, '.config/opencode/plugins/soul-gateway.js');
+    const source = await fs.readFile(file, 'utf8');
+    const patched = source.replace("'/workspace/roboteam-soul'", JSON.stringify(soul));
+    assert.notEqual(patched, source);
+    await fs.writeFile(file, patched);
+}
+
 async function setup(t, upstream) {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'soul-plugin-'));
     await prepareRobotShell(home);
+    const soul = path.join(home, 'soul');
+    await fs.mkdir(soul);
+    await mountPlugin(home, soul);
     const adapter = createSoulGatewayOpenCode({ connect: async () => upstream });
-    const socket = path.join(home, '.config/opencode/soul-gateway.sock');
+    const socket = path.join(soul, 'soul-gateway.sock');
     await adapter.listen(socket);
     const { SoulGateway } = await import(pathToFileURL(path.join(home, '.config/opencode/plugins/soul-gateway.js')));
     const plugin = await SoulGateway();
@@ -138,16 +151,19 @@ test('plugin reports unavailable service and installer refuses symlinks', async 
 
 test('service shares preparation, supports long mounted homes and closes robot sockets', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'soul-service-'));
-    const home = path.join(root, 'long-mounted-workspace-'.repeat(5), 'home');
+    const home = path.join(root, 'home');
+    const soul = path.join(root, 'long-mounted-workspace-'.repeat(5), 'soul');
     await fs.mkdir(home, { recursive: true });
+    await fs.mkdir(soul, { recursive: true });
     await prepareRobotShell(home);
+    await mountPlugin(home, soul);
     let connections = 0;
     const service = createSoulGatewayService({ adapter: () => createSoulGatewayOpenCode({ connect: async () => {
         connections++;
         return { scope: 'test', request: async () => listing() };
     } }) });
     t.after(async () => { await service.close(); await fs.rm(root, { recursive: true, force: true }); });
-    await Promise.all([service.prepare(home), service.prepare(home)]);
+    await Promise.all([service.prepare(soul), service.prepare(soul)]);
     assert.equal(connections, 1);
     const { SoulGateway } = await import(pathToFileURL(path.join(home, '.config/opencode/plugins/soul-gateway.js')));
     const plugin = await SoulGateway();
@@ -156,13 +172,13 @@ test('service shares preparation, supports long mounted homes and closes robot s
         await plugin.config(config);
         assert.ok(config.provider['soul-gateway'].models['vendor/model-a']);
         const duplicate = createSoulGatewayOpenCode({ connect: async () => ({ scope: 'other' }) });
-        await assert.rejects(duplicate.listen(path.join(home, '.config/opencode/soul-gateway.sock')), /already has an owner/);
+        await assert.rejects(duplicate.listen(path.join(soul, 'soul-gateway.sock')), /already has an owner/);
         await duplicate.close();
-        await service.remove(home);
+        await service.remove(soul);
         await assert.rejects(plugin.config({}), /Soul Gateway is unavailable/);
     } finally { await plugin.dispose(); }
     await service.close();
-    await assert.rejects(service.prepare(home), /service is closed/);
+    await assert.rejects(service.prepare(soul), /service is closed/);
 });
 
 // A mount shared from a macOS host rejects chmod on a socket with EINVAL.
@@ -177,7 +193,10 @@ function failSocketChmod(t, socket, code) {
 test('the listener starts where the filesystem cannot set the socket mode', async t => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'soul-socket-mode-'));
     await prepareRobotShell(home);
-    const socket = path.join(home, '.config/opencode/soul-gateway.sock');
+    const soul = path.join(home, 'soul');
+    await fs.mkdir(soul);
+    await mountPlugin(home, soul);
+    const socket = path.join(soul, 'soul-gateway.sock');
     failSocketChmod(t, socket, 'EINVAL');
     const warn = t.mock.method(console, 'warn', () => {});
     const adapter = createSoulGatewayOpenCode({ connect: async () => ({ scope: 'mode', request: async () => listing() }) });

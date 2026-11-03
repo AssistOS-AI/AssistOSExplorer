@@ -15,7 +15,7 @@ async function withStore(t) {
     await fs.mkdir(workspaceRoot);
     const previousWorkspaceRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = workspaceRoot;
-    const robotStore = new RobotStore({ dataDir: path.join(root, 'private') });
+    const robotStore = new RobotStore({ dataDir: path.join(root, 'private'), roboWork: { call: async () => ({}) } });
     await robotStore.initialize();
     t.after(async () => {
         if (previousWorkspaceRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT;

@@ -569,7 +569,14 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 // OpenCode takes seconds to start, so its list is reused while every input it
                 // derives from is unchanged; any failure to establish that lists as before.
                 const selection = { model: config.models[config.backend] || null, effort: config.efforts[config.backend] || null };
-                const { models } = await roboWork.call('robot_models', { robotId: config.robotId, agent: config.backend, cwd: config.cwd }, { timeoutMs: 90000 });
+                // The caller's ceiling ends the wait here; RoboWork's own call keeps its longer timeout.
+                const aborted = new Promise((_, reject) => {
+                    controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+                });
+                const { models } = await Promise.race([
+                    roboWork.call('robot_models', { robotId: config.robotId, agent: config.backend, cwd: config.cwd }, { timeoutMs: 90000 }),
+                    aborted,
+                ]);
                 return { backend: config.backend, models, ...selection };
             } finally {
                 signal?.removeEventListener('abort', abort);

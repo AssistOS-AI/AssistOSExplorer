@@ -29,7 +29,7 @@ test('only opted-in workflow policies mount the internal read-only human input s
     const folder = path.join(docs, 'skills/human-report');
     await fs.mkdir(folder, { recursive: true });
     await fs.writeFile(path.join(folder, 'SKILL.md'), '---\nname: human-report\ndescription: Write the final report.\n---\nReport outcomes.\n');
-    const store = new RobotStore({ dataDir: path.join(root, 'private') });
+    const store = new RobotStore({ dataDir: path.join(root, 'private'), roboWork: { call: async () => ({}) } });
     await store.initialize();
     const robot = await store.create({ name: 'Worker' });
     const skillsets = new RobotSkillsets({ robotStore: store, workspaceRoot: root, discoverSkills,

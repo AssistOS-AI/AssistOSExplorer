@@ -14,7 +14,7 @@ import { listedRepository } from './helpers/repository-listing.mjs';
 async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'legacy-skill-recovery-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const store = new RobotStore({ dataDir: path.join(root, 'private') });
+    const store = new RobotStore({ dataDir: path.join(root, 'private'), roboWork: { call: async () => ({}) } });
     const robot = await store.create({ name: 'Analyst' });
     const workspaceRoot = path.join(root, 'workspace');
     const previousRoot = process.env.PLOINKY_WORKSPACE_ROOT;

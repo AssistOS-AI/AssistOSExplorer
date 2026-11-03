@@ -8,17 +8,17 @@ import { RobotStore } from '../server/robot-store.mjs';
 import { ToolCache } from '../../roboWorkAgent/server/tool-cache.mjs';
 import { CODING_AGENT_NAMES, codingAgentEnvironment, GUI_CODING_AGENTS, robotCodingAgents } from '../server/coding-agents.mjs';
 import { prepareRobotShell } from '../../roboWorkAgent/server/robot-shell.mjs';
-import { buildRobotRunArgs } from '../server/runtime-manager.mjs';
+import { buildRobotRunArgs } from '../../roboWorkAgent/server/gui-manager.mjs';
 import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 
 test('new robots default to OpenCode and persisted API configuration supports every coding agent', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-agents-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const store = new RobotStore({ dataDir: root });
+    const store = new RobotStore({ dataDir: root, roboWork: { call: async () => ({}) } });
     const robot = await store.create({ name: 'worker' });
     assert.deepEqual(robot.codingAgents, ['opencode']);
     await store.setCodingAgents(robot.id, ['pi']);
-    assert.deepEqual((await new RobotStore({ dataDir: root }).get(robot.id)).codingAgents, ['pi']);
+    assert.deepEqual((await new RobotStore({ dataDir: root, roboWork: { call: async () => ({}) } }).get(robot.id)).codingAgents, ['pi']);
     await store.setCodingAgents(robot.id, ['claude']);
     assert.deepEqual(robotCodingAgents(await store.get(robot.id)), ['claude']);
     await store.setCodingAgents(robot.id, ['codex', 'opencode', 'pi', 'claude']);

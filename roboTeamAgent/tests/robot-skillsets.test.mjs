@@ -330,7 +330,7 @@ test('rejects symlinked skills at capture, duplicate selected names and catalog 
 
 test('robot deletion refuses queued work and prevents late starts after deletion', async (t) => {
     const f = await fixture(t);
-    const manager = new RuntimeManager({ dataDir: f.dataDir, toolCache: {} });
+    const manager = new RuntimeManager({ dataDir: f.dataDir, toolCache: {}, roboWork: { call: async () => ({}) } });
     manager.shuttingDown = true;
     const task = manager.startTask(f.robot, 'simple', { task: 'test', cwd: f.source });
     await assert.rejects(manager.deleteRobot(f.robot.id, () => f.store.delete(f.robot.id)), /stop/);
