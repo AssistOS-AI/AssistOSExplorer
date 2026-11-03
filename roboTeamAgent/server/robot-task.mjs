@@ -1,4 +1,5 @@
 import readline from 'node:readline';
+import { taskOwnerContext } from './task-owner.mjs';
 import { prepareCopilotContext } from './copilot-context.mjs';
 import { setRobotContext } from '../copilot/src/lib/execution/robotContext.mjs';
 import { createCliRuntime } from '../copilot/src/index.mjs';
@@ -57,7 +58,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         const attach = process.env.ROBOTEAM_ATTACH_RUN ? JSON.parse(process.env.ROBOTEAM_ATTACH_RUN) : runtime.initialSession.remoteRun;
         if (options['--attach-run'] && attach?.runId !== options['--attach-run']) throw new Error('The saved run does not match RoboWork');
         const result = await runtime.engine.executeTurn({ sessionId: runtime.initialSession.sessionId, prompt: task.prompt,
-            signal: controller.signal, context: { workingDir: options['--cwd'], rawText: task.prompt },
+            signal: controller.signal, context: { workingDir: options['--cwd'], rawText: task.prompt, ...taskOwnerContext() },
             ...(options['--attach-run'] ? { attach } : {}),
             onControl: (send) => { control = send; },
             onEvent: (event) => { process.stderr.write('@@ALA_EVENT@@' + JSON.stringify(event) + '\n'); } });

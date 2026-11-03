@@ -133,6 +133,18 @@ test('the relay stamps a started workflow with the run owner and overwrites a ro
     assert.deepEqual(calls.map(call => call.ownerPrincipal), ['user:alice', 'user:alice', null, null]);
 });
 
+test('a robot task relay stamps the owner from the service-set task tag only', async () => {
+    const { taskOwnerContext } = await import('../server/task-owner.mjs');
+    const calls = [];
+    const createClient = async () => ({ callToolWithoutWait: async (tool, input) => { calls.push(input); return {}; } });
+    for (const env of [{ ROBOTEAM_TASK_TAG: JSON.stringify({ ownerPrincipal: 'user:alice' }) }, { ROBOTEAM_TASK_TAG: JSON.stringify({ ownerPrincipal: null }) },
+        { ROBOTEAM_TASK_TAG: JSON.stringify({ ownerPrincipal: 'alice' }) }, { ROBOTEAM_TASK_TAG: '{' }, {}]) {
+        const relay = await createPloinkyTaskContext({ context: { workingDir: '/workspace/project', ...taskOwnerContext(env) }, robotId: 'robot-one', env: {}, createClient });
+        await relay.dispatch({ path: '/agent-call', body: { agent: 'roboTeamAgent', tool: 'roboflow_start_flow', payload: { workflowTypeId: 'w' } } });
+    }
+    assert.deepEqual(calls.map(call => call.ownerPrincipal), ['user:alice', null, null, null, null]);
+});
+
 test('extracts visible coding-agent messages from the ALA event stream', () => {
     let output = '';
     const parser = runtimeManagerInternals.createAlaProgressParser((text) => { output += text; });

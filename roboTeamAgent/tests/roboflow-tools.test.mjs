@@ -73,8 +73,11 @@ test('the start tool passes the relay\'s robot constraint to RoboFlow', { timeou
     f.child.kill('SIGTERM');
 });
 
-test('the start tool forwards the relay\'s owner only when the call has no user identity', { timeout: 10000 }, async t => {
-    for (const [metadata, expected] of [[undefined, 'user:alice'], [{ user: { id: 'bob' } }, undefined]]) {
+test('the start tool forwards the relay\'s owner only from RoboTeam acting for itself', { timeout: 10000 }, async t => {
+    const own = 'agent:AchillesIDE/roboTeamAgent';
+    const grant = (sub) => ({ invocation: { sub, actor: { kind: 'agent', id: sub } } });
+    for (const [metadata, expected] of [[grant(own), 'user:alice'], [grant('agent:other/agent'), undefined],
+        [undefined, undefined], [{ ...grant(own), user: { id: 'bob' } }, undefined]]) {
         const posted = deferred();
         const server = http.createServer(async (req, res) => {
             res.setHeader('content-type', 'application/json');
