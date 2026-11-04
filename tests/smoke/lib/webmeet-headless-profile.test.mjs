@@ -75,7 +75,7 @@ test('headless WebMeet acceptance keeps synthetic media, strict accounts, and fo
   assert.match(
     roomSpec,
     /trySignInToWebMeet\(memberPage, smokeConfig\.secondaryUser\)/,
-    'the fallback member must authenticate directly into WebMeet instead of booting and abandoning Explorer',
+    'the fallback member must use the shared WebMeet sign-in helper',
   );
   assert.match(roomSpec, /await expectWebMeetReady\(memberPage, \{ expectCreateRoom: false \}\)/);
   assert.match(roomSpec, /requireConfiguredPrincipal:\s*true/);
@@ -87,8 +87,8 @@ test('headless WebMeet acceptance keeps synthetic media, strict accounts, and fo
   const webMeetHelpers = fs.readFileSync(new URL('./webmeet.mjs', import.meta.url), 'utf8');
   assert.match(
     webMeetHelpers,
-    /return trySignIn\(page, account, webMeetDashboardPath\(\)\)/,
-    'the optional-account path must use the same direct destination as strict WebMeet navigation',
+    /const signedIn = await trySignIn\(page, account, explorerUrl\(\)\);\s*if \(signedIn\) await openWebMeetToolbar\(page\)/,
+    'the optional-account path must activate WebMeet through the Explorer toolbar after authenticating',
   );
   assert.match(
     webMeetHelpers,

@@ -5,6 +5,7 @@ import {
   deleteRoomIfPresent,
   joinRoom,
   openWebMeet,
+  webMeetSurface,
   sendWebMeetChat,
 } from '../lib/webmeet.mjs';
 
@@ -27,21 +28,21 @@ test.describe('WebMeet @ tags', () => {
       };
       page.on('request', observeAutocomplete);
 
-      await page.locator('#webmeetChatInput').fill('@op');
-      await page.locator('#webmeetChatInput').evaluate((input) => {
+      await webMeetSurface(page).locator('#webmeetChatInput').fill('@op');
+      await webMeetSurface(page).locator('#webmeetChatInput').evaluate((input) => {
         input.selectionStart = input.value.length;
         input.selectionEnd = input.value.length;
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
       await page.waitForTimeout(1_000);
-      await expect(page.locator('.webmeet-chat-suggest-group', { hasText: 'Agents' })).toHaveCount(0);
-      await expect(page.locator('.webmeet-chat-suggest-item', { hasText: '@open-interpreter' })).toHaveCount(0);
-      await expect(page.locator('#webmeetChatInput')).toHaveValue('@op');
+      await expect(webMeetSurface(page).locator('.webmeet-chat-suggest-group', { hasText: 'Agents' })).toHaveCount(0);
+      await expect(webMeetSurface(page).locator('.webmeet-chat-suggest-item', { hasText: '@open-interpreter' })).toHaveCount(0);
+      await expect(webMeetSurface(page).locator('#webmeetChatInput')).toHaveValue('@op');
 
       const message = `@open-interpreter ordinary-chat-${smokeConfig.runId}`;
       await sendWebMeetChat(page, message);
-      await expect(page.locator('#webmeetChatList', { hasText: message })).toBeVisible();
-      await expect(page.locator('#webmeetChatList .webmeet-chat-mention', { hasText: '@open-interpreter' })).toHaveCount(0);
+      await expect(webMeetSurface(page).locator('#webmeetChatList', { hasText: message })).toBeVisible();
+      await expect(webMeetSurface(page).locator('#webmeetChatList .webmeet-chat-mention', { hasText: '@open-interpreter' })).toHaveCount(0);
       expect(searches.length, 'typing a reference must exercise Explorer autocomplete').toBeGreaterThan(0);
       expect(searches.every(Boolean), 'autocomplete requests file and folder kinds in its search response').toBe(true);
       expect(metadataRequests, 'autocomplete must not queue per-result metadata requests ahead of chat').toBe(0);

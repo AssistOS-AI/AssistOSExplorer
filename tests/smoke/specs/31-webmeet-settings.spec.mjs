@@ -5,6 +5,7 @@ import {
   deleteRoomIfPresent,
   joinRoom,
   openWebMeet,
+  webMeetSurface,
 } from '../lib/webmeet.mjs';
 
 async function expectCustomSelectValue(locator, expectedValue) {
@@ -32,35 +33,35 @@ test.describe('WebMeet settings', () => {
       await createRoom(page, roomTitle);
       await joinRoom(page, roomTitle);
 
-      const settingsButton = page.locator('#webmeetMediaSettingsButton');
+      const settingsButton = webMeetSurface(page).locator('#webmeetMediaSettingsButton');
       await expect(settingsButton).toBeVisible();
 
       await settingsButton.click();
 
-      const settingsPanel = page.locator('#webmeetMediaSettingsPanel');
+      const settingsPanel = webMeetSurface(page).locator('#webmeetMediaSettingsPanel');
       await expect(settingsPanel).toBeVisible();
-      const settingsDialog = page.locator('dialog.webmeet-settings-modal-dialog');
+      const settingsDialog = webMeetSurface(page).locator('dialog.webmeet-settings-modal-dialog');
       await expect(settingsDialog).toBeVisible();
-      await page.locator('#webmeetSettingsFullscreenButton').click();
+      await webMeetSurface(page).locator('#webmeetSettingsFullscreenButton').click();
       await expect(settingsDialog).toHaveClass(/is-fullscreen/);
       await expect(settingsPanel).toContainText('Audio & video');
       await expect(settingsPanel).toContainText('Camera background');
       await expect(settingsPanel).toContainText('Avatar');
-      const voiceProcessingSelect = page.locator('#webmeetVoiceProcessingMode');
+      const voiceProcessingSelect = webMeetSurface(page).locator('#webmeetVoiceProcessingMode');
       await expectCustomSelectValue(voiceProcessingSelect, 'auto');
       await expect(voiceProcessingSelect.locator('.custom-select-option').first()).toHaveText('Voice Focus, recommended');
-      await expect(page.locator('#webmeetAutomaticParticipantVolume')).toBeChecked();
-      await expect(page.locator('#webmeetAudioHealthIndicator')).toHaveAttribute('data-health', 'good');
-      await expect(page.locator('#webmeetMicButton')).toHaveAttribute('title', 'Toggle Microphone - Audio: Good');
+      await expect(webMeetSurface(page).locator('#webmeetAutomaticParticipantVolume')).toBeChecked();
+      await expect(webMeetSurface(page).locator('#webmeetAudioHealthIndicator')).toHaveAttribute('data-health', 'good');
+      await expect(webMeetSurface(page).locator('#webmeetMicButton')).toHaveAttribute('title', 'Toggle Microphone - Audio: Good');
 
-      const effectSelect = page.locator('#webmeetBackgroundEffectSelect');
+      const effectSelect = webMeetSurface(page).locator('#webmeetBackgroundEffectSelect');
       await expect(effectSelect).toBeVisible();
 
       await selectCustomOption(effectSelect, settingsDialog, 'blur');
-      await expect(page.locator('#webmeetBackgroundBlurRow')).toBeVisible();
+      await expect(webMeetSurface(page).locator('#webmeetBackgroundBlurRow')).toBeVisible();
 
       await selectCustomOption(effectSelect, settingsDialog, 'image');
-      await expect(page.locator('#webmeetBackgroundImageRow')).toBeVisible();
+      await expect(webMeetSurface(page).locator('#webmeetBackgroundImageRow')).toBeVisible();
     } finally {
       await deleteRoomIfPresent(page, roomTitle).catch(() => null);
     }
@@ -73,15 +74,15 @@ test.describe('WebMeet settings', () => {
       await createRoom(page, roomTitle);
       await joinRoom(page, roomTitle);
 
-      await page.locator('#webmeetMediaSettingsButton').click();
+      await webMeetSurface(page).locator('#webmeetMediaSettingsButton').click();
 
-      const voiceProcessingHelpButton = page.getByRole('button', { name: 'About Voice processing' });
-      const voiceProcessingTooltip = page.locator('#webmeetSettingHelpVoiceProcessing');
+      const voiceProcessingHelpButton = webMeetSurface(page).getByRole('button', { name: 'About Voice processing' });
+      const voiceProcessingTooltip = webMeetSurface(page).locator('#webmeetSettingHelpVoiceProcessing');
       await voiceProcessingHelpButton.hover();
       await expect(voiceProcessingTooltip).toBeVisible();
 
-      const echoHelpButton = page.getByRole('button', { name: 'About Echo cancellation' });
-      const echoTooltip = page.locator('#webmeetSettingHelpEchoCancellation');
+      const echoHelpButton = webMeetSurface(page).getByRole('button', { name: 'About Echo cancellation' });
+      const echoTooltip = webMeetSurface(page).locator('#webmeetSettingHelpEchoCancellation');
       await echoHelpButton.focus();
       await expect(echoTooltip).toBeVisible();
     } finally {

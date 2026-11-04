@@ -6,21 +6,46 @@ import { collectLiveBoxEvidence } from './live-box.mjs';
 import { screenRuntimeEvidenceProvesUdpMux } from './screen-runtime-evidence.mjs';
 import { findSecretLeaks } from './security.mjs';
 import { evaluateGuestPresence } from './webmeet-public-room.mjs';
+import { explorerUrl } from './explorer.mjs';
 
-function webMeetDashboardPath() {
-  const params = new URLSearchParams({
-    webmeetSmoke: smokeConfig.runId,
-  });
-  if (smokeConfig.flags.webmeetMedia) {
-    params.set('webmeetMediaDebug', '1');
-  }
-  return `/explorer/index.html?${params.toString()}#webmeet-dashboard`;
+const webMeetFrames = new WeakMap();
+
+// DOM and RTC probes run in WebMeet; browser ownership and diagnostics stay on Page.
+export function webMeetSurface(page) {
+    const frame = webMeetFrames.get(page);
+    if (frame?.isDetached()) {
+        throw new Error('WebMeet expanded-modal frame is detached; reopen WebMeet before probing it.');
+    }
+    return frame || page;
+}
+
+async function openWebMeetToolbar(page) {
+    await page.getByRole('button', { name: 'WebMeet', exact: true }).click({
+        timeout: smokeConfig.timeouts.navigation,
+    });
+    const iframe = page.locator('expanded-modal iframe.expanded-modal-frame[title="WebMeet"]');
+    await expect(iframe).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
+    const handle = await iframe.elementHandle();
+    try {
+        const frame = await handle.contentFrame();
+        expect(frame, 'WebMeet toolbar must open its expanded-modal frame').not.toBeNull();
+        await frame.waitForURL((url) => (
+            url.origin === new URL(smokeConfig.baseURL).origin
+            && url.pathname === '/webmeetAgent/roomLoader.html'
+        ), { timeout: smokeConfig.timeouts.navigation });
+        await expect(frame.locator('div.webmeet-dashboard')).toBeVisible({
+            timeout: smokeConfig.timeouts.navigation,
+        });
+        webMeetFrames.set(page, frame);
+    } finally {
+        await handle.dispose();
+    }
 }
 
 export async function expectWebMeetReady(page, { expectCreateRoom = true } = {}) {
-  await expect(page.locator('div.webmeet-dashboard')).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
+  await expect(webMeetSurface(page).locator('div.webmeet-dashboard')).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
   if (expectCreateRoom) {
-    await expect(page.locator('#webmeetCreateRoomButton')).toBeVisible();
+    await expect(webMeetSurface(page).locator('#webmeetCreateRoomButton')).toBeVisible();
   }
 }
 
@@ -33,19 +58,25 @@ async function prepareWebMeetPage(page) {
 }
 
 export async function trySignInToWebMeet(page, account = smokeConfig.primaryUser) {
+  webMeetFrames.delete(page);
   await prepareWebMeetPage(page);
-  return trySignIn(page, account, webMeetDashboardPath());
+  const signedIn = await trySignIn(page, account, explorerUrl());
+  if (signedIn) await openWebMeetToolbar(page);
+  return signedIn;
 }
 
 export async function openWebMeet(page, account = smokeConfig.primaryUser, options = {}) {
   const { expectCreateRoom = true, requireConfiguredPrincipal = false } = options;
+  webMeetFrames.delete(page);
   await prepareWebMeetPage(page);
-  const principal = await signIn(page, account, webMeetDashboardPath(), { requireConfiguredPrincipal });
+  const principal = await signIn(page, account, explorerUrl(), { requireConfiguredPrincipal });
+  await openWebMeetToolbar(page);
   await expectWebMeetReady(page, { expectCreateRoom });
   return principal;
 }
 
 export async function openStandaloneWebMeet(page, { roomId = '', url = '' } = {}) {
+  webMeetFrames.delete(page);
   // `url` is a complete room link exactly as it was shared; it is opened verbatim.
   const target = url || (() => {
     const path = new URL('/webmeetAgent/roomLoader.html', smokeConfig.baseURL);
@@ -59,32 +90,32 @@ export async function openStandaloneWebMeet(page, { roomId = '', url = '' } = {}
   if (url) {
     expect(page.url(), 'the shared room link must be served without a redirect (for example to sign-in)').toBe(url);
   }
-  await expect(page.locator('body')).not.toContainText(/^Not Found$/);
+  await expect(webMeetSurface(page).locator('body')).not.toContainText(/^Not Found$/);
   return response;
 }
 
 export async function expectAuthenticatedStandaloneWebMeet(page) {
   await openStandaloneWebMeet(page);
-  await expect(page.locator('div.webmeet-dashboard')).toBeVisible({
+  await expect(webMeetSurface(page).locator('div.webmeet-dashboard')).toBeVisible({
     timeout: smokeConfig.timeouts.navigation,
   });
-  await expect(page.locator('#webmeetCreateRoomButton')).toBeVisible();
+  await expect(webMeetSurface(page).locator('#webmeetCreateRoomButton')).toBeVisible();
 }
 
 export async function joinStandaloneGuestRoom(page, { roomId, displayName, url = '' }) {
   await openStandaloneWebMeet(page, { roomId, url });
-  await expect(page.locator('#webmeetGuestEntryName')).toBeVisible({
+  await expect(webMeetSurface(page).locator('#webmeetGuestEntryName')).toBeVisible({
     timeout: smokeConfig.timeouts.navigation,
   });
-  await page.locator('#webmeetGuestEntryName').fill(displayName);
-  await page.locator('#webmeetGuestEntrySubmit').click();
-  await expect(page.locator('#webmeetChatInput')).toBeVisible({
+  await webMeetSurface(page).locator('#webmeetGuestEntryName').fill(displayName);
+  await webMeetSurface(page).locator('#webmeetGuestEntrySubmit').click();
+  await expect(webMeetSurface(page).locator('#webmeetChatInput')).toBeVisible({
     timeout: smokeConfig.timeouts.media,
   });
 }
 
 export async function leaveWebMeetRoomIfJoined(page) {
-    const captured = await page.evaluateHandle(() => {
+    const captured = await webMeetSurface(page).evaluateHandle(() => {
         const presenter = document.querySelector('webmeet-dashboard')?.webSkelPresenter;
         return {
             presenter,
@@ -95,7 +126,7 @@ export async function leaveWebMeetRoomIfJoined(page) {
     try {
         if (!await captured.evaluate(({joined}) => joined)) return;
         expect(await captured.evaluate(({room}) => Boolean(room)), 'joined guest must have a LiveKit room').toBe(true);
-        await page.locator('#webmeetLeaveButton').click();
+        await webMeetSurface(page).locator('#webmeetLeaveButton').click();
         await expect.poll(() => captured.evaluate(({presenter, room}) => (
             presenter.state.session === null
             && !presenter.state.leavingMeeting
@@ -112,13 +143,13 @@ export async function leaveWebMeetRoomIfJoined(page) {
 // Reads the room link from the admin "Room settings" dialog, which shows the
 // exact text its Copy button copies.
 export async function readRoomShareLink(page, title) {
-  const item = page
+  const item = webMeetSurface(page)
     .locator('#webmeetMeetingList .webmeet-list-item')
-    .filter({ has: page.getByText(title, { exact: true }) });
+    .filter({ has: webMeetSurface(page).getByText(title, { exact: true }) });
   await expect(item).toHaveCount(1);
   await item.first().hover();
   await item.first().getByRole('button', { name: 'Room settings' }).click();
-  const dialog = page.locator('dialog:has(webmeet-room-settings-modal)').last();
+  const dialog = webMeetSurface(page).locator('dialog:has(webmeet-room-settings-modal)').last();
   await expect(dialog).toBeVisible();
   const linkText = dialog.locator('[data-role="roomLinkText"]');
   await expect(linkText).toHaveText(/\S/);
@@ -129,7 +160,7 @@ export async function readRoomShareLink(page, title) {
 }
 
 async function participantCardRows(page) {
-  return page.evaluate(() => Array.from(document.querySelectorAll('webmeet-participant-card[data-participant-id]'))
+  return webMeetSurface(page).evaluate(() => Array.from(document.querySelectorAll('webmeet-participant-card[data-participant-id]'))
     .map((element) => ({
       identity: String(element.dataset.participantId || '').trim(),
       local: String(element.dataset.local || element.getAttribute('data-is-local') || '') === 'true',
@@ -152,7 +183,7 @@ export async function expectGuestVisibleToOwner(ownerPage, guestPage, guestDispl
 
 // A chat entry whose text is `message`, with the server-attributed author name.
 export async function expectChatEntry(page, message, { author = '' } = {}) {
-  const entry = page.locator('#webmeetChatList .webmeet-feed-item', { hasText: message });
+  const entry = webMeetSurface(page).locator('#webmeetChatList .webmeet-feed-item', { hasText: message });
   await expect(entry).toHaveCount(1, { timeout: smokeConfig.timeouts.navigation });
   if (author) {
     await expect(entry.locator('[data-role="chat-author"]')).toHaveText(author);
@@ -160,23 +191,23 @@ export async function expectChatEntry(page, message, { author = '' } = {}) {
 }
 
 export async function createRoom(page, title, { roomType = 'team' } = {}) {
-  await page.locator('#webmeetCreateRoomButton').click();
-  await expect(page.locator('[data-id="roomTitleInput"]')).toBeVisible();
+  await webMeetSurface(page).locator('#webmeetCreateRoomButton').click();
+  await expect(webMeetSurface(page).locator('[data-id="roomTitleInput"]')).toBeVisible();
   if (roomType === 'guest') {
-    const guestRoomType = page.locator('[data-id="roomTypeGuest"]');
-    await page.locator('label.room-type-option', { hasText: 'Public meeting' }).click();
+    const guestRoomType = webMeetSurface(page).locator('[data-id="roomTypeGuest"]');
+    await webMeetSurface(page).locator('label.room-type-option', { hasText: 'Public meeting' }).click();
     await expect(guestRoomType).toBeChecked();
   } else if (roomType !== 'team') {
     throw new Error(`Unsupported WebMeet room type: ${roomType}`);
   }
-  await page.locator('[data-id="roomTitleInput"]').fill(title);
-  await page.locator('[data-local-action="confirmCreate"]').click();
+  await webMeetSurface(page).locator('[data-id="roomTitleInput"]').fill(title);
+  await webMeetSurface(page).locator('[data-local-action="confirmCreate"]').click();
   if (roomType === 'guest') {
-    const confirmationDialog = page.locator('dialog:has(confirm-action-modal)').last();
+    const confirmationDialog = webMeetSurface(page).locator('dialog:has(confirm-action-modal)').last();
     await expect(confirmationDialog).toBeVisible();
     await confirmationDialog.getByRole('button', { name: 'No' }).click();
   }
-  const room = page.locator('#webmeetMeetingList .webmeet-list-item', { hasText: title }).first();
+  const room = webMeetSurface(page).locator('#webmeetMeetingList .webmeet-list-item', { hasText: title }).first();
   await expect(room).toBeVisible();
   const roomId = String(await room.getAttribute('data-id') || '').trim();
   expect(roomId, `created WebMeet room '${title}' must expose its room id`).toMatch(/^room_[0-9a-f-]{36}$/i);
@@ -184,45 +215,45 @@ export async function createRoom(page, title, { roomType = 'team' } = {}) {
 }
 
 export async function joinRoom(page, title) {
-  await page.locator('#webmeetMeetingList .webmeet-list-item', { hasText: title }).first().locator('.webmeet-meeting-row').click();
-/*  await expect(page.locator('#webmeetActiveRoomTitle')).toContainText(title);*/
-  await expect(page.locator('#webmeetChatInput')).toBeVisible();
+  await webMeetSurface(page).locator('#webmeetMeetingList .webmeet-list-item', { hasText: title }).first().locator('.webmeet-meeting-row').click();
+/*  await expect(webMeetSurface(page).locator('#webmeetActiveRoomTitle')).toContainText(title);*/
+  await expect(webMeetSurface(page).locator('#webmeetChatInput')).toBeVisible();
 }
 
 export async function sendWebMeetChat(page, message) {
-  await page.locator('#webmeetChatInput').fill(message);
-  await page.locator('.webmeet-compose [data-local-action="sendChat"]').click();
-  await expect(page.locator('#webmeetChatList', { hasText: message })).toBeVisible();
+  await webMeetSurface(page).locator('#webmeetChatInput').fill(message);
+  await webMeetSurface(page).locator('.webmeet-compose [data-local-action="sendChat"]').click();
+  await expect(webMeetSurface(page).locator('#webmeetChatList', { hasText: message })).toBeVisible();
 }
 
 export async function expectWebMeetSuggestion(page, { group, text }) {
-  await expect(page.locator('.webmeet-chat-suggest-menu')).toBeVisible();
+  await expect(webMeetSurface(page).locator('.webmeet-chat-suggest-menu')).toBeVisible();
   if (group) {
-    await expect(page.locator('.webmeet-chat-suggest-group', { hasText: group })).toBeVisible();
+    await expect(webMeetSurface(page).locator('.webmeet-chat-suggest-group', { hasText: group })).toBeVisible();
   }
-  await expect(page.locator('.webmeet-chat-suggest-item', { hasText: text }).first()).toBeVisible();
+  await expect(webMeetSurface(page).locator('.webmeet-chat-suggest-item', { hasText: text }).first()).toBeVisible();
 }
 
 export async function selectActiveWebMeetSuggestion(page) {
-  await page.keyboard.press('Enter');
+  await webMeetSurface(page).locator('#webmeetChatInput').press('Enter');
 }
 
 export async function deleteRoomIfPresent(page, title) {
-  const matchingRooms = page
+  const matchingRooms = webMeetSurface(page)
     .locator('#webmeetMeetingList .webmeet-list-item')
-    .filter({ has: page.getByText(title, { exact: true }) });
+    .filter({ has: webMeetSurface(page).getByText(title, { exact: true }) });
   let deleted = false;
   while (await matchingRooms.count()) {
     const item = matchingRooms.first();
     await item.hover();
     await item.getByRole('button', { name: 'Room settings' }).click();
 
-    const settingsDialog = page.locator('dialog:has(webmeet-room-settings-modal)').last();
+    const settingsDialog = webMeetSurface(page).locator('dialog:has(webmeet-room-settings-modal)').last();
     await expect(settingsDialog).toBeVisible();
     await settingsDialog.getByRole('tab', { name: 'Lifecycle' }).click();
     await settingsDialog.getByRole('button', { name: 'Delete room' }).click();
 
-    const confirmationDialog = page.locator('dialog:has(confirm-action-modal)').last();
+    const confirmationDialog = webMeetSurface(page).locator('dialog:has(confirm-action-modal)').last();
     await expect(confirmationDialog).toBeVisible();
     await expect(confirmationDialog).toContainText(title);
     await expect(confirmationDialog).toContainText(/cannot\s+be\s+undone/i);
@@ -236,13 +267,13 @@ export async function deleteRoomIfPresent(page, title) {
 }
 
 export async function enableMedia(page) {
-  await page.locator('#webmeetMicButton').click();
-  await page.locator('#webmeetCameraButton').click();
-  await expect(page.locator('#webmeetVideoGrid video').first()).toBeVisible({ timeout: smokeConfig.timeouts.media });
+  await webMeetSurface(page).locator('#webmeetMicButton').click();
+  await webMeetSurface(page).locator('#webmeetCameraButton').click();
+  await expect(webMeetSurface(page).locator('#webmeetVideoGrid video').first()).toBeVisible({ timeout: smokeConfig.timeouts.media });
 }
 
 export async function expectIncreasingRtpStats(page) {
-  const first = await page.evaluate(async () => {
+  const first = await webMeetSurface(page).evaluate(async () => {
     const pcs = window.__e2ePeerConnections || [];
     const rows = [];
     for (const pc of pcs) {
@@ -261,7 +292,7 @@ export async function expectIncreasingRtpStats(page) {
     return rows;
   });
   await page.waitForTimeout(2_500);
-  const second = await page.evaluate(async () => {
+  const second = await webMeetSurface(page).evaluate(async () => {
     const pcs = window.__e2ePeerConnections || [];
     const rows = [];
     for (const pc of pcs) {
@@ -285,7 +316,7 @@ export async function expectIncreasingRtpStats(page) {
 }
 
 async function bidirectionalMediaRtpSnapshot(page, peerConnectionIndices = null) {
-  return page.evaluate(async (requiredPeerConnectionIndices) => {
+  return webMeetSurface(page).evaluate(async (requiredPeerConnectionIndices) => {
     const required = Array.isArray(requiredPeerConnectionIndices)
       ? new Set(requiredPeerConnectionIndices)
       : null;
@@ -366,7 +397,7 @@ export async function expectBidirectionalAudioVideoRtp(page, { label, testInfo, 
 }
 
 async function webMeetMediaStateSnapshot(page) {
-  return page.evaluate(async () => {
+  return webMeetSurface(page).evaluate(async () => {
     const dashboard = document.querySelector('webmeet-dashboard');
     const presenter = dashboard?.webSkelPresenter || null;
     const room = presenter?.room
@@ -501,7 +532,7 @@ export async function expectWebMeetMediaState(page, { label, testInfo }) {
 const SCREEN_SOURCE = 'screen_share';
 
 async function participantSnapshot(page) {
-  return page.evaluate(() => {
+  return webMeetSurface(page).evaluate(() => {
     const rows = Array.from(document.querySelectorAll('webmeet-participant-card[data-participant-id]'))
       .map((element) => ({
         identity: String(element.dataset.participantId || '').trim(),
@@ -549,7 +580,7 @@ export async function expectTwoDistinctWebMeetParticipants(ownerPage, memberPage
 }
 
 async function screenPublicationSnapshot(page) {
-  return page.evaluate((screenSource) => {
+  return webMeetSurface(page).evaluate((screenSource) => {
     const dashboard = document.querySelector('webmeet-dashboard');
     const presenter = dashboard?.webSkelPresenter || null;
     const room = presenter?.room
@@ -644,7 +675,7 @@ export function exactRemoteScreenTrackStopped(snapshot, reference) {
 }
 
 async function exactTrackRtpSnapshot(page, { direction, trackId }) {
-  return page.evaluate(async ({ expectedDirection, expectedTrackId }) => {
+  return webMeetSurface(page).evaluate(async ({ expectedDirection, expectedTrackId }) => {
     const pcs = window.__e2ePeerConnections || [];
     const rows = [];
     for (const [peerConnectionIndex, pc] of pcs.entries()) {
@@ -678,7 +709,7 @@ async function exactTrackRtpSnapshot(page, { direction, trackId }) {
 }
 
 export async function rtcCandidateEvidence(page) {
-  return page.evaluate(async () => {
+  return webMeetSurface(page).evaluate(async () => {
     function parseTurnUrl(value) {
       const text = String(value || '').trim();
       const match = text.match(/^(turns?):(.*)$/i);
@@ -802,7 +833,7 @@ export async function expectWebMeetNetworkLane(page, {
     timeout: smokeConfig.timeouts.media,
   }).toBe(true);
   expect(evidence.some((pair) => pair.remote.port === 7881), `${label} must never select UDP 7881`).toBe(false);
-  const probe = await page.evaluate(() => ({
+  const probe = await webMeetSurface(page).evaluate(() => ({
     requiredTurnEndpoint: window.__e2eRequiredTurnEndpoint || null,
     rtcConfigurations: window.__e2eRtcConfigurations || [],
     generatedCandidates: window.__e2eIceCandidateEvents || [],
@@ -864,7 +895,7 @@ export function assessHeadlessMediaCandidatePort({ selectedPairs, remoteCandidat
 }
 
 async function rtcRemoteCandidates(page) {
-  return page.evaluate(async () => {
+  return webMeetSurface(page).evaluate(async () => {
     const candidates = [];
     for (const [peerConnectionIndex, pc] of (window.__e2ePeerConnections || []).entries()) {
       const stats = await pc.getStats();
@@ -980,7 +1011,7 @@ async function expectLocalScreenUdpMux(page, {
     requirePublicAddress: true,
     serverEvidence: screenRuntimeEvidence,
   });
-  const probe = await page.evaluate(() => ({
+  const probe = await webMeetSurface(page).evaluate(() => ({
     rtcConfigurations: window.__e2eRtcConfigurations || [],
     generatedCandidates: window.__e2eIceCandidateEvents || [],
   }));
@@ -1011,7 +1042,7 @@ export async function attachJsonEvidence(testInfo, name, value) {
 }
 
 async function joinMaterialSnapshot(page) {
-  return page.evaluate(async () => {
+  return webMeetSurface(page).evaluate(async () => {
     const dashboard = document.querySelector('webmeet-dashboard');
     const presenter = dashboard?.webSkelPresenter || null;
     const session = presenter?.state?.session || null;
@@ -1140,7 +1171,7 @@ async function setContextsOffline(pages, offline) {
   const contexts = [...new Set(pages.map((page) => page.context()))];
   await Promise.all(contexts.map((context) => context.setOffline(offline)));
   await expect.poll(async () => {
-    const states = await Promise.all(pages.map((page) => page.evaluate(() => navigator.onLine)));
+    const states = await Promise.all(pages.map((page) => webMeetSurface(page).evaluate(() => navigator.onLine)));
     return states.every((online) => online === !offline);
   }, {
     message: `all WebMeet browsers must report navigator.onLine=${!offline}`,
@@ -1315,7 +1346,7 @@ export async function exerciseScreenShareDirection({
   testInfo,
   screenRuntimeEvidence,
 }) {
-  const screenButton = sharerPage.locator('#webmeetScreenShareButton');
+  const screenButton = webMeetSurface(sharerPage).locator('#webmeetScreenShareButton');
   await expect(screenButton).toBeEnabled();
   await screenButton.click();
   await expect(screenButton).toHaveClass(/\bactive\b/, { timeout: smokeConfig.timeouts.media });

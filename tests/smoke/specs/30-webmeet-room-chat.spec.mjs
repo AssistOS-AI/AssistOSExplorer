@@ -37,6 +37,7 @@ import {
   leaveWebMeetRoomIfJoined,
   openStandaloneWebMeet,
   openWebMeet,
+  webMeetSurface,
   readRoomShareLink,
   sendWebMeetChat,
   trySignInToWebMeet,
@@ -413,9 +414,9 @@ test.describe('WebMeet rooms', () => {
       }
 
       await sendWebMeetChat(ownerPage, ownerMessage);
-      await expect(memberPage.locator('#webmeetChatList', { hasText: ownerMessage })).toBeVisible();
+      await expect(webMeetSurface(memberPage).locator('#webmeetChatList', { hasText: ownerMessage })).toBeVisible();
       await sendWebMeetChat(memberPage, memberMessage);
-      await expect(ownerPage.locator('#webmeetChatList', { hasText: memberMessage })).toBeVisible();
+      await expect(webMeetSurface(ownerPage).locator('#webmeetChatList', { hasText: memberMessage })).toBeVisible();
 
       if (smokeConfig.flags.webmeetMedia) {
         // The single live Box media-host-port label is the expected headless remote port.

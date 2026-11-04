@@ -201,7 +201,7 @@ bound to the same candidate and inventory pins:
 | official-release (`05`) | 1 | Exact title `opens a working Copilot from a newly created folder`; `SMOKE_ROBOWORK_MODEL_SETUP=1` |
 | supporting-10 (`10`) | 2 | Default graph; owned upload fixtures |
 | supporting-20 (`20`) | 1 | Default graph |
-| official-release (`30`) | 2 | Separate public-room and media commands; WebMeet and LiveKit ready |
+| official-release (`30`) | 2 | Separate public-room and media commands; primary administrator uses the toolbar; WebMeet and LiveKit ready |
 | supporting-31 (`31`), supporting-40 (`40`) | 2, 1 | WebMeet and LiveKit ready |
 | supporting-33 (`33`) | 1 | Umami ready, `SMOKE_UMAMI=1`, private dashboard inputs |
 | official-release (`50`) | 1 | OnlyOffice globally enabled and ready, `SMOKE_ONLYOFFICE=1`, absolute candidate `SMOKE_PLOINKY_BIN` |
@@ -213,9 +213,11 @@ The four official-release passes (specs 05, 30 twice and 50) must come from one 
 generation, each in its own invocation and artifact directory. For the media pass set
 `SMOKE_WEBMEET_HEADLESS=1`, `SMOKE_WEBMEET_MEDIA=1` and `SMOKE_MEDIA_TIMEOUT_MS=60000`; the
 public room needs neither media flags nor a secondary account. WebMeet is disabled by
-default, so enable `webmeet/webmeetAgent` globally (documented command or Marketplace) and
-prove WebMeet and LiveKit ready before preflight; prepare OnlyOffice alone, and neither
-Scribe nor STT is a prerequisite. Spec 03 stays a separate fresh cohort: record its full
+default; the primary administrator's toolbar entry activates it and waits for its runtime
+before mounting the dashboard iframe. Activation queues its declared LiveKit dependency
+asynchronously, so prove both runtimes ready before preflight. Prepare OnlyOffice
+separately; neither Scribe nor STT is a prerequisite.
+Spec 03 stays a separate fresh cohort: record its full
 transitive graph (Scribe transitively enables LiveKit) and never pre-enable its four
 selections. Measure startup, account and service setup, all four commands, postflight and a
 margin inside the hard 30-minute generation limit. When the measured sequence cannot fit,
@@ -365,7 +367,7 @@ This inventory assigns every RA1-RA6 and E1-E8 requirement to committed source o
 | E8 Live Sessions and Observability panel | Spec 07's two fixed identities cover owner/observer/message/stop behavior and the separate RA7 spec covers interrupted/resumed execution. The full Observability-panel feature has no complete committed cohort |
 
 The spec 07 cohort requires exactly two discovered identities and two passed terminal outcomes on attempt zero, with zero skips, retries, or errors. Source discovery and helper checks do not prove deployed behavior. Provider readiness and all deployed observations remain unverified until the actual run. This cohort complements the existing terminal WebTTY suite and does not cover every task/workflow producer or resolve the documented ALA socket limitations.
-The WebMeet specs open the WebMeet dashboard URL directly rather than through the Explorer toolbar, so the on-demand enablement does not apply. WebMeet is disabled in the default graph: enable `webmeet/webmeetAgent` in global mode (Marketplace or `ploinky enable agent webmeet/webmeetAgent global`) and wait for it and LiveKit to be Running before any WebMeet gate.
+Authenticated WebMeet smoke navigation opens Explorer's WebMeet toolbar button, waits for on-demand activation, and uses the dashboard inside `/webmeetAgent/roomLoader.html`. Helpers direct WebMeet DOM and RTC checks to that iframe while authentication and browser diagnostics retain the outer page. Standalone public-room navigation uses the published invitation URL. WebMeet is disabled in the default graph, and the primary administrator enters first. Activation queues the declared LiveKit dependency asynchronously; a ready room list alone does not prove LiveKit readiness. Both runtimes must be ready before the WebMeet gates.
 
 The official release cohort has a second WebMeet gate, the public-room gate, which
 proves that anyone with the URL of a public room can join that room. It is

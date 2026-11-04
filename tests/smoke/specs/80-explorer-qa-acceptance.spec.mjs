@@ -32,6 +32,7 @@ import {
   joinStandaloneGuestRoom,
   joinRoom,
   openWebMeet,
+  webMeetSurface,
   sendWebMeetChat,
 } from '../lib/webmeet.mjs';
 
@@ -490,9 +491,9 @@ test.describe('Explorer QA acceptance', () => {
       const participants = await expectTwoDistinctWebMeetParticipants(ownerPage, memberPage);
 
       await sendWebMeetChat(ownerPage, ownerMessage);
-      await expect(memberPage.locator('#webmeetChatList', { hasText: ownerMessage })).toBeVisible();
+      await expect(webMeetSurface(memberPage).locator('#webmeetChatList', { hasText: ownerMessage })).toBeVisible();
       await sendWebMeetChat(memberPage, memberMessage);
-      await expect(ownerPage.locator('#webmeetChatList', { hasText: memberMessage })).toBeVisible();
+      await expect(webMeetSurface(ownerPage).locator('#webmeetChatList', { hasText: memberMessage })).toBeVisible();
 
       if (smokeConfig.flags.failOnBrowserErrors) {
         expect(ownerDiagnostics.actionableEvents(), 'owner WebMeet browser errors').toEqual([]);
