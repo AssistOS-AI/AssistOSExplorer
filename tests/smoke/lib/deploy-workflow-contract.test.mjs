@@ -27,7 +27,6 @@ const WORKFLOWS = [
       "'AchillesIDE|https://github.com/AssistOS-AI/AssistOSExplorer.git'",
       "'UmamiAgent|https://github.com/AssistOS-AI/UmamiAgent.git'",
       "'OnlyOfficeAgent|https://github.com/AssistOS-AI/OnlyOfficeAgent.git'",
-      "'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'",
       "'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'",
       "'webmeet|https://github.com/AssistOS-AI/webmeet.git'",
       "CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'",
@@ -240,6 +239,15 @@ test('Explorer QA deploy explicitly reconciles every managed checkout to the sel
   const graphStart = source.indexOf('GRAPH_REPOSITORIES=(');
   const graphEnd = source.indexOf("PLOINKY_URL='", graphStart);
   const graphBlock = source.slice(graphStart, graphEnd);
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'explorer/manifest.json'), 'utf8'));
+  const installedRepositories = new Set(['AchillesIDE', 'copilot-agents', ...Object.keys(manifest.repos)]);
+
+  for (const [, repositoryName] of graphBlock.matchAll(/'([^'|]+)\|https:\/\/github\.com\/[^']+'/g)) {
+    assert.ok(
+      installedRepositories.has(repositoryName),
+      `${repositoryName} is not installed by the current Explorer graph; deployed source verification would require a missing checkout`,
+    );
+  }
 
   assert.match(graphBlock, /BRANCH_ARGS=\(\)/);
   assert.match(

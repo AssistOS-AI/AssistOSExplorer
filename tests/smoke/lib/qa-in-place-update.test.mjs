@@ -1109,7 +1109,7 @@ test('the production remote default reads a real origin and fails when ls-remote
     fs.writeFileSync(path.join(bin, 'podman'), `#!${process.execPath}
         const { spawnSync } = require('node:child_process');
         const args = process.argv.slice(2);
-        if (args[0] === 'info') { process.stdout.write('true pasta'); process.exit(0); }
+        if (args[0] === 'info') { process.stdout.write(args.at(-1) === '{{.Host.RootlessNetworkCmd}}' ? 'pasta' : 'true'); process.exit(0); }
         const result = spawnSync('git', args.slice(args.indexOf(${JSON.stringify(sandbox.image)}) + 1), { encoding: 'utf8' });
         process.stdout.write(result.stdout); process.exit(result.status);
     `, { mode: 0o700 });
@@ -1226,7 +1226,7 @@ function fakeGitEngine(root, network = '') {
         const fs = require('node:fs');
         const args = process.argv.slice(2);
         fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(args) + '\\n');
-        if (args[0] === 'info') { process.stdout.write('true ${network}'); process.exit(0); }
+        if (args[0] === 'info') { process.stdout.write(args.at(-1) === '{{.Host.RootlessNetworkCmd}}' ? '${network}' : 'true'); process.exit(0); }
         if (args[0] === 'container' && args[1] === 'exec') { process.stdout.write(JSON.stringify({ files: 1 })); process.exit(0); }
         const sub = args[args.indexOf('-C') + 2];
         const out = { 'ls-remote': 'ref: refs/heads/main\\tHEAD\\n' + 'b'.repeat(40) + '\\tHEAD\\n', 'rev-parse': args.includes('@{upstream}') ? 'origin/main\\n' : 'b'.repeat(40) + '\\n',
@@ -1337,6 +1337,39 @@ test('E9 (merge): the production fast-forward runs only in the sandbox, so the f
     assert.ok(merge.includes(`--volume=${f.repo}:${f.repo}:rw`) && merge.includes('--network=none'));
 });
 
+test('offline Git needs only rootless proof when Podman lacks rootless network metadata', () => {
+    const calls = [];
+    const sandbox = { engine: 'podman', image: 'f'.repeat(64) };
+    const run = createGitSandbox({ spawn: (program, args) => {
+        calls.push(args);
+        if (args[0] !== 'info') return { status: 0, stdout: 'a'.repeat(40) };
+        return args.at(-1) === '{{.Host.Security.Rootless}}'
+            ? { status: 0, stdout: 'true' }
+            : { status: 125, stderr: 'RootlessNetworkCmd is unavailable' };
+    } });
+    assert.equal(run('/r', sandbox, ['rev-parse', 'HEAD']).status, 0);
+    assert.equal(calls.filter(args => args[0] === 'info').length, 1);
+    assert.ok(calls.at(-1).includes('--network=none'));
+    assert.throws(() => run('/r', sandbox, ['ls-remote', 'origin'], { network: true }),
+        { code: 'QA_SOURCE_SANDBOX_NETWORK_UNAVAILABLE' });
+    assert.equal(calls.filter(args => args[0] === 'run').length, 1, 'offline proof cannot authorize a networked run');
+    assert.equal(run('/r', sandbox, ['status']).status, 0, 'failed network metadata does not prevent an offline check');
+    assert.ok(calls.at(-1).includes('--network=none'));
+});
+
+test('Git sandbox refuses unproven rootless engines before offline or networked runs', () => {
+    for (const info of [{ status: 0, stdout: 'false' }, { status: 125, stdout: 'true' }, { status: 0, stdout: '' },
+        { status: 0, stdout: 'true pasta' }, { status: 0, stdout: 'true', error: new Error('spawn failed') }]) {
+        for (const network of [false, true]) {
+            const calls = [];
+            const run = createGitSandbox({ spawn: (program, args) => { calls.push(args); return info; } });
+            assert.throws(() => run('/r', { engine: 'podman', image: 'f'.repeat(64) }, ['status'], { network }),
+                { code: 'QA_SOURCE_SANDBOX_UNAVAILABLE' });
+            assert.equal(calls.filter(args => args[0] === 'run').length, 0);
+        }
+    }
+});
+
 test('sandboxed fetch and remote queries never reach the host loopback, rendered for the engine network, and fail closed otherwise', () => {
     assert.equal(sandboxNetwork('pasta'), 'pasta:--no-map-gw');
     assert.equal(sandboxNetwork('slirp4netns'), 'slirp4netns:allow_host_loopback=false');
@@ -1346,12 +1379,21 @@ test('sandboxed fetch and remote queries never reach the host loopback, rendered
     const spawned = [];
     const run = network => createGitSandbox({ spawn: (program, args) => {
         spawned.push(args);
-        return args[0] === 'info' ? { status: 0, stdout: `true ${network}` } : { status: 0, stdout: '' };
+        return args[0] === 'info' ? { status: 0, stdout: args.at(-1) === '{{.Host.RootlessNetworkCmd}}' ? network : 'true' } : { status: 0, stdout: '' };
     } });
     for (const [network, rendered] of [['pasta', '--network=pasta:--no-map-gw'], ['slirp4netns', '--network=slirp4netns:allow_host_loopback=false']]) {
         spawned.length = 0;
-        run(network)('/r', { engine: 'podman', image: 'f'.repeat(64) }, ['ls-remote', 'origin'], { network: true });
+        const execute = run(network);
+        const sandbox = { engine: 'podman', image: 'f'.repeat(64) };
+        execute('/r', sandbox, ['status']);
+        assert.equal(spawned.filter(args => args[0] === 'info').length, 1, 'offline invocation only proves rootless mode');
+        execute('/r', sandbox, ['ls-remote', 'origin'], { network: true });
         assert.ok(spawned.at(-1).includes(rendered), network);
+        execute('/r', sandbox, ['status']);
+        assert.ok(spawned.at(-1).includes('--network=none'));
+        execute('/r', sandbox, ['ls-remote', 'origin'], { network: true });
+        assert.ok(spawned.at(-1).includes(rendered), network);
+        assert.equal(spawned.filter(args => args[0] === 'info').length, 2, 'rootless and supported backend proofs are each cached');
     }
     spawned.length = 0;
     const unknown = run('');
@@ -1372,7 +1414,7 @@ test('a repository the sandbox may write is mounted only from its symlink-free r
     fs.symlinkSync(path.join(root, 'elsewhere'), path.join(root, 'workspace/.ploinky/repos'));
     assert.throws(() => writableRepositorySource(repo), { code: 'QA_SOURCE_SANDBOX_PATH_INVALID' }, 'symlinked component');
     const spawned = [];
-    const sandboxed = createGitSandbox({ spawn: (program, args) => { spawned.push(args); return { status: 0, stdout: args[0] === 'info' ? 'true pasta' : '' }; } });
+    const sandboxed = createGitSandbox({ spawn: (program, args) => { spawned.push(args); return { status: 0, stdout: args[0] === 'info' ? 'true' : '' }; } });
     assert.throws(() => sandboxed(repo, { engine: 'podman', image: 'f'.repeat(64) }, ['merge', '--ff-only', 'x'], { write: true }),
         { code: 'QA_SOURCE_SANDBOX_PATH_INVALID' });
     assert.equal(spawned.filter(args => args[0] === 'run').length, 0, 'nothing is mounted writable through a link');

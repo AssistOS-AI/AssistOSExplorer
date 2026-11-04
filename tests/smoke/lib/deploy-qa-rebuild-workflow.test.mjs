@@ -473,7 +473,7 @@ function fakeSandboxEngine(root) {
         const fs = require('node:fs'); const { spawnSync } = require('node:child_process');
         const args = process.argv.slice(2), input = args[0] === 'run' ? fs.readFileSync(0, 'utf8') : '';
         fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(args) + '\\n');
-        if (args[0] === 'info') { process.stdout.write(args.join(' ').includes('RootlessNetworkCmd') ? 'true pasta' : 'true'); process.exit(0); }
+        if (args[0] === 'info') { process.stdout.write(args.at(-1) === '{{.Host.RootlessNetworkCmd}}' ? 'pasta' : 'true'); process.exit(0); }
         if (args[0] === 'container' && args[1] === 'inspect') { process.stdout.write('sha256:${SANDBOX_IMAGE}\\n'); process.exit(0); }
         if (args[0] !== 'run') process.exit(40);
         const entry = args.find(arg => arg.startsWith('--entrypoint='));
@@ -1421,7 +1421,7 @@ test('the summary renders a fresh installation and an in-place update without th
 test('the verification expectation is one line carrying the Box, the image, the start time and every source', t => {
     const expectation = block('verification expectation');
     const repositories = [...workflow.matchAll(/^ {12}'([A-Za-z-]+)\|https:\/\/github\.com\/AssistOS-AI\/[A-Za-z-]+\.git'$/gm)].map(match => match[1]);
-    assert.equal(repositories.length, 6);
+    assert.deepEqual(repositories, GRAPH);
     const records = ['.runtime/ploinky|master|' + 'a'.repeat(40), 'AdvancedLanguageAgent|main|' + 'b'.repeat(40),
         ...repositories.map((name, index) => `.ploinky/repos/${name}|main|${String(index + 1).repeat(40)}`)];
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-expectation-'));
@@ -1438,7 +1438,7 @@ test('the verification expectation is one line carrying the Box, the image, the 
     assert.match(expected.boxId, /^[a-f0-9]{64}$/);
     assert.match(expected.imageId, /^[a-f0-9]{64}$/);
     assert.ok(Number.isSafeInteger(expected.minimumRunStartedAtMs) && expected.minimumRunStartedAtMs > 0);
-    assert.equal(Object.keys(expected.sources).length, 8);
+    assert.deepEqual(Object.keys(expected.sources), records.map(record => record.split('|')[0]));
     for (const source of Object.values(expected.sources)) assert.match(source.commit, /^[a-f0-9]{40}$/);
     assert.deepEqual(Object.keys(expected.sources).filter(name => name.startsWith('.ploinky/repos/')).map(name => name.slice('.ploinky/repos/'.length)).sort(),
         repositories.sort());
@@ -1617,7 +1617,7 @@ test('the ancestry directory removal only deletes the exact mktemp shape of a re
 // The deployment script uses associative arrays, so these runs need bash 4 (the host and CI have it; macOS ships 3.2).
 const bashMajor = Number(spawnSync('bash', ['-c', 'echo ${BASH_VERSINFO[0]}'], { encoding: 'utf8' }).stdout.trim());
 const bash4 = bashMajor >= 4 ? {} : { skip: `Requires bash 4 associative arrays (found bash ${bashMajor}); run these on Linux.` };
-const GRAPH = ['AchillesIDE', 'UmamiAgent', 'OnlyOfficeAgent', 'AchillesCLI', 'copilot-agents', 'webmeet'];
+const GRAPH = ['AchillesIDE', 'UmamiAgent', 'OnlyOfficeAgent', 'copilot-agents', 'webmeet'];
 
 function runDeployedVerification(t, { deployed = {}, mergeBase = 0 } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-post-start-'));
@@ -1663,7 +1663,7 @@ test('a deployed commit equal to the resolved one passes without an ancestry che
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.doesNotMatch(calls, /merge-base/);
     assert.match(result.stdout, new RegExp(`Deployed AssistOSExplorer commit: ${expected.AchillesIDE}`));
-    assert.equal(result.stdout.match(/Verified \S+ at [a-f0-9]{40}\./g).length, 6);
+    assert.equal(result.stdout.match(/Verified \S+ at [a-f0-9]{40}\./g).length, GRAPH.length);
 });
 
 test('a deployed commit that is a fast-forward of the resolved one passes for every graph repository and is carried forward', bash4, t => {

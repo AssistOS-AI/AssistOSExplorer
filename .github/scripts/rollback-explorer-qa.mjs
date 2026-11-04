@@ -372,23 +372,30 @@ export function writableRepositorySource(repository, fsApi = fs) {
  * rootless Podman, nothing runs.
  */
 export function createGitSandbox({ env = process.env, spawn = spawnSync, fsApi = fs } = {}) {
-    let engineInfo = null;
+    let rootless = false;
+    let networkCommand = null;
     return (repository, sandbox, args, { write = false, network = false, timeout = 60_000, encoding = 'utf8' } = {}) => {
         const image = String(sandbox?.image || '').replace(/^sha256:/, '');
         requireProof(sandbox?.engine === 'podman' && FULL_ID.test(image), 'QA_SOURCE_SANDBOX_UNAVAILABLE');
         requireProof(SOURCE_PATH.test(repository) && path.normalize(repository) === repository, 'QA_SOURCE_SANDBOX_PATH_INVALID');
-        if (!engineInfo) {
-            const info = spawn('podman', ['info', '--format', '{{.Host.Security.Rootless}} {{.Host.RootlessNetworkCmd}}'],
+        if (!rootless) {
+            const info = spawn('podman', ['info', '--format', '{{.Host.Security.Rootless}}'],
                 { env, encoding: 'utf8', timeout: 60_000 });
-            const [rootless, networkCommand = ''] = String(info.stdout || '').trim().split(/\s+/);
-            requireProof(!info.error && info.status === 0 && rootless === 'true', 'QA_SOURCE_SANDBOX_UNAVAILABLE');
-            engineInfo = { networkCommand };
+            requireProof(!info.error && info.status === 0 && String(info.stdout || '').trim() === 'true', 'QA_SOURCE_SANDBOX_UNAVAILABLE');
+            rootless = true;
         }
         // A networked run needs the engine's rootless network; without one it fails closed.
-        if (network) sandboxNetwork(engineInfo.networkCommand);
+        if (network && !networkCommand) {
+            const info = spawn('podman', ['info', '--format', '{{.Host.RootlessNetworkCmd}}'],
+                { env, encoding: 'utf8', timeout: 60_000 });
+            requireProof(!info.error && info.status === 0, 'QA_SOURCE_SANDBOX_NETWORK_UNAVAILABLE');
+            const kind = String(info.stdout || '').trim();
+            sandboxNetwork(kind);
+            networkCommand = kind;
+        }
         const source = write ? writableRepositorySource(repository, fsApi) : repository;
         return spawn('podman', gitSandboxArguments(repository, image, args,
-            { write, network: network ? engineInfo.networkCommand : null, source }),
+            { write, network: network ? networkCommand : null, source }),
         { env, encoding, timeout, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
     };
 }
