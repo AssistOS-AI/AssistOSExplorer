@@ -264,6 +264,64 @@ export async function selectActiveWebMeetSuggestion(page) {
   await webMeetSurface(page).locator('#webmeetChatInput').press('Enter');
 }
 
+async function confirmRoomDeletion(page, surface, settingsDialog, item, title) {
+    const roomId = String(await item.getAttribute('data-id') || '').trim();
+    expect(roomId, 'room deletion must identify the selected room').not.toBe('');
+    const identities = await surface.locator('#webmeetMeetingList .webmeet-list-item').evaluateAll((rows, id) => (
+        rows.filter((row) => row.getAttribute('data-id') === id).length
+    ), roomId);
+    expect(identities, 'the selected room ID must identify exactly one room').toBe(1);
+    const settings = settingsDialog.locator('webmeet-room-settings-modal');
+    await expect(settings).toHaveAttribute('data-room-id', roomId, { timeout: smokeConfig.timeouts.navigation });
+    await expect(settings).toHaveAttribute('data-room-title', title, { timeout: smokeConfig.timeouts.navigation });
+    const sourceUrl = surface.url();
+    const source = new URL(sourceUrl);
+    expect(source.origin).toBe(new URL(smokeConfig.baseURL).origin);
+    expect(source.pathname).toBe('/webmeetAgent/roomLoader.html');
+    expect(page.listenerCount('dialog'), 'room deletion must own its scoped native-dialog handler').toBe(0);
+    const message = `Permanently delete "${title}" and all of its WebMeet history? This cannot be undone.`;
+    let received = false;
+    let failure = null;
+    let finish;
+    const confirmation = new Promise((resolve) => { finish = resolve; });
+    const handling = [];
+    const onDialog = (dialog) => {
+        const task = (async () => {
+            const expected = !received && dialog.page() === page && dialog.type() === 'confirm'
+                && dialog.message() === message && (webMeetFrames.get(page) || page) === surface
+                && (surface === page || !surface.isDetached())
+                && surface.url() === sourceUrl;
+            received = true;
+            if (!expected) {
+                await dialog.dismiss();
+                throw new Error('Unexpected native dialog during selected WebMeet room deletion.');
+            }
+            await dialog.accept();
+        })().catch((error) => { failure ||= error; }).finally(() => finish(failure));
+        handling.push(task);
+    };
+    const timer = setTimeout(() => finish(new Error('WebMeet room deletion did not open its expected native confirmation.')),
+        smokeConfig.timeouts.navigation);
+    page.on('dialog', onDialog);
+    let click;
+    try {
+        // Register before clicking: native confirm blocks renderer work until handled.
+        click = settingsDialog.getByRole('button', { name: 'Delete room', exact: true }).click({
+            timeout: smokeConfig.timeouts.navigation,
+        });
+        const [, error] = await Promise.all([click, confirmation]);
+        if (error) throw error;
+        await expect(item).toHaveCount(0, { timeout: smokeConfig.timeouts.navigation });
+        if (failure) throw failure;
+    } finally {
+        clearTimeout(timer);
+        page.off('dialog', onDialog);
+        await click?.catch(() => {});
+        await Promise.all(handling);
+        if (failure) throw failure;
+    }
+}
+
 export async function deleteRoomIfPresent(page, title) {
   const matchingRooms = webMeetSurface(page)
     .locator('#webmeetMeetingList .webmeet-list-item')
@@ -277,15 +335,7 @@ export async function deleteRoomIfPresent(page, title) {
     const settingsDialog = webMeetSurface(page).locator('dialog:has(webmeet-room-settings-modal)').last();
     await expect(settingsDialog).toBeVisible();
     await settingsDialog.getByRole('tab', { name: 'Lifecycle' }).click();
-    await settingsDialog.getByRole('button', { name: 'Delete room' }).click();
-
-    const confirmationDialog = webMeetSurface(page).locator('dialog:has(confirm-action-modal)').last();
-    await expect(confirmationDialog).toBeVisible();
-    await expect(confirmationDialog).toContainText(title);
-    await expect(confirmationDialog).toContainText(/cannot\s+be\s+undone/i);
-    await confirmationDialog.getByRole('button', { name: 'Yes' }).click();
-
-    await expect(item).toHaveCount(0, { timeout: smokeConfig.timeouts.navigation });
+    await confirmRoomDeletion(page, webMeetSurface(page), settingsDialog, item, title);
     deleted = true;
   }
   await expect(matchingRooms).toHaveCount(0);

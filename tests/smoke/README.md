@@ -371,6 +371,8 @@ Authenticated WebMeet smoke navigation opens Explorer's WebMeet toolbar button, 
 
 When sign-in navigation restores an existing WebMeet panel, the helper waits for restoration, clicks its normal Close panel control, and waits for closure before reopening through the toolbar. This lets the iframe's close hook finish room and media cleanup. A refused close fails reentry. The official media gate verifies the configured primary account again before room deletion.
 
+Room deletion uses the settings Lifecycle tab and its native browser confirmation. The helper checks the selected room ID and title, accepts its exact permanent-deletion prompt once, and requires the room to disappear. Unexpected native dialogs are dismissed and fail cleanup. The handler is removed when the deletion attempt ends.
+
 The official release cohort has a second WebMeet gate, the public-room gate, which
 proves that anyone with the URL of a public room can join that room. It is
 `specs/30-webmeet-room-chat.spec.mjs` with the title grep
