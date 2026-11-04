@@ -142,7 +142,8 @@ export function enableEntries(manifest) {
 // - otherwise any gap throws an Error with `code === SIBLING_MISSING_CODE`
 //   listing every gap on one line;
 // - otherwise `{ runtimes, violations }` is returned, and the caller asserts
-//   on `violations`.
+//   on `violations`. Runtime flags contain the effective no-wait mode, including
+//   inherited background execution and precedence of any blocking root path.
 export function resolveExplorerGraph({
     explorerRepo = EXPLORER_REPO_ROOT,
     siblingsRoot = path.resolve(explorerRepo, '..'),
@@ -216,7 +217,7 @@ export function resolveExplorerGraph({
         const known = runtimes.get(key);
         if (known) {
             flags.forEach((flag) => known.flags.add(flag));
-            return;
+            return key;
         }
         const manifestFile = path.join(dir, agent, 'manifest.json');
         if (!fs.existsSync(manifestFile)) {
@@ -230,7 +231,8 @@ export function resolveExplorerGraph({
             defects.push(`Cannot read manifest for ${key} at ${manifestFile}: ${error.message}`);
             return;
         }
-        runtimes.set(key, { flags: new Set(flags), manifestFile });
+        const dependencies = new Map();
+        runtimes.set(key, { flags: new Set(flags), manifestFile, dependencies });
         for (const entry of enableEntries(manifest)) {
             const [childRef, ...childFlags] = enableTokens(entry);
             if (!childRef) {
@@ -241,8 +243,15 @@ export function resolveExplorerGraph({
                 violations.push(`${key} (${manifestFile}) enables ${childRef}`);
                 continue;
             }
-            visit(childRef, repo, dir, childFlags, key);
+            const childKey = visit(childRef, repo, dir, childFlags, key);
+            if (childKey) {
+                const noWait = childFlags.includes('no-wait');
+                // A repeated blocking declaration wins, as in Ploinky's
+                // workspaceDependencyGraph dependencyEdges map.
+                dependencies.set(childKey, (dependencies.get(childKey) ?? true) && noWait);
+            }
         }
+        return key;
     }
     visit('explorer', EXPLORER_REPO_ALIAS, explorerRepo, [], 'the Explorer root');
     if (defects.length || (violations.length && gaps.length)) {
@@ -266,6 +275,24 @@ export function resolveExplorerGraph({
         error.code = SIBLING_MISSING_CODE;
         error.gaps = gaps;
         throw error;
+    }
+    // Match Ploinky's classifyDependencyGraphWaitMode: a runtime blocks when
+    // any root path reaches it without crossing a no-wait edge. Descendants
+    // reachable only through background parents therefore also run no-wait.
+    // Classify after the walk so shared paths are independent of visit order.
+    const blocking = new Set();
+    const pending = [`${EXPLORER_REPO_ALIAS}/explorer`];
+    while (pending.length) {
+        const key = pending.pop();
+        if (blocking.has(key)) continue;
+        blocking.add(key);
+        for (const [childKey, noWait] of runtimes.get(key).dependencies) {
+            if (!noWait) pending.push(childKey);
+        }
+    }
+    for (const [key, runtime] of runtimes) {
+        runtime.flags.delete('no-wait');
+        if (!blocking.has(key)) runtime.flags.add('no-wait');
     }
     return { runtimes, violations };
 }
