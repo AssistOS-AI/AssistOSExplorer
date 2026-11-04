@@ -373,6 +373,8 @@ When sign-in navigation restores an existing WebMeet panel, the helper waits for
 
 Room deletion uses the settings Lifecycle tab and its native browser confirmation. The helper checks the selected room ID and title, accepts its exact permanent-deletion prompt once, and requires the room to disappear. Unexpected native dialogs are dismissed and fail cleanup. The handler is removed when the deletion attempt ends.
 
+Public-room creation checks the form title and room type, then dismisses the native invitation confirmation to choose No. The helper validates the prompt's canonical same-origin room link and matches its room ID to the created room after the dialog closes. Team-room creation expects no confirmation. The pinned WebMeet creation code attempts a clipboard write even after No; this helper does not change that product behavior. A failed invitation check can follow a successful creation, so the caller retains room cleanup ownership.
+
 The official release cohort has a second WebMeet gate, the public-room gate, which
 proves that anyone with the URL of a public room can join that room. It is
 `specs/30-webmeet-room-chat.spec.mjs` with the title grep

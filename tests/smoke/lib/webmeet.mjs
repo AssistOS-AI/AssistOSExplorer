@@ -217,26 +217,71 @@ export async function expectChatEntry(page, message, { author = '' } = {}) {
 }
 
 export async function createRoom(page, title, { roomType = 'team' } = {}) {
-  await webMeetSurface(page).locator('#webmeetCreateRoomButton').click();
-  await expect(webMeetSurface(page).locator('[data-id="roomTitleInput"]')).toBeVisible();
+  const surface = webMeetSurface(page);
+  await surface.locator('#webmeetCreateRoomButton').click();
+  const form = surface.locator('dialog:has(create-room-modal)').last();
+  await expect(form).toBeVisible();
+  const titleInput = form.locator('[data-id="roomTitleInput"]');
+  await expect(titleInput).toBeVisible();
   if (roomType === 'guest') {
-    const guestRoomType = webMeetSurface(page).locator('[data-id="roomTypeGuest"]');
-    await webMeetSurface(page).locator('label.room-type-option', { hasText: 'Public meeting' }).click();
+    const guestRoomType = form.locator('[data-id="roomTypeGuest"]');
+    await form.locator('label.room-type-option', { hasText: 'Public meeting' }).click();
     await expect(guestRoomType).toBeChecked();
   } else if (roomType !== 'team') {
     throw new Error(`Unsupported WebMeet room type: ${roomType}`);
   }
-  await webMeetSurface(page).locator('[data-id="roomTitleInput"]').fill(title);
-  await webMeetSurface(page).locator('[data-local-action="confirmCreate"]').click();
+  await titleInput.fill(title);
+  await expect(titleInput).toHaveValue(title);
+  await expect(form.locator('input[name="roomType"]:checked')).toHaveValue(roomType);
+  const submit = () => form.locator('[data-local-action="confirmCreate"]').click({
+    timeout: smokeConfig.timeouts.navigation,
+  });
+  const room = roomType === 'guest'
+    ? surface.locator('#webmeetMeetingList .webmeet-list-item')
+      .filter({ has: surface.getByText(title, { exact: true }) })
+    : surface.locator('#webmeetMeetingList .webmeet-list-item', { hasText: title }).first();
+  const verifyRoom = async () => {
+    if (roomType === 'guest') await expect(room).toHaveCount(1, { timeout: smokeConfig.timeouts.navigation });
+    await expect(room).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
+  };
+  let invitationRoomId;
   if (roomType === 'guest') {
-    const confirmationDialog = webMeetSurface(page).locator('dialog:has(confirm-action-modal)').last();
-    await expect(confirmationDialog).toBeVisible();
-    await confirmationDialog.getByRole('button', { name: 'No' }).click();
+    await handleWebMeetConfirmation(page, surface, {
+      description: 'public WebMeet room creation',
+      accept: false,
+      matchesMessage(message) {
+        const prefix = 'Public meeting created! Share this link:\n\n';
+        const suffix = '\n\n(Click Yes to copy to clipboard)';
+        if (!message.startsWith(prefix) || !message.endsWith(suffix)) return false;
+        try {
+          const rawLink = message.slice(prefix.length, -suffix.length);
+          const link = new URL(rawLink);
+          const id = link.searchParams.get('roomId');
+          if (!/^room_[0-9a-f-]{36}$/i.test(id || '')) return false;
+          const expected = new URL('/webmeetAgent/roomLoader.html', smokeConfig.baseURL);
+          expected.searchParams.set('roomId', id);
+          if (rawLink !== expected.href) return false;
+          invitationRoomId = id;
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      click: submit,
+      verify: verifyRoom,
+    });
+  } else {
+    await handleWebMeetConfirmation(page, surface, {
+      description: 'team WebMeet room creation',
+      waitForConfirmation: false,
+      click: submit,
+      verify: verifyRoom,
+    });
   }
-  const room = webMeetSurface(page).locator('#webmeetMeetingList .webmeet-list-item', { hasText: title }).first();
   await expect(room).toBeVisible();
   const roomId = String(await room.getAttribute('data-id') || '').trim();
   expect(roomId, `created WebMeet room '${title}' must expose its room id`).toMatch(/^room_[0-9a-f-]{36}$/i);
+  if (roomType === 'guest') expect(roomId, 'created room must match the native invitation link').toBe(invitationRoomId);
   return roomId;
 }
 
@@ -274,12 +319,26 @@ async function confirmRoomDeletion(page, surface, settingsDialog, item, title) {
     const settings = settingsDialog.locator('webmeet-room-settings-modal');
     await expect(settings).toHaveAttribute('data-room-id', roomId, { timeout: smokeConfig.timeouts.navigation });
     await expect(settings).toHaveAttribute('data-room-title', title, { timeout: smokeConfig.timeouts.navigation });
+    const message = `Permanently delete "${title}" and all of its WebMeet history? This cannot be undone.`;
+    await handleWebMeetConfirmation(page, surface, {
+        description: 'selected WebMeet room deletion',
+        accept: true,
+        matchesMessage: (value) => value === message,
+        click: () => settingsDialog.getByRole('button', { name: 'Delete room', exact: true }).click({
+            timeout: smokeConfig.timeouts.navigation,
+        }),
+        verify: () => expect(item).toHaveCount(0, { timeout: smokeConfig.timeouts.navigation }),
+    });
+}
+
+async function handleWebMeetConfirmation(page, surface, {
+    description, accept = false, matchesMessage = () => false, waitForConfirmation = true, click: trigger, verify,
+}) {
     const sourceUrl = surface.url();
     const source = new URL(sourceUrl);
     expect(source.origin).toBe(new URL(smokeConfig.baseURL).origin);
     expect(source.pathname).toBe('/webmeetAgent/roomLoader.html');
-    expect(page.listenerCount('dialog'), 'room deletion must own its scoped native-dialog handler').toBe(0);
-    const message = `Permanently delete "${title}" and all of its WebMeet history? This cannot be undone.`;
+    expect(page.listenerCount('dialog'), `${description} must own its scoped native-dialog handler`).toBe(0);
     let received = false;
     let failure = null;
     let finish;
@@ -287,31 +346,32 @@ async function confirmRoomDeletion(page, surface, settingsDialog, item, title) {
     const handling = [];
     const onDialog = (dialog) => {
         const task = (async () => {
-            const expected = !received && dialog.page() === page && dialog.type() === 'confirm'
-                && dialog.message() === message && (webMeetFrames.get(page) || page) === surface
+            const expected = waitForConfirmation && !received && dialog.page() === page && dialog.type() === 'confirm'
+                && matchesMessage(dialog.message()) && (webMeetFrames.get(page) || page) === surface
                 && (surface === page || !surface.isDetached())
                 && surface.url() === sourceUrl;
             received = true;
             if (!expected) {
                 await dialog.dismiss();
-                throw new Error('Unexpected native dialog during selected WebMeet room deletion.');
+                throw new Error(`Unexpected native dialog during ${description}.`);
             }
-            await dialog.accept();
+            if (accept) await dialog.accept();
+            else await dialog.dismiss();
         })().catch((error) => { failure ||= error; }).finally(() => finish(failure));
         handling.push(task);
     };
-    const timer = setTimeout(() => finish(new Error('WebMeet room deletion did not open its expected native confirmation.')),
-        smokeConfig.timeouts.navigation);
+    const timer = waitForConfirmation
+        ? setTimeout(() => finish(new Error(`${description} did not open its expected native confirmation.`)),
+            smokeConfig.timeouts.navigation)
+        : null;
     page.on('dialog', onDialog);
     let click;
     try {
         // Register before clicking: native confirm blocks renderer work until handled.
-        click = settingsDialog.getByRole('button', { name: 'Delete room', exact: true }).click({
-            timeout: smokeConfig.timeouts.navigation,
-        });
-        const [, error] = await Promise.all([click, confirmation]);
+        click = trigger();
+        const [, error] = await Promise.all([click, waitForConfirmation ? confirmation : null]);
         if (error) throw error;
-        await expect(item).toHaveCount(0, { timeout: smokeConfig.timeouts.navigation });
+        await verify();
         if (failure) throw failure;
     } finally {
         clearTimeout(timer);
