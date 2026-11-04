@@ -272,6 +272,7 @@ export function createRepositoryOps(ctx) {
       name: localRepoName,
       remote: configuredRemoteName,
       remoteUrl,
+      reconciled: repository.reconciled,
       repository: repository.repository
     };
   }

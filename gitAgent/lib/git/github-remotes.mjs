@@ -166,6 +166,58 @@ export async function listGithubRepositories({ token, query = '', maxRepos = 500
   return { ok: true, repositories };
 }
 
+async function reconcileGithubRepository({ owner, name, visibility, token }) {
+  const unknownOutcome = 'GitHub repository creation outcome is unknown. Verify the repository on GitHub before retrying.';
+  const controller = new AbortController();
+  let timer;
+  const deadline = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(unknownOutcome));
+    }, 5000);
+  });
+  const repoUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  const options = {
+    method: 'GET',
+    headers: createGithubHeaders(token),
+    redirect: 'error',
+    signal: controller.signal,
+  };
+  try {
+    return await Promise.race([deadline, (async () => {
+      const response = await fetch(repoUrl, options);
+      if (!response.ok) throw new Error(unknownOutcome);
+      const found = await response.json();
+      if (!Number.isSafeInteger(found?.id) || found.id <= 0
+        || typeof found.owner?.login !== 'string' || found.owner.login.toLowerCase() !== owner.toLowerCase()
+        || typeof found.name !== 'string' || found.name.toLowerCase() !== name.toLowerCase()
+        || typeof found.full_name !== 'string' || found.full_name.toLowerCase() !== `${owner}/${name}`.toLowerCase()
+        || found.private !== (visibility !== 'public')
+        || found.archived !== false || found.disabled !== false || found.fork !== false) {
+        throw new Error(unknownOutcome);
+      }
+      const branchesResponse = await fetch(`${repoUrl}/branches?per_page=1`, options);
+      if (!branchesResponse.ok) throw new Error(unknownOutcome);
+      const branches = await branchesResponse.json();
+      if (!Array.isArray(branches) || branches.length !== 0) throw new Error(unknownOutcome);
+      const htmlUrl = `https://github.com/${encodeURIComponent(found.owner.login)}/${encodeURIComponent(found.name)}`;
+      return {
+        ok: true,
+        reconciled: true,
+        repository: {
+          ...sanitizeGithubRepository(found),
+          htmlUrl,
+          cloneUrl: `${htmlUrl}.git`,
+        },
+      };
+    })()]);
+  } catch {
+    throw new Error(unknownOutcome);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function createGithubRepository({ owner, name, visibility = 'private', token }) {
   const authToken = String(token || '').trim();
   if (!authToken) {
@@ -181,18 +233,35 @@ export async function createGithubRepository({ owner, name, visibility = 'privat
   const createUrl = repoOwner.toLowerCase() === login.toLowerCase()
     ? 'https://api.github.com/user/repos'
     : `https://api.github.com/orgs/${encodeURIComponent(repoOwner)}/repos`;
-  const created = await fetchGithubJson(createUrl, {
-    method: 'POST',
-    token: authToken,
-    body: {
-      name: repoName,
-      private: visibility !== 'public',
-      auto_init: false
-    }
-  });
+  const reconcile = () => reconcileGithubRepository({ owner: repoOwner, name: repoName, visibility, token: authToken });
+  let response;
+  try {
+    response = await fetch(createUrl, {
+      method: 'POST',
+      headers: { ...createGithubHeaders(authToken), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: repoName,
+        private: visibility !== 'public',
+        auto_init: false,
+      }),
+    });
+  } catch {
+    return reconcile();
+  }
+  if (response.status >= 500 && response.status <= 599) return reconcile();
+  if (!response.ok) {
+    throw new Error(await readGithubApiError(response) || `GitHub API request failed (${response.status}).`);
+  }
+  let created;
+  try {
+    created = await response.json();
+  } catch {
+    return reconcile();
+  }
   const repository = sanitizeGithubRepository(created);
   return {
     ok: true,
+    reconciled: false,
     repository: repository || {
       fullName: `${repoOwner}/${repoName}`,
       name: repoName,

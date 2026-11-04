@@ -109,6 +109,8 @@ For the host-owned Explorer `New` menu, the owning Git behavior is:
 
 ### Behavioral Specification
 
+After an ambiguous GitHub create response, the agent may connect the exact requested branchless repository after the bounded read-only checks in DS004. The menu reports `Connected GitHub repository` for `reconciled: true` and `Created GitHub repository` for normal creation. Either success refreshes the directory once and releases the loader after refresh. An unresolved outcome displays verification-before-retry guidance and releases the loader without a success refresh.
+
 1. Explorer mounts toolbar plugins and resolves menu contributions for host-owned menu surfaces.
 2. Git UI components or Git menu modules read the current Explorer context.
 3. The Git integration calls [`gitAgent`](wiki.html#definition-gitagent) over [Model Context Protocol](wiki.html#definition-mcp) ([MCP](wiki.html#definition-mcp)) for repository operations.

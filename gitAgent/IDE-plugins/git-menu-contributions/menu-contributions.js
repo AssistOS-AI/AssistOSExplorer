@@ -110,7 +110,7 @@ async function executeAddRepository({ context, host }) {
                 throw new Error(createResult?.error || 'Failed to create GitHub repository.');
             }
             const fullName = createResult.repository?.fullName || `${githubTarget.owner}/${githubTarget.repo}`;
-            host?.showStatus?.(`Created GitHub repository: ${fullName}.`);
+            host?.showStatus?.(`${createResult.reconciled ? 'Connected' : 'Created'} GitHub repository: ${fullName}.`);
             await host?.refreshDirectory?.();
             return;
         }
