@@ -17,6 +17,9 @@ import {
   fetchMarketplaceProof
 } from '/explorer/services/infrastructure/authApi.js';
 import {
+  activateMarketplaceAgent
+} from '/explorer/services/infrastructure/marketplaceActivation.mjs';
+import {
   isRetryableMarketplaceStatusError
 } from '/explorer/services/infrastructure/runtimeStatusEvents.js';
 import {
@@ -106,6 +109,7 @@ export class MarketplaceModal {
     this.unloaded = true;
     this.invalidateAgentStatusRefresh();
     this.marketplaceLoadController?.abort();
+    this.agentActivationController?.abort();
     if (this.statusClearTimer) {
       clearTimeout(this.statusClearTimer);
       this.statusClearTimer = null;
@@ -201,6 +205,18 @@ export class MarketplaceModal {
       return options.raw === true ? { ok: true, marketplace } : marketplace;
     }
     this.invalidateAgentStatusRefresh();
+    if (actionBody.action === 'enable_agent') {
+      const controller = new AbortController();
+      this.agentActivationController = controller;
+      try {
+        const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+        const data = await activateMarketplaceAgent(actionBody, { signal, proofFetcher: fetchMarketplaceProof });
+        const marketplace = data.marketplace || await this.fetchMarketplaceHalf('agents', { signal });
+        return options.raw === true ? { ...data, marketplace } : marketplace;
+      } finally {
+        if (this.agentActivationController === controller) this.agentActivationController = null;
+      }
+    }
     const resource = ['enable_agent', 'disable_agent'].includes(actionBody.action) ? 'agents' : 'repos';
     const fetchOptions = {
       credentials: 'include',
@@ -436,6 +452,7 @@ export class MarketplaceModal {
       this.mergeMarketplaceSnapshot(marketplace);
       this.setStatus(`${agentRef} ${active ? 'disabled' : 'enabled'}.`);
     } catch (error) {
+      if (this.unloaded) return;
       this.setStatus(error?.message || 'Failed to update agent.', 'error');
     } finally {
       this.state.agentMutationBusyRef = '';

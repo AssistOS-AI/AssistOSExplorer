@@ -89,3 +89,37 @@ test('closing during the startup snapshot aborts fetch and never enables the age
         globalThis.fetch = previousFetch;
     }
 });
+
+test('async activation refetches inventory after terminal success and preserves an authoritative starting state', async t => {
+    const previousFetch = globalThis.fetch;
+    const previousLocation = globalThis.location;
+    const previousTimeout = globalThis.setTimeout;
+    t.after(() => { globalThis.fetch = previousFetch; globalThis.location = previousLocation; globalThis.setTimeout = previousTimeout; });
+    globalThis.location = { origin: 'http://localhost:8080' };
+    globalThis.setTimeout = (callback, ms, ...args) => previousTimeout(callback, ms === 2_000 ? 1 : ms, ...args);
+    const operation = { id: '11111111-1111-4111-8111-111111111111', agentRef: 'repo/worker', mode: '', state: 'pending' };
+    let inventories = 0;
+    let posts = 0;
+    let polls = 0;
+    globalThis.fetch = async (url, options = {}) => {
+        if (url === '/auth/token') return Response.json({ ok: true, adminControl: { origin: 'http://localhost:8080', csrfToken: 'proof' } });
+        if (options.method === 'POST') {
+            posts++;
+            assert.equal(inventories, 1);
+            return Response.json({ ok: true, action: 'enable_agent', operation }, { status: 202 });
+        }
+        if (String(url).includes('?operation=')) {
+            assert.equal(inventories, 1, 'accepted activation must not publish a running inventory');
+            polls++;
+            return Response.json({ ok: true, action: 'enable_agent', operation: { ...operation, state: polls === 1 ? 'pending' : 'succeeded' } });
+        }
+        inventories++;
+        return Response.json({ ok: true, marketplace: { agents: [{ ref: 'repo/worker', running: false, status: inventories === 1 ? 'stopped' : 'starting' }] } });
+    };
+    const agent = await ensureMarketplaceAgentRunning('repo/worker');
+    assert.equal(posts, 1);
+    assert.equal(polls, 2);
+    assert.equal(inventories, 2);
+    assert.equal(agent.running, false);
+    assert.equal(agent.status, 'starting');
+});

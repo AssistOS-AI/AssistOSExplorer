@@ -3,64 +3,192 @@ live-sessions-modal {
     width: 100%;
     height: 100%;
     min-height: 0;
-    color: var(--text, #172033);
+    color: var(--text);
 }
 
 live-sessions-modal .live-sessions-body {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
     flex: 1;
     min-width: 0;
     min-height: 0;
-    gap: 20px;
-    padding: 20px;
+    gap: var(--space-xl);
+    padding: var(--space-xl);
 }
 
 live-sessions-modal .live-sessions-list-panel {
-    flex: 1;
-    min-width: 280px;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    overflow: hidden;
 }
 
-live-sessions-modal .live-sessions-guidance,
-live-sessions-modal .live-sessions-detail {
-    color: var(--text-soft, #64748b);
+live-sessions-modal .live-sessions-list-heading {
+    padding: var(--space-xl) var(--space-lg) var(--space-lg);
+    border-bottom: 1px solid var(--border);
+}
+
+live-sessions-modal .live-sessions-list-heading h2 {
+    margin: 0 0 var(--space-xs);
+    font-size: 18px;
+    font-weight: var(--font-semibold);
+}
+
+live-sessions-modal .live-sessions-list-heading p {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: var(--font-sm);
+    line-height: var(--line-relaxed);
+}
+
+live-sessions-modal #liveSessionsStatus {
+    display: inline-block;
+    margin-top: var(--space-md);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text);
+    font-size: var(--font-xs);
+}
+
+live-sessions-modal .live-sessions-guidance {
+    margin: 0;
+    padding: var(--space-lg);
+    border-top: 1px solid var(--border);
+    background: var(--surface-soft);
+    color: var(--text-soft);
+    font-size: var(--font-xs);
+    line-height: var(--line-relaxed);
 }
 
 live-sessions-modal .live-sessions-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     list-style: none;
     padding: 0;
     margin: 0;
 }
 
 live-sessions-modal .live-sessions-row {
-    padding: 14px 0;
-    border-bottom: 1px solid var(--border, #dbe2ea);
+    padding: var(--space-lg);
+    border-bottom: 1px solid var(--border);
     overflow-wrap: anywhere;
 }
 
+live-sessions-modal .live-sessions-row:last-child {
+    border-bottom: 0;
+}
+
+live-sessions-modal .live-sessions-row:focus-within {
+    background: var(--surface-soft);
+}
+
 live-sessions-modal .live-sessions-row h3 {
-    margin: 0 0 6px;
-    font-size: 15px;
+    margin: 0 0 var(--space-sm);
+    font-size: var(--font-base);
+    line-height: var(--line-relaxed);
+    font-weight: var(--font-semibold);
 }
 
 live-sessions-modal .live-sessions-row p {
-    margin: 4px 0;
-    font-size: 13px;
+    margin: var(--space-xs) 0;
+    font-size: var(--font-xs);
+    line-height: var(--line-relaxed);
+}
+
+live-sessions-modal .live-sessions-detail {
+    color: var(--text-soft);
 }
 
 live-sessions-modal .live-sessions-actions {
     display: flex;
+    align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 10px;
+    gap: var(--space-sm);
+    margin-top: var(--space-md);
+}
+
+live-sessions-modal .live-sessions-row .live-sessions-actions button {
+    min-height: 32px;
+    padding: 7px 10px;
+    font-size: var(--font-xs);
+}
+
+live-sessions-modal [data-session-action="kill"]:not(:disabled),
+live-sessions-modal [data-session-action="confirm-kill"]:not(:disabled) {
+    color: var(--danger);
+}
+
+live-sessions-modal [data-session-action="kill"] {
+    margin-left: auto;
+}
+
+live-sessions-modal button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+live-sessions-modal .live-sessions-placeholder {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    min-width: 0;
+    padding: var(--space-2xl);
+    text-align: center;
+}
+
+live-sessions-modal .live-sessions-placeholder-icon {
+    display: grid;
+    place-items: center;
+    width: 56px;
+    height: 56px;
+    margin-bottom: var(--space-xl);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    color: var(--accent);
+    font: var(--font-semibold) 22px var(--mono-font);
+}
+
+live-sessions-modal .live-sessions-placeholder h2 {
+    margin: 0 0 var(--space-md);
+    font-size: 22px;
+    font-weight: var(--font-semibold);
+    letter-spacing: -0.02em;
+}
+
+live-sessions-modal .live-sessions-placeholder p {
+    max-width: 400px;
+    margin: 0 0 var(--space-md);
+    color: var(--text-soft);
+    font-size: var(--font-base);
+    line-height: var(--line-relaxed);
+}
+
+live-sessions-modal .live-sessions-placeholder .live-sessions-placeholder-hint {
+    max-width: 360px;
+    font-size: var(--font-xs);
+}
+
+live-sessions-modal .live-sessions-body:has(.live-sessions-viewer:not([hidden])) .live-sessions-placeholder {
+    display: none;
 }
 
 live-sessions-modal .live-sessions-viewer {
     display: flex;
     flex-direction: column;
-    flex: 3;
     min-width: 0;
     min-height: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    overflow: hidden;
 }
 
 live-sessions-modal .live-sessions-viewer[hidden] {
@@ -71,34 +199,56 @@ live-sessions-modal .live-sessions-viewer-heading {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 10px;
+    gap: var(--space-md);
+    padding: var(--space-lg);
+    border-bottom: 1px solid var(--border);
+}
+
+live-sessions-modal .live-sessions-viewer-label {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: var(--space-xs);
+}
+
+live-sessions-modal .live-sessions-viewer-eyebrow {
+    color: var(--text-soft);
+    font-size: var(--font-xs);
+}
+
+live-sessions-modal #liveSessionsViewerTitle {
+    overflow-wrap: anywhere;
+    font-size: var(--font-base);
+    font-weight: var(--font-semibold);
+}
+
+live-sessions-modal .live-sessions-viewer-heading button {
+    flex-shrink: 0;
+    font-size: var(--font-xs);
 }
 
 live-sessions-modal .live-sessions-frame {
     flex: 1;
-    min-height: 280px;
+    min-height: 0;
+    overflow: auto;
 }
 
 live-sessions-modal iframe {
+    display: block;
     width: 100%;
     height: 100%;
     border: 0;
 }
 
-@media (max-width: 900px) {
-    live-sessions-modal .live-sessions-body {
-        flex-direction: column;
-    }
-}
-
 live-sessions-modal .live-sessions-notice {
-    color: var(--warning, #b45309);
-    font-weight: var(--font-semibold, 600);
+    color: var(--text);
+    border-left: 2px solid var(--warning);
+    padding-left: var(--space-sm);
+    font-weight: var(--font-semibold);
 }
 
 live-sessions-modal .live-sessions-banner {
-    color: var(--danger, #b91c1c);
+    color: var(--danger);
 }
 
 live-sessions-modal .live-sessions-close-dialog h2 {
@@ -113,4 +263,34 @@ live-sessions-modal .live-sessions-close-dialog p {
 
 live-sessions-modal .live-sessions-close-dialog p[hidden] {
     display: none;
+}
+
+@media (max-width: 900px) {
+    live-sessions-modal .live-sessions-body {
+        grid-template-columns: minmax(260px, 310px) minmax(0, 1fr);
+        gap: var(--space-md);
+        padding: var(--space-md);
+    }
+}
+
+@media (max-width: 680px) {
+    live-sessions-modal .live-sessions-body {
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+    }
+
+    live-sessions-modal .live-sessions-list-panel {
+        flex: 0 0 auto;
+        height: max(380px, 55vh);
+    }
+
+    live-sessions-modal .live-sessions-viewer {
+        flex: 1 0 400px;
+    }
+
+    live-sessions-modal .live-sessions-placeholder {
+        flex: 1 0 260px;
+        padding: var(--space-xl) var(--space-md);
+    }
 }

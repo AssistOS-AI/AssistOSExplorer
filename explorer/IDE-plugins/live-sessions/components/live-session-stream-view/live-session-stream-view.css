@@ -3,12 +3,13 @@ live-session-stream-view {
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    overflow: auto;
     gap: 12px;
 }
 
 live-session-stream-view pre.live-session-output {
     flex: 1;
-    min-height: 180px;
+    min-height: 0;
     overflow: auto;
     white-space: pre-wrap;
     overflow-wrap: anywhere;

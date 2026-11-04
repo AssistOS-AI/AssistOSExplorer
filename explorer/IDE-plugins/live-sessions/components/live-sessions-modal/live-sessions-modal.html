@@ -1,12 +1,25 @@
 <div class="live-sessions-body">
     <div class="live-sessions-list-panel">
-        <p class="live-sessions-guidance">Watch agent runs and manage your sessions. When you close or detach a terminal you own, you choose whether it keeps running. Use Stop or Kill to end a run or shell.</p>
-        <p id="liveSessionsStatus" role="status" aria-live="polite">Loading live sessions…</p>
+        <header class="live-sessions-list-heading">
+            <h2>Sessions</h2>
+            <p>Agent runs and workspace terminals</p>
+            <p id="liveSessionsStatus" role="status" aria-live="polite">Loading live sessions…</p>
+        </header>
         <ul id="liveSessionsList" class="live-sessions-list" aria-label="Live sessions"></ul>
+        <p class="live-sessions-guidance">When you close or detach a terminal you own, you choose whether it keeps running. Use Stop or Kill to end a run or shell.</p>
     </div>
+    <section class="live-sessions-placeholder" aria-labelledby="liveSessionsPlaceholderTitle">
+        <div class="live-sessions-placeholder-icon" aria-hidden="true">&gt;_</div>
+        <h2 id="liveSessionsPlaceholderTitle">Your session, in view</h2>
+        <p>Choose <strong>Watch</strong> on an agent run or <strong>Attach</strong> on a terminal to open it here.</p>
+        <p class="live-sessions-placeholder-hint">Sessions appear here when they are available to your account. Start a shell with Open Terminal Here in Explorer.</p>
+    </section>
     <section id="liveSessionsViewer" class="live-sessions-viewer" aria-label="Attached session" hidden>
         <div class="live-sessions-viewer-heading">
-            <span id="liveSessionsViewerTitle"></span>
+            <div class="live-sessions-viewer-label">
+                <span class="live-sessions-viewer-eyebrow">Session viewer</span>
+                <span id="liveSessionsViewerTitle"></span>
+            </div>
             <button class="gray-button" type="button" data-local-action="requestDetachViewer">Detach view</button>
         </div>
         <div id="liveSessionsFrame" class="live-sessions-frame"></div>

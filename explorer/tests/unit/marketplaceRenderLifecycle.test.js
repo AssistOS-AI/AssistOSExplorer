@@ -534,3 +534,30 @@ test('Marketplace mutation invalidates an older poll even when its response arri
     assert.equal(modal.state.marketplace, newCatalog);
     assert.ok(modal.agentStatusRefreshTimer);
 });
+
+test('Marketplace unload stops accepted activation observation without fetching inventory or replaying POST', async t => {
+    const originalFetch = globalThis.fetch;
+    const originalProof = globalThis.__marketplaceFetchMarketplaceProof;
+    const {MarketplaceModal} = await loadMarketplaceModal();
+    const modal = new MarketplaceModal({querySelector: () => null}, () => {});
+    const calls = [];
+    globalThis.__marketplaceFetchMarketplaceProof = async () => ({header: 'x-proof', csrfToken: 'test-proof'});
+    globalThis.fetch = async (url, options) => {
+        calls.push({url, options});
+        return Response.json({ok: true, action: 'enable_agent', operation: {
+            id: '11111111-1111-4111-8111-111111111111', agentRef: 'repo/agent', mode: '', state: 'pending'
+        }}, {status: 202});
+    };
+    t.after(() => {
+        globalThis.fetch = originalFetch;
+        if (originalProof === undefined) delete globalThis.__marketplaceFetchMarketplaceProof;
+        else globalThis.__marketplaceFetchMarketplaceProof = originalProof;
+    });
+    const pending = modal.requestMarketplace({action: 'enable_agent', agentRef: 'repo/agent'});
+    await new Promise(resolve => setImmediate(resolve));
+    modal.afterUnload();
+    await assert.rejects(pending, {name: 'AbortError'});
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'POST');
+    assert.equal(modal.agentActivationController, null);
+});

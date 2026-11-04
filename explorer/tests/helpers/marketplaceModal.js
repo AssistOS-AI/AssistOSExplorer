@@ -12,8 +12,10 @@ export async function loadMarketplaceModal() {
     const withoutImports = source.replace(/import\s+\{[\s\S]*?\}\s+from\s+'[^']+';\s*/g, '');
     const visibilityUrl = pathToFileURL(path.join(path.dirname(sourcePath), 'marketplaceVisibility.js')).href;
     const statusUrl = pathToFileURL(path.resolve(path.dirname(sourcePath), '../../../../services/infrastructure/runtimeStatusEvents.js')).href;
+    const activationUrl = pathToFileURL(path.resolve(path.dirname(sourcePath), '../../../../services/infrastructure/marketplaceActivation.mjs')).href;
     const dependencies = `
         import { fetchMarketplaceSnapshot, isRetryableMarketplaceStatusError } from '${statusUrl}';
+        import { activateMarketplaceAgent } from '${activationUrl}';
         import { getVisibleMarketplaceCatalog, marketplaceAgentRepositoryName } from '${visibilityUrl}';
         const callExplorerTool = async () => ({});
         const parseToolResult = (value) => value;
