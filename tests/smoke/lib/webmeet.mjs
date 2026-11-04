@@ -20,6 +20,32 @@ export function webMeetSurface(page) {
 }
 
 async function openWebMeetToolbar(page) {
+    // Explorer restores resumable panels after sign-in navigation. Close WebMeet
+    // through its normal UI so its frame hook releases the room before reentry.
+    const existingPanel = page.locator('expanded-modal').filter({
+        has: page.locator('iframe.expanded-modal-frame[title="WebMeet"]'),
+    });
+    const restoringWebMeet = await page.evaluate(() => {
+        try {
+            const descriptor = JSON.parse(sessionStorage.getItem('explorer.expandedModal.resume'));
+            if (!descriptor?.url) return false;
+            const target = new URL(descriptor.url, location.href);
+            return descriptor?.resume === true && descriptor.title === 'WebMeet'
+                && target.origin === location.origin
+                && target.pathname === '/webmeetAgent/roomLoader.html';
+        } catch {
+            return false;
+        }
+    });
+    if (restoringWebMeet) {
+        await expect(existingPanel).toHaveCount(1, { timeout: smokeConfig.timeouts.navigation });
+    }
+    if (await existingPanel.count()) {
+        await existingPanel.locator('#expandedModalClose').click({
+            timeout: smokeConfig.timeouts.navigation,
+        });
+        await expect(existingPanel).toHaveCount(0, { timeout: smokeConfig.timeouts.navigation });
+    }
     await page.getByRole('button', { name: 'WebMeet', exact: true }).click({
         timeout: smokeConfig.timeouts.navigation,
     });

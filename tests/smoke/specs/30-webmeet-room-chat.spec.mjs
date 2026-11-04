@@ -575,7 +575,7 @@ test.describe('WebMeet rooms', () => {
           if (!cleanupPage && page && !page.isClosed()) cleanupPage = page;
           if (!cleanupPage && ownerContext) cleanupPage = await ownerContext.newPage();
           if (!cleanupPage) throw new Error('no live primary-account browser page remains for room deletion');
-          await openWebMeet(cleanupPage, smokeConfig.primaryUser);
+          await openWebMeet(cleanupPage, smokeConfig.primaryUser, { requireConfiguredPrincipal: true });
           await deleteRoomIfPresent(cleanupPage, roomTitle);
           roomDeleted = true;
         });
