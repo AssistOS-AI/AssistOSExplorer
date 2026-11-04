@@ -339,12 +339,13 @@ test('Box admission requires the same-path host workspace mount, working directo
     }
 });
 
-test('the expected default graph matches the direct enable entries of this repository, without any sibling checkout', () => {
+test('the expected default graph matches the local enable declarations, without any sibling checkout', () => {
     const read = relative => JSON.parse(fs.readFileSync(new URL(`../../../${relative}`, import.meta.url), 'utf8'));
     const specification = entry => String(typeof entry === 'string' ? entry : entry.agent).split(/\s+/)[0];
     const reference = spec => (spec.includes('/') ? spec : `AchillesIDE/${spec}`);
     const derived = ['AchillesIDE/explorer', ...read('explorer/manifest.json').enable.map(specification).map(reference),
-        ...read('userPersistoAgent/manifest.json').enable.map(specification).map(reference)];
+        ...read('userPersistoAgent/manifest.json').enable.map(specification).map(reference),
+        ...read('roboTeamAgent/manifest.json').enable.map(specification).map(reference)];
     assert.deepEqual([...EXPECTED_DEFAULT_GRAPH].sort(), [...new Set(derived)].sort());
 });
 

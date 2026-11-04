@@ -59,7 +59,7 @@ function requireProof(condition, code) {
  */
 export const EXPECTED_DEFAULT_GRAPH = Object.freeze([
     'AchillesIDE/explorer', 'AchillesIDE/gitAgent', 'AchillesIDE/userPersistoAgent', 'AchillesIDE/emailAgent',
-    'AchillesIDE/dpuAgent', 'AchillesIDE/roboTeamAgent', 'AchillesIDE/soul-gateway', 'AchillesIDE/workspaceMonitorAgent',
+    'AchillesIDE/dpuAgent', 'AchillesIDE/roboTeamAgent', 'AchillesIDE/roboWorkAgent', 'AchillesIDE/soul-gateway', 'AchillesIDE/workspaceMonitorAgent',
     'local-llms/local-llm',
 ]);
 
