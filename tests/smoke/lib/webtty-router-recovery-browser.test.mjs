@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { siblingPath } from '../../helpers/sibling-roots.mjs';
 
-// The actual unchanged WebTTY browser client (Ploinky blob d497f20a232f675c53d32ccb5169ebc60f5aaad7) runs against an
+// The actual unchanged WebTTY browser client (Ploinky blob 9b2887955d48c2d31ca2f47e445c06d095c96c5c) runs against an
 // independent server process, so a blocked test process never pauses the server's replies.
 const SESSION_ID = 'S'.repeat(32);
 const VIEW_ID = 'V'.repeat(32);
@@ -182,7 +182,7 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
     const { armRouterRecoveryObservation, captureRouterRecoveryAuthentication, acknowledgeRouterRecovery, finalizeRouterRecoveryFailure, RouterRecoveryProofError } = await import('./webtty-router-recovery.mjs');
     const { spawnSync } = await import('node:child_process');
     const { createHash } = await import('node:crypto');
-    const PINNED_CLIENT_SHA256 = '273258130933db8582430d46fe279e00baa0b2af3b9e0e9963573198cc2924f7';
+    const PINNED_CLIENT_SHA256 = '033424e85b2204802e8804e1b101df3ca316e7660a55506df7e821c40ab860da';
     const loopbackCookie = (mode, value) => ({ name: mode === 'sso' ? 'ploinky_sso' : 'ploinky_jwt', value });
 
     test('the unchanged WebTTY client under test is the pinned blob', () => {
