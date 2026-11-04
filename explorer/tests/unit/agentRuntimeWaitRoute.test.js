@@ -107,15 +107,192 @@ test('runtime target probe exposes transient HTTP status to the shared loader', 
         (error) => error.status === 404 && error.code === 'agent_not_ready'
     );
 
-    let bodyCancelled = false;
+    let bodyRead = false;
     const result = await probeAgentRuntimeTarget(targetUrl, async () => ({
         ok: true,
         status: 200,
         redirected: false,
-        body: { cancel: async () => { bodyCancelled = true; } }
+        body: new ReadableStream({ start(controller) { bodyRead = true; controller.close(); } })
     }));
     assert.equal(result, targetUrl);
-    assert.equal(bodyCancelled, true);
+    assert.equal(bodyRead, true);
+});
+
+test('readiness drains sequential chunks to EOF, releases the lock and leaves completed requests un-aborted', async () => {
+    const caller = new AbortController();
+    const target = new URL('/webmeetAgent/roomLoader.html?room=one', ORIGIN);
+    let finish;
+    let reads = 0;
+    let pending = false;
+    let released = false;
+    let options;
+    const reader = {
+        async read() {
+            assert.equal(pending, false, 'only one read at a time');
+            pending = true;
+            reads += 1;
+            if (reads === 3) await new Promise(resolve => { finish = resolve; });
+            pending = false;
+            return reads === 3 ? { done: true } : { done: false, value: new Uint8Array(1024) };
+        },
+        releaseLock() { released = true; },
+    };
+    const response = { ok: true, status: 200, body: { getReader: () => reader } };
+    for (const name of ['text', 'arrayBuffer', 'blob', 'json']) response[name] = () => assert.fail(`aggregate ${name} used`);
+    let settled = false;
+    const probe = probeAgentRuntimeTarget(target, async (url, init) => {
+        assert.equal(url, target.toString());
+        options = init;
+        return response;
+    }, { signal: caller.signal }).then(value => { settled = true; return value; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.equal(reads, 3);
+    finish();
+    assert.equal(await probe, target);
+    assert.equal(released, true);
+    assert.equal(options.method, 'GET');
+    assert.equal(options.credentials, 'include');
+    assert.equal(options.cache, 'no-store');
+    assert.equal(options.headers.accept, 'text/html');
+    assert.equal(options.signal.aborted, false);
+    caller.abort();
+    assert.equal(options.signal.aborted, false, 'caller listener detached after success');
+});
+
+test('readiness accepts null and zero-byte bodies', async () => {
+    for (const body of [null, new ReadableStream({ start(controller) { controller.close(); } })]) {
+        const target = new URL('/webmeetAgent/empty', ORIGIN);
+        assert.equal(await probeAgentRuntimeTarget(target, async () => ({ ok: true, body })), target);
+        if (body) assert.equal(body.locked, false);
+    }
+});
+
+test('settled probes clear their deadline and detach caller listeners on success and failure', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    for (const status of [200, 403]) {
+        const caller = new AbortController();
+        let listeners = 0;
+        const signal = {
+            get reason() { return caller.signal.reason; },
+            throwIfAborted: () => caller.signal.throwIfAborted(),
+            addEventListener(...args) { listeners += 1; caller.signal.addEventListener(...args); },
+            removeEventListener(...args) { listeners -= 1; caller.signal.removeEventListener(...args); },
+        };
+        let ownedSignal;
+        const probe = probeAgentRuntimeTarget(new URL('/webmeetAgent/empty', ORIGIN), async (url, options) => {
+            ownedSignal = options.signal;
+            return { ok: status === 200, status, body: null };
+        }, { signal });
+        if (status === 200) await probe;
+        else await assert.rejects(probe, error => error.status === status);
+        assert.equal(listeners, 0);
+        t.mock.timers.tick(5000);
+        assert.equal(ownedSignal.aborted, status !== 200);
+        if (status !== 200) assert.notEqual(ownedSignal.reason.code, 'agent_not_ready', 'cleared deadline cannot replace failure cancellation');
+    }
+});
+
+test('readiness preserves caller abort reasons before fetch, during read, and at EOF', async () => {
+    const target = new URL('/webmeetAgent/roomLoader.html', ORIGIN);
+    const already = new AbortController();
+    const reason = new Error('panel closed');
+    already.abort(reason);
+    await assert.rejects(probeAgentRuntimeTarget(target, () => assert.fail('aborted caller fetched'), { signal: already.signal }), error => error === reason);
+    for (const atEof of [false, true]) {
+        const caller = new AbortController();
+        let body;
+        const probe = probeAgentRuntimeTarget(target, async (url, { signal }) => {
+            body = new ReadableStream({
+                start(controller) {
+                    if (atEof) { controller.close(); caller.abort(reason); }
+                    else signal.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+                },
+            });
+            return { ok: true, body };
+        }, { signal: caller.signal });
+        if (!atEof) {
+            await new Promise(resolve => setImmediate(resolve));
+            caller.abort(reason);
+        }
+        await assert.rejects(probe, error => error === reason);
+        assert.equal(body.locked, false);
+    }
+});
+
+test('one five-second deadline covers hanging headers and endless response bodies', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    for (const headers of [true, false]) {
+        let ownedSignal;
+        let body;
+        const probe = probeAgentRuntimeTarget(new URL('/webmeetAgent/hang', ORIGIN), async (url, { signal }) => {
+            ownedSignal = signal;
+            if (headers) return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+            body = new ReadableStream({ start(controller) {
+                signal.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+                controller.enqueue(new Uint8Array(1));
+            } });
+            return { ok: true, body };
+        });
+        const rejected = assert.rejects(probe, error => error.code === 'agent_not_ready' && /timed out/.test(error.message) && error.status === undefined);
+        await new Promise(resolve => setImmediate(resolve));
+        t.mock.timers.tick(4999);
+        assert.equal(ownedSignal.aborted, false);
+        t.mock.timers.tick(1);
+        await rejected;
+        assert.equal(ownedSignal.aborted, true);
+        if (body) assert.equal(body.locked, false);
+    }
+});
+
+test('read failures retain their cause, release locks and abort incomplete requests', async () => {
+    const cause = new TypeError('socket terminated');
+    const body = new ReadableStream({ start(controller) { controller.error(cause); } });
+    let signal;
+    await assert.rejects(probeAgentRuntimeTarget(new URL('/webmeetAgent/broken', ORIGIN), async (url, options) => {
+        signal = options.signal;
+        return { ok: true, body };
+    }), error => error.code === 'agent_not_ready' && error.cause === cause);
+    assert.equal(body.locked, false);
+    assert.equal(signal.aborted, true);
+});
+
+test('readiness keeps HTTP and redirect classifications', async () => {
+    const target = new URL('/webmeetAgent/roomLoader.html?room=one', ORIGIN);
+    for (const status of [400, 401, 403, 404, 422, 502, 503, 504]) {
+        await assert.rejects(probeAgentRuntimeTarget(target, async () => ({ ok: false, status })),
+            error => error.status === status && (status === 404 ? error.code === 'agent_not_ready' : error.code === undefined));
+    }
+    await assert.rejects(probeAgentRuntimeTarget(target, async () => ({ ok: true, redirected: true, url: `${ORIGIN}/auth/login` })),
+        error => error.status === 401 && /different session/.test(error.message));
+    assert.equal(await probeAgentRuntimeTarget(target, async () => ({ ok: true, redirected: true, url: `${ORIGIN}${target.pathname}?different=query` })), target);
+});
+
+test('404 and gateway failures retry, permanent statuses stop and outer expiry stays unchanged', async () => {
+    const target = new URL('/webmeetAgent/roomLoader.html', ORIGIN);
+    for (const status of [404, 502, 503, 504, 400, 401, 403, 422]) {
+        let calls = 0;
+        const run = waitForAgentRuntimeAvailability({
+            operation: () => probeAgentRuntimeTarget(target, async () => ({ ok: ++calls > 1, status })),
+            wait: async () => {},
+        });
+        if ([400, 401, 403, 422].includes(status)) {
+            await assert.rejects(run, error => error.status === status);
+            assert.equal(calls, 1);
+        } else {
+            assert.equal(await run, target);
+            assert.equal(calls, 2);
+        }
+    }
+    let time = 0;
+    let calls = 0;
+    await assert.rejects(waitForAgentRuntimeAvailability({
+        now: () => time, timeoutMs: 1000, pollIntervalMs: 250,
+        wait: async ms => { time += ms; },
+        operation: () => { calls += 1; return probeAgentRuntimeTarget(target, async () => ({ ok: false, status: 503 })); },
+    }), error => error.status === 503);
+    assert.equal(time, 1000);
+    assert.equal(calls, 5);
 });
 
 test('runtime MCP probe waits for a complete agent handshake', async () => {

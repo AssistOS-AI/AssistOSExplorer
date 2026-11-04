@@ -62,26 +62,62 @@ export function parseAgentRuntimeWaitRoute(hashValue, origin = window.location.o
     return Object.freeze({ agentRef, label, targetUrl });
 }
 
-export async function probeAgentRuntimeTarget(targetUrl, fetchImpl = fetch) {
-    const response = await fetchImpl(targetUrl.toString(), {
-        method: 'GET',
-        credentials: 'include',
-        cache: 'no-store',
-        headers: { accept: 'text/html' }
-    });
-    if (!response.ok) {
-        const error = new Error(`The agent route is unavailable (${response.status}).`);
-        error.status = response.status;
-        if (response.status === 404) error.code = 'agent_not_ready';
+export async function probeAgentRuntimeTarget(targetUrl, fetchImpl = fetch, { signal } = {}) {
+    signal?.throwIfAborted();
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(signal.reason);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const timeoutError = new Error('The agent route readiness request timed out.');
+    timeoutError.code = 'agent_not_ready';
+    const timer = setTimeout(() => controller.abort(timeoutError), 5000);
+    let reader;
+    let complete = false;
+    try {
+        const response = await fetchImpl(targetUrl.toString(), {
+            method: 'GET',
+            credentials: 'include',
+            cache: 'no-store',
+            headers: { accept: 'text/html' },
+            signal: controller.signal
+        });
+        if (!response.ok) {
+            const error = new Error(`The agent route is unavailable (${response.status}).`);
+            error.status = response.status;
+            if (response.status === 404) error.code = 'agent_not_ready';
+            throw error;
+        }
+        if (response.redirected && new URL(response.url).pathname !== targetUrl.pathname) {
+            const error = new Error('The agent route requires a different session.');
+            error.status = 401;
+            throw error;
+        }
+        if (response.body) {
+            try {
+                reader = response.body.getReader();
+                // Discard each chunk before requesting the next; readiness requires the complete response.
+                while (!(await reader.read()).done) {
+                    controller.signal.throwIfAborted();
+                }
+            } catch (cause) {
+                const error = new Error('The agent route readiness response could not be completed.', { cause });
+                error.code = 'agent_not_ready';
+                throw error;
+            }
+        }
+        signal?.throwIfAborted();
+        controller.signal.throwIfAborted();
+        complete = true;
+        return targetUrl;
+    } catch (error) {
+        signal?.throwIfAborted();
+        controller.signal.throwIfAborted();
         throw error;
+    } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        if (!complete) controller.abort();
+        reader?.releaseLock();
     }
-    if (response.redirected && new URL(response.url).pathname !== targetUrl.pathname) {
-        const error = new Error('The agent route requires a different session.');
-        error.status = 401;
-        throw error;
-    }
-    await response.body?.cancel?.();
-    return targetUrl;
 }
 
 export async function probeAgentRuntimeMcp(agentRef, sdk) {

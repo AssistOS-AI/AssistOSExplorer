@@ -7,7 +7,7 @@ const source = (await fs.readFile(new URL('../../web-components/modals/expanded-
     .replace(/^import[\s\S]*?;\n/gm, '').replace('export class ExpandedModal', 'class ExpandedModal');
 function presenter(extra = {}) {
     const frames = [];
-    const context = vm.createContext({ window: { innerWidth: 1200, innerHeight: 800 }, console, AbortController, clearTimeout, requestAnimationFrame: callback => frames.push(callback), setTimeout, ...extra });
+    const context = vm.createContext({ window: { innerWidth: 1200, innerHeight: 800 }, console, AbortController, AbortSignal, clearTimeout, requestAnimationFrame: callback => frames.push(callback), setTimeout, ...extra });
     vm.runInContext(`${source}\nthis.Modal = ExpandedModal;`, context);
     const element = { isConnected: true, querySelector: () => ({ textContent: '' }) };
     const modal = new context.Modal(element, () => {});
@@ -154,6 +154,71 @@ test('a late component registration cannot mount after close', async () => {
 
 const loaderModule = await import('../../shared/ui/agent-runtime-loader/agent-runtime-loader.js');
 const wait = await import('../../shared/ui/agent-runtime-loader/agent-runtime-wait-route.js');
+
+test('modal fetch composition preserves the target deadline and route-probe cancellation', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let targetSignal;
+    let routeSignal;
+    let failure;
+    const p = presenter({
+        URL,
+        window: { location: { origin: 'http://localhost:8080' } },
+        console: { error: (...args) => { failure = args.at(-1); } },
+        assistosSDK: {},
+        fetch: async (url, options) => {
+            if (url === '/route') { routeSignal = options.signal; return {}; }
+            targetSignal = options.signal;
+            return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+        },
+        probeAgentRuntimeRouteStability: async (ref, { fetchImpl }) => { await fetchImpl('/route', {}); },
+        probeAgentRuntimeTarget: wait.probeAgentRuntimeTarget,
+        probeAgentRuntimeTargetAndMcp: wait.probeAgentRuntimeTargetAndMcp,
+        probeAgentRuntimeMcp: async () => {},
+        waitForAgentRuntimeAvailability: ({ operation }) => operation(),
+    });
+    p.attr = () => 'Panel'; p.setState = () => {}; p.frameUrl = () => '/webmeetAgent/roomLoader.html';
+    const loading = p.waitForAgent('webmeet/webmeetAgent', p.runId, p.loadController.signal);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(routeSignal, p.loadController.signal);
+    assert.notEqual(targetSignal, p.loadController.signal);
+    t.mock.timers.tick(5000);
+    assert.equal(targetSignal.aborted, true, 'probe deadline reaches fetch instead of being overwritten');
+    assert.equal(p.loadController.signal.aborted, false);
+    assert.equal(await loading, false);
+    assert.equal(failure.code, 'agent_not_ready');
+});
+
+test('close and reload invalidate a frame startup released just before readiness EOF', async () => {
+    for (const action of ['close', 'reload']) {
+        const p = presenter();
+        p.attr = name => name === 'agent-ref' ? 'webmeet/webmeetAgent' : '';
+        p.setState = () => {};
+        p.ensureAgentRuntime = async () => ({ running: true });
+        let ready;
+        p.waitForAgent = () => new Promise(resolve => { ready = resolve; });
+        let mounts = 0;
+        p.mountFrameContent = () => { mounts += 1; };
+        const loading = p.startFrameContent();
+        await new Promise(resolve => setImmediate(resolve));
+        ready(true);
+        if (action === 'close') p.afterUnload();
+        else { p.cancelLoading(); p.loadController = new AbortController(); }
+        await loading;
+        assert.equal(mounts, 0, action);
+    }
+});
+
+test('generic Live Sessions iframe without agentRef mounts once without agent readiness work', async () => {
+    const p = presenter();
+    p.attr = () => '';
+    p.setState = () => {};
+    p.ensureAgentRuntime = () => assert.fail('generic iframe must not start an agent');
+    p.waitForAgent = () => assert.fail('generic iframe must not probe an agent');
+    let mounts = 0;
+    p.mountFrameContent = () => { mounts += 1; };
+    await p.startFrameContent();
+    assert.equal(mounts, 1);
+});
 
 function waitHarness({ marketplaceEntry, runtimeReads, order, target, mcp }) {
     const p = presenter({

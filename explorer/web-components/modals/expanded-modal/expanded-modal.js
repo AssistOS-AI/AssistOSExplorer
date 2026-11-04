@@ -453,7 +453,10 @@ export class ExpandedModal {
     }
 
     async waitForAgent(agentRef, runId, signal, initialRuntime = null) {
-        const fetchImpl = (url, options) => fetch(url, { ...options, signal });
+        const fetchImpl = (url, options) => fetch(url, {
+            ...options,
+            signal: options?.signal ? AbortSignal.any([options.signal, signal]) : signal
+        });
         const label = this.attr("title") || "Panel";
         this.setState("Loading…");
         try {
@@ -469,7 +472,7 @@ export class ExpandedModal {
                     await probeAgentRuntimeRouteStability(agentRef, { fetchImpl, wait: ms => this.waitForNextProbe(ms) });
                     signal.throwIfAborted();
                     await probeAgentRuntimeTargetAndMcp(
-                        () => probeAgentRuntimeTarget(new URL(this.frameUrl(), window.location.origin), fetchImpl),
+                        () => probeAgentRuntimeTarget(new URL(this.frameUrl(), window.location.origin), fetchImpl, { signal }),
                         () => probeAgentRuntimeMcp(agentRef, assistosSDK)
                     );
                     signal.throwIfAborted();
