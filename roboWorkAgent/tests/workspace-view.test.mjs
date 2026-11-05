@@ -230,7 +230,10 @@ test('a filesystem that opens a hidden entry under another spelling shows no wor
     assert.deepEqual(hidden, { root: null, masks: [], writableSubmounts: [] });
     assert.deepEqual(alaWorkspaceOptions(hidden, { cwd: path.join(root, 'app') }), { folders: [], ignoredPaths: [path.join(root, 'app', '.roboteam')] });
     assert.deepEqual(podmanWorkspaceArguments(hidden, { cwd: path.join(root, 'app') }), []);
-    // Control: on a filesystem that keeps the names apart the masks stand, and a `.ENV` of its own is a different entry.
+    // An upper-case spelling with an identity of its own hides the view too: a shared filesystem may not report one identity.
+    const otherIdentity = async (file, options) => ({ ...await fs.lstat(path.join(root, spellings[path.basename(file)] || path.basename(file)), options), ino: path.basename(file) in spellings ? 1 : 2 });
+    assert.equal((await view({ ...linux, lstat: otherIdentity })).root, null);
+    // Control: on a filesystem that keeps the names apart, with no such entry, the masks stand.
     const distinct = (file, options) => spellings[path.basename(file)]
         ? Promise.reject(Object.assign(new Error('absent'), { code: 'ENOENT' })) : fs.lstat(file, options);
     assert.equal((await view({ ...linux, lstat: distinct })).root, root);
@@ -247,11 +250,11 @@ test('a grant under another spelling of a hidden entry is refused, whichever fil
     await fs.mkdir(path.join(root, 'app'));
     const paths = new RobotPaths({ dataDir: path.join(base, 'service'), workspaceRoot: root });
     const realpath = fs.realpath;
-    t.mock.method(fs, 'realpath', async value => value.includes('.DATA') || value.includes('.PLOINKY') ? value : realpath(value));
+    t.mock.method(fs, 'realpath', async value => /\.DATA|\.PLOINKY|\.Ploinky-Box/u.test(value) ? value : realpath(value));
     t.mock.method(fs, 'stat', async () => ({ isDirectory: () => true }));
     for (const spelled of ['.DATA/.PRIVATE', '.PLOINKY/repos/x', '.Ploinky-Box.old']) {
-        await assert.rejects(paths.grant(path.join(root, spelled)), { code: 'FOLDER_REFUSED' }, spelled);
-        await assert.rejects(paths.grant(path.join(root, spelled), 'cwd'), { code: 'CWD_REFUSED' }, spelled);
+        await assert.rejects(paths.grant(path.join(root, spelled)), { code: 'FOLDER_REFUSED', message: /protected/u }, spelled);
+        await assert.rejects(paths.grant(path.join(root, spelled), 'cwd'), { code: 'CWD_REFUSED', message: /protected/u }, spelled);
     }
     assert.equal(await paths.grant(path.join(root, 'app'), 'cwd'), path.join(root, 'app'));
 });

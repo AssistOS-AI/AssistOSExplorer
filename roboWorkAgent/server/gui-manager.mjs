@@ -88,7 +88,7 @@ function chromiumLanguageFlag(lang) {
 }
 
 // `workspaceArgs` is the Podman form of the workspace view (`podmanWorkspaceArguments(view, { volumeFlag: '-v' })`): the
-// workspace read-only with its masks. It is never optional, because a session without it would show a wrong workspace.
+// workspace read-only with its masks. It is empty only where the view cannot be shown safely; a caller must still pass it.
 export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, workspaceArgs, proxy = null, cwdIdentity = null, cwdSource = cwd, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!Array.isArray(workspaceArgs)) throw new Error('workspaceArgs must carry the workspace view, empty where it cannot be shown');

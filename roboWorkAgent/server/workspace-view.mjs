@@ -82,16 +82,16 @@ async function mask(root, entry) {
 }
 
 // A mask covers one spelling. Where the filesystem opens an entry under another spelling too, as APFS does through a Mac
-// Box's virtiofs mount, `.ENV` would reach what the mask over `.env` hides. Any hidden entry reached by its upper-case name
-// proves that of the whole filesystem.
+// Box's virtiofs mount, `.ENV` would reach what the mask over `.env` hides. A hidden entry that also answers to its upper-case
+// name counts as that without comparing identities, which a shared filesystem need not report faithfully. A real `.ENV` beside
+// `.env` on a Linux root costs only the view.
 async function ignoresCase(root, names, lstat) {
-    const identity = name => lstat(path.join(root, name), { bigint: true }).catch(error => {
+    const identity = name => lstat(path.join(root, name)).catch(error => {
         if (MISSING.has(error.code)) return null;
         throw unavailable('A workspace entry cannot be inspected');
     });
     for (const name of names) {
-        const [entry, variant] = [await identity(name), await identity(name.toUpperCase())];
-        if (entry && variant && entry.dev === variant.dev && entry.ino === variant.ino) return true;
+        if (await identity(name) && await identity(name.toUpperCase())) return true;
     }
     return false;
 }
