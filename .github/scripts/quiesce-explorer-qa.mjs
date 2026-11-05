@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Runs inside the exact QA Box selected and verified by the deployment workflow.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -108,7 +110,7 @@ const healthRelaySources = (name) => [
 ];
 
 /** Match the selected registry and manifest before trusting a database shutdown. */
-export function assertContainerMounts(binding, inspected, { manifest, realpath = fs.realpathSync } = {}) {
+export function assertContainerMounts(binding, inspected, { manifest, realpath = fs.realpathSync, tmpdir = os.tmpdir } = {}) {
     if (!DURABLE_AGENTS.has(binding.agent)) return '';
     const binds = binding.record.config?.binds;
     requireProof(Array.isArray(binds) && manifest && typeof manifest === 'object', 'QA_MOUNT_CONTRACT_MISSING');
@@ -144,21 +146,56 @@ export function assertContainerMounts(binding, inspected, { manifest, realpath =
     const actual = new Map();
     for (const mount of inspected.Mounts) {
         requireProof(mount.Type === 'bind' && typeof mount.RW === 'boolean'
+            && typeof mount.Source === 'string' && path.posix.isAbsolute(mount.Source)
+            && path.posix.normalize(mount.Source) === mount.Source
+            && typeof mount.Destination === 'string' && path.posix.isAbsolute(mount.Destination)
+            && path.posix.normalize(mount.Destination) === mount.Destination
             && !actual.has(mount.Destination), 'QA_MOUNT_CONTRACT_INVALID');
         actual.set(mount.Destination, mount);
+    }
+    const dataProjection = actual.get(dataRoot);
+    if (dataProjection?.RW) {
+        const workspaceGrant = expected.get(WORKSPACE);
+        const workspaceMount = actual.get(WORKSPACE);
+        requireProof(dataProjection.Source === dataRoot && workspaceGrant?.source === WORKSPACE
+            && workspaceGrant.writable === true && workspaceMount?.Source === WORKSPACE
+            && workspaceMount.RW === true, 'QA_UNREGISTERED_WRITABLE_MOUNT');
+        for (const root of [WORKSPACE, dataRoot, `${WORKSPACE}/.ploinky/repos`]) {
+            requireProof(realpath(root) === root, 'QA_DATA_MOUNT_INVALID');
+        }
+        const digest = createHash('sha256').update(path.resolve(WORKSPACE)).digest('hex').slice(0, 24);
+        const guardBase = path.join(realpath(tmpdir()), 'ploinky-runtime-guards', digest);
+        const masks = new Map([
+            [`${WORKSPACE}/.ploinky`, `${WORKSPACE}/.ploinky`],
+            [`${WORKSPACE}/.ploinky/data`, `${guardBase}/data`],
+            [`${WORKSPACE}/.ploinky-box`, `${guardBase}/host`],
+            [`${dataRoot}/.private`, `${guardBase}/private`],
+        ]);
+        for (const [target, source] of masks) {
+            const mask = actual.get(target);
+            requireProof(mask?.Source === source && mask.RW === false
+                && realpath(target) === target && realpath(source) === source, 'QA_DATA_MOUNT_INVALID');
+        }
+        const protectedRoots = [...masks.keys()].filter((target) => target !== `${WORKSPACE}/.ploinky`);
+        for (const mount of actual.values()) {
+            requireProof(!mount.RW || !protectedRoots.some((target) => mount.Destination === target
+                || mount.Destination.startsWith(`${target}/`)), 'QA_DATA_MOUNT_INVALID');
+        }
+    }
+    for (const mount of actual.values()) {
         const contract = expected.get(mount.Destination);
         if (contract) {
             requireProof(contract.source === mount.Source && contract.writable === mount.RW, 'QA_MOUNT_CONTRACT_CHANGED');
         } else {
-            // Neither writable mount is a registry bind: Ploinky appends them to the
-            // run arguments only, the relay for the container's health probes and
-            // the repository projection that accompanies a writable workspace grant.
+            // Ploinky appends these projections and the health relay after it
+            // records registry binds. The data pin requires the complete proof above.
             const healthRelay = mount.Destination === HEALTH_PROBE_RELAY
                 && healthRelaySources(binding.name).includes(mount.Source);
             const repositoryProjection = mount.Destination === `${WORKSPACE}/.ploinky/repos`
                 && mount.Source === mount.Destination
                 && expected.get(WORKSPACE)?.source === WORKSPACE && expected.get(WORKSPACE).writable;
-            requireProof(!mount.RW || healthRelay || repositoryProjection, 'QA_UNREGISTERED_WRITABLE_MOUNT');
+            requireProof(!mount.RW || healthRelay || repositoryProjection
+                || mount === dataProjection, 'QA_UNREGISTERED_WRITABLE_MOUNT');
         }
         const dataTarget = [...requiredData.keys()].some((target) => mount.Destination === target
             || mount.Destination.startsWith(`${target}/`));

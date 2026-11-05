@@ -350,6 +350,119 @@ for (const agent of ['dpuAgent', 'soul-gateway', 'umamiAgent']) {
     });
 }
 
+// Current controller guards add the writable data ancestor pin and all three
+// protected-root masks after the registry binds are recorded. Use stand-in
+// runtime identities; only the observed mount shape is part of this fixture.
+function guardedDpuMountFixture() {
+    const f = liveMountFixture('dpuAgent');
+    f.binding.record.projectPath = WORKSPACE;
+    f.options.tmpdir = () => '/tmp';
+    f.inspected.Mounts.push(
+        { Type: 'bind', Source: `${WORKSPACE}/.data`, Destination: `${WORKSPACE}/.data`, RW: true },
+        { Type: 'bind', Source: '/tmp/ploinky-runtime-guards/7a31ab7775eb642cfbb41dd3/host', Destination: `${WORKSPACE}/.ploinky-box`, RW: false },
+        { Type: 'bind', Source: '/tmp/ploinky-runtime-guards/7a31ab7775eb642cfbb41dd3/private', Destination: `${WORKSPACE}/.data/.private`, RW: false },
+    );
+    return f;
+}
+
+test('the current DPU data ancestor projection passes only with its canonical workspace grant and guards', () => {
+    const f = guardedDpuMountFixture();
+    assert.equal(assertContainerMounts(f.binding, f.inspected, f.options), JSON.stringify(f.options.manifest));
+});
+
+const guardedMount = (f, target) => f.inspected.Mounts.find((mount) => mount.Destination === target);
+const protectedTargets = [`${WORKSPACE}/.ploinky/data`, `${WORKSPACE}/.ploinky-box`, `${WORKSPACE}/.data/.private`];
+
+for (const target of [`${WORKSPACE}/.ploinky`, ...protectedTargets]) {
+    for (const scenario of ['absent', 'writable', 'foreign-source', 'redirected-source', 'redirected-target']) {
+        test(`DPU data projection rejects ${scenario} mask at ${target.slice(WORKSPACE.length)}`, () => {
+            const f = guardedDpuMountFixture();
+            const mask = guardedMount(f, target);
+            if (scenario === 'absent') f.inspected.Mounts = f.inspected.Mounts.filter((mount) => mount !== mask);
+            if (scenario === 'writable') mask.RW = true;
+            if (scenario === 'foreign-source') mask.Source = '/tmp/foreign';
+            if (scenario === 'redirected-source') f.options.realpath = (value) => value === mask.Source ? '/tmp/redirected' : value;
+            if (scenario === 'redirected-target') f.options.realpath = (value) => value === target ? '/tmp/redirected' : value;
+            assert.throws(() => assertContainerMounts(f.binding, f.inspected, f.options), { code: 'QA_DATA_MOUNT_INVALID' });
+        });
+    }
+}
+
+for (const [scenario, edit, code] of [
+    ['incorrect workspace hash', (f) => {
+        for (const target of protectedTargets) guardedMount(f, target).Source = guardedMount(f, target).Source.replace('7a31ab7775eb642cfbb41dd3', '0'.repeat(24));
+    }, 'QA_DATA_MOUNT_INVALID'],
+    ['unregistered workspace grant', (f) => {
+        f.binding.record.config.binds = f.binding.record.config.binds.filter((bind) => bind.target !== WORKSPACE);
+    }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['missing actual workspace grant', (f) => {
+        f.inspected.Mounts = f.inspected.Mounts.filter((mount) => mount.Destination !== WORKSPACE);
+    }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['read-only workspace grant', (f) => {
+        f.binding.record.config.binds.find((bind) => bind.target === WORKSPACE).ro = true;
+        guardedMount(f, WORKSPACE).RW = false;
+    }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['read-only registered but writable actual workspace', (f) => {
+        f.binding.record.config.binds.find((bind) => bind.target === WORKSPACE).ro = true;
+    }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['writable registered but read-only actual workspace', (f) => { guardedMount(f, WORKSPACE).RW = false; }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['foreign registered workspace', (f) => {
+        f.binding.record.config.binds.find((bind) => bind.target === WORKSPACE).source = '/foreign';
+    }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['foreign actual workspace', (f) => { guardedMount(f, WORKSPACE).Source = '/foreign'; }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['redirected data source', (f) => { guardedMount(f, `${WORKSPACE}/.data`).Source = '/foreign'; }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['noncanonical data source', (f) => { guardedMount(f, `${WORKSPACE}/.data`).Source += '/.'; }, 'QA_MOUNT_CONTRACT_INVALID'],
+    ['duplicate destination', (f) => { f.inspected.Mounts.push({ ...guardedMount(f, `${WORKSPACE}/.data`) }); }, 'QA_MOUNT_CONTRACT_INVALID'],
+    ['non-bind mask', (f) => { guardedMount(f, protectedTargets[0]).Type = 'volume'; }, 'QA_MOUNT_CONTRACT_INVALID'],
+    ['non-boolean mask mode', (f) => { guardedMount(f, protectedTargets[0]).RW = 'false'; }, 'QA_MOUNT_CONTRACT_INVALID'],
+    ['extra writable data descendant', (f) => {
+        f.inspected.Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.data/rogue`, Destination: `${WORKSPACE}/.data/rogue`, RW: true });
+    }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['unrelated writable mount', (f) => {
+        f.inspected.Mounts.push({ Type: 'bind', Source: '/tmp/foreign', Destination: '/scratch', RW: true });
+    }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['read-only registered but writable actual source', (f) => { guardedMount(f, '/code').RW = true; }, 'QA_MOUNT_CONTRACT_CHANGED'],
+]) {
+    test(`DPU data projection rejects ${scenario}`, () => {
+        const f = guardedDpuMountFixture();
+        edit(f);
+        assert.throws(() => assertContainerMounts(f.binding, f.inspected, f.options), { code });
+    });
+}
+
+for (const root of [WORKSPACE, `${WORKSPACE}/.data`, `${WORKSPACE}/.ploinky/repos`]) {
+    test(`DPU data projection rejects a symlinked root ${root.slice(WORKSPACE.length) || '/'}`, () => {
+        const f = guardedDpuMountFixture();
+        f.options.realpath = (value) => value === root ? '/foreign' : value;
+        assert.throws(() => assertContainerMounts(f.binding, f.inspected, f.options), { code: 'QA_DATA_MOUNT_INVALID' });
+    });
+}
+
+for (const target of protectedTargets) {
+    test(`DPU data projection rejects even a registered writable shadow below ${target.slice(WORKSPACE.length)}`, () => {
+        const f = guardedDpuMountFixture();
+        const descendant = `${target}/shadow`;
+        f.binding.record.config.binds.push({ source: '/tmp/foreign', target: descendant });
+        f.inspected.Mounts.push({ Type: 'bind', Source: '/tmp/foreign', Destination: descendant, RW: true });
+        assert.throws(() => assertContainerMounts(f.binding, f.inspected, f.options), { code: 'QA_DATA_MOUNT_INVALID' });
+    });
+}
+
+test('DPU data projection admission is independent of mount order', () => {
+    const f = guardedDpuMountFixture();
+    f.inspected.Mounts.reverse();
+    assert.equal(assertContainerMounts(f.binding, f.inspected, f.options), JSON.stringify(f.options.manifest));
+});
+
+test('DPU guard sources derive from the canonical temporary root without trusting inspected sources', () => {
+    const f = guardedDpuMountFixture();
+    f.options.tmpdir = () => '/temporary-link';
+    f.options.realpath = (value) => value === '/temporary-link' ? '/tmp' : value;
+    assert.ok(assertContainerMounts(f.binding, f.inspected, f.options));
+    for (const target of protectedTargets) guardedMount(f, target).Source = guardedMount(f, target).Source.replace('/tmp/', '/foreign/');
+    assert.throws(() => assertContainerMounts(f.binding, f.inspected, f.options), { code: 'QA_DATA_MOUNT_INVALID' });
+});
+
 const relayOf = (f) => f.inspected.Mounts.find((item) => item.Destination === '/run/ploinky-health-probes');
 
 test('the health relay stays accepted from the workspace of earlier Ploinky runtimes', () => {
