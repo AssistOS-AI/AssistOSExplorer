@@ -9,6 +9,7 @@ import { parseTerminalProfile, terminalDirectory } from '../server/terminal-prof
 import { buildPrivateLaunch } from '../server/launch.mjs';
 import { nativeEnvironment } from '../server/native-environment.mjs';
 import { EnvironmentManager } from '../server/environment.mjs';
+import { alaWorkspaceOptions } from '../server/workspace-view.mjs';
 
 const script = fileURLToPath(import.meta.url);
 const codeRoot = path.dirname(path.dirname(script));
@@ -45,6 +46,8 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
     const directory = await fs.realpath(cwd);
     descriptor.cwd = directory === stub || directory === selectedHome ? null : await paths.interactiveCwd(directory);
     descriptor.cwdIdentity = descriptor.cwd ? await paths.identity(descriptor.cwd, 'cwd') : null;
+    // The service computes the view once. A terminal inside a container cannot: its `.env` is already a character device.
+    descriptor.workspaceView = await paths.workspaceView(id);
     return { descriptor, paths };
 }
 
@@ -58,15 +61,17 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
     const home = descriptor.innerEnvironment ? target : path.join(descriptor.dataDir, 'robots', descriptor.id, 'home');
     const cwd = descriptor.cwd || target;
     const shell = await fs.access('/bin/bash', fs.constants.X_OK).then(() => '/bin/bash', () => '/bin/sh');
-    const folders = [{ source: descriptor.cacheRoot, target: descriptor.cacheRoot },
+    // The workspace is read-only at its canonical path with its private entries masked. In a container Podman has made the
+    // masks, and ALA could not name a character device again, so the sandbox inside receives the root and `.roboteam` only.
+    const shown = alaWorkspaceOptions(descriptor.workspaceView, { cwd: descriptor.cwd, environment: Boolean(descriptor.innerEnvironment) });
+    const folders = [...shown.folders, { source: descriptor.cacheRoot, target: descriptor.cacheRoot },
         { source: descriptor.innerEnvironment ? '/workspace/roboteam-soul' : path.join(descriptor.dataDir, 'robots', descriptor.id, 'run/soul'),
             target: '/workspace/roboteam-soul' }];
     const env = nativeEnvironment({ PATH: '/usr/local/bin:/usr/bin:/bin', TERM: descriptor.term || 'xterm-256color', LANG: 'C.UTF-8' }, target);
     // The folder is opened once and bound by descriptor. The robot home has no private project data to mask.
     const pin = descriptor.cwd ? api.pinDirectory(descriptor.cwd, descriptor.cwdIdentity) : null;
-    const mask = descriptor.cwd ? { ignoredPaths: [path.join(descriptor.cwd, '.roboteam')] } : {};
-    if (descriptor.cwd) await fs.mkdir(mask.ignoredPaths[0], { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
-    const args = api.buildSandboxArgs({ workspace: descriptor.cwd || home, workspaceTarget: cwd, ...(pin ? { workspaceFd: pin.fd } : {}), ...mask,
+    if (descriptor.cwd) await fs.mkdir(path.join(descriptor.cwd, '.roboteam'), { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+    const args = api.buildSandboxArgs({ workspace: descriptor.cwd || home, workspaceTarget: cwd, ...(pin ? { workspaceFd: pin.fd } : {}), ignoredPaths: shown.ignoredPaths,
         binary: shell, args: shell.endsWith('/bash') ? ['--login', '-i'] : ['-i'], env, bwrap,
         privateProc: true, home, folders, chdir: cwd, newSession: false });
     // Tool paths are service-selected. Every parent credential and environment value is discarded.
@@ -81,7 +86,7 @@ export async function buildTerminalLaunch(descriptor, paths, { environment = new
         const entry = await environment.require(descriptor.environment, { retry: true });
         const launch = await environment.buildLaunch({ environment: entry.ref, runId: 'terminal-' + randomUUID(), robotId: descriptor.id,
             home: paths.home(descriptor.id), cwd: descriptor.cwd, cwdIdentity: descriptor.cwdIdentity,
-            toolCache: descriptor.cacheRoot,
+            toolCache: descriptor.cacheRoot, workspace: descriptor.workspaceView,
             ala: { source: codeRoot, target: '/opt/robowork-terminal', entry: '/opt/robowork-terminal/scripts/robot-shell.mjs' },
             bwrap: { source: descriptor.bwrap, target: '/opt/robowork-bwrap' },
             soul: { source: paths.soul(descriptor.id), target: '/workspace/roboteam-soul' },

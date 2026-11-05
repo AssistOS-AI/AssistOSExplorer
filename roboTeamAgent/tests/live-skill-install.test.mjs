@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { installLiveSkills } from '../server/live-skill-install.mjs';
 import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
-import { alaSkillMountArguments, skillOverlayTargets } from '../copilot/src/lib/execution/alaSkillMounts.mjs';
+import { alaSkillMountArguments, reportTaskBlockedFolder, skillOverlayTargets } from '../copilot/src/lib/execution/alaSkillMounts.mjs';
 
 // Use the same linked installation as production, including non-sibling checkouts.
 const { packageRoot } = await resolveAlaInstallation();
@@ -238,6 +238,23 @@ test('RoboTeam arguments use the real ALA parser and mount every skill source, w
     // A source that would sit at its own path inside a former workspace view is still mounted.
     const sameRoot = alaSkillMountArguments({ snapshot: { ...snapshot, mounts: [{ source: humanReport, target: humanReport }] }, workspaceRoot: root, cwd });
     assert.ok(sameRoot.some((value, at) => value === humanReport && sameRoot[at - 1] === '--folder' && sameRoot[at + 1] === 'at'));
+});
+
+test('the report-task-blocked folder stays readable when the workspace view ignores .ploinky, and only because it is exported', async t => {
+    const { root, cwd } = await fixture(t);
+    const source = path.join(root, '.ploinky/repos/skills/report-task-blocked');
+    await fs.mkdir(source, { recursive: true });
+    const masked = folder => {
+        const options = parseArguments(['--folder', root, '--folder', folder.source, ...(folder.alias ? ['as', folder.alias] : []),
+            ...(folder.expose ? ['expose'] : []), '--ignore', path.join(root, '.ploinky')]);
+        return ignoredMountTargets(options.ignoredPaths, [{ source: cwd, target: cwd }, ...resolveFolderMounts(options.folders)], cwd);
+    };
+    const folder = reportTaskBlockedFolder(source);
+    assert.deepEqual(folder, { source, alias: 'report-task-blocked', expose: true });
+    // The workspace view's mask covers `.ploinky`, and the alias is not inside it.
+    assert.deepEqual(masked(folder), [path.join(root, '.ploinky')]);
+    // Without the export ALA masks the alias itself, and the required skill would read an empty folder.
+    assert.deepEqual(masked({ source, alias: 'report-task-blocked' }), [path.join(root, '.ploinky'), '/workspace/report-task-blocked']);
 });
 
 test('two Bubblewrap processes see their own skills while private configuration stays hidden', {

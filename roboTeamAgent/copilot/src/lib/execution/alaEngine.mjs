@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { alaSkillMountArguments, skillOverlayTargets } from './alaSkillMounts.mjs';
+import { alaSkillMountArguments, reportTaskBlockedFolder, skillOverlayTargets } from './alaSkillMounts.mjs';
 import { readAlaSession } from './alaTranscript.mjs';
 import * as workspaceSettings from '../config/achillesSettings.mjs';
 import { acquireExecutionLease } from '../storage/workspaceStateLock.mjs';
@@ -251,8 +251,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             // ALA reads defaults from the robot home. Only explicit session or
             // task overrides are passed as arguments; no derived config is written.
             const folders = [];
-            // The writable cwd is the --cwd grant and the robot sees no other part of the
-            // workspace. ALA mounts exactly what it is given.
+            // The writable cwd is the --cwd grant; RoboWork adds the workspace around it, read-only with its private entries
+            // masked. These are the folders RoboTeam adds: skill sources, which a mask may hide at their canonical path.
             if (snapshot.skillsDirectory) {
                 const { targets, skipped } = await skillOverlayTargets(cwd);
                 for (const name of skipped) await emit({ type: 'diagnostic', category: 'skill-catalog', message: `invalid: Session skills are not available at ${name}` });
@@ -270,7 +270,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) channels.push({ name: 'human-input', context: {} });
             const failureSkill = skills.find(skill => skill.name === 'report-task-blocked');
             if (execution.workflowExecution && failureSkill) {
-                folders.push({ source: await targetPath(failureSkill.skillDir, config.workspaceRoot), alias: 'report-task-blocked' });
+                folders.push(reportTaskBlockedFolder(await targetPath(failureSkill.skillDir, config.workspaceRoot)));
                 nativePrompt += '\n\nRead /workspace/report-task-blocked/SKILL.md. Use this required skill if missing resources, access or capabilities prevent fulfilling the agreed task and plan.';
                 channels.push({ name: 'task-failure', context: {} });
                 failureChannel = { close: async () => {}, request: async ({ message }) => {

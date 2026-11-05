@@ -131,7 +131,8 @@ if (prompt.includes('FORCED_FAILURE')) {
     }
     const output = JSON.stringify({ prompt, skill: args.includes('--skill') ? value('--skill') : null, choice, resumed: args.includes('--resume-session'), config,
         openCodeModels, humanInput, folders: args.flatMap((value, index) => value === '--folder' ? [{ source: args[index + 1], alias: args[index + 2] === 'as' ? args[index + 3] : null,
-            ...(args[index + 2] === 'at' ? { target: args[index + 3], expose: args[index + 4] === 'expose' } : {}) }] : []),
+            ...(args[index + 2] === 'at' ? { target: args[index + 3], expose: args[index + 4] === 'expose' } : {}),
+            ...(args[index + 2] === 'as' ? { expose: args[index + 4] === 'expose' } : {}) }] : []),
         effortOverride: value('--effort') ?? null, repositories: process.env.ALA_TASK_REPOSITORIES, model: value('--model') || config.models[backend] || null, modelOverride: value('--model') || null, ca: value('--ca') || null,
         credential: process.env.PLOINKY_AGENT_SECRET || process.env.SSO_ACCESS_TOKEN || null,
         livePublish: process.env.ROBOTEAM_LIVE_PUBLISH ?? null,

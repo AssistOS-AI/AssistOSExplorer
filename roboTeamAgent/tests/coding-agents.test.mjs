@@ -60,7 +60,8 @@ test('ALA sees only the selected agent while the shell and GUI mounts offer ever
         for (const mode of ['desktop', 'browser']) {
             const plan = buildRobotRunArgs({ robot: { id: 'worker-abc123', name: 'worker', codingAgents: [name] },
                 mode, dataDir: root, publicBasePath: '/rt/', images: { desktop: 'desktop', browser: 'browser' },
-                timezone: 'UTC', cwd: '/workspace', toolsPath: '/tools', shellTools: shell, workspaceRoot: root });
+                timezone: 'UTC', cwd: '/workspace', toolsPath: '/tools', shellTools: shell, workspaceRoot: root,
+                workspaceArgs: ['-v', `${root}:${root}:ro,rbind`] });
             for (const agent of Object.values(agents)) assert.ok(plan.args.includes(`${agent.path}:${agent.path}:ro`));
             assert.equal(plan.args.includes(`${cacheRoot}:/data/tool-cache:ro`), false);
             assert.ok(plan.args.includes(`${shell.path}:${path.dirname(shell.binPath)}:ro`));

@@ -46,6 +46,91 @@ export function assertDeniedPaths(files, io = fs) {
     }
 }
 
+const REFUSED_WRITE = ['EROFS', 'EACCES', 'EPERM'];
+const within = (root, value) => value === root || value.startsWith(root === '/' ? '/' : `${root}/`);
+
+// One mount per line of /proc/self/mountinfo: `id parent major:minor root mountpoint options [optional...] - fstype source super`.
+// The kernel escapes a space, tab, newline and backslash in the mount point as \NNN octal.
+export function parseMountinfo(content) {
+    const entries = [];
+    for (const line of String(content).split('\n')) {
+        if (line === '') continue;
+        const fields = line.split(' ');
+        const separator = fields.indexOf('-');
+        assert.ok(separator >= 6 && fields.length >= separator + 3 && /^\d+$/u.test(fields[0]) && /^\d+$/u.test(fields[1]) && fields[4].startsWith('/'),
+            'The mount table is malformed.');
+        const mountPoint = Buffer.from(Buffer.from(fields[4], 'utf8').toString('latin1')
+            .replace(/\\([0-7]{3})/gu, (_, octal) => String.fromCharCode(parseInt(octal, 8) & 0xff)), 'latin1').toString('utf8');
+        entries.push({ id: Number(fields[0]), parent: Number(fields[1]), mountPoint, options: fields[5].split(',') });
+    }
+    return entries;
+}
+
+// The mounts whose content a process can reach. The kernel attaches a mount to the topmost mount at its path, so a mount
+// stacked on another (a tmpfs mask over a copied submount) has the covered mount as its parent and the same mount point, and
+// hides it with everything mounted below it. Two mounts of one parent are different: the one at the path or above hides the
+// other, however they are ordered. A mount is also lost when its parent is not reachable.
+export function visibleMounts(entries) {
+    const byId = new Map(entries.map(entry => [entry.id, entry]));
+    const stackedOver = entry => entries.some(other => other !== entry && other.parent === entry.id && other.mountPoint === entry.mountPoint);
+    const memo = new Map();
+    const reachable = entry => {
+        if (memo.has(entry.id)) return memo.get(entry.id);
+        memo.set(entry.id, false);
+        const index = entries.indexOf(entry);
+        const covered = entries.some((other, at) => other !== entry && other.parent === entry.parent
+            && (other.mountPoint === entry.mountPoint ? at > index : within(other.mountPoint, entry.mountPoint)));
+        const parent = byId.get(entry.parent);
+        const result = !covered && (!parent || reachable(parent) && (entry.mountPoint === parent.mountPoint || !stackedOver(parent)));
+        memo.set(entry.id, result);
+        return result;
+    };
+    return entries.filter(entry => reachable(entry) && !stackedOver(entry));
+}
+
+// The visible writable mounts at or below the root, other than the working folder's own.
+export function writableWorkspaceMounts(content, workspace, cwd) {
+    return visibleMounts(parseMountinfo(content)).filter(entry => entry.options.includes('rw') && within(workspace, entry.mountPoint)
+        && !within(cwd, entry.mountPoint)).map(entry => entry.mountPoint);
+}
+
+// Attempts to create a file where a robot has no write access and requires a refusal. A created file is removed again.
+function assertCreateRefused(io, file) {
+    let descriptor, error;
+    try { descriptor = io.openSync(file, 'wx'); } catch (caught) { error = caught; }
+    if (descriptor !== undefined) { io.closeSync(descriptor); try { io.unlinkSync?.(file); } catch { /* A leftover is itself the evidence. */ } }
+    assert.ok(error && REFUSED_WRITE.includes(error.code), `A new file was admitted: ${file}`);
+}
+
+// A device node opens for writing even on a read-only mount unless the mount is `nodev`, and a `/dev/null` bound over `.env`
+// by Podman may be one. A write to it persists nowhere, so the open may succeed only on that very device.
+function assertNoPersistentWrite(io, file) {
+    let descriptor, error;
+    try { descriptor = io.openSync(file, 'r+'); } catch (caught) { error = caught; }
+    if (descriptor === undefined) { assert.ok(error && REFUSED_WRITE.includes(error.code), `A writable open failed unexpectedly: ${file}`); return; }
+    try {
+        const opened = io.fstatSync(descriptor), discard = io.statSync('/dev/null');
+        assert.ok(opened.isCharacterDevice() && opened.rdev === discard.rdev, `A writable open was admitted: ${file}`);
+    } finally { io.closeSync(descriptor); }
+}
+
+function assertOpenRefused(io, file) {
+    let descriptor, error;
+    try { descriptor = io.openSync(file, 'r+'); } catch (caught) { error = caught; }
+    if (descriptor !== undefined) io.closeSync(descriptor);
+    assert.ok(error && REFUSED_WRITE.includes(error.code), `A writable open was admitted: ${file}`);
+}
+
+// Run inside the robot's sandbox. A robot with a user namespace of its own tries to take a mask away: it unmounts the private
+// entries, binds the root without its submounts and binds it recursively. Anything printed SHOWN or UNMOUNTED is a hole.
+const SHOWTHROUGH = ['R=$1; V=$2', 'umount "$R/.data" 2>/dev/null && echo UNMOUNTED', 'umount "$R/.ploinky" 2>/dev/null && echo UNMOUNTED',
+    'umount "$R/.ploinky-box" 2>/dev/null && echo UNMOUNTED', 'mkdir -p /tmp/robowork-flat /tmp/robowork-deep',
+    'mount --bind "$R" /tmp/robowork-flat 2>/dev/null', 'mount --rbind "$R" /tmp/robowork-deep 2>/dev/null',
+    'for base in "$R" /tmp/robowork-flat /tmp/robowork-deep; do',
+    '  [ -e "$base/.data/.private/roboWorkAgent/robots/$V/home/marker-B" ] && echo SHOWN',
+    '  for name in .data .ploinky .ploinky-box; do [ -n "$(ls -A "$base/$name" 2>/dev/null)" ] && echo SHOWN; done',
+    '  [ -s "$base/.env" ] && echo SHOWN', 'done', 'exit 0'].join('\n');
+
 export async function runIsolationProbe(options, { io = fs, run = execute, env = process.env, request = fetch } = {}) {
     const { probe, robot, victim, workspace } = options;
     const protectedFiles = victimPaths({ robot, victim, workspace, servicePid: options['service-pid'] });
@@ -59,6 +144,12 @@ export async function runIsolationProbe(options, { io = fs, run = execute, env =
             return error;
         });
         await checked('global marker search empty', () => assert.equal(result.stdout.trim(), ''));
+        // The workspace is a separate mount in every path, so the search above does not enter it.
+        const shown = await run('find', [workspace, '-name', 'marker-B', '-print'], { timeout: 60000, maxBuffer: 1024 * 1024 }).catch(error => {
+            assert.ok(error.code === 1 && typeof error.stdout === 'string', 'Workspace marker search failed without bounded evidence.');
+            return error;
+        });
+        await checked('workspace marker search empty', () => assert.equal(shown.stdout.trim(), ''));
         if (probe === 'hostlink') await checked('planted project transcript and home links cannot reach victim', () => {
             assert.ok(options.project && path.posix.isAbsolute(options.project), 'Hostlink requires a planted project.');
             assertDeniedPaths([`${options.project}/.roboteam/.ala/marker-B`, `/home/${robot}/.ala/marker-B`], io);
@@ -85,21 +176,73 @@ export async function runIsolationProbe(options, { io = fs, run = execute, env =
             }
         });
     } else if (probe === 'masks') {
-        // A robot started in a project folder sees no other part of the workspace: its private children are absent
-        // and the workspace root lists only the path to the working folder.
-        for (const name of ['.data', '.ploinky', '.env']) await checked(`${name} is not mounted`, () => assert.throws(() => io.lstatSync(`${workspace}/${name}`), { code: 'ENOENT' }));
-        await checked('every level above the working folder shows only the next path segment', () => {
-            const folder = options.control && path.posix.dirname(options.control);
-            assert.ok(folder && folder.startsWith(`${workspace}/`), 'A control file directly in a working folder below the workspace root is required.');
-            let level = workspace;
-            for (const segment of folder.slice(workspace.length + 1).split('/')) {
-                assert.deepEqual(io.readdirSync(level), [segment], `Unexpected entries in ${level}`);
-                level = `${level}/${segment}`;
-            }
+        // A robot started in a project folder sees the workspace read-only at its canonical path: the private entries are
+        // empty read-only masks, other projects can be read and not written, and only the working folder is writable.
+        const cwd = options.control && path.posix.dirname(options.control);
+        assert.ok(cwd && cwd.startsWith(`${workspace}/`), 'A control file directly in a working folder below the workspace root is required.');
+        const siblingFolder = options.sibling && path.posix.dirname(options.sibling);
+        assert.ok(siblingFolder && path.posix.isAbsolute(siblingFolder) && siblingFolder.startsWith(`${workspace}/`)
+            && !within(cwd, siblingFolder) && !within(siblingFolder, cwd),
+        'A sibling file in another project folder below the workspace root is required.');
+        assert.ok(['present', 'absent'].includes(options.env), 'The expected state of the root .env, present or absent, is required.');
+        const entries = io.readdirSync(workspace);
+        for (const name of ['.data', '.ploinky', '.ploinky-box', ...entries.filter(entry => entry.startsWith('.ploinky-box.'))]) {
+            await checked(`${name} exists, lists nothing and refuses a new file`, () => {
+                assert.deepEqual(io.readdirSync(`${workspace}/${name}`), [], `${name} is not empty`);
+                assertCreateRefused(io, `${workspace}/${name}/robowork-probe`);
+            });
+        }
+        await checked(`root .env is ${options.env}, and holds no readable content when present`, () => {
+            const env = `${workspace}/.env`;
+            if (options.env === 'absent') { assert.throws(() => io.lstatSync(env), { code: 'ENOENT' }); return; }
+            io.lstatSync(env);
+            let content;
+            try { content = io.readFileSync(env, 'utf8'); } catch (error) { assert.equal(error.code, 'EACCES', 'The masked .env fails unexpectedly.'); }
+            assert.ok(content === undefined || content === '', 'The root .env content is readable.');
+            assertNoPersistentWrite(io, env);
+        });
+        await checked('victim paths are denied, including through the workspace', () => assertDeniedPaths(protectedFiles, io));
+        await checked('another project reads and cannot be written', () => {
+            const descriptor = io.openSync(options.sibling, 'r'); io.closeSync(descriptor);
+            assertOpenRefused(io, options.sibling);
+            assertCreateRefused(io, `${siblingFolder}/robowork-probe`);
+        });
+        await checked('the root refuses a new file and lists the path to the working folder and to the other project', () => {
+            assertCreateRefused(io, `${workspace}/robowork-probe`);
+            for (const target of [cwd, options.sibling]) assert.ok(entries.includes(target.slice(workspace.length + 1).split('/')[0]), `The root does not list ${target}`);
         });
         await checked('working folder positive-control file readable and writable', () => {
             const descriptor = io.openSync(options.control, 'r+'); io.closeSync(descriptor);
         });
+        await checked('the working folder .roboteam is empty and refuses a new file', () => {
+            assert.deepEqual(io.readdirSync(`${cwd}/.roboteam`), [], 'The working folder .roboteam is not empty');
+            assertCreateRefused(io, `${cwd}/.roboteam/robowork-probe`);
+        });
+        await checked('no visible writable mount at or below the root outside the working folder', () => {
+            assert.deepEqual(writableWorkspaceMounts(io.readFileSync('/proc/self/mountinfo', 'utf8'), workspace, cwd), []);
+        });
+        // `find` exits 1 on any directory it cannot read, which says nothing about sockets; its bounded output still decides.
+        const sockets = await run('find', [workspace, '-path', cwd, '-prune', '-o', '-type', 's', '-print'], { timeout: 60000, maxBuffer: 1024 * 1024 })
+            .catch(error => {
+                assert.ok(error.code === 1 && typeof error.stdout === 'string', 'Socket search failed without bounded evidence.');
+                return error;
+            });
+        await checked('no socket outside the working folder', () => assert.equal(sockets.stdout.trim(), ''));
+    } else if (probe === 'showthrough') {
+        // A permission refusal of `unshare` means no robot can build a namespace to attack a mask from. A missing binary
+        // means the probe could not run, and fails.
+        const outcome = await run('unshare', ['-Urm', '/bin/sh', '-c', SHOWTHROUGH, 'sh', workspace, victim], { timeout: 30000, maxBuffer: 65536 })
+            .then(result => ({ result }), error => ({ error }));
+        if (outcome.error) {
+            await checked('unshare is refused by permission, so no mask can be attacked', () => {
+                assert.notEqual(outcome.error.code, 'ENOENT', 'unshare is required to run this probe.');
+                assert.match(String(outcome.error.stderr || ''), /not permitted|permission denied/iu, 'unshare failed for a reason other than a permission refusal.');
+            });
+        } else {
+            await checked('no mask can be unmounted or bypassed from a namespace of the robot', () => {
+                assert.doesNotMatch(String(outcome.result.stdout), /SHOWN|UNMOUNTED/u, 'A mask was bypassed.');
+            });
+        }
     } else if (probe === 'service') {
         await checked('no Ploinky environment', () => assert.deepEqual(Object.keys(env).filter(key => key.startsWith('PLOINKY_')), []));
         const result = await run('grep', ['-R', '-l', 'PLOINKY_', '/workspace/ploinky-runtime'], { timeout: 5000, maxBuffer: 65536 })

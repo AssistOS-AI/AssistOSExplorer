@@ -149,6 +149,9 @@ test('actual skill overlays in a public workspace under home survive schema and 
     const sourceIdentity = paths.identity.bind(paths);
     paths.grant = (value, kind) => kind === 'cwd' && value === cwd ? Promise.resolve(cwd) : sourceGrant(value, kind);
     paths.identity = (value, kind) => kind === 'cwd' && value === cwd ? Promise.resolve('1:1') : sourceIdentity(value, kind);
+    // The geometry is not on this disk either, so the view is the one the Linux host would compute.
+    const masks = ['.data', '.env', '.ploinky', '.ploinky-box'].map(name => ({ path: path.join(workspace, name), directory: name !== '.env' }));
+    paths.workspaceView = async () => ({ root: workspace, masks, writableSubmounts: [] });
     const source = input.folders[0].source;
     const skillArgs = alaSkillMountArguments({ cwd, snapshot: { skillsDirectory: source,
         mounts: [0, 1, 2].map(index => ({ source, target: `/workspace/roboteam-skill-${index}` })) } });
@@ -166,7 +169,7 @@ test('actual skill overlays in a public workspace under home survive schema and 
     for (const folder of folders) assert.ok(launches[0].args.some((value, index) => value === 'at' && launches[0].args[index + 1] === folder.at));
     const forbidden = ['/', '/home', '/home/skutner', '/home/victim', '/home/aaa', workspace,
         path.join(workspace, '.data'), path.join(workspace, '.data', '.private', 'victim'),
-        path.join(workspace, '.ploinky'), path.join(workspace, '.env'), path.join(cwd, '.roboteam'),
+        path.join(workspace, '.ploinky'), path.join(workspace, '.ploinky-box'), path.join(workspace, '.ploinky-box.old'), path.join(workspace, '.env'), path.join(cwd, '.roboteam'),
         `${workspace}-sibling/project/.agents/skills`, '/data', '/data/robots/victim/home', '/proc/self/fd', '/sys/kernel',
         '/dev', '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64', '/workspace'];
     for (const [index, at] of forbidden.entries()) {
@@ -174,4 +177,26 @@ test('actual skill overlays in a public workspace under home survive schema and 
             { code: 'FOLDER_REFUSED' }, at);
     }
     assert.equal(runs.list().length, 1);
+    // The run shows the workspace read-only at its canonical path and masks each private entry; no caller supplied any of it.
+    const args = launches[0].args;
+    assert.deepEqual(args.flatMap((value, index) => value === '--ignore' ? [args[index + 1]] : []),
+        [path.join(cwd, '.roboteam'), ...masks.map(mask => mask.path)]);
+    assert.equal(args[args.indexOf('--folder') + 1], workspace);
+    assert.notEqual(args[args.indexOf('--folder') + 2], 'expose');
+});
+
+test('a plain grant inside the workspace becomes an export over it, and one in .ploinky or .ploinky-box is refused through the real tool entry', async t => {
+    const { paths, input, call, runs, launches } = await service(t);
+    const shared = path.join(paths.workspaceRoot, 'shared'), repository = path.join(paths.workspaceRoot, '.ploinky', 'repos', 'skills', 'one');
+    const box = path.join(paths.workspaceRoot, '.ploinky-box', 'state');
+    for (const directory of [shared, repository, box]) await fs.mkdir(directory, { recursive: true });
+    for (const source of [repository, box, path.join(paths.workspaceRoot, '.ploinky-box')]) {
+        await assert.rejects(call('run_start', { ...input, folders: [{ source }] }), { code: 'FOLDER_REFUSED' }, source);
+    }
+    assert.equal(runs.list().length, 0);
+    assert.equal((await call('run_start', { ...input, folders: [{ source: shared }] })).state, 'starting');
+    await runs.get(input.runId).preparing;
+    const args = launches[0].args;
+    const at = args.indexOf(shared);
+    assert.deepEqual(args.slice(at - 1, at + 4), ['--folder', shared, 'at', shared, 'expose']);
 });

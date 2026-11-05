@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { HIDDEN_WORKSPACE_ENTRIES, HIDDEN_WORKSPACE_PREFIX, workspaceView } from './workspace-view.mjs';
 
 // O_PATH needs only search permission on each directory. It has this value on the Linux architectures RoboWork runs on.
 const O_PATH = process.platform === 'linux' ? 0o10000000 : 0;
@@ -93,11 +94,12 @@ export class RobotPaths {
             const protectedRoot = await fs.realpath(requestedRoot).catch(() => requestedRoot);
             if (within(protectedRoot, resolved) || within(resolved, protectedRoot)) throw fail(code, 'Directory contains protected storage');
         }
-        if (kind === 'cwd') {
-            for (const requestedRoot of [path.join(this.workspaceRoot, '.data'), path.join(this.workspaceRoot, '.ploinky')]) {
-                const protectedRoot = await fs.realpath(requestedRoot).catch(() => requestedRoot);
-                if (within(protectedRoot, resolved)) throw fail(code, 'Working directory is protected');
-            }
+        // Service and deployment state is never granted, as a folder or as a working directory. A robot sees it only as the
+        // empty masks of the workspace view. Workspace .ploinky is for a folder only below a registered repository.
+        for (const requestedRoot of await this.hiddenEntries()) {
+            if (kind !== 'cwd' && path.basename(requestedRoot) === '.ploinky') continue;
+            const protectedRoot = await fs.realpath(requestedRoot).catch(() => requestedRoot);
+            if (within(protectedRoot, resolved)) throw fail(code, kind === 'cwd' ? 'Working directory is protected' : 'Directory is protected workspace state');
         }
         if (kind !== 'cwd') {
             // Registered repository sources live below .ploinky/repos/<name>; nothing else in .ploinky is for a robot.
@@ -117,6 +119,21 @@ export class RobotPaths {
         if (resolved.split(path.sep).includes('.roboteam')) throw fail('CWD_REFUSED', 'Directory is private project data');
         return resolved;
     }
+
+    // The workspace entries that hold service or deployment state: the fixed names and any quarantined Box sibling, by the
+    // configured path and by the canonical one.
+    async hiddenEntries() {
+        const roots = [...new Set([this.workspaceRoot, await fs.realpath(this.workspaceRoot).catch(() => this.workspaceRoot)])];
+        const entries = [];
+        for (const root of roots) {
+            const siblings = (await fs.readdir(root).catch(() => [])).filter(name => name.startsWith(HIDDEN_WORKSPACE_PREFIX));
+            for (const name of [...HIDDEN_WORKSPACE_ENTRIES, ...siblings]) entries.push(path.join(root, name));
+        }
+        return entries;
+    }
+
+    // The read-only view of the workspace every execution path of this robot shows. RoboWork adds it; no caller supplies it.
+    async workspaceView(id, options = {}) { return workspaceView(this.workspaceRoot, { robotId: robotId(id), ...options }); }
 
     async identity(resolved, kind = 'folder') {
         try { return await directoryIdentity(resolved); }

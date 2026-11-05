@@ -13,7 +13,7 @@ import { nativeSymlinkControl } from './controller/native-terminal.mjs';
 import { SENTINEL, assertNoAgentExec, assertVictimUnchanged, assertDualHome, assertDeleted,
     assertEmptyPrivateListing, assertNoMarker, createMarkerStreamGuard, assertRefused, sha256, pending } from './controller/contracts.mjs';
 
-export const HELP = `Usage: node controller-scenarios.mjs --config <private-json> --scenario <I2|I8|I9|I10|I11|H2|H3>
+export const HELP = `Usage: node controller-scenarios.mjs --config <private-json> --scenario <I2|I8|I9|I10|I11|W1|H2|H3>
 Run on the selected apparatus host. No SSH or model prompt is issued.
 Config: engine (podman/docker), canonical fixture host path, workspace in-Box path,
 box {id,image,startedAt}, rt/rw immutable IDs, ploinkyRoot/ploinkyRevision,
@@ -27,9 +27,13 @@ or result overrides. All scenarios need explorer {origin,storageState}, where st
 is the current operator browser's private Playwright JSON and origin is a local
 published port of this exact Box. I2 exercises native preparation and Browser
 creation but supplies no model prompt; it requires the approved baseline Git
-object for its isolated mode-mutation negative control. I10 retains all fourteen
-grant refusals and performs a finite native symlink read through the normal
-default robot WebTTY terminal (existing smoke Playwright/Chromium required).
+object for its isolated mode-mutation negative control. I10 retains all eighteen
+grant refusals (the workspace-private .data/roboTeamAgent and .ploinky-box included, each
+proved to exist from RoboWork first) and performs a finite native symlink read through
+the normal default robot WebTTY terminal (existing smoke Playwright/Chromium required).
+W1 uses a new owned robot and owned folders to prove that a sibling folder's OpenCode
+plugin is not loaded while its parent's is, and that a plugin in the robot's own home
+sees an empty workspace .data during a fresh model discovery.
 M17 sets default and probe robots by normal RT PATCH to the exact free Nemotron
 route. H2 stops and deletes only its own newly provisioned probe and GUI.
 P1 lifecycle orchestration remains pending and exits nonzero before live access.
@@ -251,6 +255,12 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
             const bytes=fs.readFileSync(path.join(input.project,'victim-link','marker-B'));
             if(crypto.createHash('sha256').update(bytes).digest('hex')!==input.markerHash) throw Error('Grant symlink positive control failed'); console.log('true');
         `, { project, victim, markerHash: before.markerHash });
+        // Workspace entries that exist but belong to no robot. The service must see them, or a refusal proves nothing.
+        const private_ = [`${workspace}/.data/roboTeamAgent`, `${workspace}/.ploinky-box`];
+        await runtime.node(runtime.config.rw, `
+            for (const target of input.targets) if (!fs.lstatSync(target).isDirectory()) throw Error('Refusal target is not a directory: '+target);
+            console.log('true');
+        `, { op: 'exists', targets: private_ });
         // The deliberately invalid tag is checked after grants. If a protected
         // grant unexpectedly succeeds, this stops before any native launch and
         // produces INVALID_INPUT, which cannot satisfy the refusal assertion.
@@ -259,7 +269,7 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
         assertRefused(await runtime.mcp('run_start', request), 'INVALID_INPUT');
         assertRefused(await runtime.mcp('run_start', { ...request, folders: [{ source: project }] }), 'INVALID_INPUT');
         const paths = ['/data', '/data/robots', `/data/robots/${victim}/home`,
-            `${workspace}/.data/.private`, workspace, '/', `${project}/victim-link`];
+            `${workspace}/.data/.private`, workspace, '/', `${project}/victim-link`, ...private_];
         for (const target of paths) {
             for (const kind of ['cwd', 'folder']) {
                 const result = await runtime.mcp('run_start', kind === 'cwd' ? { ...request, cwd: target }
@@ -292,6 +302,84 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
     }
     return { observations, victim: before, nativeTerminal,
         positiveControl: 'safe cwd and folder reach subsequent tag validation; privileged symlink reads marker' };
+}
+
+// OpenCode finds plugins in every ancestor of its working folder and never beside it. This plants the same canary in a
+// sibling of the working folder and in its parent, and a recorder in the robot's own home, then runs a real turn and a fresh
+// model discovery. The sibling's canary must stay silent, the parent's must write (it proves the canary runs, and documents
+// that a robot writing a parent folder runs code in its children), and the recorder must have run and seen an empty `.data`.
+const CANARY = marker => `export const W1Canary = async () => { try { const fs = await import('node:fs'), path = await import('node:path');
+    fs.writeFileSync(path.join(process.cwd(), ${JSON.stringify(marker)}), 'loaded'); } catch {} return {}; };`;
+const RECORDER = root => `export const W1Recorder = async () => { try { const fs = await import('node:fs'), path = await import('node:path');
+    let entry; try { entry = { entries: fs.readdirSync(${JSON.stringify(`${root}/.data`)}) }; } catch (error) { entry = { error: String(error.code || error.message) }; }
+    fs.appendFileSync(path.join(process.env.HOME, 'w1-recorder.jsonl'), JSON.stringify({ cwd: process.cwd(), ...entry }) + '\\n'); } catch {} return {}; };`;
+const W1_MARKERS = Object.freeze({ sibling: 'w1-marker-sibling', parent: 'w1-marker-parent' });
+
+export async function walkUpAndDiscovery(runtime) {
+    const { workspace } = runtime.config;
+    const attacker = await runtime.probes.create(runtime.config.attacker);
+    const parent = `${workspace}/controller-w1-${randomUUID()}`;
+    const cwd = `${parent}/child`, sibling = `${parent}/sibling`;
+    const owner = await runtime.node(runtime.config.rw, `
+        for (const directory of [input.parent, input.cwd, input.sibling]) fs.mkdirSync(directory,{recursive:true,mode:0o700});
+        const stat=fs.lstatSync(input.parent); console.log(JSON.stringify({ino:stat.ino,dev:stat.dev}));
+    `, { op: 'folders', parent, cwd, sibling });
+    let observed;
+    try {
+        await runtime.node(runtime.config.rw, `
+            for (const [directory, file, source] of input.plugins) {
+                for (const name of ['plugin','plugins']) { fs.mkdirSync(path.join(directory,'.opencode',name),{recursive:true}); fs.writeFileSync(path.join(directory,'.opencode',name,file),source); }
+            }
+            const home='/data/robots/'+input.attacker+'/home/.config/opencode/plugins';
+            fs.mkdirSync(home,{recursive:true}); fs.writeFileSync(path.join(home,'w1-recorder.js'),input.recorder);
+            console.log('true');
+        `, { op: 'plant', attacker, recorder: RECORDER(workspace), plugins: [
+            [sibling, 'w1-sibling.js', CANARY(W1_MARKERS.sibling)], [parent, 'w1-parent.js', CANARY(W1_MARKERS.parent)]] });
+        const read = async () => runtime.node(runtime.config.rw, `
+            const records=fs.existsSync(input.file)?fs.readFileSync(input.file,'utf8').split('\\n').filter(Boolean).map(line=>JSON.parse(line)):[];
+            const present=name=>fs.existsSync(path.join(input.cwd,name));
+            console.log(JSON.stringify({records,sibling:present(input.markers.sibling),parent:present(input.markers.parent)}));
+        `, { op: 'observe', file: `/data/robots/${attacker}/home/w1-recorder.jsonl`, cwd, markers: W1_MARKERS });
+        // A fresh discovery: a new robot has no cached catalog, and the recorder is new to its configuration.
+        const models = await runtime.mcp('robot_models', { robotId: attacker, agent: 'opencode', cwd });
+        assert.ok(models.ok === true, 'Model discovery failed, so its view of the workspace was not observed.');
+        const discovery = await read();
+        assert.ok(discovery.records.length > 0, 'The home plugin never ran during model discovery.');
+        for (const record of discovery.records) assert.deepEqual(record.entries, [], `Discovery saw workspace .data entries or failed: ${JSON.stringify(record)}`);
+        // A real turn in the working folder.
+        const runId = `controller-${randomUUID()}`;
+        const started = await runtime.mcp('run_start', { runId, robotId: attacker, cwd, ala: { sessionId: randomUUID(), ca: 'opencode', model: FREE_MODEL },
+            folders: [], ignore: [], channels: [], tag: {} });
+        assert.ok(started.ok === true, 'The probe turn could not start.');
+        const prompt = Buffer.from(`${JSON.stringify({ type: 'prompt', prompt: 'Reply with the single word ok.' })}\n`).toString('base64');
+        assert.ok((await runtime.mcp('run_input', { runId, data: prompt })).ok === true, 'The probe prompt was not accepted.');
+        let state = 'running', cursor = 0;
+        for (let attempt = 0; attempt < 480 && ['starting', 'running', 'stopping'].includes(state); attempt++) {
+            const chunk = await runtime.mcp('run_read', { runId, after: cursor, waitMs: 500, maxBytes: 1024 * 1024 });
+            assert.ok(chunk.ok === true && Number.isSafeInteger(chunk.result?.next), 'The probe turn cannot be read.');
+            cursor = chunk.result.next; state = chunk.result.state;
+        }
+        await stopOwnedActivity(runtime, attacker);
+        assert.ok(!['starting', 'running', 'stopping'].includes(state), 'The probe turn did not end within its bound.');
+        observed = await read();
+        assert.ok(observed.records.length > discovery.records.length, 'The home plugin never ran during the turn.');
+        for (const record of observed.records) assert.deepEqual(record.entries, [], `A robot saw workspace .data entries: ${JSON.stringify(record)}`);
+        assert.equal(observed.parent, true, 'The parent folder canary did not run, so the turn proves nothing about plugin loading.');
+        assert.equal(observed.sibling, false, 'A sibling folder plugin was loaded.');
+        assertDeleted(await runtime.probes.remove(attacker));
+    } finally {
+        if (runtime.probes.owned?.has(attacker)) {
+            await stopOwnedActivity(runtime, attacker);
+            assertDeleted(await runtime.probes.remove(attacker));
+        }
+        await runtime.node(runtime.config.rw, `
+            const stat=fs.lstatSync(input.parent);
+            if(!stat.isDirectory()||stat.isSymbolicLink()||stat.ino!==input.ino||stat.dev!==input.dev) throw Error('Walk-up folder ownership changed');
+            fs.rmSync(input.parent,{recursive:true}); console.log('true');
+        `, { op: 'remove', parent, ...owner });
+    }
+    return { discoveryRecords: observed.records.length, markers: { parent: observed.parent, sibling: observed.sibling },
+        positiveControl: 'the parent folder canary wrote its marker and the home recorder ran in discovery and in the turn' };
 }
 
 export async function dualHome(runtime) {
@@ -362,7 +450,7 @@ export async function workspaceStorage(runtime) {
 }
 
 export async function runControllerScenario(config, scenario) {
-    if (!['I2', 'I8', 'I9', 'I10', 'I11', 'H2', 'H3'].includes(scenario)) {
+    if (!['I2', 'I8', 'I9', 'I10', 'I11', 'W1', 'H2', 'H3'].includes(scenario)) {
         pending(scenario, 'Controller scenario is not fully implemented; authenticated API, sandbox control or lifecycle evidence remains pending.');
     }
     const runtime = new ControllerRuntime(config);
@@ -372,12 +460,12 @@ export async function runControllerScenario(config, scenario) {
 export async function runVerifiedScenario(runtime, scenario) {
     const identity = await runtime.verify();
     const operation = { I2: symlinkHelpers, I8: otherAgentMasks, I9: manifests, I10: grantRefusals, I11: safeDelete,
-        H2: dualHome, H3: workspaceStorage }[scenario];
+        W1: walkUpAndDiscovery, H2: dualHome, H3: workspaceStorage }[scenario];
     let observed, primaryError;
     try {
         runtime.auth = await openControllerSession(runtime);
         runtime.probes = new ProbeRobots(runtime);
-        await runtime.probes.setup({ includeVictim: !['H2', 'H3', 'I9'].includes(scenario) });
+        await runtime.probes.setup({ includeVictim: !['H2', 'H3', 'I9', 'W1'].includes(scenario) });
         observed = await operation(runtime);
     }
     catch (error) {

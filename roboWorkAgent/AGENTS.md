@@ -22,4 +22,4 @@ Use Node.js ES modules in `.mjs` files, built-ins and async/await. Follow the ro
 
 ## Key Paths
 
-`server/main.mjs` wires the resident service. `tools/robowork.mjs` verifies internal invocations. `server/run-manager.mjs` owns runs and logs. `server/launch.mjs` narrows ALA's host view and creates private networks. `server/gui-manager.mjs` owns GUI containers. `server/environment.mjs` starts fresh containers from selected images. `scripts/robot-shell.mjs` launches profile terminals. `tests/` holds focused checks; `tests/e2e/` holds explicit live acceptance probes.
+`server/main.mjs` wires the resident service. `tools/robowork.mjs` verifies internal invocations. `server/run-manager.mjs` owns runs and logs. `server/launch.mjs` narrows ALA's host view and creates private networks. `server/workspace-view.mjs` computes the read-only workspace view, its masks and the ALA and Podman arguments every execution path adds. `server/gui-manager.mjs` owns GUI containers. `server/environment.mjs` starts fresh containers from selected images. `scripts/robot-shell.mjs` launches profile terminals. `tests/` holds focused checks; `tests/e2e/` holds explicit live acceptance probes.

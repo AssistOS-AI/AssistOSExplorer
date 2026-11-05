@@ -193,15 +193,16 @@ test('shell sandbox requires private proc, one layer, own home, service mounts o
     } });
     assert.equal(options.newSession, false); assert.equal(options.privateProc, true);
     assert.equal(options.home, f.paths.home('robot-a')); assert.equal(options.chdir, '/home/robot-a');
-    // Only service mounts are passed: no workspace view and nothing to mask inside one.
-    assert.equal(options.ignoredPaths, undefined);
-    assert.deepEqual(options.folders.map(folder => folder.target), [descriptor.cacheRoot, '/workspace/roboteam-soul']);
-    assert.equal(options.folders.some(folder => folder.source === f.paths.workspaceRoot), false);
+    // The workspace is shown read-only at its canonical path with its private entries masked; the home has no `.roboteam` to mask.
+    assert.deepEqual(options.ignoredPaths, ['.data', '.env', '.ploinky'].map(name => path.join(f.paths.workspaceRoot, name)));
+    assert.deepEqual(options.folders, [{ source: f.paths.workspaceRoot },
+        { source: descriptor.cacheRoot, target: descriptor.cacheRoot },
+        { source: f.paths.soul('robot-a'), target: '/workspace/roboteam-soul' }]);
     assert.ok(launch.args.indexOf('--setenv') < launch.args.indexOf('--'));
     await assert.rejects(buildShellSandbox(descriptor, { loadSandbox: async () => ({ canMountPrivateProc: () => false }) }), { code: 'SANDBOX_UNAVAILABLE' });
 });
 
-test('shell sandbox in a project folder grants that folder only, never the workspace or a sibling', async t => {
+test('shell sandbox in a project folder grants that folder writable and the workspace read-only with its masks, never a sibling by name', async t => {
     const f = await fixture(t);
     await f.api.prepare(PROFILE);
     const project = path.join(f.paths.workspaceRoot, 'project'), sibling = path.join(f.paths.workspaceRoot, 'sibling');
@@ -216,10 +217,12 @@ test('shell sandbox in a project folder grants that folder only, never the works
         pinDirectory: (source, identity) => { pinned = { source, identity }; return { fd: 42 }; },
         buildSandboxArgs: input => { options = input; return ['--', '/bin/bash']; } }) });
     assert.equal(options.workspace, project); assert.equal(options.chdir, project);
-    assert.deepEqual(options.folders.map(folder => folder.target), [descriptor.cacheRoot, '/workspace/roboteam-soul']);
-    assert.equal(options.folders.some(folder => [f.paths.workspaceRoot, sibling].includes(folder.source)), false);
+    assert.deepEqual(options.folders.map(folder => folder.target ?? folder.source), [f.paths.workspaceRoot, descriptor.cacheRoot, '/workspace/roboteam-soul']);
+    assert.equal(options.folders.some(folder => folder.source === sibling), false);
+    // The root is a plain read-only folder: only an export may overlay it, and the workspace itself never is one.
+    assert.deepEqual(options.folders[0], { source: f.paths.workspaceRoot });
     // Private project data is hidden as in a run, and the mask target exists before ALA is asked to mask it.
-    assert.deepEqual(options.ignoredPaths, [path.join(project, '.roboteam')]);
+    assert.deepEqual(options.ignoredPaths, [path.join(project, '.roboteam'), ...['.data', '.env', '.ploinky'].map(name => path.join(f.paths.workspaceRoot, name))]);
     assert.equal((await fs.stat(path.join(project, '.roboteam'))).isDirectory(), true);
     // The folder is bound through a descriptor opened against the identity checked by the outer process.
     const stat = await fs.lstat(project, { bigint: true });
@@ -227,6 +230,48 @@ test('shell sandbox in a project folder grants that folder only, never the works
     assert.equal(descriptor.cwdIdentity, pinned.identity);
     assert.equal(options.workspaceFd, 42);
     assert.deepEqual(launch.options.stdio, ['inherit', 'inherit', 'inherit', 42]);
+});
+
+test('inside a container the terminal sandbox receives the root and .roboteam only, from the view the outer process computed', async t => {
+    const f = await fixture(t);
+    await prepareReady(f.api, 'robot-a.YWdlbnQ');
+    const project = path.join(f.paths.workspaceRoot, 'project');
+    await fs.mkdir(project);
+    const { descriptor } = await readTerminalDescriptor(f.paths, 'robot-a.YWdlbnQ', f.stub, project);
+    // The view is carried in the descriptor, and the container receives it from the outer process.
+    assert.deepEqual(descriptor.workspaceView, await f.paths.workspaceView('robot-a'));
+    const previous = process.env.ALA_SANDBOX_HOME;
+    t.after(() => { if (previous === undefined) delete process.env.ALA_SANDBOX_HOME; else process.env.ALA_SANDBOX_HOME = previous; });
+    let options;
+    // In the container `.env` is already a character device, so the view is taken as given and never computed again.
+    const inner = { ...descriptor, innerEnvironment: true, alaEntry: '/opt/robowork-ala/bin/ala.mjs', bwrap: '/opt/robowork-bwrap',
+        workspaceView: { ...descriptor.workspaceView, masks: [...descriptor.workspaceView.masks, { path: '/dev/null/device', directory: false }] } };
+    await buildShellSandbox(inner, { loadSandbox: async () => ({ canMountPrivateProc: () => true, pinDirectory: () => ({ fd: 42 }),
+        buildSandboxArgs: input => { options = input; return ['--', '/bin/bash']; } }) });
+    assert.deepEqual(options.ignoredPaths, [path.join(project, '.roboteam')]);
+    assert.deepEqual(options.folders[0], { source: f.paths.workspaceRoot });
+    let launchOptions;
+    await buildTerminalLaunch(descriptor, f.paths, { environment: { require: f.environment.require, buildLaunch: async input => { launchOptions = input; return { command: 'podman', args: ['run', '-it'], options: {} }; } } });
+    assert.deepEqual(launchOptions.workspace, descriptor.workspaceView);
+    assert.deepEqual(JSON.parse(launchOptions.args[1]).workspaceView, descriptor.workspaceView);
+    assert.equal(JSON.parse(launchOptions.args[1]).innerEnvironment, true);
+});
+
+test('a terminal without a workspace view does not start, and a view that cannot be shown refuses the descriptor', async t => {
+    const f = await fixture(t);
+    await f.api.prepare(PROFILE);
+    const { descriptor } = await readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub);
+    const previous = process.env.ALA_SANDBOX_HOME;
+    t.after(() => { if (previous === undefined) delete process.env.ALA_SANDBOX_HOME; else process.env.ALA_SANDBOX_HOME = previous; });
+    const sandbox = { loadSandbox: async () => ({ canMountPrivateProc: () => true, buildSandboxArgs: () => { throw new Error('unreachable'); } }) };
+    for (const workspaceView of [undefined, null, {}, { root: '/x', masks: [] }]) {
+        await assert.rejects(buildShellSandbox({ ...descriptor, workspaceView }, sandbox), { code: 'WORKSPACE_UNAVAILABLE' });
+    }
+    await assert.rejects(buildTerminalLaunch({ ...descriptor, environment: 'repo/agent', workspaceView: undefined }, f.paths,
+        { environment: new (await import('../server/environment.mjs')).EnvironmentManager({ loadMarketplace: async () => ({ agents: [] }) }) }), { code: 'ENVIRONMENT_UNAVAILABLE' });
+    await fs.rm(path.join(f.paths.workspaceRoot, '.env'));
+    assert.equal(spawnSync('mkfifo', [path.join(f.paths.workspaceRoot, '.env')]).status, 0);
+    await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub), { code: 'WORKSPACE_UNAVAILABLE' });
 });
 
 test('terminal in a real ALA sandbox module refuses a swapped folder and masks through the descriptor', async t => {

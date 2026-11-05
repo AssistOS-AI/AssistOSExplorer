@@ -7,17 +7,21 @@ import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { fstatSync } from 'node:fs';
 import { GuiManager, buildRobotRunArgs, proxySessionHttp } from '../server/gui-manager.mjs';
+import { podmanWorkspaceArguments } from '../server/workspace-view.mjs';
 import { createRoboWorkServer } from '../server/http-server.mjs';
 
 const shellTools = { path: '/data/tool-cache/shell-generation', binPath: '/data/tool-cache/shell-generation/bin', agents: { codex: { path: '/data/tool-cache/codex-generation' } } };
-const base = { robot: { id: 'robot-a', name: 'Robot' }, mode: 'browser', dataDir: '/data', workspaceRoot: '/workspace', images: { browser: 'browser', desktop: 'desktop' }, toolsPath: '/data/tool-cache/browser', shellTools };
+// The workspace sits at a path of its own, not at /workspace, where ALA refuses a destination.
+const view = { root: '/srv/ws', writableSubmounts: ['/srv/ws/checkout', '/srv/ws/project/vendor'],
+    masks: [{ path: '/srv/ws/.data', directory: true }, { path: '/srv/ws/.env', directory: false }] };
+const workspaceArgsFor = cwd => podmanWorkspaceArguments(view, { cwd, volumeFlag: '-v' });
+const base = { robot: { id: 'robot-a', name: 'Robot' }, mode: 'browser', dataDir: '/data', images: { browser: 'browser', desktop: 'desktop' }, toolsPath: '/data/tool-cache/browser', shellTools,
+    workspaceArgs: workspaceArgsFor('/srv/ws/project') };
 
-for (const mode of ['browser', 'desktop']) for (const cwd of ['/home/robot-a', '/workspace/project']) {
-    test(`${mode} launch mounts only home, the working folder and service paths at ${cwd}`, () => {
-        const { args } = buildRobotRunArgs({ ...base, mode, cwd });
+for (const mode of ['browser', 'desktop']) for (const cwd of ['/home/robot-a', '/srv/ws/project']) {
+    test(`${mode} launch mounts home, the working folder writable, the workspace read-only with its masks and service paths at ${cwd}`, () => {
+        const { args } = buildRobotRunArgs({ ...base, mode, cwd, workspaceArgs: workspaceArgsFor(cwd) });
         for (const grant of ['/data/robots/robot-a/home:/config', '/data/robots/robot-a/home:/home/robot-a', '/data/robots/robot-a/run/soul:/workspace/roboteam-soul']) assert.ok(args.includes(grant));
-        assert.equal(args.some(value => /^\/workspace\/\.(data|ploinky):/u.test(value)), false);
-        assert.equal(args.some(value => value.includes('/workspace/.env')), false);
         assert.ok(args.includes('HOME=/home/robot-a'));
         assert.ok(args.includes('ROBOTEAM_SHELL_HOME=/home/robot-a'));
         assert.ok(args.includes('USER=robot-a'));
@@ -25,16 +29,30 @@ for (const mode of ['browser', 'desktop']) for (const cwd of ['/home/robot-a', '
         const mounts = args.filter((value, index) => args[index - 1] === '-v');
         assert.equal(mounts.includes('/data:/data'), false);
         assert.equal(mounts.includes('/data/robots:/data/robots'), false);
-        // Neither the workspace root nor a sibling project is mounted.
-        assert.equal(mounts.some(value => value.startsWith('/workspace:')), false);
-        assert.equal(mounts.some(value => value.startsWith('/workspace/sibling')), false);
-        assert.equal(mounts.includes(`${cwd}:${cwd}:rw`), cwd !== '/home/robot-a');
+        // The workspace is read-only and recursive, every writable submount below it is read-only again, and Podman's `ro`
+        // covers only the top mount.
+        assert.ok(mounts.includes('/srv/ws:/srv/ws:ro,rbind'));
+        assert.ok(mounts.includes('/srv/ws/checkout:/srv/ws/checkout:ro'));
+        assert.equal(mounts.includes('/srv/ws/project/vendor:/srv/ws/project/vendor:ro'), cwd !== '/srv/ws/project');
+        // Private entries are empty read-only masks, and a tmpfs without `notmpcopyup` would copy what it covers.
+        assert.ok(mounts.includes('/dev/null:/srv/ws/.env:ro'));
+        const tmpfs = args.flatMap((value, index) => args[index - 1] === '--tmpfs' ? [value] : []);
+        assert.ok(tmpfs.includes('/srv/ws/.data:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup'));
+        for (const mask of tmpfs.filter(value => value.startsWith('/srv/ws/'))) assert.ok(mask.split(':')[1].split(',').includes('notmpcopyup'), mask);
+        // The sibling project is reached through the workspace, never as a mount of its own.
+        assert.equal(mounts.some(value => value.startsWith('/srv/ws/sibling')), false);
         const writable = mounts.filter(value => value.endsWith(':rw'));
         assert.deepEqual(writable, cwd === '/home/robot-a' ? [] : [`${cwd}:${cwd}:rw`]);
         assert.equal(args[args.indexOf('-w') + 1], cwd);
+        // The working folder is mounted after the workspace, over it.
+        if (cwd !== '/home/robot-a') assert.ok(args.indexOf('/srv/ws:/srv/ws:ro,rbind') < args.indexOf(`${cwd}:${cwd}:rw`));
         if (cwd === '/home/robot-a') assert.equal(mounts.some(value => value.startsWith('/home/robot-a:')), false);
     });
 }
+
+test('a session plan is refused without the workspace view', () => {
+    for (const workspaceArgs of [undefined, null, [], 'x']) assert.throws(() => buildRobotRunArgs({ ...base, workspaceArgs, cwd: '/srv/ws/project' }), /workspaceArgs/u);
+});
 
 test('proxy forwarding is only its relay and browser firewall precedes startup', () => {
     const plan = buildRobotRunArgs({ ...base, proxy: { relayPort: 4567, policyFile: '/data/proxy-pool/policy.json' } });
@@ -137,23 +155,23 @@ test('gui_ensure reports CWD_REFUSED and its reason for every refused root form'
 
 test('Browser and Desktop mask private project data read-only in a working folder and need no mask in the home', () => {
     for (const mode of ['browser', 'desktop']) {
-        const { args } = buildRobotRunArgs({ ...base, mode, cwd: '/workspace/project' });
-        const mask = args[args.indexOf('--tmpfs', args.indexOf('/workspace/project:/workspace/project:rw')) + 1];
-        assert.equal(mask, '/workspace/project/.roboteam:ro,size=4k,mode=0555,notmpcopyup');
+        const { args } = buildRobotRunArgs({ ...base, mode, cwd: '/srv/ws/project' });
+        const mask = args[args.indexOf('--tmpfs', args.indexOf('/srv/ws/project:/srv/ws/project:rw')) + 1];
+        assert.equal(mask, '/srv/ws/project/.roboteam:ro,size=4k,mode=0555,notmpcopyup');
         // Without this flag Podman copies what the mask covers, so history stays readable or fills the 4k tmpfs.
         // A real container is needed to prove the mask is empty, which only Linux can run.
         assert.ok(mask.split(':')[1].split(',').includes('notmpcopyup'));
-        assert.equal(buildRobotRunArgs({ ...base, mode, cwd: '/home/robot-a' }).args.some(value => value.includes('.roboteam')), false);
+        assert.equal(buildRobotRunArgs({ ...base, mode, cwd: '/home/robot-a', workspaceArgs: workspaceArgsFor('/home/robot-a') }).args.some(value => value.includes('.roboteam')), false);
     }
 });
 
 test('the container starts with the working folder check and only then becomes /init', async t => {
-    const plan = buildRobotRunArgs({ ...base, cwd: '/workspace/project', cwdIdentity: '12:34' });
+    const plan = buildRobotRunArgs({ ...base, cwd: '/srv/ws/project', cwdIdentity: '12:34' });
     const image = plan.args.indexOf('browser');
     assert.equal(plan.args[plan.args.indexOf('--entrypoint') + 1], '/bin/sh'); assert.ok(plan.args.indexOf('--entrypoint') < image);
     const [flag, script, name, cwd, identity] = plan.args.slice(image + 1);
-    assert.deepEqual([flag, name, cwd, identity], ['-c', 'robowork-cwd-check', '/workspace/project', '12:34']);
-    assert.equal(buildRobotRunArgs({ ...base, cwd: '/home/robot-a' }).args.at(-1), 'browser');
+    assert.deepEqual([flag, name, cwd, identity], ['-c', 'robowork-cwd-check', '/srv/ws/project', '12:34']);
+    assert.equal(buildRobotRunArgs({ ...base, cwd: '/home/robot-a', workspaceArgs: workspaceArgsFor('/home/robot-a') }).args.at(-1), 'browser');
     // Runs the real script. macOS has another stat, so a stand-in answers; only Linux proves the format against coreutils.
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gui-check-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -173,6 +191,30 @@ test('the container starts with the working folder check and only then becomes /
     // /init does not exist here, so a passing check ends as the shell's failure to run it.
     const passed = run(directory, '12:34');
     assert.notEqual(passed.status, 78, passed.stderr); assert.doesNotMatch(passed.stderr, /working folder changed/u);
+});
+
+test('a session mounts the workspace read-only with the view computed for its start, and a view that cannot be shown ends it before a container', async t => {
+    const { manager, calls, workspaceRoot } = await fixture(t);
+    const root = await fs.realpath(workspaceRoot);
+    const project = path.join(root, 'project');
+    await fs.mkdir(path.join(root, '.data'), { recursive: true }); await fs.mkdir(project); await fs.mkdir(path.join(root, '.ploinky-box'));
+    await fs.writeFile(path.join(root, '.env'), 'secret');
+    for (const [robotId, cwd] of [['robot-a', project], ['robot-b', undefined]]) {
+        await manager.ensureReady({ robotId, mode: 'browser', cwd });
+        const run = calls.map(([, args]) => args).filter(args => args[0] === 'run').at(-1);
+        const mounts = run.filter((value, index) => run[index - 1] === '-v');
+        assert.ok(mounts.includes(`${root}:${root}:ro,rbind`), robotId);
+        assert.ok(mounts.includes(`/dev/null:${path.join(root, '.env')}:ro`), robotId);
+        const tmpfs = run.filter((value, index) => run[index - 1] === '--tmpfs');
+        for (const name of ['.data', '.ploinky-box']) assert.ok(tmpfs.includes(`${path.join(root, name)}:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`), `${robotId} ${name}`);
+        // The workspace is mounted before the working folder, over which the folder is mounted.
+        if (cwd) assert.ok(run.findIndex(value => value.startsWith(`${root}:${root}:`)) < run.findIndex(value => value.endsWith(`:${cwd}:rw`)));
+    }
+    const runs = calls.filter(([, args]) => args[0] === 'run').length;
+    await fs.rm(path.join(root, '.env'));
+    assert.equal(spawnSync('mkfifo', [path.join(root, '.env')]).status, 0);
+    await assert.rejects(manager.ensureReady({ robotId: 'robot-c', mode: 'browser', cwd: project }), { code: 'WORKSPACE_UNAVAILABLE' });
+    assert.equal(calls.filter(([, args]) => args[0] === 'run').length, runs);
 });
 
 test('a session mounts through a descriptor held until the container starts and reports a swap as CWD_REFUSED', async t => {

@@ -113,6 +113,8 @@ export class RobotManager {
         const identity = cwd !== undefined ? await this.paths.identity(workingDirectory, 'cwd') : undefined;
         const tools = await this.toolCache.prepareCodingAgents([agent]);
         await this.soulGateway.prepare(this.paths.soul(id));
+        // A catalog query runs the coding agent in the same view as a run. One that cannot be shown safely is refused here.
+        const workspace = await this.paths.workspaceView(id);
         const directory = path.join(this.paths.dataDir, 'runs', 'models-' + randomUUID());
         await fs.mkdir(directory, { mode: 0o700 });
         let cacheDirectory = this.paths.dataDir;
@@ -120,7 +122,7 @@ export class RobotManager {
         try {
             const launch = await buildPrivateLaunch({ paths: this.paths, id, directory, command: process.execPath,
                 args: [fileURLToPath(new URL('./model-op.mjs', import.meta.url)), JSON.stringify({ alaEntry: this.alaEntry,
-                    agent, cwd: workingDirectory, identity, home: this.paths.home(id), soul: this.paths.soul(id), dataDir: this.paths.dataDir, robotId: id })],
+                    agent, cwd: workingDirectory, identity, workspace, home: this.paths.home(id), soul: this.paths.soul(id), dataDir: this.paths.dataDir, robotId: id })],
                 extraBindings: [[cacheDirectory, cacheDirectory]],
                 env: codingAgentEnvironment(tools, { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' }, this.toolCache.root) });
             const result = await this.captureLaunch(launch);
