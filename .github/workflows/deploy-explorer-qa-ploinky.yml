@@ -836,15 +836,28 @@ jobs:
             printf '%s' "$QA_USERPERSISTO_GOOGLE_CLIENT_ID" | ploinky_locked var USERPERSISTO_GOOGLE_CLIENT_ID --stdin
           fi
 
-          # Bizanso is private and the Box holds no credential, so Ploinky cannot clone it. The runner streams its
-          # default branch into the Box as a copy with no Git metadata. The previous copy stays until the next run,
-          # because the running agent still reads it until the restart below. A run that follows a failed restart
-          # removes it, and Bizanso alone is then broken until a restart succeeds.
-          # BEGIN QA private repository copy
+          # Bizanso and ScriptaHub live at the workspace root, where RoboTeam finds their flows and Ploinky prefers
+          # them. No Ploinky command places a repository there, so these steps run inside the Box, and never Git on
+          # the host. A repository still in its earlier managed location is uninstalled first, which also disables
+          # its agent and keeps its data; finding it in both places is left to an operator.
+          # BEGIN QA workspace repositories
+          run_in_box() {
+            "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec -i --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' ploinky-box-explorerqaworkspace-7a31ab7775eb sh -c '$1' sh"
+          }
+          MANAGED_PROGRAM='set -eu
+          for name in bizanso ScriptaHubAgent; do
+            if [ -e ".ploinky/repos/$name" ]; then
+              if [ -e "$name" ]; then echo "$name is both managed and at the workspace root" >&2; exit 1; fi
+              echo "$name"
+            fi
+          done'
+          # Bizanso is private and the Box holds no credential, so the runner streams its default branch in as a
+          # copy with no Git metadata. The previous copy stays until the next run, because the running agent still
+          # reads it until the restart below. A run that follows a failed restart removes it, and Bizanso alone is
+          # then broken until a restart succeeds.
           COPY_PROGRAM='set -eu
-          repos=$PWD/.ploinky/repos
           stage=$PWD/.ploinky/.qa-private-copy
-          mkdir -p "$repos" "$stage"
+          mkdir -p "$stage"
           for stale in "$stage"/*; do
             if [ -e "$stale" ] || [ -L "$stale" ]; then rm -rf -- "$stale"; fi
           done
@@ -852,16 +865,29 @@ jobs:
           tar -xf - -C "$incoming"
           test -n "$(ls -A "$incoming")"
           test ! -e "$incoming/.git"
-          if [ -e "$repos/bizanso" ] || [ -L "$repos/bizanso" ]; then mv "$repos/bizanso" "$stage/previous"; fi
-          mv "$incoming" "$repos/bizanso"'
-          git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive --format=tar HEAD |
-            "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec -i --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' ploinky-box-explorerqaworkspace-7a31ab7775eb sh -c '$COPY_PROGRAM' sh"
-          # END QA private repository copy
+          if [ -e bizanso ] || [ -L bizanso ]; then mv bizanso "$stage/previous"; fi
+          mv "$incoming" bizanso'
+          # ScriptaHub is public, so it is an ordinary checkout that `update repo` fast-forwards below.
+          CLONE_PROGRAM='set -eu
+          url=https://github.com/Axiologic/ScriptaHubAgent.git
+          if [ ! -e ScriptaHubAgent ]; then git clone --quiet "$url" ScriptaHubAgent; fi
+          test "$(git -C ScriptaHubAgent remote get-url origin)" = "$url"'
+          # A plain assignment, because a failed command in a `for` list would not stop the run.
+          MANAGED_LOCATIONS="$(run_in_box "$MANAGED_PROGRAM" < /dev/null)"
+          for repo in $MANAGED_LOCATIONS; do
+            case "$repo" in
+              bizanso|ScriptaHubAgent) ploinky_locked uninstall repo "$repo" ;;
+              *) echo "::error::Unexpected repository in the managed location check."; exit 1 ;;
+            esac
+          done
+          git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive --format=tar HEAD | run_in_box "$COPY_PROGRAM"
+          run_in_box "$CLONE_PROGRAM" < /dev/null
+          # END QA workspace repositories
           printf '%s' "$PUBLIC_URL/base-agent-additional-server/bizanso/8787" | ploinky_locked var BIZANSO_PUBLIC_LINK_BASE --stdin
 
           # Bizanso and ScriptaHub sit beside the Explorer graph, so they join the awaited runtimes only from here:
-          # a first start cannot wait for agents it has not been asked to run. Enabling issues a new instance
-          # identity, so only a missing runtime is enabled.
+          # a first start cannot wait for agents it has not been asked to run. `add repo` registers the checkouts
+          # placed above. Enabling issues a new instance identity, so only a missing runtime is enabled.
           ploinky_locked add repo https://github.com/Axiologic/bizanso.git bizanso
           ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent
           ENABLED_STATES="$(ploinky_read status | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"

@@ -13,7 +13,7 @@ const destroy = read('destroy-explorer-qa-ploinky.yml');
 const legacyDeploy = read('deploy-explorer-qa.yml');
 const legacyDestroy = read('destroy-explorer-qa.yml');
 
-const PRIVATE_COPY_BLOCK = /# BEGIN QA private repository copy[\s\S]*# END QA private repository copy/;
+const WORKSPACE_REPOSITORIES_BLOCK = /# BEGIN QA workspace repositories[\s\S]*# END QA workspace repositories/;
 
 function runBlocks(source) {
     const blocks = [];
@@ -76,8 +76,8 @@ for (const [name, source] of [['deploy', deploy], ['destroy', destroy]]) {
             /\/opt\/ploinky\/cli/, /qa-teardown/, /update-explorer-qa/, /quiesce-explorer-qa/,
             /\.ploinky\/(?:repos|running|data)/, /rm -rf/,
         ]) {
-            // The private repository copy is the one exception, and has its own test.
-            assert.doesNotMatch(source.replace(PRIVATE_COPY_BLOCK, ''), forbidden);
+            // Placing the repositories at the workspace root is the one exception, and has its own tests.
+            assert.doesNotMatch(source.replace(WORKSPACE_REPOSITORIES_BLOCK, ''), forbidden);
         }
     });
 
@@ -106,7 +106,10 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         'ploinky_locked var "$CLOUDFLARE_API_SECRET_HANDLE" --stdin',
         'ploinky_locked var "$CLOUDFLARE_TUNNEL_SECRET_HANDLE" --stdin',
         'ploinky_locked var USERPERSISTO_OIDC_ISSUER --stdin',
-        '# BEGIN QA private repository copy',
+        '# BEGIN QA workspace repositories',
+        'ploinky_locked uninstall repo "$repo"',
+        '| run_in_box "$COPY_PROGRAM"',
+        'run_in_box "$CLONE_PROGRAM"',
         'ploinky_locked var BIZANSO_PUBLIC_LINK_BASE --stdin',
         'ploinky_locked add repo https://github.com/Axiologic/bizanso.git bizanso',
         'ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent',
@@ -156,9 +159,12 @@ test('deploy: the Bizanso key stays on the runner and reaches only its checkout'
     assert.doesNotMatch(destroy, /BIZANSO/);
 });
 
-test('deploy: the private copy replaces the repository and keeps one predecessor', () => {
-    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
-    const block = body.match(PRIVATE_COPY_BLOCK)[0];
+function workspaceRepositoriesBlock() {
+    return step(deploy, 'Bootstrap the host and deploy through Ploinky commands').match(WORKSPACE_REPOSITORIES_BLOCK)[0];
+}
+
+test('deploy: the private copy replaces the workspace-root repository and keeps one predecessor', () => {
+    const block = workspaceRepositoriesBlock();
     assert.match(block, / podman container exec -i --user podman .* ploinky-box-explorerqaworkspace-7a31ab7775eb sh -c /);
     const program = block.match(/COPY_PROGRAM='([^']*)'/)[1];
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-private-copy-'));
@@ -173,7 +179,7 @@ test('deploy: the private copy replaces the repository and keeps one predecessor
         };
         const workspace = path.join(root, 'workspace');
         fs.mkdirSync(path.join(workspace, '.ploinky'), { recursive: true });
-        const repo = path.join(workspace, '.ploinky/repos/bizanso');
+        const repo = path.join(workspace, 'bizanso');
         const previous = path.join(workspace, '.ploinky/.qa-private-copy/previous');
         assert.equal(copy('one').status, 0);
         assert.ok(fs.existsSync(path.join(repo, 'one')));
@@ -193,6 +199,68 @@ test('deploy: the private copy replaces the repository and keeps one predecessor
         assert.notEqual(spawnSync('sh', ['-c', program, 'sh'], { cwd: workspace, input: nothing.stdout }).status, 0);
         assert.notEqual(spawnSync('sh', ['-c', program, 'sh'], { cwd: workspace, input: '' }).status, 0);
         assert.ok(fs.existsSync(path.join(repo, 'three')));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('deploy: only a repository solely in its managed location is uninstalled', () => {
+    const block = workspaceRepositoriesBlock();
+    const program = block.match(/MANAGED_PROGRAM='([^']*)'/)[1];
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-managed-'));
+    const run = () => spawnSync('sh', ['-c', program, 'sh'], { cwd: workspace, encoding: 'utf8' });
+    try {
+        assert.equal(run().stdout, '');
+        fs.mkdirSync(path.join(workspace, 'bizanso'));
+        fs.mkdirSync(path.join(workspace, 'ScriptaHubAgent'));
+        assert.equal(run().stdout, '', 'an already moved workspace is left alone');
+        fs.rmSync(path.join(workspace, 'bizanso'), { recursive: true });
+        fs.mkdirSync(path.join(workspace, '.ploinky/repos/bizanso'), { recursive: true });
+        assert.deepEqual([run().status, run().stdout], [0, 'bizanso\n']);
+        fs.mkdirSync(path.join(workspace, 'bizanso'));
+        assert.notEqual(run().status, 0, 'both locations stop the run before anything is uninstalled');
+    } finally {
+        fs.rmSync(workspace, { recursive: true, force: true });
+    }
+});
+
+test('deploy: a failed managed location check stops the run before anything moves', () => {
+    const block = workspaceRepositoriesBlock();
+    const start = block.indexOf('MANAGED_LOCATIONS="$(');
+    const end = block.indexOf('# END QA workspace repositories');
+    const run = (stub) => spawnSync('bash', ['-c', `set -euo pipefail
+run_in_box() { case "$1" in MANAGED) ${stub} ;; *) cat > /dev/null; echo "box:$1" ;; esac; }
+ploinky_locked() { echo "ploinky:$*"; }
+git() { echo archive; }
+MANAGED_PROGRAM=MANAGED COPY_PROGRAM=COPY CLONE_PROGRAM=CLONE GITHUB_WORKSPACE=/w
+${block.slice(start, end)}`], { encoding: 'utf8' });
+    const refused = run('echo bizanso; exit 1');
+    assert.notEqual(refused.status, 0, refused.stdout);
+    assert.equal(refused.stdout, '', 'nothing is uninstalled, copied or cloned');
+    const unexpected = run('echo other');
+    assert.notEqual(unexpected.status, 0);
+    assert.doesNotMatch(unexpected.stdout, /ploinky:|box:/);
+    assert.equal(run('echo bizanso').stdout, 'ploinky:uninstall repo bizanso\nbox:COPY\nbox:CLONE\n');
+    assert.equal(run('true').stdout, 'box:COPY\nbox:CLONE\n');
+});
+
+test('deploy: ScriptaHub is a workspace-root checkout of the exact public source', () => {
+    const block = workspaceRepositoriesBlock();
+    const program = block.match(/CLONE_PROGRAM='([^']*)'/)[1];
+    assert.match(program, /url=https:\/\/github\.com\/Axiologic\/ScriptaHubAgent\.git\n/);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-clone-'));
+    try {
+        const url = 'https://github.com/Axiologic/ScriptaHubAgent.git';
+        const init = (origin) => {
+            for (const args of [['init', '--quiet', 'ScriptaHubAgent'], ['-C', 'ScriptaHubAgent', 'remote', 'add', 'origin', origin]]) {
+                assert.equal(spawnSync('git', args, { cwd: root }).status, 0);
+            }
+        };
+        init(url);
+        assert.equal(spawnSync('sh', ['-c', program, 'sh'], { cwd: root }).status, 0, 'an existing checkout is kept');
+        fs.rmSync(path.join(root, 'ScriptaHubAgent'), { recursive: true });
+        init('https://example.test/other.git');
+        assert.notEqual(spawnSync('sh', ['-c', program, 'sh'], { cwd: root }).status, 0, 'another origin stops the run');
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
