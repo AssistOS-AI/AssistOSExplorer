@@ -18,6 +18,9 @@ async function fixture(t, name = 'workspace') {
     return { base, root, view: options => workspaceView(root, { robotId: ROBOT, platform: 'darwin', ...options }) };
 }
 
+// A Linux filesystem that keeps names apart, whatever filesystem these tests run on.
+const keepsCase = (file, options) => /[A-Z]/u.test(path.basename(file)) ? Promise.reject(Object.assign(new Error('absent'), { code: 'ENOENT' })) : fs.lstat(file, options);
+
 const line = (id, mountPoint, options, rest = '- ext4 /dev/sda1 rw') => `${id} 1 8:1 / ${mountPoint} ${options} shared:1 ${rest}`;
 
 test('an empty root has no mask and keeps its canonical path', async t => {
@@ -155,11 +158,11 @@ test('on Linux the mount table is read for this namespace; an unreadable or malf
     await fs.mkdir(path.join(root, '.data'));
     const table = [line(1, root, 'rw'), line(2, `${root}/checkout`, 'rw'), line(3, `${root}/.data/.private`, 'rw')].join('\n');
     const reads = [];
-    const found = await view({ platform: 'linux', readFile: async file => { reads.push(file); return Buffer.from(table); } });
+    const found = await view({ platform: 'linux', lstat: keepsCase, readFile: async file => { reads.push(file); return Buffer.from(table); } });
     assert.deepEqual(reads, ['/proc/self/mountinfo']);
     assert.deepEqual(found.writableSubmounts, [`${root}/checkout`]);
-    await assert.rejects(view({ platform: 'linux', readFile: async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } }), { code: 'WORKSPACE_UNAVAILABLE' });
-    await assert.rejects(view({ platform: 'linux', readFile: async () => 'not a mount table\n' }), { code: 'WORKSPACE_UNAVAILABLE' });
+    await assert.rejects(view({ platform: 'linux', lstat: keepsCase, readFile: async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } }), { code: 'WORKSPACE_UNAVAILABLE' });
+    await assert.rejects(view({ platform: 'linux', lstat: keepsCase, readFile: async () => 'not a mount table\n' }), { code: 'WORKSPACE_UNAVAILABLE' });
     // Other platforms have no such table and a missing one is not an error there.
     assert.deepEqual((await view({ platform: 'darwin', readFile: async () => { throw new Error('unused'); } })).writableSubmounts, []);
 });
@@ -213,4 +216,42 @@ test('ALA receives the root as a plain read-only folder and the masks as ignored
     // In the robot home there is no private project data to mask.
     assert.deepEqual(alaWorkspaceOptions(sample(), { cwd: '/data/robots/robot-a/home', home: '/data/robots/robot-a/home' }).ignoredPaths, ['/srv/ws/.data', '/srv/ws/.env']);
     assert.deepEqual(alaWorkspaceOptions(sample(), { home: '/home/robot-a' }).ignoredPaths, ['/srv/ws/.data', '/srv/ws/.env']);
+});
+
+test('a filesystem that opens a hidden entry under another spelling shows no workspace, and each path then adds nothing', async t => {
+    const { root, view } = await fixture(t);
+    await fs.mkdir(path.join(root, '.data'));
+    await fs.writeFile(path.join(root, '.env'), 'SECRET=1\n');
+    const linux = { platform: 'linux', readFile: async () => '' };
+    const spellings = { '.ENV': '.env', '.DATA': '.data' };
+    // The lookup a case-insensitive filesystem performs, whatever filesystem this test runs on.
+    const folding = (file, options) => fs.lstat(path.join(path.dirname(file), spellings[path.basename(file)] || path.basename(file)), options);
+    const hidden = await view({ ...linux, lstat: folding });
+    assert.deepEqual(hidden, { root: null, masks: [], writableSubmounts: [] });
+    assert.deepEqual(alaWorkspaceOptions(hidden, { cwd: path.join(root, 'app') }), { folders: [], ignoredPaths: [path.join(root, 'app', '.roboteam')] });
+    assert.deepEqual(podmanWorkspaceArguments(hidden, { cwd: path.join(root, 'app') }), []);
+    // Control: on a filesystem that keeps the names apart the masks stand, and a `.ENV` of its own is a different entry.
+    const distinct = (file, options) => spellings[path.basename(file)]
+        ? Promise.reject(Object.assign(new Error('absent'), { code: 'ENOENT' })) : fs.lstat(file, options);
+    assert.equal((await view({ ...linux, lstat: distinct })).root, root);
+    await assert.rejects(view({ ...linux, lstat: () => Promise.reject(Object.assign(new Error('denied'), { code: 'EACCES' })) }), { code: 'WORKSPACE_UNAVAILABLE' });
+});
+
+test('hidden names are recognized in every spelling a folding filesystem accepts, and no others', () => {
+    for (const name of ['.ENV', '.Data', '.PLOINKY', '.ploinKy', '.PLOINKY-BOX', '.PLOINKY-BOX.old', '.env.', '.data ', '.ploin\u212Ay']) assert.ok(isHiddenWorkspaceEntry(name), name);
+    for (const name of ['.env.local', '.ploinkyish', '.ploinky-box-mcp.json', 'DATA', 'env']) assert.ok(!isHiddenWorkspaceEntry(name), name);
+});
+
+test('a grant under another spelling of a hidden entry is refused, whichever filesystem holds it', async t => {
+    const { base, root } = await fixture(t);
+    await fs.mkdir(path.join(root, 'app'));
+    const paths = new RobotPaths({ dataDir: path.join(base, 'service'), workspaceRoot: root });
+    const realpath = fs.realpath;
+    t.mock.method(fs, 'realpath', async value => value.includes('.DATA') || value.includes('.PLOINKY') ? value : realpath(value));
+    t.mock.method(fs, 'stat', async () => ({ isDirectory: () => true }));
+    for (const spelled of ['.DATA/.PRIVATE', '.PLOINKY/repos/x', '.Ploinky-Box.old']) {
+        await assert.rejects(paths.grant(path.join(root, spelled)), { code: 'FOLDER_REFUSED' }, spelled);
+        await assert.rejects(paths.grant(path.join(root, spelled), 'cwd'), { code: 'CWD_REFUSED' }, spelled);
+    }
+    assert.equal(await paths.grant(path.join(root, 'app'), 'cwd'), path.join(root, 'app'));
 });

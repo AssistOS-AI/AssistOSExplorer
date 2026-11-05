@@ -91,7 +91,7 @@ function chromiumLanguageFlag(lang) {
 // workspace read-only with its masks. It is never optional, because a session without it would show a wrong workspace.
 export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, workspaceArgs, proxy = null, cwdIdentity = null, cwdSource = cwd, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
-    if (!Array.isArray(workspaceArgs) || workspaceArgs.length === 0) throw new Error('workspaceArgs must carry the workspace view');
+    if (!Array.isArray(workspaceArgs)) throw new Error('workspaceArgs must carry the workspace view, empty where it cannot be shown');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     if (proxy && (!Number.isInteger(proxy.relayPort) || proxy.relayPort < 1 || proxy.relayPort > 65535 || !path.isAbsolute(String(proxy.policyFile || '')))) {
         throw new Error('proxy needs a relay port and an absolute policy file');

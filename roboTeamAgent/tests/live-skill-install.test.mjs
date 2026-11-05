@@ -92,7 +92,7 @@ test('project skill links lead anywhere visible in the workspace and are dropped
     // Folders any robot sees read-only: another project, the root's own skills, and another project's skills.
     const published = { sibling: path.join(root, 'sibling'), rootSkill: path.join(root, '.agents/skills/x'), otherSkill: path.join(root, 'other/.agents/skills/y') };
     // Hidden data, the workspace itself, the working folder with its private data, and anything outside the workspace.
-    const refused = { data: path.join(root, '.data/x'), ploinky: path.join(root, '.ploinky/repos/x'), box: path.join(root, '.ploinky-box/x'),
+    const refused = { data: path.join(root, '.data/x'), ploinky: path.join(root, '.ploinky/repos/x'), box: path.join(root, '.ploinky-box/x'), upper: path.join(root, '.DATA/y'),
         quarantined: path.join(root, '.ploinky-box.old/x'), otherPrivate: path.join(root, 'other/.roboteam/x'), workspace: root,
         outside, self: cwd, session: path.join(cwd, '.roboteam/sessions/other'), private: path.join(cwd, '.roboteam') };
     for (const target of [...Object.values(published), ...Object.values(refused)].filter(target => target !== root && target !== cwd && target !== path.join(cwd, '.roboteam'))) await fs.mkdir(target, { recursive: true });

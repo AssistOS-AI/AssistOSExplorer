@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { HIDDEN_WORKSPACE_ENTRIES, HIDDEN_WORKSPACE_PREFIX, workspaceView } from './workspace-view.mjs';
+import { HIDDEN_WORKSPACE_ENTRIES, HIDDEN_WORKSPACE_PREFIX, isHiddenWorkspaceEntry, workspaceView } from './workspace-view.mjs';
 
 // O_PATH needs only search permission on each directory. It has this value on the Linux architectures RoboWork runs on.
 const O_PATH = process.platform === 'linux' ? 0o10000000 : 0;
@@ -94,6 +94,9 @@ export class RobotPaths {
             const protectedRoot = await fs.realpath(requestedRoot).catch(() => requestedRoot);
             if (within(protectedRoot, resolved) || within(resolved, protectedRoot)) throw fail(code, 'Directory contains protected storage');
         }
+        // On a filesystem that ignores case, `.DATA` is `.data`, and a path keeps the spelling it was given inside a Linux guest.
+        const first = within(root, resolved) ? path.relative(root, resolved).split(path.sep)[0] : null;
+        if (first && isHiddenWorkspaceEntry(first) && !(kind !== 'cwd' && first === '.ploinky')) throw fail(code, kind === 'cwd' ? 'Working directory is protected' : 'Directory is protected workspace state');
         // Service and deployment state is never granted, as a folder or as a working directory. A robot sees it only as the
         // empty masks of the workspace view. Workspace .ploinky is for a folder only below a registered repository.
         for (const requestedRoot of await this.hiddenEntries()) {

@@ -12,7 +12,12 @@ const inside = (root, candidate) => candidate === root || candidate.startsWith(`
 // The workspace entries RoboWork shows every robot as empty masks. RoboWork keeps the authoritative list and refuses these as
 // grants; RoboTeam is a separate agent and repeats the names so that it refuses a link there with a diagnostic of its own.
 const HIDDEN_WORKSPACE_ENTRIES = Object.freeze(['.data', '.ploinky', '.ploinky-box', '.env']);
-const hiddenWorkspaceEntry = name => HIDDEN_WORKSPACE_ENTRIES.includes(name) || name.startsWith('.ploinky-box.');
+// Compared in the form a filesystem that ignores case or Unicode form uses, so `.DATA` is refused like `.data`.
+const foldName = name => name.normalize('NFKC').toLowerCase().replace(/[. ]+$/u, '');
+const hiddenWorkspaceEntry = name => {
+    const folded = foldName(name);
+    return HIDDEN_WORKSPACE_ENTRIES.includes(folded) || folded.startsWith('.ploinky-box.');
+};
 
 // The execution lease serializes publication for one session. Different sessions
 // publish into different directories and never change the project's skill links.
@@ -42,7 +47,7 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
         if (inside(root, source)) return true;
         if (!inside(workspace, source) || source === workspace) return false;
         const parts = path.relative(workspace, source).split(path.sep);
-        return !hiddenWorkspaceEntry(parts[0]) && !parts.includes(ACHILLES_PRIVATE_DIRECTORY_NAME);
+        return !hiddenWorkspaceEntry(parts[0]) && !parts.some(part => foldName(part) === ACHILLES_PRIVATE_DIRECTORY_NAME);
     };
     // Retain skills already supplied by the project, including directory symlinks.
     for (const name of await fs.readdir(projectSkills).catch(error => {

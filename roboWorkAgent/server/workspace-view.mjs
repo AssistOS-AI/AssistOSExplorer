@@ -3,9 +3,15 @@ import path from 'node:path';
 
 // Entries of the workspace root that hold service or deployment state. A robot sees each as an empty read-only entry.
 export const HIDDEN_WORKSPACE_ENTRIES = Object.freeze(['.data', '.ploinky', '.ploinky-box', '.env']);
-// Ploinky quarantines former Box host state beside the root as `.ploinky-box.<suffix>`; it is hidden like `.ploinky-box`.
+// Ploinky quarantines former Box host state in the root as `.ploinky-box.<suffix>`; it is hidden like `.ploinky-box`.
 export const HIDDEN_WORKSPACE_PREFIX = '.ploinky-box.';
-export const isHiddenWorkspaceEntry = name => HIDDEN_WORKSPACE_ENTRIES.includes(name) || name.startsWith(HIDDEN_WORKSPACE_PREFIX);
+// A name in the form a filesystem that ignores case or Unicode form compares it, so `.ENV` and `.DATA` are refused like the
+// entries they can open on such a filesystem.
+const foldName = name => name.normalize('NFKC').toLowerCase().replace(/[. ]+$/u, '');
+export const isHiddenWorkspaceEntry = name => {
+    const folded = foldName(name);
+    return HIDDEN_WORKSPACE_ENTRIES.includes(folded) || folded.startsWith(HIDDEN_WORKSPACE_PREFIX);
+};
 
 const MOUNTINFO = '/proc/self/mountinfo';
 const MISSING = new Set(['ENOENT', 'ENOTDIR', 'ELOOP']);
@@ -75,6 +81,21 @@ async function mask(root, entry) {
     throw unavailable('A hidden workspace entry is neither a file nor a directory');
 }
 
+// A mask covers one spelling. Where the filesystem opens an entry under another spelling too, as APFS does through a Mac
+// Box's virtiofs mount, `.ENV` would reach what the mask over `.env` hides. Any hidden entry reached by its upper-case name
+// proves that of the whole filesystem.
+async function ignoresCase(root, names, lstat) {
+    const identity = name => lstat(path.join(root, name), { bigint: true }).catch(error => {
+        if (MISSING.has(error.code)) return null;
+        throw unavailable('A workspace entry cannot be inspected');
+    });
+    for (const name of names) {
+        const [entry, variant] = [await identity(name), await identity(name.toUpperCase())];
+        if (entry && variant && entry.dev === variant.dev && entry.ino === variant.ino) return true;
+    }
+    return false;
+}
+
 // Where a root can be shown. ALA refuses a destination at /workspace, where the Soul alias would also land inside the
 // read-only root, and it refuses a root that overlaps the robot's own home.
 export function assertShowableRoot(root, robotId) {
@@ -84,7 +105,9 @@ export function assertShowableRoot(root, robotId) {
 
 // The read-only view of the workspace that every robot execution path shows next to its writable working folder. The root
 // stays at its canonical path; the masks and the writable submounts are computed for this start and nothing is written.
-export async function workspaceView(workspaceRoot, { robotId, readFile = fs.readFile, platform = process.platform } = {}) {
+// A root whose private entries cannot be masked is not shown at all: `root` is null, and the robot works in its folder and
+// its grants alone.
+export async function workspaceView(workspaceRoot, { robotId, readFile = fs.readFile, lstat = fs.lstat, platform = process.platform } = {}) {
     if (typeof robotId !== 'string' || !robotId) throw unavailable('A robot is required for the workspace view');
     const root = await fs.realpath(workspaceRoot).catch(() => { throw unavailable('The workspace root is unavailable'); });
     if (!(await fs.stat(root).catch(() => null))?.isDirectory()) throw unavailable('The workspace root is not a directory');
@@ -92,6 +115,7 @@ export async function workspaceView(workspaceRoot, { robotId, readFile = fs.read
     let names;
     try { names = await fs.readdir(root); } catch { throw unavailable('The workspace root cannot be listed'); }
     const hidden = [...HIDDEN_WORKSPACE_ENTRIES, ...names.filter(name => name.startsWith(HIDDEN_WORKSPACE_PREFIX)).sort()];
+    if (platform === 'linux' && await ignoresCase(root, hidden, lstat)) return { root: null, masks: [], writableSubmounts: [] };
     const found = [];
     for (const name of hidden) {
         const entry = await mask(root, path.join(root, name));
@@ -111,7 +135,7 @@ export async function workspaceView(workspaceRoot, { robotId, readFile = fs.read
 }
 
 function assertView(view) {
-    if (!view || typeof view.root !== 'string' || !path.isAbsolute(view.root) || !Array.isArray(view.masks)
+    if (!view || (view.root !== null && (typeof view.root !== 'string' || !path.isAbsolute(view.root))) || !Array.isArray(view.masks)
         || !Array.isArray(view.writableSubmounts) || view.masks.some(entry => typeof entry?.path !== 'string' || !path.isAbsolute(entry.path))
         || view.writableSubmounts.some(entry => typeof entry !== 'string' || !path.isAbsolute(entry))) {
         throw unavailable('A workspace view is required');
@@ -131,7 +155,7 @@ export function alaWorkspaceOptions(view, { cwd, home, environment = false } = {
     // has none to mask.
     const ignoredPaths = cwd && cwd !== home ? [path.join(cwd, '.roboteam')] : [];
     if (!environment) ignoredPaths.push(...view.masks.map(entry => entry.path));
-    return { folders: [{ source: view.root }], ignoredPaths };
+    return { folders: view.root ? [{ source: view.root }] : [], ignoredPaths };
 }
 
 // Podman arguments for a container that holds the view. `ro` covers only the top mount there, so every writable submount of
@@ -143,6 +167,7 @@ export function podmanWorkspaceArguments(view, { cwd, volumeFlag = '--volume' } 
         return value;
     };
     const { root } = view;
+    if (!root) return [];
     const args = [volumeFlag, `${named(root)}:${root}:ro,rbind`];
     for (const submount of view.writableSubmounts) {
         if (cwd && within(cwd, submount)) continue;

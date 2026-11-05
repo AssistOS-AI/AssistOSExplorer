@@ -51,7 +51,10 @@ for (const mode of ['browser', 'desktop']) for (const cwd of ['/home/robot-a', '
 }
 
 test('a session plan is refused without the workspace view', () => {
-    for (const workspaceArgs of [undefined, null, [], 'x']) assert.throws(() => buildRobotRunArgs({ ...base, workspaceArgs, cwd: '/srv/ws/project' }), /workspaceArgs/u);
+    for (const workspaceArgs of [undefined, null, 'x']) assert.throws(() => buildRobotRunArgs({ ...base, workspaceArgs, cwd: '/srv/ws/project' }), /workspaceArgs/u);
+    // An empty list is a view that cannot be shown: the session keeps its folder and sees no workspace.
+    const hidden = buildRobotRunArgs({ ...base, workspaceArgs: [], cwd: '/srv/ws/project' });
+    assert.ok(!hidden.args.some(value => value.includes(':ro,rbind')));
 });
 
 test('proxy forwarding is only its relay and browser firewall precedes startup', () => {

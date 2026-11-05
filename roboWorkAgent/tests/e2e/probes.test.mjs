@@ -95,6 +95,8 @@ test('masks probe passes a read-only workspace with empty masks and fails each h
         await fails(`${name} is absent`, model => { delete model.dirs[`/fixture/${name}`]; }, /ENOENT/u);
     }
     await fails('a quarantined Box sibling lists an entry', model => { model.dirs['/fixture'].push('.ploinky-box.old'); model.dirs['/fixture/.ploinky-box.old'] = ['state']; }, /\.ploinky-box\.old is not empty/u);
+    await fails('an upper-case spelling reaches the real .env', model => { model.files['/fixture/.ENV'] = 'SECRET=1'; }, /\.ENV opens a masked entry/u);
+    await fails('an upper-case spelling reaches the real .data', model => { model.dirs['/fixture/.DATA'] = ['.private']; }, /\.DATA opens a masked entry/u);
     await fails('root .env readable with content', model => { model.files['/fixture/.env'] = 'SECRET=1'; }, /content is readable/u);
     await fails('root .env missing though expected', model => { delete model.files['/fixture/.env']; }, /ENOENT/u);
     await fails('root .env present though expected absent', () => {}, /ENOENT|did not throw|Missing expected/u, { env: 'absent' });
@@ -182,6 +184,10 @@ test('showthrough probe fails when a mask is bypassed, when unshare is missing o
     await assert.rejects(probe(async () => { throw Object.assign(new Error('spawn unshare ENOENT'), { code: 'ENOENT' }); }), /unshare is required/u);
     await assert.rejects(probe(async () => { throw refusal('unshare: unrecognized option'); }), /other than a permission refusal/u);
     await assert.rejects(probe(async () => { throw refusal(''); }), /other than a permission refusal/u);
+    // Run for real: with no mount tools the script exits non-zero, and that fails the probe rather than reading as no bypass.
+    const missing = spawnSync('/bin/sh', ['-c', arguments_[0][1][3], 'sh', '/nonexistent', 'robot-b'], { env: { PATH: '/nonexistent' }, encoding: 'utf8' });
+    assert.equal(missing.status, 3);
+    await assert.rejects(probe(async () => { throw refusal(missing.stderr); }), /other than a permission refusal/u);
 });
 
 test('fd probe fails on an inherited descriptor', async () => {

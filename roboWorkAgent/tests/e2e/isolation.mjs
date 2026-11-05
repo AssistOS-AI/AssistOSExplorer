@@ -123,8 +123,11 @@ function assertOpenRefused(io, file) {
 
 // Run inside the robot's sandbox. A robot with a user namespace of its own tries to take a mask away: it unmounts the private
 // entries, binds the root without its submounts and binds it recursively. Anything printed SHOWN or UNMOUNTED is a hole.
-const SHOWTHROUGH = ['R=$1; V=$2', 'umount "$R/.data" 2>/dev/null && echo UNMOUNTED', 'umount "$R/.ploinky" 2>/dev/null && echo UNMOUNTED',
-    'umount "$R/.ploinky-box" 2>/dev/null && echo UNMOUNTED', 'mkdir -p /tmp/robowork-flat /tmp/robowork-deep',
+// Without the tools or a writable /tmp every attack would fail silently, so the probe fails instead. mkdir's own message is
+// dropped because a "Permission denied" there must not read as unshare refusing.
+const SHOWTHROUGH = ['R=$1; V=$2', 'command -v mount >/dev/null && command -v umount >/dev/null || { echo "mount tools are missing" >&2; exit 3; }',
+    'mkdir -p /tmp/robowork-flat /tmp/robowork-deep 2>/dev/null || { echo "the probe cannot create its mount points" >&2; exit 3; }', 'umount "$R/.data" 2>/dev/null && echo UNMOUNTED', 'umount "$R/.ploinky" 2>/dev/null && echo UNMOUNTED',
+    'umount "$R/.ploinky-box" 2>/dev/null && echo UNMOUNTED',
     'mount --bind "$R" /tmp/robowork-flat 2>/dev/null', 'mount --rbind "$R" /tmp/robowork-deep 2>/dev/null',
     'for base in "$R" /tmp/robowork-flat /tmp/robowork-deep; do',
     '  [ -e "$base/.data/.private/roboWorkAgent/robots/$V/home/marker-B" ] && echo SHOWN',
@@ -200,6 +203,9 @@ export async function runIsolationProbe(options, { io = fs, run = execute, env =
             try { content = io.readFileSync(env, 'utf8'); } catch (error) { assert.equal(error.code, 'EACCES', 'The masked .env fails unexpectedly.'); }
             assert.ok(content === undefined || content === '', 'The root .env content is readable.');
             assertNoPersistentWrite(io, env);
+        });
+        await checked('no other spelling of a masked entry opens anything', () => {
+            for (const name of ['.ENV', '.DATA', '.PLOINKY']) assert.throws(() => io.lstatSync(`${workspace}/${name}`), { code: 'ENOENT' }, `${name} opens a masked entry`);
         });
         await checked('victim paths are denied, including through the workspace', () => assertDeniedPaths(protectedFiles, io));
         await checked('another project reads and cannot be written', () => {
