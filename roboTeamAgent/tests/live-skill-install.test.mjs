@@ -20,10 +20,10 @@ const { ignoredMountTargets } = await loadAla('coding-agents/ignored-paths.mjs')
 
 const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
 
-async function fixture(t, { projectSkills = true } = {}) {
+async function fixture(t, { projectSkills = true, cwdName = 'project' } = {}) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'robot-session-skills-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const cwd = path.join(root, 'project');
+    const cwd = path.join(root, cwdName);
     const local = path.join(cwd, '.agents/skills/local');
     await fs.mkdir(cwd, { recursive: true });
     if (projectSkills) {
@@ -80,28 +80,65 @@ test('robot selection overrides a project name only in its session, including no
     assert.equal(await fs.readFile(path.join(cwd, '.agents/skills/example/SKILL.md'), 'utf8'), 'project example');
 });
 
-test('project skill links that leave the working folder are dropped with a diagnostic', async t => {
+const REFUSED = 'Project skill link leaves the workspace or leads into hidden data';
+
+test('project skill links lead anywhere visible in the workspace and are dropped, with a diagnostic, when they leave it or lead into hidden data', async t => {
     const { root, cwd, local, input } = await fixture(t);
     const inner = path.join(cwd, 'tools/inner');
     await fs.mkdir(inner, { recursive: true });
-    const targets = { sibling: path.join(root, 'sibling'), ploinky: path.join(root, '.ploinky'), data: path.join(root, '.data/x'),
-        self: cwd, session: path.join(cwd, '.roboteam/sessions/other'), private: path.join(cwd, '.roboteam') };
-    for (const target of Object.values(targets).filter(target => target !== cwd && target !== path.join(cwd, '.roboteam'))) await fs.mkdir(target, { recursive: true });
     await fs.mkdir(path.join(cwd, '.roboteam'), { recursive: true });
-    for (const [name, target] of Object.entries(targets)) await fs.symlink(target, path.join(cwd, '.agents/skills', name), 'dir');
+    const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'robot-session-outside-')));
+    t.after(() => fs.rm(outside, { recursive: true, force: true }));
+    // Folders any robot sees read-only: another project, the root's own skills, and another project's skills.
+    const published = { sibling: path.join(root, 'sibling'), rootSkill: path.join(root, '.agents/skills/x'), otherSkill: path.join(root, 'other/.agents/skills/y') };
+    // Hidden data, the workspace itself, the working folder with its private data, and anything outside the workspace.
+    const refused = { data: path.join(root, '.data/x'), ploinky: path.join(root, '.ploinky/repos/x'), box: path.join(root, '.ploinky-box/x'),
+        quarantined: path.join(root, '.ploinky-box.old/x'), otherPrivate: path.join(root, 'other/.roboteam/x'), workspace: root,
+        outside, self: cwd, session: path.join(cwd, '.roboteam/sessions/other'), private: path.join(cwd, '.roboteam') };
+    for (const target of [...Object.values(published), ...Object.values(refused)].filter(target => target !== root && target !== cwd && target !== path.join(cwd, '.roboteam'))) await fs.mkdir(target, { recursive: true });
+    for (const [name, target] of Object.entries({ ...published, ...refused })) await fs.symlink(target, path.join(cwd, '.agents/skills', name), 'dir');
     await fs.symlink(inner, path.join(cwd, '.agents/skills/inner'), 'dir');
     const prepared = await installLiveSkills(input(0));
     const names = await fs.readdir(prepared.skillsDirectory);
-    assert.deepEqual(names.sort(), ['example', 'inner', 'local']);
-    for (const name of Object.keys(targets)) {
+    assert.deepEqual(names.sort(), ['example', 'inner', 'local', ...Object.keys(published)].sort());
+    for (const name of Object.keys(refused)) {
         assert.ok(!names.includes(name), `Escaping link was published: ${name}`);
-        assert.ok(prepared.diagnostics.some(item => item.source === name && item.state === 'invalid'
-            && item.message === 'Project skill link leaves the working folder'), `Missing diagnostic: ${name}`);
+        assert.ok(prepared.diagnostics.some(item => item.source === name && item.state === 'invalid' && item.message === REFUSED), `Missing diagnostic: ${name}`);
     }
+    assert.deepEqual(prepared.diagnostics.filter(item => item.message === REFUSED).map(item => item.source).sort(), Object.keys(refused).sort());
+    // Every published source is mounted at a path of its own, and none lies in hidden data or the working folder's private data.
     const mounted = prepared.mounts.map(mount => mount.source);
-    assert.deepEqual(mounted.filter(source => !inside(cwd, source) && !source.endsWith('/skills/example')), []);
+    for (const source of [...Object.values(published), inner, local]) assert.ok(mounted.includes(source), source);
+    for (const hidden of [refused.data, refused.ploinky, refused.box, refused.quarantined, refused.otherPrivate]) {
+        assert.ok(!mounted.some(source => source === hidden || source.startsWith(`${hidden}${path.sep}`)), hidden);
+    }
+    assert.ok(!mounted.includes(root) && !mounted.includes(outside));
     assert.ok(!mounted.includes(cwd) && !mounted.some(source => source.startsWith(path.join(cwd, '.roboteam'))));
-    assert.ok(mounted.includes(inner) && mounted.includes(local));
+});
+
+test('a link to a parent of the working folder is refused, whichever parent', async t => {
+    const { root, cwd, input } = await fixture(t, { cwdName: 'group/project' });
+    await fs.mkdir(path.join(cwd, '.roboteam'), { recursive: true });
+    await fs.mkdir(path.join(cwd, '.agents/skills'), { recursive: true });
+    await fs.symlink(path.dirname(cwd), path.join(cwd, '.agents/skills/parent'), 'dir');
+    await fs.symlink(root, path.join(cwd, '.agents/skills/root'), 'dir');
+    const prepared = await installLiveSkills(input(0));
+    assert.ok(!(await fs.readdir(prepared.skillsDirectory)).some(name => ['parent', 'root'].includes(name)));
+    assert.deepEqual(prepared.diagnostics.filter(item => item.message === REFUSED).map(item => item.source).sort(), ['parent', 'root']);
+});
+
+test('a project link is judged by where it resolves at each install, so one retargeted into hidden data is refused', async t => {
+    const { root, cwd, input } = await fixture(t);
+    await fs.mkdir(path.join(root, 'sibling'), { recursive: true });
+    await fs.mkdir(path.join(root, '.data/x'), { recursive: true });
+    const skills = path.join(cwd, '.agents/skills');
+    // The check resolves every link at that moment, so a link that already points into hidden data is refused by name.
+    await fs.symlink(path.join(root, 'sibling'), path.join(skills, 'swapped'), 'dir');
+    assert.ok((await fs.readdir((await installLiveSkills(input(0))).skillsDirectory)).includes('swapped'));
+    await fs.rm(path.join(skills, 'swapped')); await fs.symlink(path.join(root, '.data/x'), path.join(skills, 'swapped'), 'dir');
+    const refused = await installLiveSkills(input(0));
+    assert.ok(!(await fs.readdir(refused.skillsDirectory)).includes('swapped'));
+    assert.ok(refused.diagnostics.some(item => item.source === 'swapped' && item.message === REFUSED));
 });
 
 test('project skill links that lead nowhere are skipped with a diagnostic and never stop the turn', async t => {
@@ -217,7 +254,8 @@ test('RoboTeam arguments use the real ALA parser and mount every skill source, w
     const snapshot = await installLiveSkills(input(0));
     const skillArguments = alaSkillMountArguments({ snapshot, cwd });
     const args = [...skillArguments, '--ignore', path.join(cwd, '.roboteam')];
-    // No workspace folder is passed, so a source inside the workspace is reachable only through its own mount.
+    // RoboTeam names no workspace folder; RoboWork adds the read-only view. A source keeps a mount of its own, because the
+    // view's masks may hide its canonical path.
     assert.ok(!args.includes(root));
     for (const mount of snapshot.mounts) {
         const index = args.findIndex((value, at) => value === mount.source && args[at - 1] === '--folder');
@@ -235,7 +273,7 @@ test('RoboTeam arguments use the real ALA parser and mount every skill source, w
         'Project skills retain their read-only relocated source');
     const aliased = alaSkillMountArguments({ snapshot, cwd, targets: [path.join(cwd, '.agents/skills')] });
     assert.ok(!aliased.includes(path.join(cwd, '.claude/skills')));
-    // A source that would sit at its own path inside a former workspace view is still mounted.
+    // A source that sits at its own path inside the workspace view is still mounted, since a mask may cover that path.
     const sameRoot = alaSkillMountArguments({ snapshot: { ...snapshot, mounts: [{ source: humanReport, target: humanReport }] }, workspaceRoot: root, cwd });
     assert.ok(sameRoot.some((value, at) => value === humanReport && sameRoot[at - 1] === '--folder' && sameRoot[at + 1] === 'at'));
 });

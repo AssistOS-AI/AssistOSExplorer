@@ -3,10 +3,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { repositoryClient } from './repository-client.mjs';
+import { requireWorkspaceRoot } from './workspace-root.mjs';
 import { sessionDirectory } from '../copilot/src/lib/storage/sessionPaths.mjs';
 import { ACHILLES_PRIVATE_DIRECTORY_NAME, assertSafeAchillesPrivatePath } from '../copilot/src/lib/storage/privateDataRoot.mjs';
 
 const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
+
+// The workspace entries RoboWork shows every robot as empty masks. RoboWork keeps the authoritative list and refuses these as
+// grants; RoboTeam is a separate agent and repeats the names so that it refuses a link there with a diagnostic of its own.
+const HIDDEN_WORKSPACE_ENTRIES = Object.freeze(['.data', '.ploinky', '.ploinky-box', '.env']);
+const hiddenWorkspaceEntry = name => HIDDEN_WORKSPACE_ENTRIES.includes(name) || name.startsWith('.ploinky-box.');
 
 // The execution lease serializes publication for one session. Different sessions
 // publish into different directories and never change the project's skill links.
@@ -26,6 +32,18 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
     const diagnostics = [...(inventory.diagnostics || [])];
     const root = await fs.realpath(cwd);
     const privateDirectory = path.join(root, ACHILLES_PRIVATE_DIRECTORY_NAME);
+    const workspace = await fs.realpath(service.workspaceRoot || requireWorkspaceRoot());
+    // A robot sees the whole workspace read-only, so a project link may lead to any folder in it except hidden data: the
+    // private entries RoboWork masks, and any `.roboteam`, which holds records RoboTeam acts on. A link into or over the
+    // working folder's own private data is refused first. One inside the working folder is kept, which also keeps the real
+    // skills of a generation folder that itself sits below a `.roboteam`.
+    const linkAllowed = source => {
+        if (inside(privateDirectory, source) || inside(source, privateDirectory)) return false;
+        if (inside(root, source)) return true;
+        if (!inside(workspace, source) || source === workspace) return false;
+        const parts = path.relative(workspace, source).split(path.sep);
+        return !hiddenWorkspaceEntry(parts[0]) && !parts.includes(ACHILLES_PRIVATE_DIRECTORY_NAME);
+    };
     // Retain skills already supplied by the project, including directory symlinks.
     for (const name of await fs.readdir(projectSkills).catch(error => {
         if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) return [];
@@ -40,9 +58,8 @@ export async function installLiveSkills({ service, robot, policyId, sessionId, c
             diagnostics.push({ source: name, state: 'invalid', message: 'Project skill link cannot be resolved' });
             continue;
         }
-        // A project link may not lead out of the working folder or into, or over, its private data.
-        if (!inside(root, source) || inside(privateDirectory, source) || inside(source, privateDirectory)) {
-            diagnostics.push({ source: name, state: 'invalid', message: 'Project skill link leaves the working folder' });
+        if (!linkAllowed(source)) {
+            diagnostics.push({ source: name, state: 'invalid', message: 'Project skill link leaves the workspace or leads into hidden data' });
             continue;
         }
         if ((await fs.stat(source)).isDirectory()) selected.set(name, source);
