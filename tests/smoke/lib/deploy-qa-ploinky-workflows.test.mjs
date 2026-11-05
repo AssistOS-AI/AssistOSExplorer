@@ -102,6 +102,9 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         'ploinky_locked var "$CLOUDFLARE_API_SECRET_HANDLE" --stdin',
         'ploinky_locked var "$CLOUDFLARE_TUNNEL_SECRET_HANDLE" --stdin',
         'ploinky_locked var USERPERSISTO_OIDC_ISSUER --stdin',
+        'ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent',
+        'ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent',
+        'GRAPH_RUNTIMES="$GRAPH_RUNTIMES scriptahubAgent"',
         'ploinky_locked update\n          wait_ready',
         '| ploinky_locked edge set -',
         'ploinky_locked --port "$ROUTER_PORT" start explorer\n\n          wait_ready',
@@ -114,6 +117,17 @@ test('deploy: the order sets values, updates sources, saves the publication, the
     }
     // Overwriting a Cloudflare-mode journal with a local-only document is refused by Ploinky.
     assert.doesNotMatch(deploy, /"hosts":\{\}/);
+});
+
+test('deploy: ScriptaHub is enabled only when missing and is awaited only after that', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const graph = body.match(/GRAPH_RUNTIMES='([^']*)'/);
+    assert.ok(graph);
+    // The first start waits for this list before ScriptaHub has been enabled.
+    assert.doesNotMatch(graph[1], /scriptahubAgent/);
+    assert.match(body, /if ! grep -q '\^scriptahubAgent ' <<< "\$ENABLED_STATES"; then\n\s+ploinky_locked enable agent ScriptaHubAgent\/scriptahubAgent\n\s+fi\n/);
+    assert.ok(deploy.indexOf('- name: Verify public URL') < deploy.indexOf('- name: Verify ScriptaHub'));
+    assert.match(step(deploy, 'Verify ScriptaHub'), /\/base-agent-additional-server\/scriptahubAgent\/3002\/health/);
 });
 
 test('deploy: readiness reads only the runtime block of real status output', () => {

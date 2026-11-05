@@ -228,6 +228,7 @@ These workflows differ from the two above:
 | The bootstrap fast-forwards the mounted Ploinky checkout | New CLI code runs against a running Box. If Ploinky then refuses that Box, the status error names the recovery |
 | With no running graph, the first start uses the kept Cloudflare values | A rotated API or connector token, or a tunnel deleted outside these workflows, fails that start after its health wait, because no command stores a value before a Box exists. A replaced tunnel fails early. Recover with `delete_data`, or with the first pair of workflows |
 | Redirect origins come from the saved variable | An origin held only in the UserPersisto policy store is not merged |
+| These workflows also install ScriptaHub | `deploy-explorer-qa-ploinky.yml` adds the public `https://github.com/Axiologic/ScriptaHubAgent.git` repository, enables `ScriptaHubAgent/scriptahubAgent` when it is missing, requires it to be ready, and checks its `health` path at `/base-agent-additional-server/scriptahubAgent/3002/` through the public edge. Its image, `docker.io/assistos/scriptahub-agent:runtime`, is a mutable tag of about 6 GB, and these workflows do not admit capacity. The first pair of workflows does not install it |
 
 Moving between the two pairs:
 

@@ -818,6 +818,17 @@ jobs:
             printf '%s' "$QA_USERPERSISTO_GOOGLE_CLIENT_ID" | ploinky_locked var USERPERSISTO_GOOGLE_CLIENT_ID --stdin
           fi
 
+          # ScriptaHub sits beside the Explorer graph, so it joins the awaited runtimes only from here: a first
+          # start cannot wait for an agent it has not been asked to run. Enabling issues a new instance identity,
+          # so only a missing runtime is enabled. The update below restarts it, which also registers its MCP tools
+          # with the Router.
+          ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent
+          ENABLED_STATES="$(ploinky_read status | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"
+          if ! grep -q '^scriptahubAgent ' <<< "$ENABLED_STATES"; then
+            ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent
+          fi
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES scriptahubAgent"
+
           # Start never fetches a checkout that exists, so kept sources move forward here. This fast-forwards
           # every managed source and restarts the graph when it runs; a dirty or diverged source fails the
           # run and is left untouched.
@@ -959,6 +970,23 @@ jobs:
             sleep 5
           done
 
+      - name: Verify ScriptaHub
+        run: |
+          set -euo pipefail
+          HEALTH_URL="${PUBLIC_URL%/}/base-agent-additional-server/scriptahubAgent/3002/health"
+          for attempt in $(seq 1 60); do
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$HEALTH_URL" || true)"
+            if [ "$code" = '200' ]; then
+              echo '[deploy-qa] ScriptaHub answers through the public edge.'
+              break
+            fi
+            if [ "$attempt" = '60' ]; then
+              echo "::error::ScriptaHub did not become ready; last HTTP code: ${code:-none}"
+              exit 1
+            fi
+            sleep 5
+          done
+
       - name: Verify dedicated connector and protected Cloudflare topology
         if: always()
         env:
@@ -1075,6 +1103,7 @@ jobs:
             printf -- '- Protected shared tunnel: `%s` unchanged at `%s`\n' \
               "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" "${PROTECTED_CLOUDFLARE_DIGEST:-not-snapshotted}"
             echo "- Public URL: \`${PUBLIC_URL}\`"
+            echo "- ScriptaHub: \`${PUBLIC_URL}/base-agent-additional-server/scriptahubAgent/3002/\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup
