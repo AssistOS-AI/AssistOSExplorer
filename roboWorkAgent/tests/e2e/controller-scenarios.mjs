@@ -251,6 +251,7 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
     try {
         await noRuns();
         await runtime.node(runtime.config.rw, `
+            fs.mkdirSync(path.join(input.project,'grantable'),{mode:0o700});
             fs.symlinkSync('/data/robots/'+input.victim+'/home',path.join(input.project,'victim-link'),'dir');
             const bytes=fs.readFileSync(path.join(input.project,'victim-link','marker-B'));
             if(crypto.createHash('sha256').update(bytes).digest('hex')!==input.markerHash) throw Error('Grant symlink positive control failed'); console.log('true');
@@ -267,7 +268,10 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
         const request = { runId: `controller-${randomUUID()}`, robotId: attacker, cwd: project,
             ala: { sessionId: randomUUID() }, folders: [], ignore: [], channels: [], tag: { padding: 'x'.repeat(65537) } };
         assertRefused(await runtime.mcp('run_start', request), 'INVALID_INPUT');
-        assertRefused(await runtime.mcp('run_start', { ...request, folders: [{ source: project }] }), 'INVALID_INPUT');
+        // A folder inside the working folder reaches the tag check. The working folder itself cannot be granted plainly: its
+        // export would cover `.roboteam`.
+        assertRefused(await runtime.mcp('run_start', { ...request, folders: [{ source: `${project}/grantable` }] }), 'INVALID_INPUT');
+        assertRefused(await runtime.mcp('run_start', { ...request, folders: [{ source: project }] }), 'FOLDER_REFUSED');
         const paths = ['/data', '/data/robots', `/data/robots/${victim}/home`,
             `${workspace}/.data/.private`, workspace, '/', `${project}/victim-link`, ...private_];
         for (const target of paths) {
@@ -304,16 +308,17 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
         positiveControl: 'safe cwd and folder reach subsequent tag validation; privileged symlink reads marker' };
 }
 
-// OpenCode finds plugins in every ancestor of its working folder and never beside it. This plants the same canary in a
-// sibling of the working folder and in its parent, and a recorder in the robot's own home, then runs a real turn and a fresh
-// model discovery. The sibling's canary must stay silent, the parent's must write (it proves the canary runs, and documents
-// that a robot writing a parent folder runs code in its children), and the recorder must have run and seen an empty `.data`.
+// OpenCode looks for plugins in every ancestor of its working folder and never beside it, and it stops if it cannot prepare an
+// ancestor's `.opencode`. This plants the same canary in a sibling of the working folder, in its parent, whose `.opencode` is not
+// prepared, and in the working folder, and a recorder in the robot's own home, then runs a fresh model discovery and a real turn.
+// Discovery and the turn must work. The sibling's and the parent's canaries must stay silent, the working folder's must write
+// (it proves the canary runs), and the recorder must have run and seen an empty `.data`.
 const CANARY = marker => `export const W1Canary = async () => { try { const fs = await import('node:fs'), path = await import('node:path');
     fs.writeFileSync(path.join(process.cwd(), ${JSON.stringify(marker)}), 'loaded'); } catch {} return {}; };`;
 const RECORDER = root => `export const W1Recorder = async () => { try { const fs = await import('node:fs'), path = await import('node:path');
     let entry; try { entry = { entries: fs.readdirSync(${JSON.stringify(`${root}/.data`)}) }; } catch (error) { entry = { error: String(error.code || error.message) }; }
     fs.appendFileSync(path.join(process.env.HOME, 'w1-recorder.jsonl'), JSON.stringify({ cwd: process.cwd(), ...entry }) + '\\n'); } catch {} return {}; };`;
-const W1_MARKERS = Object.freeze({ sibling: 'w1-marker-sibling', parent: 'w1-marker-parent' });
+const W1_MARKERS = Object.freeze({ sibling: 'w1-marker-sibling', parent: 'w1-marker-parent', own: 'w1-marker-own' });
 
 export async function walkUpAndDiscovery(runtime) {
     const { workspace } = runtime.config;
@@ -334,11 +339,12 @@ export async function walkUpAndDiscovery(runtime) {
             fs.mkdirSync(home,{recursive:true}); fs.writeFileSync(path.join(home,'w1-recorder.js'),input.recorder);
             console.log('true');
         `, { op: 'plant', attacker, recorder: RECORDER(workspace), plugins: [
-            [sibling, 'w1-sibling.js', CANARY(W1_MARKERS.sibling)], [parent, 'w1-parent.js', CANARY(W1_MARKERS.parent)]] });
+            [sibling, 'w1-sibling.js', CANARY(W1_MARKERS.sibling)], [parent, 'w1-parent.js', CANARY(W1_MARKERS.parent)],
+            [cwd, 'w1-own.js', CANARY(W1_MARKERS.own)]] });
         const read = async () => runtime.node(runtime.config.rw, `
             const records=fs.existsSync(input.file)?fs.readFileSync(input.file,'utf8').split('\\n').filter(Boolean).map(line=>JSON.parse(line)):[];
             const present=name=>fs.existsSync(path.join(input.cwd,name));
-            console.log(JSON.stringify({records,sibling:present(input.markers.sibling),parent:present(input.markers.parent)}));
+            console.log(JSON.stringify({records,sibling:present(input.markers.sibling),parent:present(input.markers.parent),own:present(input.markers.own)}));
         `, { op: 'observe', file: `/data/robots/${attacker}/home/w1-recorder.jsonl`, cwd, markers: W1_MARKERS });
         // A fresh discovery: a new robot has no cached catalog, and the recorder is new to its configuration.
         const models = await runtime.mcp('robot_models', { robotId: attacker, agent: 'opencode', cwd });
@@ -364,7 +370,8 @@ export async function walkUpAndDiscovery(runtime) {
         observed = await read();
         assert.ok(observed.records.length > discovery.records.length, 'The home plugin never ran during the turn.');
         for (const record of observed.records) assert.deepEqual(record.entries, [], `A robot saw workspace .data entries: ${JSON.stringify(record)}`);
-        assert.equal(observed.parent, true, 'The parent folder canary did not run, so the turn proves nothing about plugin loading.');
+        assert.equal(observed.own, true, 'The working folder canary did not run, so the turn proves nothing about plugin loading.');
+        assert.equal(observed.parent, false, 'A parent folder plugin was loaded.');
         assert.equal(observed.sibling, false, 'A sibling folder plugin was loaded.');
         assertDeleted(await runtime.probes.remove(attacker));
     } finally {
@@ -378,8 +385,8 @@ export async function walkUpAndDiscovery(runtime) {
             fs.rmSync(input.parent,{recursive:true}); console.log('true');
         `, { op: 'remove', parent, ...owner });
     }
-    return { discoveryRecords: observed.records.length, markers: { parent: observed.parent, sibling: observed.sibling },
-        positiveControl: 'the parent folder canary wrote its marker and the home recorder ran in discovery and in the turn' };
+    return { discoveryRecords: observed.records.length, markers: { own: observed.own, parent: observed.parent, sibling: observed.sibling },
+        positiveControl: 'the working folder canary wrote its marker and the home recorder ran in discovery and in the turn' };
 }
 
 export async function dualHome(runtime) {

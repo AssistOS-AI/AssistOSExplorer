@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { HIDDEN_WORKSPACE_ENTRIES, alaWorkspaceOptions, assertShowableRoot, isHiddenWorkspaceEntry, parseMountinfo,
+import { HIDDEN_WORKSPACE_ENTRIES, OPENCODE_SHADOW, alaWorkspaceOptions, assertShowableRoot, isHiddenWorkspaceEntry, parseMountinfo,
     podmanWorkspaceArguments, workspaceView, writableSubmounts } from '../server/workspace-view.mjs';
 import { RobotPaths } from '../server/robot-paths.mjs';
 
@@ -165,6 +165,45 @@ test('on Linux the mount table is read for this namespace; an unreadable or malf
     await assert.rejects(view({ platform: 'linux', lstat: keepsCase, readFile: async () => 'not a mount table\n' }), { code: 'WORKSPACE_UNAVAILABLE' });
     // Other platforms have no such table and a missing one is not an error there.
     assert.deepEqual((await view({ platform: 'darwin', readFile: async () => { throw new Error('unused'); } })).writableSubmounts, []);
+});
+
+test('every .opencode above the working folder is shown as the prepared directory, and nothing else is', async t => {
+    const { base, root, view } = await fixture(t);
+    const cwd = path.join(root, 'a', 'b', 'c');
+    await fs.mkdir(path.join(cwd, '.opencode'), { recursive: true });
+    for (const folder of [root, path.join(root, 'a'), path.join(root, 'a', 'b'), path.join(root, 'sibling')]) await fs.mkdir(path.join(folder, '.opencode'), { recursive: true });
+    await fs.mkdir(path.join(base, 'outside', '.opencode'), { recursive: true });
+    const found = await view();
+    const expected = [path.join(root, '.opencode'), path.join(root, 'a', '.opencode'), path.join(root, 'a', 'b', '.opencode')];
+    const shown = alaWorkspaceOptions(found, { cwd, home: '/home/robot-a' });
+    assert.deepEqual(shown.folders[0], { source: root });
+    assert.deepEqual(shown.folders.slice(1), expected.map(target => ({ source: OPENCODE_SHADOW, target, expose: true })));
+    assert.equal(await fs.readFile(path.join(OPENCODE_SHADOW, '.gitignore'), 'utf8'), 'node_modules\n', 'The file OpenCode looks for is present');
+    const args = podmanWorkspaceArguments(found, { cwd });
+    for (const target of expected) assert.ok(args.includes(`${OPENCODE_SHADOW}:${target}:ro`), target);
+    assert.ok(!args.some(value => value.includes('sibling') || value.includes('c/.opencode')));
+    // The container already carries them, and the robot home and a missing view have no ancestors to shadow.
+    assert.deepEqual(alaWorkspaceOptions(found, { cwd, home: '/home/robot-a', environment: true }).folders, [{ source: root }]);
+    assert.deepEqual(alaWorkspaceOptions(found, { cwd: '/home/robot-a', home: '/home/robot-a' }).folders, [{ source: root }]);
+    assert.deepEqual(podmanWorkspaceArguments(found).filter(value => value.includes(OPENCODE_SHADOW)), []);
+    assert.deepEqual(alaWorkspaceOptions({ root: null, masks: [], writableSubmounts: [] }, { cwd, home: '/home/robot-a' }).folders, []);
+});
+
+test('a linked .opencode is shadowed at its target inside the root, unless it holds the working folder or leads out', async t => {
+    const { base, root, view } = await fixture(t);
+    const cwd = path.join(root, 'a', 'b');
+    await fs.mkdir(cwd, { recursive: true });
+    await fs.mkdir(path.join(root, 'shared'));
+    await fs.mkdir(path.join(base, 'outside'));
+    await fs.symlink(path.join(root, 'shared'), path.join(root, 'a', '.opencode'));
+    await fs.symlink(path.join(base, 'outside'), path.join(root, '.opencode'));
+    assert.deepEqual(alaWorkspaceOptions(await view(), { cwd, home: '/h' }).folders.slice(1).map(entry => entry.target), [path.join(root, 'shared')]);
+    await fs.rm(path.join(root, 'a', '.opencode'));
+    await fs.symlink(path.join(root, 'a'), path.join(root, 'a', '.opencode'));
+    assert.deepEqual(alaWorkspaceOptions(await view(), { cwd, home: '/h' }).folders.slice(1), []);
+    await fs.rm(path.join(root, 'a', '.opencode'));
+    await fs.symlink(path.join(root, 'missing'), path.join(root, 'a', '.opencode'));
+    assert.deepEqual(alaWorkspaceOptions(await view(), { cwd, home: '/h' }).folders.slice(1), []);
 });
 
 const sample = () => ({ root: '/srv/ws', writableSubmounts: ['/srv/ws/checkout', '/srv/ws/project/vendor'],

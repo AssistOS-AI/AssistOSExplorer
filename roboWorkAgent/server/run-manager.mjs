@@ -190,7 +190,7 @@ export class RunManager {
             const view = await this.paths.workspaceView(input.robotId);
             check();
             const shown = alaWorkspaceOptions(view, { cwd, home, environment: Boolean(input.environment) });
-            for (const { source } of shown.folders) args.push('--folder', source);
+            for (const { source, target, expose } of shown.folders) args.push('--folder', source, ...(target ? ['at', target] : []), ...(expose ? ['expose'] : []));
             for (const ignored of shown.ignoredPaths) args.push('--ignore', ignored);
             for (const ignored of input.ignore || []) {
                 if (typeof ignored !== 'string' || !path.isAbsolute(ignored)) throw fail('INVALID_INPUT', 'Ignore path must be absolute');

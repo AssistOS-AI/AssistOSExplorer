@@ -1,5 +1,7 @@
 import fs from 'node:fs/promises';
+import { lstatSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Entries of the workspace root that hold service or deployment state. A robot sees each as an empty read-only entry.
 export const HIDDEN_WORKSPACE_ENTRIES = Object.freeze(['.data', '.ploinky', '.ploinky-box', '.env']);
@@ -147,15 +149,40 @@ function assertClear(view, cwd) {
     if (cwd && view.masks.some(entry => overlaps(entry.path, cwd))) throw unavailable('A workspace mask overlaps the working folder');
 }
 
+// OpenCode reads every `.opencode` from its cwd up to the root and stops with an error when it cannot write the `.gitignore`
+// it keeps in one. An ancestor's is read-only here, so a robot would fail below any that lacks the file, and otherwise run
+// plugins from a folder it was never started in. Each is shown as this read-only prepared directory, which leaves a robot
+// what it had before it could see the workspace: no `.opencode` from above its working folder. A `.opencode` that leads
+// outside the root is not visible, and one over the working folder or a mask stays as it is.
+export const OPENCODE_SHADOW = fileURLToPath(new URL('./opencode-shadow', import.meta.url));
+
+function shadowedOpencode(view, cwd) {
+    if (!view.root || !cwd || cwd === view.root || !within(view.root, cwd)) return [];
+    const shadows = new Set();
+    for (let folder = path.dirname(cwd); within(view.root, folder); folder = path.dirname(folder)) {
+        const entry = path.join(folder, '.opencode');
+        try {
+            const target = lstatSync(entry).isSymbolicLink() ? realpathSync(entry) : entry;
+            if (statSync(target).isDirectory() && within(view.root, target) && !overlaps(target, cwd)
+                && !view.masks.some(mask => overlaps(mask.path, target))) shadows.add(target);
+        } catch (error) {
+            if (!MISSING.has(error.code)) throw unavailable('A workspace entry cannot be inspected');
+        }
+        if (folder === view.root) break;
+    }
+    return [...shadows].sort();
+}
+
 // Arguments for ALA, native or inside an Environment. A native run masks through ALA. An Environment container already
-// carries its masks from Podman, where a character device cannot be named again as an ignored path.
+// carries its masks and shadows from Podman, where a character device cannot be named again as an ignored path.
 export function alaWorkspaceOptions(view, { cwd, home, environment = false } = {}) {
     assertView(view); assertClear(view, cwd);
     // The folder's private project data holds records RoboTeam reads back; it comes first, as it always has. The robot home
     // has none to mask.
     const ignoredPaths = cwd && cwd !== home ? [path.join(cwd, '.roboteam')] : [];
     if (!environment) ignoredPaths.push(...view.masks.map(entry => entry.path));
-    return { folders: view.root ? [{ source: view.root }] : [], ignoredPaths };
+    const shadows = environment ? [] : shadowedOpencode(view, cwd).map(target => ({ source: OPENCODE_SHADOW, target, expose: true }));
+    return { folders: view.root ? [{ source: view.root }, ...shadows] : [], ignoredPaths };
 }
 
 // Podman arguments for a container that holds the view. `ro` covers only the top mount there, so every writable submount of
@@ -178,5 +205,6 @@ export function podmanWorkspaceArguments(view, { cwd, volumeFlag = '--volume' } 
         if (entry.directory) args.push('--tmpfs', `${entry.path}:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`);
         else args.push(volumeFlag, `/dev/null:${entry.path}:ro`);
     }
+    for (const target of shadowedOpencode(view, cwd)) args.push(volumeFlag, `${named(OPENCODE_SHADOW)}:${named(target)}:ro`);
     return args;
 }

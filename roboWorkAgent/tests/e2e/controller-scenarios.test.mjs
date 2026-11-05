@@ -210,6 +210,7 @@ function isolationFixture({ leak = false, mutateVictim = false, admitted = false
             if (tool === 'gui_stop') { assert.equal(running, false); return { ok: true, result: { state: 'stopped' } }; }
             if (tool === 'run_start' && input.tag?.padding) {
                 const target = input.folders[0]?.source || input.cwd;
+                if (input.folders[0]?.source === input.cwd) return { ok: false, code: 'FOLDER_REFUSED' };
                 const code = target.includes('controller-grants-') && !target.endsWith('victim-link') ? 'INVALID_INPUT'
                     : input.folders.length ? 'FOLDER_REFUSED' : 'CWD_REFUSED';
                 return { ok: false, code };
@@ -248,7 +249,7 @@ test('I10 retains all eighteen refusals, proves the private workspace targets ex
     assert.ok(!runtime.observations.includes('run_start'), 'No refusal was attempted against a target that was not proven to exist.');
 });
 
-function walkFixture({ recorderRan = true, discoveryEntries = [], turnEntries = [], siblingLoaded = false, parentLoaded = true, discoveryFails = false } = {}) {
+function walkFixture({ recorderRan = true, discoveryEntries = [], turnEntries = [], siblingLoaded = false, parentLoaded = false, ownLoaded = true, discoveryFails = false } = {}) {
     const state = { discovered: false, turned: false }, calls = [], owned = new Map();
     const record = entries => ({ cwd: '/task/fixture/controller-w1/child', entries });
     return { config: config(), calls, state, probes: {
@@ -260,7 +261,7 @@ function walkFixture({ recorderRan = true, discoveryEntries = [], turnEntries = 
         if (input.op === 'folders') return { ino: 1, dev: 2 };
         if (input.op === 'observe') {
             const records = !recorderRan ? [] : state.turned ? [record(discoveryEntries), record(turnEntries)] : state.discovered ? [record(discoveryEntries)] : [];
-            return { records, sibling: siblingLoaded, parent: parentLoaded };
+            return { records, sibling: siblingLoaded, parent: parentLoaded, own: ownLoaded };
         }
         return true;
     }, async mcp(tool, input) {
@@ -274,10 +275,10 @@ function walkFixture({ recorderRan = true, discoveryEntries = [], turnEntries = 
     } };
 }
 
-test('W1 passes only when the parent canary ran, the sibling canary stayed silent and the home recorder saw an empty .data twice', async () => {
+test('W1 passes only when the working folder canary ran, the parent and sibling canaries stayed silent and the home recorder saw an empty .data twice', async () => {
     const runtime = walkFixture();
     const result = await walkUpAndDiscovery(runtime);
-    assert.deepEqual(result.markers, { parent: true, sibling: false });
+    assert.deepEqual(result.markers, { own: true, parent: false, sibling: false });
     assert.equal(result.discoveryRecords, 2);
     assert.ok(runtime.calls.indexOf('robot_models') < runtime.calls.indexOf('run_start'), 'Discovery precedes the turn');
     assert.equal(runtime.calls.at(-1), 'node:remove'); assert.ok(runtime.calls.includes('delete'));
@@ -291,7 +292,8 @@ test('W1 fails for each hole it can see and still removes what it created', asyn
         assert.ok(runtime.calls.includes('delete') && runtime.probes.owned.size === 0, 'The owned robot is removed');
     };
     await fails({ siblingLoaded: true }, /sibling folder plugin was loaded/u);
-    await fails({ parentLoaded: false }, /parent folder canary did not run/u);
+    await fails({ parentLoaded: true }, /parent folder plugin was loaded/u);
+    await fails({ ownLoaded: false }, /working folder canary did not run/u);
     await fails({ recorderRan: false }, /home plugin never ran during model discovery/u);
     await fails({ discoveryEntries: ['.private'] }, /Discovery saw workspace \.data entries/u);
     await fails({ turnEntries: ['.private'] }, /robot saw workspace \.data entries/u);
