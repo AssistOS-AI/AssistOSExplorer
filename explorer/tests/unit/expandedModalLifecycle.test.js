@@ -15,6 +15,7 @@ function createHost(storage = new Map()) {
     const context = vm.createContext({
         AbortController,
         console,
+        document: {},
         sessionStorage: {
             getItem: (key) => (storage.has(key) ? storage.get(key) : null),
             setItem: (key, value) => storage.set(key, String(value)),

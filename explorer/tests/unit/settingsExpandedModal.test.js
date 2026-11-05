@@ -182,10 +182,15 @@ test('the shared header handles Settings Escape without intercepting nested dial
 test('Explorer launches the shared shell, awaits Save and restores its settings URL only once', async t => {
     const previousWindow = globalThis.window;
     const previousAssistOS = globalThis.assistOS;
-    t.after(() => { globalThis.window = previousWindow; globalThis.assistOS = previousAssistOS; });
+    const previousDocument = globalThis.document;
+    t.after(() => { globalThis.window = previousWindow; globalThis.assistOS = previousAssistOS; globalThis.document = previousDocument; });
     const location = { href: 'https://workspace.example/?settings=editor#file-exp/demo' };
     const history = { state: null, replaceState: (_state, _title, url) => { location.href = url; } };
-    globalThis.window = { location, history, localStorage: { getItem: () => null } };
+    globalThis.window = { location, history, localStorage: { getItem: () => null }, addEventListener() {} };
+    globalThis.document = {
+        defaultView: globalThis.window,
+        documentElement: { classList: { contains: () => false } },
+    };
     let opened;
     const opening = new Promise(resolve => { opened = resolve; });
     let launches = 0;

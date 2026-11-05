@@ -15,7 +15,8 @@ function deferred() {
 
 function installHost({ ready, storage = new Map() }) {
     const shown = [];
-    const previous = { assistOS: globalThis.assistOS, sessionStorage: globalThis.sessionStorage };
+    const previous = { assistOS: globalThis.assistOS, sessionStorage: globalThis.sessionStorage, document: globalThis.document };
+    globalThis.document = {};
     globalThis.assistOS = {
         UI: {
             ensureExpandedModalReady: typeof ready === 'function' ? ready : (ready ? () => ready : undefined),

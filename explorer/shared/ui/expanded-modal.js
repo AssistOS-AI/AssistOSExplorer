@@ -21,26 +21,35 @@ function descriptorKey(descriptor = {}) {
     return String(descriptor.component || descriptor.url || descriptor.iframeUrl || descriptor.title || "expanded");
 }
 
-let activePanel = null;
-// The different panel waiting while the active one prepares to be replaced. It owns the transition.
-let pendingReplacement = null;
-let pageUnloading = false;
+const COORDINATOR_KEY = Symbol.for("explorer.expandedModal.coordinator");
 const RESUME_STORAGE_KEY = "explorer.expandedModal.resume";
 
-if (typeof globalThis.window !== "undefined") {
-    const markPageUnloading = () => { pageUnloading = true; };
-    globalThis.window.addEventListener("pagehide", markPageUnloading, { once: true });
-    globalThis.window.addEventListener("beforeunload", markPageUnloading, { once: true });
+function documentCoordinator() {
+    const document = globalThis.document;
+    if (!document) return null;
+    if (document[COORDINATOR_KEY]) return document[COORDINATOR_KEY];
+    const coordinator = { activePanel: null, pendingReplacement: null, pageUnloading: false, storage: null };
+    // Both public module URLs must reserve the same owner before any launch can await.
+    Object.defineProperty(document, COORDINATOR_KEY, { value: coordinator });
+    try {
+        coordinator.storage = document.defaultView?.sessionStorage ?? globalThis.sessionStorage;
+    } catch (_) {
+        // Session storage may be unavailable on this document.
+    }
+    const markPageUnloading = () => { coordinator.pageUnloading = true; };
+    document.defaultView?.addEventListener("pagehide", markPageUnloading, { once: true });
+    document.defaultView?.addEventListener("beforeunload", markPageUnloading, { once: true });
+    return coordinator;
 }
 
 function isResumableDescriptor(descriptor = {}) {
     return descriptor.resume === true;
 }
 
-function persistResume(descriptor = {}, key = "") {
+function persistResume(coordinator, descriptor = {}, key = "") {
     if (!isResumableDescriptor(descriptor)) return;
     try {
-        globalThis.sessionStorage?.setItem(RESUME_STORAGE_KEY, JSON.stringify({
+        coordinator.storage?.setItem(RESUME_STORAGE_KEY, JSON.stringify({
             key,
             resume: true,
             mode: descriptor.mode || (descriptor.component ? "component" : "iframe"),
@@ -57,13 +66,13 @@ function persistResume(descriptor = {}, key = "") {
     }
 }
 
-function clearResume(recordKey = "") {
+function clearResume(coordinator, recordKey = "") {
     try {
-        const raw = globalThis.sessionStorage?.getItem(RESUME_STORAGE_KEY);
+        const raw = coordinator.storage?.getItem(RESUME_STORAGE_KEY);
         if (!raw) return;
         const parsed = JSON.parse(raw);
         if (recordKey && parsed?.key && parsed.key !== recordKey) return;
-        globalThis.sessionStorage?.removeItem(RESUME_STORAGE_KEY);
+        coordinator.storage?.removeItem(RESUME_STORAGE_KEY);
     } catch (_) {
         // Ignore storage failures while clearing the resume record.
     }
@@ -102,7 +111,7 @@ function mergeDescriptor(record, descriptor) {
 }
 
 // The returned close promise also carries isClosed() and opened, which resolves with the dialog or null.
-function createPanelRecord(key, descriptor) {
+function createPanelRecord(coordinator, key, descriptor) {
     const record = { key, descriptor, controller: new AbortController(), dialog: null };
     record.closed = new Promise((resolve) => { record.resolve = resolve; });
     record.closed.isClosed = () => record.controller.signal.aborted;
@@ -110,6 +119,11 @@ function createPanelRecord(key, descriptor) {
     record.controller.signal.addEventListener("abort", () => {
         record.dialog?.close();
         record.dialog?.remove();
+        if (coordinator.activePanel === record) {
+            coordinator.activePanel = null;
+            if (!coordinator.pageUnloading) clearResume(coordinator, record.key);
+        }
+        if (coordinator.pendingReplacement === record) coordinator.pendingReplacement = null;
         record.resolveOpened(null);
         record.resolve();
     }, { once: true });
@@ -123,10 +137,13 @@ function isOpen(record) {
 export function openExpandedModal(descriptor = {}) {
     const ui = globalThis.assistOS?.UI;
     if (typeof ui?.showModal !== "function") return Promise.resolve();
+    const coordinator = documentCoordinator();
+    if (!coordinator) return Promise.resolve();
+    const { activePanel, pendingReplacement } = coordinator;
     const key = descriptorKey(descriptor);
     if (activePanel?.key === key && !activePanel.controller.signal.aborted) {
         mergeDescriptor(activePanel, descriptor);
-        persistResume(activePanel.descriptor, activePanel.key);
+        persistResume(coordinator, activePanel.descriptor, activePanel.key);
         updatePanel(activePanel);
         return activePanel.closed;
     }
@@ -137,50 +154,53 @@ export function openExpandedModal(descriptor = {}) {
             mergeDescriptor(pendingReplacement, descriptor);
             return pendingReplacement.closed;
         }
-        const cancelled = createPanelRecord(key, descriptor);
+        const cancelled = createPanelRecord(coordinator, key, descriptor);
         cancelled.controller.abort();
         return cancelled.closed;
     }
-    const record = createPanelRecord(key, descriptor);
+    const record = createPanelRecord(coordinator, key, descriptor);
     const previous = activePanel;
     const guard = isOpen(previous) && previous.dialog ? panelPresenter(previous) : null;
     if (typeof guard?.hasCloseGuard === "function" && typeof guard.prepareClose === "function" && guard.hasCloseGuard()) {
         // A mounted panel whose content guards its closing stays until it approves the replacement.
-        pendingReplacement = record;
+        coordinator.pendingReplacement = record;
         Promise.resolve().then(() => guard.prepareClose("replace")).catch(() => false).then((approved) => {
-            if (pendingReplacement === record) pendingReplacement = null;
+            if (coordinator.pendingReplacement === record) coordinator.pendingReplacement = null;
             if (!isOpen(record)) return;
-            if (activePanel === previous && isOpen(previous)) {
+            if (coordinator.activePanel === previous && isOpen(previous)) {
                 if (approved !== true) {
                     record.controller.abort();
                     return;
                 }
                 previous.controller.abort();
-            } else if (isOpen(activePanel)) {
+            } else if (isOpen(coordinator.activePanel)) {
                 record.controller.abort();
                 return;
             }
-            launchPanel(ui, record);
+            launchPanel(coordinator, ui, record);
         });
         return record.closed;
     }
     // Nothing mounted, or nothing guarded: replace at once.
     activePanel?.controller.abort();
-    launchPanel(ui, record);
+    launchPanel(coordinator, ui, record);
     return record.closed;
 }
 
-function launchPanel(ui, record) {
+function launchPanel(coordinator, ui, record) {
     const { key, descriptor } = record;
-    activePanel = record;
-    persistResume(descriptor, key);
+    coordinator.activePanel = record;
+    persistResume(coordinator, descriptor, key);
     const payload = { ...toModalPayload(descriptor), key };
     // Explorer preloads the shell component without blocking startup; no panel opens before it. A failed preload is
     // retried by the next launch (ui.ensureExpandedModalReady), and overlapping launches share one attempt.
     Promise.resolve().then(() => ui.ensureExpandedModalReady?.()).then(() => ui.showModal(EXPANDED_MODAL_COMPONENT, payload, false, {
         signal: record.controller.signal
     })).then((dialog) => {
-        if (!dialog) return;
+        if (!dialog) {
+            record.controller.abort();
+            return;
+        }
         if (record.controller.signal.aborted) {
             dialog.close();
             dialog.remove();
@@ -190,8 +210,10 @@ function launchPanel(ui, record) {
         record.resolveOpened(dialog);
         dialog.addEventListener("close", (event) => {
             dialog.remove();
-            if (activePanel === record) activePanel = null;
-            if (!pageUnloading) clearResume(record.key);
+            if (coordinator.activePanel === record) {
+                coordinator.activePanel = null;
+                if (!coordinator.pageUnloading) clearResume(coordinator, record.key);
+            }
             record.resolve(event.data);
             record.controller.abort();
         }, { once: true });
@@ -199,7 +221,6 @@ function launchPanel(ui, record) {
     }).catch((error) => {
         console.error("[expanded-modal] Failed to open panel:", error);
         record.controller.abort();
-        if (activePanel === record) activePanel = null;
     });
     return record.closed;
 }
