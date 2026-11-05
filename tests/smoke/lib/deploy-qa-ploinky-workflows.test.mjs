@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +12,8 @@ const deploy = read('deploy-explorer-qa-ploinky.yml');
 const destroy = read('destroy-explorer-qa-ploinky.yml');
 const legacyDeploy = read('deploy-explorer-qa.yml');
 const legacyDestroy = read('destroy-explorer-qa.yml');
+
+const PRIVATE_COPY_BLOCK = /# BEGIN QA private repository copy[\s\S]*# END QA private repository copy/;
 
 function runBlocks(source) {
     const blocks = [];
@@ -73,7 +76,8 @@ for (const [name, source] of [['deploy', deploy], ['destroy', destroy]]) {
             /\/opt\/ploinky\/cli/, /qa-teardown/, /update-explorer-qa/, /quiesce-explorer-qa/,
             /\.ploinky\/(?:repos|running|data)/, /rm -rf/,
         ]) {
-            assert.doesNotMatch(source, forbidden);
+            // The private repository copy is the one exception, and has its own test.
+            assert.doesNotMatch(source.replace(PRIVATE_COPY_BLOCK, ''), forbidden);
         }
     });
 
@@ -102,10 +106,15 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         'ploinky_locked var "$CLOUDFLARE_API_SECRET_HANDLE" --stdin',
         'ploinky_locked var "$CLOUDFLARE_TUNNEL_SECRET_HANDLE" --stdin',
         'ploinky_locked var USERPERSISTO_OIDC_ISSUER --stdin',
+        '# BEGIN QA private repository copy',
+        'ploinky_locked var BIZANSO_PUBLIC_LINK_BASE --stdin',
+        'ploinky_locked add repo https://github.com/Axiologic/bizanso.git bizanso',
         'ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent',
+        'ploinky_locked enable agent bizanso/bizanso',
         'ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent',
-        'GRAPH_RUNTIMES="$GRAPH_RUNTIMES scriptahubAgent"',
-        'ploinky_locked update\n          wait_ready',
+        'GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso scriptahubAgent"',
+        'ploinky_locked update repo "$repo"',
+        'ploinky_locked restart\n          wait_ready',
         '| ploinky_locked edge set -',
         'ploinky_locked --port "$ROUTER_PORT" start explorer\n\n          wait_ready',
     ];
@@ -119,15 +128,93 @@ test('deploy: the order sets values, updates sources, saves the publication, the
     assert.doesNotMatch(deploy, /"hosts":\{\}/);
 });
 
-test('deploy: ScriptaHub is enabled only when missing and is awaited only after that', () => {
+test('deploy: the added agents are enabled only when missing and are awaited only after that', () => {
     const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
     const graph = body.match(/GRAPH_RUNTIMES='([^']*)'/);
     assert.ok(graph);
-    // The first start waits for this list before ScriptaHub has been enabled.
-    assert.doesNotMatch(graph[1], /scriptahubAgent/);
-    assert.match(body, /if ! grep -q '\^scriptahubAgent ' <<< "\$ENABLED_STATES"; then\n\s+ploinky_locked enable agent ScriptaHubAgent\/scriptahubAgent\n\s+fi\n/);
-    assert.ok(deploy.indexOf('- name: Verify public URL') < deploy.indexOf('- name: Verify ScriptaHub'));
-    assert.match(step(deploy, 'Verify ScriptaHub'), /\/base-agent-additional-server\/scriptahubAgent\/3002\/health/);
+    // The first start waits for this list before these agents have been enabled.
+    assert.doesNotMatch(graph[1], /bizanso|scriptahubAgent/);
+    for (const [runtime, agent] of [['bizanso', 'bizanso/bizanso'], ['scriptahubAgent', 'ScriptaHubAgent/scriptahubAgent']]) {
+        assert.ok(body.includes(`if ! grep -q '^${runtime} ' <<< "$ENABLED_STATES"; then\n            ploinky_locked enable agent ${agent}\n          fi\n`), runtime);
+    }
+    assert.ok(deploy.indexOf('- name: Verify public URL') < deploy.indexOf('- name: Verify Bizanso and ScriptaHub'));
+    const verify = step(deploy, 'Verify Bizanso and ScriptaHub');
+    assert.match(verify, /bizanso\/8787\/how-it-works\//);
+    assert.match(verify, /scriptahubAgent\/3002\/health/);
+});
+
+test('deploy: the Bizanso key stays on the runner and reaches only its checkout', () => {
+    const uses = deploy.split('\n').filter((line) => line.includes('EXPLORER_QA_BIZANSO_DEPLOY_KEY }}'));
+    assert.deepEqual(uses.map((line) => line.trim()), [
+        'BIZANSO_DEPLOY_KEY: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}',
+        'ssh-key: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}',
+    ]);
+    const checkout = step(deploy, 'Check out Bizanso');
+    assert.match(checkout, /persist-credentials: false/);
+    assert.match(checkout, /repository: Axiologic\/bizanso/);
+    assert.doesNotMatch(step(deploy, 'Bootstrap the host and deploy through Ploinky commands'), /BIZANSO_DEPLOY_KEY/);
+    assert.doesNotMatch(destroy, /BIZANSO/);
+});
+
+test('deploy: the private copy replaces the repository and keeps one predecessor', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const block = body.match(PRIVATE_COPY_BLOCK)[0];
+    assert.match(block, / podman container exec -i --user podman .* ploinky-box-explorerqaworkspace-7a31ab7775eb sh -c /);
+    const program = block.match(/COPY_PROGRAM='([^']*)'/)[1];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-private-copy-'));
+    try {
+        const copy = (file, withGit = false) => {
+            const source = fs.mkdtempSync(path.join(root, 'source-'));
+            fs.writeFileSync(path.join(source, file), 'x');
+            if (withGit) fs.mkdirSync(path.join(source, '.git'));
+            const archive = spawnSync('tar', ['-cf', '-', '-C', source, '.']);
+            assert.equal(archive.status, 0);
+            return spawnSync('sh', ['-c', program, 'sh'], { cwd: workspace, input: archive.stdout });
+        };
+        const workspace = path.join(root, 'workspace');
+        fs.mkdirSync(path.join(workspace, '.ploinky'), { recursive: true });
+        const repo = path.join(workspace, '.ploinky/repos/bizanso');
+        const previous = path.join(workspace, '.ploinky/.qa-private-copy/previous');
+        assert.equal(copy('one').status, 0);
+        assert.ok(fs.existsSync(path.join(repo, 'one')));
+        assert.equal(copy('two').status, 0);
+        assert.ok(fs.existsSync(path.join(repo, 'two')) && !fs.existsSync(path.join(repo, 'one')));
+        assert.ok(fs.existsSync(path.join(previous, 'one')));
+        assert.equal(copy('three').status, 0);
+        assert.ok(fs.existsSync(path.join(repo, 'three')));
+        assert.ok(fs.existsSync(path.join(previous, 'two')) && !fs.existsSync(path.join(previous, 'one')));
+        assert.deepEqual(fs.readdirSync(path.dirname(previous)), ['previous']);
+        // A source carrying Git metadata is refused and leaves the live copy in place.
+        assert.notEqual(copy('four', true).status, 0);
+        assert.ok(fs.existsSync(path.join(repo, 'three')));
+        // So is an archive that produced no files.
+        const empty = fs.mkdtempSync(path.join(root, 'empty-'));
+        const nothing = spawnSync('tar', ['-cf', '-', '-C', empty, '--exclude', './*', '.']);
+        assert.notEqual(spawnSync('sh', ['-c', program, 'sh'], { cwd: workspace, input: nothing.stdout }).status, 0);
+        assert.notEqual(spawnSync('sh', ['-c', program, 'sh'], { cwd: workspace, input: '' }).status, 0);
+        assert.ok(fs.existsSync(path.join(repo, 'three')));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('deploy: every installed repository except the private copy moves on its own', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const start = body.indexOf('installed_repos() {');
+    const definition = body.slice(start, body.indexOf('\n          }\n', start));
+    const sample = [
+        'Available repositories:',
+        '- basic: https://example.test/basic.git [agents]',
+        '- AchillesIDE: https://example.test/ide.git [agents] [installed]',
+        '- bizanso: (local) [agents] [installed]',
+        '',
+        "Tip: install repos with 'install repo <url> [name]'. [installed]",
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', `${definition}\n}\ninstalled_repos`], { input: sample, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'AchillesIDE\nbizanso\n');
+    assert.match(body, /if \[ "\$repo" != bizanso \]; then\n\s+ploinky_locked update repo "\$repo"\n/);
+    assert.doesNotMatch(body, /ploinky_locked update\n/);
 });
 
 test('deploy: readiness reads only the runtime block of real status output', () => {

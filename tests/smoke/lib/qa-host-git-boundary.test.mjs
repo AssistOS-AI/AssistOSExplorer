@@ -36,6 +36,7 @@ const REVIEWED = [
     // The Ploinky workflows' checkout lies outside the workspace, and a Box mounts it read-only.
     ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^for tool in git node curl podman flock; do$/, 1, 'prerequisite presence check'],
     ['.github/workflows/deploy-explorer-qa-ploinky.yml', /git ls-remote --symref "\$PLOINKY_URL" HEAD|^git clone --quiet --branch "\$BRANCH" "\$PLOINKY_URL" "\$CHECKOUT"$|git -C "\$CHECKOUT" /, 7, 'BOOTSTRAP_OUTSIDE_BOX'],
+    ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^git -C "\$GITHUB_WORKSPACE\/\.qa-bizanso-source" archive --format=tar HEAD \|$/, 1, 'runs on the GitHub runner, in a checkout actions/checkout just created; no Box can write it'],
     ['.github/workflows/destroy-explorer-qa-ploinky.yml', /git ls-remote --symref "\$PLOINKY_URL" HEAD|^git clone --quiet --branch "\$BRANCH" "\$PLOINKY_URL" "\$CHECKOUT"$|git -C "\$CHECKOUT" /, 7, 'BOOTSTRAP_OUTSIDE_BOX'],
     ['.github/scripts/rollback-explorer-qa.mjs', /./, 7, 'IN_SANDBOX'],
     ['.github/scripts/rollback-explorer-qa.mjs', /'--entrypoint=\/usr\/bin\/git', image,/, 1, 'sandbox container entrypoint'],

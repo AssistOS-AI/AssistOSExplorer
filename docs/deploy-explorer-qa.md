@@ -203,9 +203,9 @@ owner of any architecture change needed to activate that lane.
 | --- | --- |
 | Save the publication document | `ploinky edge set -` |
 | Store Cloudflare and UserPersisto values | `ploinky var NAME --stdin`, with values only on SSH stdin |
-| Update the managed sources | `ploinky update`, on every deploy |
+| Update the managed sources | `ploinky update repo` for each installed repository except the Bizanso copy, then `ploinky restart`, on every deploy |
 | Start | `ploinky --port 8097 start explorer`, first when the graph is not running and again after the publication is saved |
-| Readiness | `ploinky status`, 10 of 10 runtimes ready three times in a row |
+| Readiness | `ploinky status`, 11 of 11 runtimes ready three times in a row |
 | Destroy, keeping data | `ploinky destroy` |
 | Destroy, deleting data | `ploinky destroy --delete-data --confirm-workspace /home/admin/explorerQaWorkspace` |
 
@@ -215,9 +215,9 @@ These workflows differ from the two above:
 
 | Difference | Consequence |
 | --- | --- |
-| No selection between an in-place update and a rebuild | Every deploy runs `ploinky update`, which restarts the graph, so a change of Explorer alone is no longer zero-downtime |
+| No selection between an in-place update and a rebuild | Every deploy moves each installed repository with `ploinky update repo` and runs `ploinky restart`, so a change of Explorer alone is no longer zero-downtime. Workspace-folder checkouts that hold no agent, which a full `ploinky update` would also refresh, do not move, because a full update fails on the Bizanso copy described below |
 | No Ploinky command detects a new Box image | Tick `recreate_box` to pick one up; it destroys the Box and keeps the data |
-| A graph not running at the start of the run takes start, update, then start | `var` needs a Box and only `start` accepts the port, and `start` does not fetch existing checkouts |
+| A graph not running at the start of the run takes start, repository updates, restart, then start | `var` needs a Box and only `start` accepts the port, and `start` does not fetch existing checkouts |
 | No command reports deployed commits or the Box source | The run proves readiness and the public application, not exact sources or the image-owned AgentLib; it does not satisfy a release gate that needs them |
 | `ploinky destroy` has no ordered drain or database shutdown | A keep-data destroy stops nested services less carefully than the quiesce helper |
 | A keep-data destroy leaves the workspace in place | Repositories, regenerated state, enabled agent selections and the publication journal stay |
@@ -228,6 +228,7 @@ These workflows differ from the two above:
 | The bootstrap fast-forwards the mounted Ploinky checkout | New CLI code runs against a running Box. If Ploinky then refuses that Box, the status error names the recovery |
 | With no running graph, the first start uses the kept Cloudflare values | A rotated API or connector token, or a tunnel deleted outside these workflows, fails that start after its health wait, because no command stores a value before a Box exists. A replaced tunnel fails early. Recover with `delete_data`, or with the first pair of workflows |
 | Redirect origins come from the saved variable | An origin held only in the UserPersisto policy store is not merged |
+| These workflows also install Bizanso | The private `Axiologic/bizanso` default branch is checked out on the runner with the read-only `EXPLORER_QA_BIZANSO_DEPLOY_KEY` secret and streamed into the Box as `.ploinky/repos/bizanso`, with no Git metadata, because neither the host nor the Box holds a credential. This step is the one exception to driving the host only through Ploinky commands. `bizanso/bizanso` is enabled when missing, must be ready, and its `how-it-works` page is checked at `/base-agent-additional-server/bizanso/8787/` through the public edge. The first pair of workflows does not install it |
 | These workflows also install ScriptaHub | `deploy-explorer-qa-ploinky.yml` adds the public `https://github.com/Axiologic/ScriptaHubAgent.git` repository, enables `ScriptaHubAgent/scriptahubAgent` when it is missing, requires it to be ready, and checks its `health` path at `/base-agent-additional-server/scriptahubAgent/3002/` through the public edge. Its image, `docker.io/assistos/scriptahub-agent:runtime`, is a mutable tag of about 6 GB, and these workflows do not admit capacity. The first pair of workflows does not install it |
 
 Moving between the two pairs:

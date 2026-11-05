@@ -37,7 +37,7 @@ jobs:
   deploy:
     name: Deploy Explorer QA through Ploinky commands
     runs-on: ubuntu-latest
-    # A fresh installation or a recreated Box runs start, update and start, and each may take 30 minutes.
+    # A fresh installation or a recreated Box runs start, repository updates, restart and start, and each may take 30 minutes.
     timeout-minutes: 180
     permissions:
       contents: read
@@ -59,6 +59,7 @@ jobs:
       - name: Validate GitHub configuration
         env:
           SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+          BIZANSO_DEPLOY_KEY: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
@@ -66,6 +67,10 @@ jobs:
           set -euo pipefail
           if [ -z "${SSH_KEY:-}" ]; then
             echo "::error::Missing required repository secret EXPLORER_QA_SSH_KEY"
+            exit 1
+          fi
+          if [ -z "${BIZANSO_DEPLOY_KEY:-}" ]; then
+            echo "::error::Missing required repository secret EXPLORER_QA_BIZANSO_DEPLOY_KEY"
             exit 1
           fi
           if [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
@@ -314,6 +319,15 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           install -m 600 "$RUNNER_TEMP/explorer_qa_known_hosts" ~/.ssh/explorer_qa_known_hosts
+
+      # The key stays on the runner: neither the QA host nor the Box ever holds it.
+      - name: Check out Bizanso
+        uses: actions/checkout@v4
+        with:
+          repository: Axiologic/bizanso
+          ssh-key: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}
+          path: .qa-bizanso-source
+          persist-credentials: false
 
       - name: Bootstrap the host and deploy through Ploinky commands
         env:
@@ -725,6 +739,10 @@ jobs:
               on && match($0, /\[[a-z-]+\] \[[a-z-]+\]/) { split(substr($0, RSTART, RLENGTH), word, /[][ ]+/); state = word[2]; next }
               on && state != "" && /agent:/ { for (i = 1; i <= NF; i++) if ($i == "agent:") print $(i + 1), state; state = "" }'
           }
+          # Prints each installed repository of `ploinky list repos`, whose other lines name uninstalled ones.
+          installed_repos() {
+            awk '/^- / && /\[installed\]/ { name = $2; sub(/:$/, "", name); print name }'
+          }
           # `ploinky status` overlays each detached runtime's semantic readiness on its state. Waiting also
           # lets the detached launches settle before the next start or update.
           wait_ready() {
@@ -772,7 +790,7 @@ jobs:
             ploinky_locked destroy
             BOX_STATE=absent
           fi
-          # `update` does not start a stopped graph, so anything short of a running one starts first.
+          # The update and restart below expect a running graph, so anything short of one starts first.
           GRAPH_UP=true
           STATUS_STATES="$(printf '%s\n' "$STATUS_OUTPUT" | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"
           for agent in $GRAPH_RUNTIMES; do
@@ -818,21 +836,62 @@ jobs:
             printf '%s' "$QA_USERPERSISTO_GOOGLE_CLIENT_ID" | ploinky_locked var USERPERSISTO_GOOGLE_CLIENT_ID --stdin
           fi
 
-          # ScriptaHub sits beside the Explorer graph, so it joins the awaited runtimes only from here: a first
-          # start cannot wait for an agent it has not been asked to run. Enabling issues a new instance identity,
-          # so only a missing runtime is enabled. The update below restarts it, which also registers its MCP tools
-          # with the Router.
+          # Bizanso is private and the Box holds no credential, so Ploinky cannot clone it. The runner streams its
+          # default branch into the Box as a copy with no Git metadata. The previous copy stays until the next run,
+          # because the running agent still reads it until the restart below. A run that follows a failed restart
+          # removes it, and Bizanso alone is then broken until a restart succeeds.
+          # BEGIN QA private repository copy
+          COPY_PROGRAM='set -eu
+          repos=$PWD/.ploinky/repos
+          stage=$PWD/.ploinky/.qa-private-copy
+          mkdir -p "$repos" "$stage"
+          for stale in "$stage"/*; do
+            if [ -e "$stale" ] || [ -L "$stale" ]; then rm -rf -- "$stale"; fi
+          done
+          incoming=$(mktemp -d "$stage/incoming.XXXXXX")
+          tar -xf - -C "$incoming"
+          test -n "$(ls -A "$incoming")"
+          test ! -e "$incoming/.git"
+          if [ -e "$repos/bizanso" ] || [ -L "$repos/bizanso" ]; then mv "$repos/bizanso" "$stage/previous"; fi
+          mv "$incoming" "$repos/bizanso"'
+          git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive --format=tar HEAD |
+            "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec -i --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' ploinky-box-explorerqaworkspace-7a31ab7775eb sh -c '$COPY_PROGRAM' sh"
+          # END QA private repository copy
+          printf '%s' "$PUBLIC_URL/base-agent-additional-server/bizanso/8787" | ploinky_locked var BIZANSO_PUBLIC_LINK_BASE --stdin
+
+          # Bizanso and ScriptaHub sit beside the Explorer graph, so they join the awaited runtimes only from here:
+          # a first start cannot wait for agents it has not been asked to run. Enabling issues a new instance
+          # identity, so only a missing runtime is enabled.
+          ploinky_locked add repo https://github.com/Axiologic/bizanso.git bizanso
           ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent
           ENABLED_STATES="$(ploinky_read status | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"
+          if ! grep -q '^bizanso ' <<< "$ENABLED_STATES"; then
+            ploinky_locked enable agent bizanso/bizanso
+          fi
           if ! grep -q '^scriptahubAgent ' <<< "$ENABLED_STATES"; then
             ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent
           fi
-          GRAPH_RUNTIMES="$GRAPH_RUNTIMES scriptahubAgent"
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso scriptahubAgent"
 
-          # Start never fetches a checkout that exists, so kept sources move forward here. This fast-forwards
-          # every managed source and restarts the graph when it runs; a dirty or diverged source fails the
-          # run and is left untouched.
-          ploinky_locked update
+          # Start never fetches a checkout that exists, so kept sources move forward here. A full `ploinky update`
+          # fails on an enabled repository with no Git checkout, so each other repository moves on its own; a
+          # dirty or diverged required source fails the run and is left untouched. The restart activates them
+          # and registers the MCP tools of newly enabled agents with the Router.
+          MANAGED_REPOS="$(ploinky_read list repos | sed 's/\x1b\[[0-9;]*m//g' | installed_repos)"
+          if ! grep -qx 'AchillesIDE' <<< "$MANAGED_REPOS"; then
+            echo "::error::The repository listing did not name AchillesIDE."
+            exit 1
+          fi
+          for repo in $MANAGED_REPOS; do
+            if [[ ! "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "::error::Unexpected repository name in the listing."
+              exit 1
+            fi
+            if [ "$repo" != bizanso ]; then
+              ploinky_locked update repo "$repo"
+            fi
+          done
+          ploinky_locked restart
           wait_ready
 
           # Handles only: this document never holds a secret value.
@@ -970,21 +1029,23 @@ jobs:
             sleep 5
           done
 
-      - name: Verify ScriptaHub
+      - name: Verify Bizanso and ScriptaHub
         run: |
           set -euo pipefail
-          HEALTH_URL="${PUBLIC_URL%/}/base-agent-additional-server/scriptahubAgent/3002/health"
-          for attempt in $(seq 1 60); do
-            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$HEALTH_URL" || true)"
-            if [ "$code" = '200' ]; then
-              echo '[deploy-qa] ScriptaHub answers through the public edge.'
-              break
-            fi
-            if [ "$attempt" = '60' ]; then
-              echo "::error::ScriptaHub did not become ready; last HTTP code: ${code:-none}"
-              exit 1
-            fi
-            sleep 5
+          for path in bizanso/8787/how-it-works/ scriptahubAgent/3002/health; do
+            url="${PUBLIC_URL%/}/base-agent-additional-server/$path"
+            for attempt in $(seq 1 60); do
+              code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$url" || true)"
+              if [ "$code" = '200' ]; then
+                echo "[deploy-qa] $path answers through the public edge."
+                break
+              fi
+              if [ "$attempt" = '60' ]; then
+                echo "::error::$path did not become ready; last HTTP code: ${code:-none}"
+                exit 1
+              fi
+              sleep 5
+            done
           done
 
       - name: Verify dedicated connector and protected Cloudflare topology
@@ -1103,6 +1164,7 @@ jobs:
             printf -- '- Protected shared tunnel: `%s` unchanged at `%s`\n' \
               "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" "${PROTECTED_CLOUDFLARE_DIGEST:-not-snapshotted}"
             echo "- Public URL: \`${PUBLIC_URL}\`"
+            echo "- Bizanso: \`${PUBLIC_URL}/base-agent-additional-server/bizanso/8787/\`"
             echo "- ScriptaHub: \`${PUBLIC_URL}/base-agent-additional-server/scriptahubAgent/3002/\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
