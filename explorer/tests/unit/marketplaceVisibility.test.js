@@ -211,6 +211,35 @@ test('Marketplace load, agent polling and repository refresh apply the same visi
     assert.ok(renderedRefs(modal).includes('AchillesCLI/worker'));
 });
 
+test('ScriptaHub is the one mixed source that stays listed, also under an alias', async (t) => {
+    const url = 'git@github.com:Axiologic/ScriptaHubAgent.git';
+    const repositories = [
+        {name: 'ScriptaHubAgent', url, kind: 'mixed'},
+        {name: 'books', url, kind: 'mixed'},
+        {name: 'bizanso', url: 'https://github.com/Axiologic/bizanso.git', kind: 'mixed'},
+    ];
+    const agents = ['ScriptaHubAgent', 'books', 'bizanso'].map(repo => ({
+        ref: `${repo}/worker`, repo, name: 'worker', active: true,
+    }));
+    const catalog = getVisibleMarketplaceCatalog({repositories, agents});
+    assert.deepEqual(catalog.repositories.map(repo => [repo.name, repo.kind, repo.activeAgentsCount]), [
+        ['ScriptaHubAgent', 'agents', 1],
+        ['books', 'agents', 1],
+    ]);
+    assert.deepEqual(catalog.agents.map(agent => agent.ref), ['ScriptaHubAgent/worker', 'books/worker']);
+    assert.equal(repositories[0].kind, 'mixed', 'the router catalog is not modified');
+
+    const modal = await createModal(t);
+    modal.fetchMarketplaceHalf = async resource => (resource === 'agents'
+        ? {agents: structuredClone(agents), enabledAgents: []}
+        : {repositories: structuredClone(repositories)});
+    await modal.loadMarketplace();
+    assert.ok(renderedRefs(modal).includes('ScriptaHubAgent/worker'));
+    assert.ok(!renderedRefs(modal).includes('bizanso/worker'));
+    assert.ok(renderedRepos(modal, 'repos').includes('ScriptaHubAgent'));
+    assert.ok(!renderedRepos(modal, 'repos').includes('bizanso'));
+});
+
 test('Marketplace catalog updates retain visible rows and never add hidden startups', async (t) => {
     const modal = await createModal(t);
     modal.renderState();

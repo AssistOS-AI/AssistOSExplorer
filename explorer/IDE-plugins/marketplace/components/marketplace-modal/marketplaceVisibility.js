@@ -12,12 +12,21 @@ const HIDDEN_REPOSITORY_IDENTITIES = new Set([
     'ploinkyskills',
 ]);
 
+// Mixed sources stay hidden, except these, whose agents an administrator manages here.
+const LISTED_MIXED_REPOSITORY_IDENTITIES = new Set([
+    'scriptahubagent',
+]);
+
 const SKILL_TYPES = new Set([
     'skill', 'skills', 'skill.md', 'cskill', 'dcgskill', 'mskill', 'oskill', 'tskill',
 ]);
 
 function normalizedType(value) {
     return String(value || '').trim().toLowerCase();
+}
+
+function isMixedEntry(entry) {
+    return [entry?.kind, entry?.type].some(value => normalizedType(value) === 'mixed');
 }
 
 function isSkillEntry(entry) {
@@ -62,8 +71,10 @@ export function getVisibleMarketplaceCatalog(marketplace) {
         marketplaceRepositoryIdentity(repo?.name),
         marketplaceRepositoryIdentity(repo?.url),
     ].filter(Boolean)]));
+    const isListedMixed = repo => isMixedEntry(repo)
+        && identitiesByRepository.get(repo).some(value => LISTED_MIXED_REPOSITORY_IDENTITIES.has(value));
     const hiddenRepositories = new Set(repositories.filter(repo => (
-        isSkillEntry(repo) || [repo?.kind, repo?.type].some(value => normalizedType(value) === 'mixed')
+        isSkillEntry(repo) || (isMixedEntry(repo) && !isListedMixed(repo))
     )));
 
     // Propagate a source's policy to every local alias, independent of catalog ordering.
@@ -100,6 +111,8 @@ export function getVisibleMarketplaceCatalog(marketplace) {
     return {
         repositories: repositories.filter(repo => !hiddenRepositories.has(repo)).map(repo => ({
             ...repo,
+            // The Repos tab lists only agent repositories.
+            ...(isListedMixed(repo) ? {kind: 'agents'} : {}),
             activeAgentsCount: enabledCounts.get(repo.name) || 0,
         })),
         agents: visibleAgents,
