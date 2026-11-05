@@ -150,10 +150,10 @@ function assertClear(view, cwd) {
 }
 
 // OpenCode reads every `.opencode` from its cwd up to the root and stops with an error when it cannot write the `.gitignore`
-// it keeps in one. An ancestor's is read-only here, so a robot would fail below any that lacks the file, and otherwise run
-// plugins from a folder it was never started in. Each is shown as this read-only prepared directory, which leaves a robot
-// what it had before it could see the workspace: no `.opencode` from above its working folder. A `.opencode` that leads
-// outside the root is not visible, and one over the working folder or a mask stays as it is.
+// it keeps in one. An ancestor's is read-only here, so a robot would fail below any that lacks the file. Each is shown as this
+// read-only prepared directory, so nothing in an ancestor's `.opencode` loads. An ancestor's `opencode.json` is still read, so
+// this keeps robots running and is not a trust boundary. A link that leads outside the root shows nothing; one that leads over
+// the working folder or a mask is left as it is, and OpenCode may still stop on it.
 export const OPENCODE_SHADOW = fileURLToPath(new URL('./opencode-shadow', import.meta.url));
 
 function shadowedOpencode(view, cwd) {

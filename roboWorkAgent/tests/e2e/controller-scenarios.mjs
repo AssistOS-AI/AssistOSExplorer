@@ -299,8 +299,10 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
             if(!st.isDirectory()||st.isSymbolicLink()||st.ino!==input.ino||st.dev!==input.dev) throw Error('Grant control ownership changed');
             // Opening a terminal creates the empty mask target; a non-empty one or any other entry is a failure, and rmdir proves it empty.
             const names=fs.readdirSync(input.project).filter(name=>name!=='.roboteam'||!fs.lstatSync(path.join(input.project,name)).isDirectory()||fs.rmdirSync(path.join(input.project,name)));
-            if(names.length>1||(names.length===1&&(names[0]!=='victim-link'||!fs.lstatSync(path.join(input.project,'victim-link')).isSymbolicLink()))) throw Error('Grant control changed');
-            if(names.length) fs.unlinkSync(path.join(input.project,'victim-link')); fs.rmdirSync(input.project); console.log('true');
+            const known=names.filter(name=>name!=='grantable');
+            if(names.includes('grantable')) fs.rmdirSync(path.join(input.project,'grantable'));
+            if(known.length>1||(known.length===1&&(known[0]!=='victim-link'||!fs.lstatSync(path.join(input.project,'victim-link')).isSymbolicLink()))) throw Error('Grant control changed');
+            if(known.length) fs.unlinkSync(path.join(input.project,'victim-link')); fs.rmdirSync(input.project); console.log('true');
         `, { project, ...owner });
         assertVictimUnchanged(before, await runtime.snapshot(victim));
     }
@@ -351,6 +353,10 @@ export async function walkUpAndDiscovery(runtime) {
         assert.ok(models.ok === true, 'Model discovery failed, so its view of the workspace was not observed.');
         const discovery = await read();
         assert.ok(discovery.records.length > 0, 'The home plugin never ran during model discovery.');
+        assert.equal(discovery.parent, false, 'A parent folder plugin was loaded during model discovery.');
+        assert.equal(discovery.sibling, false, 'A sibling folder plugin was loaded during model discovery.');
+        // The working folder's canary ran in discovery too; only a new marker says something about the turn.
+        await runtime.node(runtime.config.rw, `fs.rmSync(path.join(input.cwd,input.marker),{force:true}); console.log('true');`, { op: 'clear', cwd, marker: W1_MARKERS.own });
         for (const record of discovery.records) assert.deepEqual(record.entries, [], `Discovery saw workspace .data entries or failed: ${JSON.stringify(record)}`);
         // A real turn in the working folder.
         const runId = `controller-${randomUUID()}`;
@@ -359,14 +365,17 @@ export async function walkUpAndDiscovery(runtime) {
         assert.ok(started.ok === true, 'The probe turn could not start.');
         const prompt = Buffer.from(`${JSON.stringify({ type: 'prompt', prompt: 'Reply with the single word ok.' })}\n`).toString('base64');
         assert.ok((await runtime.mcp('run_input', { runId, data: prompt })).ok === true, 'The probe prompt was not accepted.');
-        let state = 'running', cursor = 0;
+        let state = 'running', cursor = 0, exit, output = 0;
         for (let attempt = 0; attempt < 480 && ['starting', 'running', 'stopping'].includes(state); attempt++) {
             const chunk = await runtime.mcp('run_read', { runId, after: cursor, waitMs: 500, maxBytes: 1024 * 1024 });
             assert.ok(chunk.ok === true && Number.isSafeInteger(chunk.result?.next), 'The probe turn cannot be read.');
-            cursor = chunk.result.next; state = chunk.result.state;
+            cursor = chunk.result.next; state = chunk.result.state; exit = chunk.result.exit;
+            output += (chunk.result.records || []).filter(record => record.stream === 'stdout').length;
         }
         await stopOwnedActivity(runtime, attacker);
         assert.ok(!['starting', 'running', 'stopping'].includes(state), 'The probe turn did not end within its bound.');
+        assert.ok(state === 'exited' && exit?.code === 0, `The probe turn failed: ${state}, exit ${JSON.stringify(exit)}`);
+        assert.ok(output > 0, 'The probe turn produced no output.');
         observed = await read();
         assert.ok(observed.records.length > discovery.records.length, 'The home plugin never ran during the turn.');
         for (const record of observed.records) assert.deepEqual(record.entries, [], `A robot saw workspace .data entries: ${JSON.stringify(record)}`);

@@ -249,7 +249,7 @@ test('I10 retains all eighteen refusals, proves the private workspace targets ex
     assert.ok(!runtime.observations.includes('run_start'), 'No refusal was attempted against a target that was not proven to exist.');
 });
 
-function walkFixture({ recorderRan = true, discoveryEntries = [], turnEntries = [], siblingLoaded = false, parentLoaded = false, ownLoaded = true, discoveryFails = false } = {}) {
+function walkFixture({ recorderRan = true, discoveryEntries = [], turnEntries = [], siblingLoaded = false, parentLoaded = false, ownLoaded = true, discoveryFails = false, turnExit = 0 } = {}) {
     const state = { discovered: false, turned: false }, calls = [], owned = new Map();
     const record = entries => ({ cwd: '/task/fixture/controller-w1/child', entries });
     return { config: config(), calls, state, probes: {
@@ -268,7 +268,7 @@ function walkFixture({ recorderRan = true, discoveryEntries = [], turnEntries = 
         calls.push(tool);
         if (tool === 'robot_models') { state.discovered = true; return { ok: !discoveryFails, result: [] }; }
         if (tool === 'run_start' || tool === 'run_input') return { ok: true, result: {} };
-        if (tool === 'run_read') { state.turned = true; return { ok: true, result: { state: 'exited', next: 1, records: [] } }; }
+        if (tool === 'run_read') { state.turned = true; return { ok: true, result: { state: 'exited', exit: { code: turnExit }, next: 1, records: [{ seq: 1, stream: 'stdout', data: '' }] } }; }
         if (tool === 'run_list') return { ok: true, result: [] };
         if (tool === 'gui_stop') return { ok: true, result: { state: 'stopped' } };
         throw new Error(`Unexpected tool ${tool}`);
@@ -298,6 +298,7 @@ test('W1 fails for each hole it can see and still removes what it created', asyn
     await fails({ discoveryEntries: ['.private'] }, /Discovery saw workspace \.data entries/u);
     await fails({ turnEntries: ['.private'] }, /robot saw workspace \.data entries/u);
     await fails({ discoveryFails: true }, /Model discovery failed/u);
+    await fails({ turnExit: 5 }, /probe turn failed/u);
     // A recorder that ran only in discovery proves nothing about the turn.
     const runtime = walkFixture(); const mcp = runtime.mcp;
     runtime.mcp = async (tool, input) => { const answer = await mcp(tool, input); if (tool === 'run_read') runtime.state.turned = false; return answer; };
