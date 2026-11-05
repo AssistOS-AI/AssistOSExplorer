@@ -289,3 +289,19 @@ test('immutable subject comparison is case-sensitive and local binding survives 
     assert.equal(returning.user.id, created.user.id);
     assert.equal(returning.created, false);
 });
+
+test('Google supplies an initial display name and fills an existing blank name without overwriting account edits', async () => {
+    await fixture();
+    const signed = identity('google-name-subject', 'named@gmail.com', { displayName: '  Ana   Popescu  ' });
+    const first = await completeGoogleIdentity({ identity: signed, transactionId });
+    assert.equal(first.user.displayName, 'Ana Popescu');
+    assert.equal((await getUserById(first.user.id)).displayName, 'Ana Popescu');
+    await updateUser(first.user.id, { displayName: '' });
+    const filled = await completeGoogleIdentity({ identity: signed, transactionId: 'second-name-login' });
+    assert.equal(filled.user.displayName, 'Ana Popescu');
+    await updateUser(first.user.id, { displayName: 'Chosen account name' });
+    const kept = await completeGoogleIdentity({ identity: { ...signed, displayName: 'New Google name' }, transactionId: 'third-name-login' });
+    assert.equal(kept.user.displayName, 'Chosen account name');
+    assert.equal(kept.user.id, first.user.id);
+    assert.equal(kept.user.email, first.user.email);
+});

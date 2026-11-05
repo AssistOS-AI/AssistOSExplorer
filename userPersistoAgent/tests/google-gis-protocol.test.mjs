@@ -224,3 +224,17 @@ test('Google defaults are secret-free and local; partial/invalid configuration f
         await rm(folder, { recursive: true, force: true });
     }
 });
+
+test('only the signed Google display name is retained as optional bounded profile data', async () => {
+    const result = await protocol.verifyCredential(config, credential({ name: '  Ana   Popescu  ' }), attempt);
+    assert.equal(result.displayName, 'Ana Popescu');
+    for (const name of [null, {}, 123, '  ']) {
+        const result = await protocol.verifyCredential(config, credential({ name }), attempt);
+        assert.equal(result.displayName, undefined);
+    }
+    const bounded = await protocol.verifyCredential(config, credential({ name: 'A'.repeat(250) }), attempt);
+    assert.equal(bounded.displayName.length, 200);
+    await assert.rejects(protocol.verifyCredential(config, credential({ name: 'Forged name' }, {
+        privateKey: generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
+    }), attempt), { code: 'google_authentication_failed' });
+});

@@ -30,6 +30,8 @@ function normalizeIdentity(identity) {
         subject: identity.subject,
         email: email.length <= 254 && EMAIL_PATTERN.test(email) ? email : '',
         emailVerified: identity.emailVerified === true,
+        displayName: typeof identity.displayName === 'string'
+            ? identity.displayName.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200).trim() : '',
         hostedDomain: typeof identity.hostedDomain === 'string' ? identity.hostedDomain.trim().toLowerCase() : '',
     };
 }
@@ -195,7 +197,7 @@ export function completeGoogleIdentity({ identity, transactionId, collisionTarge
             }
         }
         const stageAccount = resolved.kind === 'registration'
-            ? await prepareNewAccount({ email: normalized.email, emailVerified: true, method: 'google' }).catch((error) => {
+            ? await prepareNewAccount({ email: normalized.email, displayName: normalized.displayName, emailVerified: true, method: 'google' }).catch((error) => {
                 throw error?.code === 'registration_disabled' ? identityError('registration_disabled') : error;
             })
             : null;
@@ -214,6 +216,11 @@ export function completeGoogleIdentity({ identity, transactionId, collisionTarge
                 user = resolved.kind === 'linked' ? resolved.user : sanitizeUser(await getUserById(resolved.userId));
             }
             const timestamp = new Date().toISOString();
+            // A verified Google name fills only an empty profile; account edits win.
+            if (!created && !String(user.displayName || '').trim() && normalized.displayName) {
+                user = sanitizeUser(await store.updateUser(user.id, { displayName: normalized.displayName, updatedAt: timestamp }));
+                await recordAudit({ actorId: user.id, action: 'user.update', target: user.id, reason: 'displayName' }, { save: false });
+            }
             if (resolved.binding) {
                 await store.updateExternalIdentity(resolved.binding.id, { lastUsedAt: timestamp });
             } else {

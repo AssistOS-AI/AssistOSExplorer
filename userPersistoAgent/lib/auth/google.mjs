@@ -84,7 +84,10 @@ function verifiedIdentity(config, claims, payload) {
         || claims.auth_time < now - 300 || claims.auth_time > now + 30)) {
         throw googleError('google_recent_authentication_required', 401);
     }
+    const displayName = typeof claims.name === 'string'
+        ? claims.name.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200).trim() : '';
     return { issuer: GOOGLE_ISSUER, subject: claims.sub, email: claims.email.trim().toLowerCase(), emailVerified: true,
+        ...(displayName ? { displayName } : {}),
         ...(payload.flow === 'reauth' ? { authenticatedAt: claims.auth_time * 1000 } : {}),
         ...(claims.hd ? { hostedDomain: claims.hd.toLowerCase() } : {}) };
 }
