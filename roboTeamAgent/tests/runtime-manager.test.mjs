@@ -863,6 +863,29 @@ test('runtime reattaches only authenticated live run records and preserves their
     assert.equal(events[0].taskId, taskId);
 });
 
+test('a run tag without the prompt reattaches with its preview, and an empty preview still gives the wrapper a prompt', async t => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-reattach-slim-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'robot-abc', name: 'A', codingAgents: ['codex'] };
+    const first = '12345678-1234-4123-8123-123456789abc', second = '12345678-1234-4123-8123-123456789abd';
+    const runs = [
+        { runId: 'run-one', robotId: robot.id, state: 'running', startedAt: new Date().toISOString(),
+            tag: { kind: 'task', taskId: first, type: 'simple', sessionId: first, ownerPrincipal: 'user:alice',
+                request: { cwd: root, taskPreview: 'Add the book', ca: 'codex', workflowRunId: 'add-book' } } },
+        { runId: 'run-two', robotId: robot.id, state: 'running', startedAt: new Date().toISOString(),
+            tag: { kind: 'task', taskId: second, type: 'simple', sessionId: second, request: { cwd: root, taskPreview: '', ca: 'codex' } } }];
+    const manager = new RuntimeManager({ dataDir: root, workspaceRoot: root, ownerKey: 'new-launch',
+        robotStore: { get: async id => id === robot.id ? robot : null },
+        roboWork: { call: async tool => tool === 'run_list' ? runs : tool === 'robot_status' ? { robots: [] } : {} } });
+    await manager.initialize();
+    const one = manager.tasks.get(first).request, two = manager.tasks.get(second).request;
+    assert.equal(one.task, 'Add the book');
+    assert.equal('taskPreview' in one, false);
+    assert.equal(one.workflowRunId, 'add-book');
+    assert.equal(one.ownerPrincipal, 'user:alice');
+    assert.equal(two.task, 'Reattached task');
+});
+
 test('a refused robot delete destroys nothing, and a repeat delete succeeds when RoboWork no longer has the robot', async t => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-delete-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
