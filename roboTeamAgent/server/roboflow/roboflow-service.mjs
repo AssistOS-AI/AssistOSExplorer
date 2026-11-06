@@ -23,7 +23,7 @@ const terminal = state => ['completed', 'failed', 'paused', 'terminated'].includ
 // Live Sessions owner: the signed principal (user:<id>) of the user who started
 // the work. Anything else, including internal callers, is the system owner.
 export const ownerPrincipalOf = value => typeof value === 'string' && /^user:.+/u.test(value) ? value : null;
-const OBSERVED_TASK_EVENTS = new Set(['progress', 'state', 'terminal']);
+const OBSERVED_TASK_EVENTS = new Set(['progress', 'state', 'terminal', 'agent']);
 const missing = () => Object.assign(new Error('workflow run not found'), { statusCode: 404 });
 
 // A run has one status. Running wins over everything, then pause, then failure:
@@ -543,6 +543,10 @@ export class RoboFlowService {
             if (!flow || flow.status === 'terminated') return;
             const visit = flow.instances.find(item => item.id === binding.instanceId);
             if (!visit || visit.runtimeTaskId !== event.taskId) return;
+            if (event.kind === 'agent') return this.store.update(flow.id, current => {
+                const phase = current.instances.find(item => item.id === binding.instanceId);
+                if (phase) Object.assign(phase, { codingAgent: event.agent, model: event.model || null, effort: event.effort || null });
+            });
             if (event.kind === 'terminal' && event.forcedFailure) return this._completed(binding, event);
             if (flow.humanInput?.status === 'pending' && flow.humanInput.runtimeTaskId === event.taskId) {
                 if (event.kind === 'progress') await this.store.writeOutput(flow.id, visit.id, event.chunk, 'log', { assistant: event.outputKind === 'assistant', complete: event.outputComplete, outputId: event.outputId });

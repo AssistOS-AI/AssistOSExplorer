@@ -531,6 +531,11 @@ export class RuntimeManager {
             const progressParser = createAlaProgressParser(appendProgress, (event) => {
                 if (event.type === 'run-started' && typeof event.runId === 'string') task.runId = event.runId;
                 if (event.type === 'task-failed' && typeof event.message === 'string') forcedFailure ||= new Error(event.message);
+                if (event.type === 'coding-agent-selected' && typeof event.agent === 'string') {
+                    const text = value => typeof value === 'string' && value ? value : null;
+                    task.codingAgent = { agent: event.agent, model: text(event.model), effort: text(event.effort) };
+                    this._emitTaskEvent({ kind: 'agent', robotId: robot.id, taskId: task.taskId, ...task.codingAgent });
+                }
                 if (event.type === 'skill-catalog') task.skillExecution = { revision: event.revision, policyVersion: event.policyVersion };
                 // Only the identifiers of the first turn are kept, never the event body.
                 if (event.type === 'turn-started' && !task.transcriptRef

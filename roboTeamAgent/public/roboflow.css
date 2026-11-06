@@ -277,6 +277,8 @@ body {
 
 .stage-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .stage-title { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.stage-title-meta { margin-left: 8px; color: var(--text, inherit); font-weight: 500; }
+.stage-title-meta::before { content: '— '; color: var(--muted); font-weight: 400; }
 
 .stage-body { flex: 1 1 auto; min-height: 460px; display: flex; flex-direction: column; }
 .stage-body > p { color: var(--muted); }
