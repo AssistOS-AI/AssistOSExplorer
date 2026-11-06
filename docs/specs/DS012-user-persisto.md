@@ -15,6 +15,8 @@ All [Explorer](wiki.html#definition-explorer) registration and login flows use [
 
 ## Core Content
 
+Google's optional signed `name` claim is retained as displayName only after the existing credential verification succeeds. It is whitespace-normalized, control characters are replaced with spaces, and the result is bounded to 200 UTF-16 code units; absent or malformed names do not fail authentication. Account creation uses this default display name. Returning or explicitly linked accounts copy it only when their local displayName is empty, within the same serialized staged identity completion and with an audit record for the profile update. A nonempty locally edited name is never overwritten. The ordinary authenticated profile_get projection already exposes displayName, allowing downstream applications to prefill an editable product name without receiving Google credentials or making another provider lookup. The name is display data only: subject binding, email ownership, account-link proofs, roles, capabilities and authentication generation are unchanged.
+
 The authenticated profile includes `installationAdministratorId`, read from the durable installation setup record. It is empty when no identifier was recorded; it never falls back to the current caller, a matching email or another administrator. Downstream products may use this identifier for initial ownership of imported content. It does not confer a role or capability on the caller and does not replace current authorization checks.
 
 ### Installation setup and the initial administrator
