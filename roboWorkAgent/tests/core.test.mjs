@@ -750,6 +750,12 @@ export const discoverCodingAgents = async () => [{ name: 'opencode', available: 
     await robots.models({ robotId: input.robotId, agent: 'codex', cwd: input.cwd });
     assert.ok(launched.includes(`"identity":"${identity}"`), launched);
     assert.ok(launched.includes(`"workspace":{"root":${JSON.stringify(paths.workspaceRoot)},"masks":[`), launched);
+    // A draft selection: the robot has only OpenCode enabled, and Codex models are still listed (DS006).
+    robots.require = async () => ({ id: input.robotId, codingAgents: ['opencode'] });
+    launched = '';
+    await robots.models({ robotId: input.robotId, agent: 'codex', cwd: input.cwd });
+    assert.ok(launched.includes('"agent":"codex"'), launched);
+    await assert.rejects(robots.models({ robotId: input.robotId, agent: 'unknown', cwd: input.cwd }), /Coding agent is unavailable/u);
 });
 
 test('a refused tool reports its status, so RoboTeam can pass the reason on', async t => {

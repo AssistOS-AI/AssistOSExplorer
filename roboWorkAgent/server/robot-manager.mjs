@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { normalizeCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
+import { CODING_AGENT_NAMES, normalizeCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
 import { fail, robotId, homeTarget } from './robot-paths.mjs';
 import { buildPrivateLaunch, capturePrivateLaunch } from './launch.mjs';
 import { ensureTerminalStub, removeTerminalState } from './terminal-profiles.mjs';
@@ -127,8 +127,10 @@ export class RobotManager {
     }
 
     async models({ robotId: id, agent, cwd }) {
-        const record = await this.require(id);
-        if (!record.codingAgents.includes(agent)) throw fail('INVALID_INPUT', 'Coding agent is unavailable');
+        await this.require(id);
+        // The settings dialog lists models for a draft selection before it is saved (DS006), so any
+        // known coding agent is accepted here; prepareCodingAgents installs the requested one.
+        if (!CODING_AGENT_NAMES.includes(agent)) throw fail('INVALID_INPUT', 'Coding agent is unavailable');
         const workingDirectory = cwd !== undefined ? await this.paths.grant(cwd, 'cwd') : this.paths.home(id);
         const identity = cwd !== undefined ? await this.paths.identity(workingDirectory, 'cwd') : undefined;
         const tools = await this.toolCache.prepareCodingAgents([agent]);
