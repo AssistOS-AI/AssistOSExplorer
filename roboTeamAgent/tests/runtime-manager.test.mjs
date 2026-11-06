@@ -85,7 +85,7 @@ test('MCP client never falls back locally when RoboWork refuses a call', async (
     assert.deepEqual(calls, [{ agent: 'roboWorkAgent', args: ['run_read', { runId: 'absent' }, { timeoutMs: 123 }] }]);
 });
 
-test('task context carries no environment, SDK or delegation and refuses other robots and tools', async () => {
+test('task context carries no environment, SDK or delegation and relays any agent call', async () => {
     const calls = [], observed = [];
     const context = await createPloinkyTaskContext({ context: { workingDir: '/workspace/project', resources: [] },
         env: { PLOINKY_AGENT_SECRET: 'private-sentinel', PLOINKY_AGENT_API_KEY: 'api-sentinel' },
@@ -94,14 +94,13 @@ test('task context carries no environment, SDK or delegation and refuses other r
         }, getTaskStatus: async () => ({ status: 'running' }) }), onTask: async task => { observed.push(task); } });
     assert.deepEqual(context.context, { version: 3, workingDir: '/workspace/project', resources: [], paths: [], origin: {} });
     assert.equal(JSON.stringify(context.context).includes('PLOINKY_'), false);
-    for (const body of [{ agent: 'roboTeamAgent', tool: 'startSimpleALATaskForRobot', payload: { robotName: 'victim' } },
-        { agent: 'roboWorkAgent', tool: 'run_start' }, { agent: 'other/GPTResearcher', tool: 'start_research' }]) {
+    for (const body of [{ agent: 'promotionScout' }, { tool: 'list_discussions' }, { agent: 'promotionScout', tool: 3 }]) {
         await assert.rejects(context.dispatch({ path: '/agent-call', body }), { statusCode: 403 });
     }
     await context.dispatch({ path: '/agent-call', body: { agent: 'GPTResearcher', tool: 'start_research', payload: { query: 'public facts' } } });
-    assert.equal(calls.length, 1);
+    await context.dispatch({ path: '/agent-call', body: { agent: 'promotionScout', tool: 'list_discussions', payload: { offset: 0 } } });
+    assert.deepEqual(calls.map(call => [call.agent, call.tool]), [['GPTResearcher', 'start_research'], ['promotionScout', 'list_discussions']]);
     assert.equal(observed[0].taskId, 'research-one');
-    await assert.rejects(context.dispatch({ path: '/ensure-agent', body: { ref: 'other/agent' } }), { statusCode: 403 });
 });
 
 test('task context forces the folder of tools that start work to the run working folder', async () => {
