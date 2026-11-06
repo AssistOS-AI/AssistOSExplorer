@@ -244,3 +244,16 @@ test('internal-token callers carry no principal and are refused by Live Sessions
     assert.deepEqual(liveSessionsAccess({ ok: false, status: 401, error: 'x' }), { ok: false, status: 401, error: 'x' });
     assert.deepEqual(liveSessionsAccess({ ok: true, internal: false, canAdmin: true, principal: 'not-a-user' }).status, 403);
 });
+
+test('the access view answers whether the viewer administers robots without asking RoboWork for any status', async (t) => {
+    t.after(configureAgentEnv());
+    const fixture = await startFixture();
+    t.after(fixture.close);
+    // The fixture has no RoboWork client, so any status request would fail the response.
+    for (const [name, canAdmin] of [['explorerUser', false], ['adminNotNamedAdmin', true]]) {
+        const body = await expectStatus(await fixture.get('/api/robots?view=access', signedHeaders(PRINCIPALS[name], { search: '?view=access' })), 200, name);
+        assert.deepEqual(body, { ok: true, canAdmin });
+    }
+    await expectStatus(await fixture.get('/api/robots?view=access', signedHeaders(PRINCIPALS.selfRegistered, { search: '?view=access' })), 403, 'selfRegistered');
+    assert.equal((await fixture.get('/api/robots?view=access')).status, 401);
+});

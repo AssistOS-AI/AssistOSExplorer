@@ -6,6 +6,10 @@ import { normalizeCodingAgents, codingAgentEnvironment, openCodeVersion } from '
 import { fail, robotId, homeTarget } from './robot-paths.mjs';
 import { buildPrivateLaunch, capturePrivateLaunch } from './launch.mjs';
 import { ensureTerminalStub, removeTerminalState } from './terminal-profiles.mjs';
+import { robotStatus } from './home-op.mjs';
+import { nativeEnvironment } from './native-environment.mjs';
+
+const STATUS_CONCURRENCY = 8;
 
 async function realDirectory(directory) {
     await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
@@ -16,8 +20,14 @@ async function realDirectory(directory) {
 const present = file => fs.lstat(file).then(() => true, error => { if (error.code !== 'ENOENT') throw error; return false; });
 
 export class RobotManager {
-    constructor({ paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch = capturePrivateLaunch }) {
+    constructor({ paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch = capturePrivateLaunch, readStatus = null }) {
         Object.assign(this, { paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch });
+        // A status only reads a home, so it runs in the service with the robot's own environment instead of a helper process.
+        this.readStatus = readStatus || ((id, input) => {
+            const home = this.paths.home(id);
+            return robotStatus(home, input, { alaEntry: process.env.ROBOWORK_ALA_ENTRY || this.alaEntry,
+                env: nativeEnvironment({ PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' }, home) });
+        });
         this.operations = new Map(); this.runs = null; this.gui = null; this.alaUnavailable = false;
     }
 
@@ -92,18 +102,28 @@ export class RobotManager {
     async status({ robotIds, includeLogins = false } = {}) {
         if (robotIds !== undefined && (!Array.isArray(robotIds) || robotIds.length > 10000)) throw fail('INVALID_INPUT', 'Invalid robotIds');
         const ids = robotIds || await fs.readdir(path.join(this.paths.dataDir, 'robots'));
-        const robots = [];
-        for (const id of ids) {
-            // One registry entry RoboWork does not know must not take every other robot's status with it.
-            const record = await this.require(id).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; return null; });
-            if (!record) continue;
-            const { alaUnavailable = false, ...status } = await this.homeOperation(id, 'status', { includeLogins, codingAgents: record.codingAgents });
-            // Logins are reported as absent while ALA is unavailable; the failure is logged once until ALA answers again.
+        const results = new Array(ids.length);
+        let next = 0;
+        const worker = async () => {
+            while (next < ids.length) {
+                const index = next++;
+                const id = ids[index];
+                // One registry entry RoboWork does not know must not take every other robot's status with it.
+                const record = await this.require(id).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; return null; });
+                if (!record) continue;
+                const { alaUnavailable = false, ...status } = await this.readStatus(id, { includeLogins, codingAgents: record.codingAgents });
+                results[index] = { alaUnavailable, robot: { id, ...status, gui: this.gui ? await this.gui.status(id) : { state: 'stopped', mode: null, sessionUrl: null, cwd: null } } };
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(STATUS_CONCURRENCY, ids.length) }, worker));
+        const answered = results.filter(Boolean);
+        // Logins are reported as absent while ALA is unavailable; the failure is logged once until ALA answers again.
+        if (answered.length) {
+            const alaUnavailable = answered.some(entry => entry.alaUnavailable);
             if (alaUnavailable && !this.alaUnavailable) console.error('RoboWork: ALA is unavailable, so robot logins are reported as absent');
             this.alaUnavailable = alaUnavailable;
-            robots.push({ id, ...status, gui: this.gui ? await this.gui.status(id) : { state: 'stopped', mode: null, sessionUrl: null, cwd: null } });
         }
-        return { robots };
+        return { robots: answered.map(entry => entry.robot) };
     }
 
     async models({ robotId: id, agent, cwd }) {

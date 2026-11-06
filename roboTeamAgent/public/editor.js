@@ -10,7 +10,7 @@ navigation.bindLink(generateLink);
 const editor = createWorkflowEditor({ api, onClose: navigation.returnToOrigin });
 
 try {
-    const [{ canAdmin }, { workflows }] = await Promise.all([api('api/robots'), api('api/roboflow/workflows')]);
+    const [{ canAdmin }, { workflows }] = await Promise.all([api('api/robots?view=access'), api('api/roboflow/workflows')]);
     const id = new URL(location.href).searchParams.get('id');
     const workflow = id ? workflows.find(entry => entry.id === id) : null;
     if (id && !workflow) throw new Error('Workflow type not found.');
