@@ -2,15 +2,11 @@ import { loadAgentClient } from '../../../../server/run-client.mjs';
 import { createSanitizer } from '../skillRuntimePolicy.mjs';
 import { runWithSkillRuntimeOrigin } from '../skills/skillTaskOrigin.mjs';
 
-const TOOLS = new Map([
-    ['roboTeamAgent', new Set(['roboflow_start_flow', 'roboflow_list_workflows'])],
-    ['GPTResearcher', new Set(['start_research'])],
-]);
-const REFS = new Set(['AchillesIDE/roboTeamAgent', 'legacy-agents/GPTResearcher', 'legacy-agents/searchAgent']);
+const name = value => typeof value === 'string' && value.length > 0;
 const refused = () => Object.assign(new Error('Task callback is not permitted'), { statusCode: 403 });
 
-// Only noncredential context crosses into a robot. The controller relays the
-// narrow skill calls using its own verified MCP identity.
+// Only noncredential context crosses into a robot. The controller relays any
+// agent call a skill makes using its own verified MCP identity; the router authorizes it.
 export async function createPloinkyTaskContext({ context, robotId = null, env = process.env, onTask, createClient = null }) {
     const sanitize = createSanitizer(context, env);
     const clients = new Map();
@@ -25,7 +21,7 @@ export async function createPloinkyTaskContext({ context, robotId = null, env = 
         async dispatch({ path, body }) {
             if (!body || typeof body !== 'object' || Array.isArray(body)) throw refused();
             if (path === '/agent-call') {
-                if (!TOOLS.get(body.agent)?.has(body.tool)) throw refused();
+                if (!name(body.agent) || !name(body.tool)) throw refused();
                 const given = body.payload ?? {};
                 if (!given || typeof given !== 'object' || Array.isArray(given)) throw refused();
                 // The relay sets these itself and replaces whatever a robot sends: the run's own working folder, and the calling
@@ -46,16 +42,16 @@ export async function createPloinkyTaskContext({ context, robotId = null, env = 
                 return result;
             }
             if (path === '/ensure-agent') {
-                if (!REFS.has(body.ref)) throw refused();
+                if (!name(body.ref)) throw refused();
                 return (await clientFor(body.ref.split('/').at(-1))).ensureAgentRunning(body.ref);
             }
             if (path === '/task-status') {
-                if (!TOOLS.has(body.agent) || typeof body.taskId !== 'string') throw refused();
+                if (!name(body.agent) || typeof body.taskId !== 'string') throw refused();
                 return (await clientFor(body.agent)).getTaskStatus(body.taskId);
             }
             if (path === '/task-started') {
                 const task = body.task;
-                if (!task || !TOOLS.get(task.agentName)?.has(task.toolName) || typeof task.taskId !== 'string') throw refused();
+                if (!task || !name(task.agentName) || !name(task.toolName) || typeof task.taskId !== 'string') throw refused();
                 const status = await (await clientFor(task.agentName)).getTaskStatus(task.taskId);
                 if (!status || status.status === 'not_found' || status.isError || status.ok === false) throw refused();
                 await onTask?.(sanitize({ ...(launched.get(task.taskId) || task), metadata: task.metadata || {} }));

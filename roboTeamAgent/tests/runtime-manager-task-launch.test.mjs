@@ -152,3 +152,27 @@ test('a workflow task may select an Environment only as a terminal task of a cus
     }
     assert.throws(() => normalizeWorkflow({ name: 'Standard', tasks: [task({ environment: 'repo/agent' })], edges: [] }, { id: 'default', builtin: true }), { statusCode: 400 });
 });
+
+test('a workflow prompt larger than the RoboWork run tag limit stays out of the tag and still reaches the wrapper', async t => {
+    const f = await fixture(t);
+    const robot = { id: 'workflow-a1b2c3', name: 'Workflow', codingAgents: ['codex'] };
+    const prompt = 'Previous phase response. '.repeat(8 * 1024);
+    const systemPrompt = 'Route by the workflow graph. '.repeat(4 * 1024);
+    assert.ok(Buffer.byteLength(prompt) > 128 * 1024);
+    const { status } = await f.run(robot, 'simple', { ca: 'codex', task: prompt, systemPrompt,
+        workflowRunId: 'add-book-672e9d4e', workflowInstanceId: 'instance-1', ownerPrincipal: 'user:alice' });
+    assert.equal(status.state, 'completed', status.error);
+    const spawned = f.spawns.at(-1);
+    assert.equal(spawned.prompt.prompt, prompt);
+    assert.match(spawned.prompt.systemPrompt, /Route by the workflow graph/u);
+    const raw = spawned.env.ROBOTEAM_TASK_TAG;
+    assert.ok(Buffer.byteLength(raw) < 64 * 1024, `tag is ${Buffer.byteLength(raw)} bytes`);
+    const tag = JSON.parse(raw);
+    assert.equal('task' in tag.request, false);
+    assert.equal('systemPrompt' in tag.request, false);
+    assert.equal(tag.request.taskPreview, prompt.slice(0, 1024));
+    assert.equal(tag.request.workflowRunId, 'add-book-672e9d4e');
+    assert.equal(tag.request.workflowInstanceId, 'instance-1');
+    assert.equal(tag.ownerPrincipal, 'user:alice');
+    assert.equal(tag.request.ownerPrincipal, 'user:alice');
+});

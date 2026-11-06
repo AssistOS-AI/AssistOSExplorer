@@ -426,10 +426,10 @@ function renderWorkflowFileErrors(errors) {
     workflowFileErrors.hidden = !errors.length;
 }
 
-async function loadWorkflows(canAdmin) {
+async function loadWorkflows(canAdmin, request = api('api/roboflow/workflows')) {
     addWorkflowButton.hidden = !canAdmin;
     try {
-        const { workflows, workflowFileErrors: fileErrors = [] } = await api('api/roboflow/workflows');
+        const { workflows, workflowFileErrors: fileErrors = [] } = await request;
         cronJobs.setContext(workflows, canAdmin);
         workflowListMessage.textContent = '';
         renderWorkflows(workflows, canAdmin);
@@ -492,6 +492,9 @@ function showRobotProxies() {
 }
 
 async function loadRobots() {
+    // Workflow types do not depend on the robots, so they are requested at the same time.
+    const workflowsRequest = api('api/roboflow/workflows');
+    workflowsRequest.catch(() => {});
     try {
         const result = await api('api/robots');
         canCreateRobots = result.canAdmin === true;
@@ -501,7 +504,7 @@ async function loadRobots() {
         applyRobotFilters();
         // Leases live in the optional proxyAgent, so a slow or missing one never holds the robot list.
         void loadRobotProxies();
-        await loadWorkflows(result.canAdmin === true);
+        await loadWorkflows(result.canAdmin === true, workflowsRequest);
     } catch (error) {
         robotsList.textContent = `Robots unavailable: ${error.message}`;
     }

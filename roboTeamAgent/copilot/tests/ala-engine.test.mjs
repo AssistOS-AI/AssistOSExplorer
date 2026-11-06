@@ -416,6 +416,14 @@ test('reported failure terminates ALA and persists a failed turn with the exact 
 });
 
 
+test('the required report-task-blocked skill is exported, so a masked .ploinky cannot empty it', async t => {
+    const h = await harness(t, {}, { execution: { workflowExecution: true } });
+    h.setSkills([{ name: 'report-task-blocked', description: 'Report inability to complete', skillDir: h.workingDir, enabled: true }]);
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Normal chat' });
+    const folder = JSON.parse(result.outputText).folders.find(entry => entry.alias === 'report-task-blocked');
+    assert.equal(folder.expose, true);
+});
+
 test('ordinary chat cannot use forced failure even if a stale catalog contains the skill', async t => {
     const h = await harness(t);
     h.setSkills([{ name: 'report-task-blocked', description: 'Stale skill', skillDir: h.workingDir, enabled: true }]);

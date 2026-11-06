@@ -163,7 +163,7 @@ test('the robot list survives one robot RoboWork does not know, and a store refu
     const paths = new RobotPaths({ dataDir: path.join(root, 'data'), workspaceRoot: root });
     await fs.mkdir(paths.robot('robot-known'), { recursive: true });
     await fs.writeFile(path.join(paths.robot('robot-known'), 'label'), JSON.stringify({ id: 'robot-known', name: 'known', codingAgents: [] }));
-    const roboWorkRobots = new RobotManager({ paths, homeOperation: async () => ({ activeAgent: 'codex' }) });
+    const roboWorkRobots = new RobotManager({ paths, readStatus: async () => ({ activeAgent: 'codex' }) });
     const robots = ['robot-known', 'robot-gone'].map(id => ({ id, name: id, createdAt: 'x', updatedAt: 'x' }));
     const stopped = { state: 'stopped', mode: null };
     const busy = Object.assign(new Error('close the robot chat and stop its CLI tasks before deleting it'), { code: 'ROBOT_BUSY', statusCode: 409 });

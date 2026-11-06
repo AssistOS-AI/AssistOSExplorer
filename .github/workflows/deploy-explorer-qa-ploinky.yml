@@ -37,7 +37,7 @@ jobs:
   deploy:
     name: Deploy Explorer QA through Ploinky commands
     runs-on: ubuntu-latest
-    # A fresh installation or a recreated Box runs start, update and start, and each may take 30 minutes.
+    # A fresh installation or a recreated Box runs start, repository updates, restart and start, and each may take 30 minutes.
     timeout-minutes: 180
     permissions:
       contents: read
@@ -59,6 +59,8 @@ jobs:
       - name: Validate GitHub configuration
         env:
           SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+          BIZANSO_DEPLOY_KEY: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}
+          PROMOTIONSCOUT_DEPLOY_KEY: ${{ secrets.EXPLORER_QA_PROMOTIONSCOUT_DEPLOY_KEY }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
@@ -66,6 +68,14 @@ jobs:
           set -euo pipefail
           if [ -z "${SSH_KEY:-}" ]; then
             echo "::error::Missing required repository secret EXPLORER_QA_SSH_KEY"
+            exit 1
+          fi
+          if [ -z "${BIZANSO_DEPLOY_KEY:-}" ]; then
+            echo "::error::Missing required repository secret EXPLORER_QA_BIZANSO_DEPLOY_KEY"
+            exit 1
+          fi
+          if [ -z "${PROMOTIONSCOUT_DEPLOY_KEY:-}" ]; then
+            echo "::error::Missing required repository secret EXPLORER_QA_PROMOTIONSCOUT_DEPLOY_KEY"
             exit 1
           fi
           if [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
@@ -314,6 +324,25 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           install -m 600 "$RUNNER_TEMP/explorer_qa_known_hosts" ~/.ssh/explorer_qa_known_hosts
+
+      # The key stays on the runner: neither the QA host nor the Box ever holds it.
+      - name: Check out Bizanso
+        uses: actions/checkout@v4
+        with:
+          repository: Axiologic/bizanso
+          ssh-key: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}
+          path: .qa-bizanso-source
+          persist-credentials: false
+
+      # Same rule: the key stays on the runner. The full history is fetched because it is bundled for the Box.
+      - name: Check out PromotionScoutV2
+        uses: actions/checkout@v4
+        with:
+          repository: AssistOS-AI/PromotionScoutV2
+          ssh-key: ${{ secrets.EXPLORER_QA_PROMOTIONSCOUT_DEPLOY_KEY }}
+          path: .qa-promotionscout-source
+          persist-credentials: false
+          fetch-depth: 0
 
       - name: Bootstrap the host and deploy through Ploinky commands
         env:
@@ -725,6 +754,10 @@ jobs:
               on && match($0, /\[[a-z-]+\] \[[a-z-]+\]/) { split(substr($0, RSTART, RLENGTH), word, /[][ ]+/); state = word[2]; next }
               on && state != "" && /agent:/ { for (i = 1; i <= NF; i++) if ($i == "agent:") print $(i + 1), state; state = "" }'
           }
+          # Prints each installed repository of `ploinky list repos`, whose other lines name uninstalled ones.
+          installed_repos() {
+            awk '/^- / && /\[installed\]/ { name = $2; sub(/:$/, "", name); print name }'
+          }
           # `ploinky status` overlays each detached runtime's semantic readiness on its state. Waiting also
           # lets the detached launches settle before the next start or update.
           wait_ready() {
@@ -772,7 +805,7 @@ jobs:
             ploinky_locked destroy
             BOX_STATE=absent
           fi
-          # `update` does not start a stopped graph, so anything short of a running one starts first.
+          # The update and restart below expect a running graph, so anything short of one starts first.
           GRAPH_UP=true
           STATUS_STATES="$(printf '%s\n' "$STATUS_OUTPUT" | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"
           for agent in $GRAPH_RUNTIMES; do
@@ -818,10 +851,130 @@ jobs:
             printf '%s' "$QA_USERPERSISTO_GOOGLE_CLIENT_ID" | ploinky_locked var USERPERSISTO_GOOGLE_CLIENT_ID --stdin
           fi
 
-          # Start never fetches a checkout that exists, so kept sources move forward here. This fast-forwards
-          # every managed source and restarts the graph when it runs; a dirty or diverged source fails the
-          # run and is left untouched.
-          ploinky_locked update
+          # Bizanso, PromotionScoutV2 and ScriptaHub live at the workspace root, where RoboTeam finds their flows and Ploinky prefers
+          # them. No Ploinky command places a repository there, so these steps run inside the Box, and never Git on
+          # the host. A repository still in its earlier managed location is uninstalled first, which also disables
+          # its agent and keeps its data; finding it in both places is left to an operator.
+          # BEGIN QA workspace repositories
+          run_in_box() {
+            "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec -i --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' ploinky-box-explorerqaworkspace-7a31ab7775eb sh -c '$1' sh"
+          }
+          MANAGED_PROGRAM='set -eu
+          for name in bizanso PromotionScoutV2 ScriptaHubAgent; do
+            if [ -e ".ploinky/repos/$name" ]; then
+              if [ -e "$name" ]; then echo "$name is both managed and at the workspace root" >&2; exit 1; fi
+              echo "$name"
+            fi
+          done'
+          # Bizanso is private and the Box holds no credential, so the runner streams its default branch in as a
+          # copy with no Git metadata. The previous copy stays until the next run, because the running agent still
+          # reads it until the restart below. A run that follows a failed restart removes it, and Bizanso alone is
+          # then broken until a restart succeeds.
+          COPY_PROGRAM='set -eu
+          stage=$PWD/.ploinky/.qa-private-copy
+          mkdir -p "$stage"
+          for stale in "$stage"/*; do
+            if [ -e "$stale" ] || [ -L "$stale" ]; then rm -rf -- "$stale"; fi
+          done
+          incoming=$(mktemp -d "$stage/incoming.XXXXXX")
+          tar -xf - -C "$incoming"
+          test -n "$(ls -A "$incoming")"
+          test ! -e "$incoming/.git"
+          if [ -e bizanso ] || [ -L bizanso ]; then mv bizanso "$stage/previous"; fi
+          mv "$incoming" bizanso'
+          # PromotionScoutV2 is private too, but it must stay a real checkout. The runner streams a Git bundle of its
+          # default branch, which the Box clones once, with `origin` set to the public URL, and afterwards fetches
+          # into refs/remotes/origin only. A clean checkout that is behind fast-forwards; a dirty, diverged or
+          # otherwise different one fails the run and is left untouched. `update repo` skips it, because the Box
+          # holds no credential for that origin. Its stage directory is separate, so Bizanso keeps its predecessor.
+          BUNDLE_PROGRAM='set -eu
+          url=https://github.com/AssistOS-AI/PromotionScoutV2.git
+          stage=$PWD/.ploinky/.qa-private-bundle
+          mkdir -p "$stage"
+          rm -rf -- "$stage"/* "$stage"/.[!.]*
+          trap "rm -rf -- \"$stage\"" EXIT
+          cat > "$stage/incoming.bundle"
+          heads=$(git bundle list-heads "$stage/incoming.bundle")
+          test "$(printf "%s\n" "$heads" | wc -l)" -eq 1
+          ref=${heads#* }
+          case "$ref" in refs/heads/?*) ;; *) echo "The bundle must hold exactly one branch." >&2; exit 1 ;; esac
+          branch=${ref#refs/heads/}
+          if [ ! -e PromotionScoutV2 ] && [ ! -L PromotionScoutV2 ]; then
+            git -c core.hooksPath=/dev/null clone --quiet --branch "$branch" "$stage/incoming.bundle" "$stage/clone"
+            git -C "$stage/clone" remote set-url origin "$url"
+            mv "$stage/clone" PromotionScoutV2
+            exit 0
+          fi
+          test "$(git -C PromotionScoutV2 remote get-url origin)" = "$url"
+          git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C PromotionScoutV2 fetch --quiet "$stage/incoming.bundle" "+$ref:refs/remotes/origin/$branch"
+          if [ "$(git -C PromotionScoutV2 symbolic-ref --short HEAD)" != "$branch" ]; then
+            echo "PromotionScoutV2 is not on $branch; left untouched." >&2; exit 1
+          fi
+          if [ -n "$(git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C PromotionScoutV2 status --porcelain)" ]; then
+            echo "PromotionScoutV2 has uncommitted changes; left untouched." >&2; exit 1
+          fi
+          if ! git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C PromotionScoutV2 merge-base --is-ancestor HEAD "refs/remotes/origin/$branch"; then
+            echo "PromotionScoutV2 has commits that $branch lacks; left untouched." >&2; exit 1
+          fi
+          git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C PromotionScoutV2 merge --quiet --ff-only "refs/remotes/origin/$branch"'
+          # ScriptaHub is public, so it is an ordinary checkout that `update repo` fast-forwards below.
+          CLONE_PROGRAM='set -eu
+          url=https://github.com/Axiologic/ScriptaHubAgent.git
+          if [ ! -e ScriptaHubAgent ]; then git clone --quiet "$url" ScriptaHubAgent; fi
+          test "$(git -C ScriptaHubAgent remote get-url origin)" = "$url"'
+          # A plain assignment, because a failed command in a `for` list would not stop the run.
+          MANAGED_LOCATIONS="$(run_in_box "$MANAGED_PROGRAM" < /dev/null)"
+          for repo in $MANAGED_LOCATIONS; do
+            case "$repo" in
+              bizanso|PromotionScoutV2|ScriptaHubAgent) ploinky_locked uninstall repo "$repo" ;;
+              *) echo "::error::Unexpected repository in the managed location check."; exit 1 ;;
+            esac
+          done
+          git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive --format=tar HEAD | run_in_box "$COPY_PROGRAM"
+          PROMOTIONSCOUT_SOURCE="$GITHUB_WORKSPACE/.qa-promotionscout-source"
+          PROMOTIONSCOUT_BRANCH="$(git -C "$PROMOTIONSCOUT_SOURCE" symbolic-ref --short HEAD)"
+          git -C "$PROMOTIONSCOUT_SOURCE" bundle create - "refs/heads/$PROMOTIONSCOUT_BRANCH" | run_in_box "$BUNDLE_PROGRAM"
+          run_in_box "$CLONE_PROGRAM" < /dev/null
+          # END QA workspace repositories
+          printf '%s' "$PUBLIC_URL/base-agent-additional-server/bizanso/8787" | ploinky_locked var BIZANSO_PUBLIC_LINK_BASE --stdin
+
+          # Bizanso, PromotionScoutV2 and ScriptaHub sit beside the Explorer graph, so they join the awaited runtimes only from here:
+          # a first start cannot wait for agents it has not been asked to run. `add repo` registers the checkouts
+          # placed above. Enabling issues a new instance identity, so only a missing runtime is enabled.
+          ploinky_locked add repo https://github.com/Axiologic/bizanso.git bizanso
+          ploinky_locked add repo https://github.com/AssistOS-AI/PromotionScoutV2.git PromotionScoutV2
+          ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent
+          ENABLED_STATES="$(ploinky_read status | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"
+          if ! grep -q '^bizanso ' <<< "$ENABLED_STATES"; then
+            ploinky_locked enable agent bizanso/bizanso
+          fi
+          if ! grep -q '^promotionScout ' <<< "$ENABLED_STATES"; then
+            ploinky_locked enable agent PromotionScoutV2/promotionScout
+          fi
+          if ! grep -q '^scriptahubAgent ' <<< "$ENABLED_STATES"; then
+            ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent
+          fi
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
+
+          # Start never fetches a checkout that exists, so kept sources move forward here. A full `ploinky update`
+          # fails on an enabled repository with no Git checkout, so each other repository moves on its own; a
+          # dirty or diverged required source fails the run and is left untouched. The restart activates them
+          # and registers the MCP tools of newly enabled agents with the Router.
+          MANAGED_REPOS="$(ploinky_read list repos | sed 's/\x1b\[[0-9;]*m//g' | installed_repos)"
+          if ! grep -qx 'AchillesIDE' <<< "$MANAGED_REPOS"; then
+            echo "::error::The repository listing did not name AchillesIDE."
+            exit 1
+          fi
+          for repo in $MANAGED_REPOS; do
+            if [[ ! "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "::error::Unexpected repository name in the listing."
+              exit 1
+            fi
+            if [ "$repo" != bizanso ] && [ "$repo" != PromotionScoutV2 ]; then
+              ploinky_locked update repo "$repo"
+            fi
+          done
+          ploinky_locked restart
           wait_ready
 
           # Handles only: this document never holds a secret value.
@@ -959,6 +1112,25 @@ jobs:
             sleep 5
           done
 
+      - name: Verify Bizanso and ScriptaHub
+        run: |
+          set -euo pipefail
+          for path in bizanso/8787/how-it-works/ scriptahubAgent/3002/health; do
+            url="${PUBLIC_URL%/}/base-agent-additional-server/$path"
+            for attempt in $(seq 1 60); do
+              code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$url" || true)"
+              if [ "$code" = '200' ]; then
+                echo "[deploy-qa] $path answers through the public edge."
+                break
+              fi
+              if [ "$attempt" = '60' ]; then
+                echo "::error::$path did not become ready; last HTTP code: ${code:-none}"
+                exit 1
+              fi
+              sleep 5
+            done
+          done
+
       - name: Verify dedicated connector and protected Cloudflare topology
         if: always()
         env:
@@ -1075,6 +1247,8 @@ jobs:
             printf -- '- Protected shared tunnel: `%s` unchanged at `%s`\n' \
               "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" "${PROTECTED_CLOUDFLARE_DIGEST:-not-snapshotted}"
             echo "- Public URL: \`${PUBLIC_URL}\`"
+            echo "- Bizanso: \`${PUBLIC_URL}/base-agent-additional-server/bizanso/8787/\`"
+            echo "- ScriptaHub: \`${PUBLIC_URL}/base-agent-additional-server/scriptahubAgent/3002/\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup

@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { AgentEnvironments } from '../server/agent-environments.mjs';
 import { EnvironmentManager } from '../../roboWorkAgent/server/environment.mjs';
+import { workspaceView } from '../../roboWorkAgent/server/workspace-view.mjs';
 
 function fixture(options = {}) {
     const agents = ['gitAgent', 'templated', 'unpullable', 'privateAgent', 'dpuAgent', 'roboWorkAgent', 'roboTeamAgent', 'isolated', 'inactive']
@@ -126,8 +127,9 @@ async function launchFixture(t) {
     await fs.mkdir(path.join(workspaceRoot, 'sibling'));
     await fs.writeFile(path.join(workspaceRoot, '.env'), 'secret');
     const cwd = path.join(workspaceRoot, 'project');
+    const workspace = await workspaceView(workspaceRoot, { robotId: 'robot-one', platform: 'darwin' });
     return { environment: 'AchillesIDE/gitAgent', runId: 'run-1', robotId: 'robot-one',
-        workspaceRoot, cwd, home: path.join(root, 'private/robot-one/home'),
+        workspaceRoot, workspace, cwd, home: path.join(root, 'private/robot-one/home'),
         toolCache: '/data/tool-cache',
         ala: { source: '/Agent/linked/AdvancedLanguageAgent', target: '/opt/ala', entry: '/opt/ala/bin/ala.mjs' },
         bwrap: { source: '/data/tool-cache/bwrap/bin/bwrap', target: '/opt/bwrap' },
@@ -156,12 +158,24 @@ test('each step builds a fresh disposable image container with only its mapped r
     assert.ok(args.includes('/data/runs/run-1/channels/human-input:/workspace/human-input:rw'));
     assert.ok(args.includes('/data/robots/robot-one/run/soul:/workspace/roboteam-soul:ro'));
     assert.ok(args.includes('/skills/one:/workspace/roboteam-skill-0:ro'));
-    // The workspace root and a sibling project are not mounted, so nothing inside the workspace needs a mask.
+    // The workspace is shown read-only and recursive at its canonical path, and the sibling project is reached only through it.
     const volumes = args.flatMap((value, index) => args[index - 1] === '--volume' ? [value] : []);
-    assert.equal(volumes.some(value => value.startsWith(`${options.workspaceRoot}:`) || value.includes(`${options.workspaceRoot}/sibling`)), false);
-    assert.deepEqual(volumes.filter(value => value.includes(options.workspaceRoot)), [`${options.cwd}:${options.cwd}:rw`]);
-    assert.equal(args.includes('--tmpfs'), false);
-    assert.equal(args.some(value => value.includes('/.env')), false);
+    assert.ok(volumes.includes(`${options.workspaceRoot}:${options.workspaceRoot}:ro,rbind`));
+    assert.equal(volumes.some(value => value.includes(`${options.workspaceRoot}/sibling`)), false);
+    assert.deepEqual(volumes.filter(value => value.endsWith(':rw') && value.includes(options.workspaceRoot)), [`${options.cwd}:${options.cwd}:rw`]);
+    // Private entries are empty read-only masks made by Podman: a tmpfs that cannot copy up, and /dev/null over the file.
+    const tmpfs = args.flatMap((value, index) => args[index - 1] === '--tmpfs' ? [value] : []);
+    assert.deepEqual(tmpfs, [`${options.workspaceRoot}/.data:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`]);
+    assert.ok(volumes.includes(`/dev/null:${options.workspaceRoot}/.env:ro`));
+    // The working folder is mounted after the root, so the root cannot hide it.
+    assert.ok(args.indexOf(`${options.workspaceRoot}:${options.workspaceRoot}:ro,rbind`) < args.indexOf(`${options.cwd}:${options.cwd}:rw`));
+    // The folder's `.roboteam` is masked by the inner ALA, which must still read it, so Podman adds no mask for it.
+    const podmanOptions = args.slice(0, args.indexOf('image:node'));
+    assert.equal(podmanOptions.some(value => value.includes('.roboteam') && !value.startsWith('ALA_SESSIONS')), false);
+    // ALA inside cannot name the /dev/null over `.env` as an ignored path, so the workspace masks are not in its arguments.
+    const inner = args.slice(args.indexOf('node'));
+    assert.equal(inner.some(value => value.includes(`${options.workspaceRoot}/.env`) || value.includes(`${options.workspaceRoot}/.data`)), false);
+    assert.deepEqual(inner.flatMap((value, index) => inner[index - 1] === '--ignore' ? [value] : []), [`${options.cwd}/.roboteam`]);
     assert.equal(args[args.indexOf('--workdir') + 1], options.cwd);
     const imageIndex = args.indexOf('image:node');
     assert.equal(args[imageIndex + 1], '-i');
@@ -181,10 +195,13 @@ test('each step builds a fresh disposable image container with only its mapped r
 test('builder starts in the robot home without a cwd and rejects invalid mount vectors before spawn', async t => {
     const options = await launchFixture(t);
     const { manager } = fixture();
-    // Without a cwd the container starts in the robot home and mounts no workspace folder.
+    // Without a cwd the container starts in the robot home and mounts no writable workspace folder, only the read-only view.
     const homeOnly = (await manager.buildLaunch({ ...options, cwd: null })).args;
     assert.equal(homeOnly[homeOnly.indexOf('--workdir') + 1], '/home/robot-one');
-    assert.equal(homeOnly.some((value, index) => homeOnly[index - 1] === '--volume' && value.includes(options.workspaceRoot)), false);
+    assert.deepEqual(homeOnly.filter((value, index) => homeOnly[index - 1] === '--volume' && value.includes(options.workspaceRoot)),
+        [`${options.workspaceRoot}:${options.workspaceRoot}:ro,rbind`, `/dev/null:${options.workspaceRoot}/.env:ro`]);
+    // The view is required.
+    await assert.rejects(manager.buildLaunch({ ...options, workspace: undefined }), { code: 'ENVIRONMENT_INVALID', statusCode: 400 });
     await assert.rejects(manager.buildLaunch({ ...options, home: '/bad:mount' }), { code: 'ENVIRONMENT_PATH_INVALID' });
     await assert.rejects(manager.buildLaunch({ ...options, robotId: '../robot' }), { code: 'ENVIRONMENT_INVALID' });
 });

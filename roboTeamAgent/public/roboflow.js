@@ -10,6 +10,26 @@ initPageNavigation({ fallbackUrl: new URL('?tab=workflow-types', document.baseUR
 initExecutionStateLegend(document.querySelector('.phase-state-legend'));
 
 const element = (tag, text) => { const node = document.createElement(tag); node.textContent = text; return node; };
+const CODING_AGENT_LABELS = { codex: 'Codex', opencode: 'OpenCode', pi: 'Pi', claude: 'Claude Code' };
+
+// The robot, coding agent and model of a phase, as far as they are known yet.
+function renderStageTitle(instance) {
+    const title = document.querySelector('#stageTitle');
+    const agent = instance?.codingAgent ? CODING_AGENT_LABELS[instance.codingAgent] || instance.codingAgent : '';
+    const model = instance?.model ? `${instance.model}${instance.effort ? ` (${instance.effort})` : ''}` : '';
+    const parts = [instance?.robotName, agent, model].filter(Boolean);
+    const signature = JSON.stringify(parts);
+    if (title.dataset.signature === signature) return;
+    title.dataset.signature = signature;
+    title.replaceChildren('Phase logs');
+    if (!parts.length) return;
+    const meta = element('span', parts.join(' · '));
+    meta.className = 'stage-title-meta';
+    meta.title = [instance.robotName && `Robot: ${instance.robotName}`, agent && `Coding agent: ${agent}`, model && `Model: ${model}`]
+        .filter(Boolean).join('\n');
+    title.append(meta);
+}
+
 const api = path => new URL(path, document.baseURI).toString();
 const FLOW_TERMINAL = new Set(['completed', 'failed', 'paused', 'terminated']);
 
@@ -223,7 +243,7 @@ function renderStage() {
     body.replaceChildren();
     if (stageView === 'log') {
         const instance = currentFlow.instances.find(item => item.id === selectedInstanceId);
-        title.textContent = 'Phase logs';
+        renderStageTitle(instance);
         if (!instance) {
             body.append(element('p', 'This phase is no longer available.'));
             return;
@@ -289,7 +309,7 @@ function renderStage() {
     }
     if (stageView === 'pending') {
         const task = currentFlow.graph.tasks.find(item => item.id === selectedTaskId);
-        title.textContent = 'Phase logs';
+        renderStageTitle(null);
         if (!task) {
             body.append(element('p', 'This task is no longer available.'));
             return;
@@ -311,6 +331,7 @@ function renderStage() {
         renderPhaseDetail(detail, { taskId: task.id });
         return;
     }
+    delete title.dataset.signature;
     title.textContent = 'Select a phase to view its log';
     body.append(element('p', 'Pick a phase from the list, or select a task in the execution graph below.'));
 }
@@ -648,6 +669,7 @@ function applyFlow(flow) {
         const header = document.querySelector('#stageBody .phase-view-header');
         const detail = document.querySelector('#stageBody .phase-view-detail');
         const composer = document.querySelector('#stageBody .phase-composer');
+        if (instance) renderStageTitle(instance);
         if (instance && header) renderPhaseHeader(header, instance);
         const children = document.querySelector('#stageBody .phase-subflows');
         if (instance && children) renderSubflows(children, instance);

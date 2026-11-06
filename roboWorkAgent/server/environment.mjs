@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { pinDirectory } from './robot-paths.mjs';
+import { podmanWorkspaceArguments } from './workspace-view.mjs';
 
 const execute = promisify(execFile);
 const REF = /^[A-Za-z0-9._-]{1,128}\/[A-Za-z0-9._-]{1,128}$/u;
@@ -133,9 +134,11 @@ export class EnvironmentManager {
         return { ...entry, available: true, reason: '', imagePath: imageInfo.path || DEFAULT_PATH };
     }
 
-    async buildLaunch({ environment, runId, robotId, home, cwd, cwdIdentity, toolCache, ala, bwrap,
+    async buildLaunch({ environment, runId, robotId, home, cwd, cwdIdentity, workspace, toolCache, ala, bwrap,
         channels = [], soul, folders = [], args = [], env = {}, tty = false, signal }) {
         if (!ID.test(robotId) || typeof runId !== 'string' || !runId) throw failure('ENVIRONMENT_INVALID', 'Invalid environment run identity', 400);
+        // The workspace view is never optional: a container without it would show nothing, and one with a wrong view could show too much.
+        if (!workspace || typeof workspace !== 'object') throw failure('ENVIRONMENT_INVALID', 'A workspace view is required', 400);
         const entry = await this.prepare(environment, { signal });
         signal?.throwIfAborted();
         const homeTarget = `/home/${robotId}`;
@@ -180,6 +183,9 @@ export class EnvironmentManager {
         for (const [name, value] of Object.entries(env)) {
             if (SAFE_ENV.has(name) && typeof value === 'string' && !value.includes('\0')) variables[name] = value;
         }
+        // The workspace is mounted before the folders, so the working folder is mounted over it. Podman applies `ro` to the top
+        // mount only: the writable submounts of the root and the masks are named here.
+        launch.push(...podmanWorkspaceArguments(workspace, { cwd: directory === homeTarget ? undefined : directory }));
         // A folder a robot can write is mounted through a descriptor checked against its grant.
         const granted = [...(cwd ? [{ source: directory, target: directory, readOnly: false, identity: cwdIdentity }] : []), ...folders];
         const pins = [];

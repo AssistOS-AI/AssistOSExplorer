@@ -26,7 +26,8 @@ export async function createRunManagerRoboWork({ workspaceRoot, home, childEntry
     const listModels = async ({ robotId, agent, cwd }) => {
         const workingDirectory = await paths.grant(cwd, 'cwd');
         const identity = await paths.identity(workingDirectory, 'cwd');
-        const input = { alaEntry: modelOperation.alaEntry, agent, cwd: workingDirectory, identity, home,
+        const workspace = await paths.workspaceView(robotId);
+        const input = { alaEntry: modelOperation.alaEntry, agent, cwd: workingDirectory, identity, workspace, home,
             soul: modelOperation.soul, dataDir: modelOperation.dataDir, robotId };
         const child = spawn(process.execPath, [modelScript, JSON.stringify(input)], { env: { PATH: process.env.PATH, ...modelOperation.env }, stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';

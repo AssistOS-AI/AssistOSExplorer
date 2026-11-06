@@ -80,6 +80,23 @@ test('folder grants refuse .ploinky except below a registered repository', async
     assert.equal(await paths.grant(path.join(ploinky, 'repos', 'skills')), await fs.realpath(path.join(ploinky, 'repos', 'skills')));
 });
 
+test('grants refuse .data, .ploinky-box, its quarantined siblings and the root .env for both kinds, whatever they are below', async t => {
+    const { paths, input } = await fixture(t);
+    const entries = { '.data': ['emailAgent', 'roboTeamAgent/skills'], '.ploinky-box': ['state'], '.ploinky-box.old': ['state'] };
+    for (const [name, children] of Object.entries(entries)) for (const child of ['', ...children]) await fs.mkdir(path.join(paths.workspaceRoot, name, child), { recursive: true });
+    await fs.writeFile(path.join(paths.workspaceRoot, '.env'), 'x');
+    const link = path.join(input.cwd, 'to-box'); await fs.symlink(path.join(paths.workspaceRoot, '.ploinky-box', 'state'), link);
+    for (const [name, children] of Object.entries(entries)) for (const child of ['', ...children]) {
+        const value = path.join(paths.workspaceRoot, name, child);
+        await assert.rejects(paths.grant(value), { code: 'FOLDER_REFUSED' }, value);
+        await assert.rejects(paths.grant(value, 'cwd'), { code: 'CWD_REFUSED' }, value);
+    }
+    await assert.rejects(paths.grant(link), { code: 'FOLDER_REFUSED' });
+    // A folder that merely looks similar is an ordinary project.
+    const lookalike = path.join(paths.workspaceRoot, '.ploinky-boxes'); await fs.mkdir(lookalike);
+    assert.equal(await paths.grant(lookalike), lookalike);
+});
+
 test('the workspace root is refused as a working folder or grant even before private storage exists', async t => {
     const { paths, manager, input } = await fixture(t);
     await assert.rejects(paths.grant(paths.workspaceRoot, 'cwd'), { code: 'CWD_REFUSED', message: /workspace root/u });
@@ -88,22 +105,89 @@ test('the workspace root is refused as a working folder or grant even before pri
     await assert.rejects(manager.start({ ...input, folders: [{ source: paths.workspaceRoot }] }), { code: 'FOLDER_REFUSED' });
 });
 
-test('native ALA arguments grant the working folder and named folders, never the workspace or a sibling project', async t => {
+// The ALA --folder arguments as [source, ...modifiers] lists.
+function folderArguments(args) {
+    const folders = [];
+    for (let index = 0; index < args.length; index++) {
+        if (args[index] !== '--folder') continue;
+        const folder = [args[++index]];
+        if (['as', 'at'].includes(args[index + 1])) folder.push(args[++index], args[++index]);
+        if (args[index + 1] === 'expose') folder.push(args[++index]);
+        folders.push(folder);
+    }
+    return folders;
+}
+const ignoredArguments = args => args.flatMap((value, index) => value === '--ignore' ? [args[index + 1]] : []);
+
+async function plantWorkspaceState(workspaceRoot) {
+    for (const name of ['.data', '.ploinky', '.ploinky-box']) await fs.mkdir(path.join(workspaceRoot, name), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, '.env'), 'fixture');
+}
+
+test('native ALA arguments show the workspace read-only with its private entries masked, the working folder and named folders', async t => {
     const { manager, paths, input } = await fixture(t);
     const sibling = path.join(paths.workspaceRoot, 'sibling'); const shared = path.join(paths.workspaceRoot, 'shared');
     await fs.mkdir(sibling); await fs.mkdir(shared);
-    await fs.mkdir(path.join(paths.workspaceRoot, '.data'), { recursive: true }); await fs.mkdir(path.join(paths.workspaceRoot, '.ploinky'));
-    await fs.writeFile(path.join(paths.workspaceRoot, '.env'), 'fixture');
+    await plantWorkspaceState(paths.workspaceRoot);
+    let launched, launches = 0;
+    manager.buildLaunch = async options => { launches += 1; launched = options; return { command: process.execPath, args: ['-e', "process.stdin.on('data',()=>{});"], options: { detached: true, stdio: ['pipe', 'pipe', 'pipe'] } }; };
+    await startReady(manager, { ...input, folders: [{ source: shared }], ignore: [] });
+    // The workspace is one plain read-only folder at its canonical path, never an exposed export. A folder inside it is an export over it.
+    assert.deepEqual(folderArguments(launched.args), [[paths.workspaceRoot], [shared, 'at', shared, 'expose'],
+        [paths.soul(input.robotId), 'as', 'roboteam-soul']]);
+    const workspace = name => path.join(paths.workspaceRoot, name);
+    // The folder's own private data stays the first ignored path, as it always has been; the workspace masks follow.
+    assert.deepEqual(ignoredArguments(launched.args), [path.join(input.cwd, '.roboteam'), workspace('.data'), workspace('.env'), workspace('.ploinky'), workspace('.ploinky-box')]);
+    // The sibling project is reached only through the workspace, never named, and the working folder stays the only writable grant.
+    assert.ok(!launched.args.includes(sibling));
+    assert.equal(launched.args[launched.args.indexOf('--cwd') + 1], input.cwd);
+    assert.ok(!launched.args.includes('write'));
+    // A replayed start neither launches again nor builds a second set of arguments.
+    assert.equal((await manager.start({ ...input, folders: [{ source: shared }], ignore: [] })).alreadyRunning, true);
+    assert.equal(launches, 1);
+});
+
+test('a caller cannot grant, widen or drop the workspace view', async t => {
+    const { manager, paths, input } = await fixture(t);
+    await plantWorkspaceState(paths.workspaceRoot);
+    const ploinky = path.join(paths.workspaceRoot, '.ploinky');
+    const repository = path.join(ploinky, 'repos', 'skills', 'one');
+    await fs.mkdir(repository, { recursive: true });
+    await fs.mkdir(path.join(paths.workspaceRoot, '.data', 'emailAgent'), { recursive: true });
+    const refused = (folder, code = 'FOLDER_REFUSED') => assert.rejects(manager.start({ ...input, runId: 'refused-' + Math.random().toString(36).slice(2, 8), folders: [folder] }), { code }, JSON.stringify(folder));
+    await refused({ source: paths.workspaceRoot });
+    await refused({ source: input.cwd, at: paths.workspaceRoot, expose: true });
+    await refused({ source: input.cwd, at: path.dirname(paths.workspaceRoot), expose: true });
+    await refused({ source: path.join(paths.workspaceRoot, '.data', 'emailAgent'), alias: 'mail', expose: true });
+    await refused({ source: path.join(paths.workspaceRoot, '.ploinky-box'), alias: 'box', expose: true });
+    await refused({ source: path.join(paths.workspaceRoot, '.ploinky-box'), at: path.join(paths.workspaceRoot, '.ploinky-box'), expose: true });
+    await refused({ source: input.cwd, at: path.join(paths.workspaceRoot, '.ploinky-box', 'inside'), expose: true });
+    // A plain grant becomes an export at its own path, which the `.ploinky` target check refuses; an alias is not a path in the workspace.
+    await refused({ source: repository });
+    await refused({ source: repository, at: repository, expose: true });
+    await assert.rejects(manager.start({ ...input, runId: 'relative-ignore', ignore: ['relative'] }), { code: 'INVALID_INPUT' });
+    // A caller's ignore list can only add masks.
     let launched;
     manager.buildLaunch = async options => { launched = options; return { command: process.execPath, args: ['-e', "process.stdin.on('data',()=>{});"], options: { detached: true, stdio: ['pipe', 'pipe', 'pipe'] } }; };
-    await startReady(manager, { ...input, folders: [{ source: shared }], ignore: [] });
-    const folders = launched.args.flatMap((value, index) => value === '--folder' ? [launched.args[index + 1]] : []);
-    assert.equal(folders[0], shared);
-    for (const hidden of [paths.workspaceRoot, sibling, path.join(paths.workspaceRoot, '.data'), path.join(paths.workspaceRoot, '.ploinky'), path.join(paths.workspaceRoot, '.env')]) {
-        assert.ok(!launched.args.includes(hidden), `Unexpected ALA argument: ${hidden}`);
-    }
-    assert.deepEqual(launched.args.flatMap((value, index) => value === '--ignore' ? [launched.args[index + 1]] : []), [path.join(input.cwd, '.roboteam')]);
-    assert.equal(launched.args[launched.args.indexOf('--cwd') + 1], input.cwd);
+    await startReady(manager, { ...input, runId: 'aliased', folders: [{ source: repository, alias: 'skill-one', expose: true }], ignore: [] });
+    assert.deepEqual(folderArguments(launched.args).slice(0, 2), [[paths.workspaceRoot], [repository, 'as', 'skill-one', 'expose']]);
+    assert.deepEqual(ignoredArguments(launched.args).slice(1, 5), ['.data', '.env', '.ploinky', '.ploinky-box'].map(name => path.join(paths.workspaceRoot, name)));
+    const extra = path.join(paths.workspaceRoot, 'extra'); await fs.mkdir(extra);
+    await startReady(manager, { ...input, runId: 'extra-mask', ignore: [extra, path.join(paths.workspaceRoot, 'absent')] });
+    assert.equal(ignoredArguments(launched.args)[0], path.join(input.cwd, '.roboteam'));
+    assert.equal(ignoredArguments(launched.args).at(-1), extra);
+    assert.ok(!ignoredArguments(launched.args).includes(path.join(paths.workspaceRoot, 'absent')));
+});
+
+test('a start whose workspace cannot be shown safely is refused with its reason and launches nothing', async t => {
+    const { manager, paths, input, spawns } = await fixture(t);
+    assert.equal(spawnSync('mkfifo', [path.join(paths.workspaceRoot, '.env')]).status, 0);
+    await manager.start(input);
+    await manager.get(input.runId).preparing;
+    const records = (await manager.read({ runId: input.runId, after: 0, waitMs: 0 })).records;
+    const text = records.map(record => Buffer.from(record.data, 'base64').toString()).join('');
+    assert.match(text, /preparation ended: WORKSPACE_UNAVAILABLE: A hidden workspace entry is neither a file nor a directory/u);
+    assert.equal(spawns(), 0);
 });
 
 test('concurrent run_start is idempotent; stdin/output, durable replay and unknown ids', async t => {
@@ -457,12 +541,13 @@ test('environment stop checks the exact container label and robot before signall
     assert.ok(!calls.some(args => args[0] === 'kill'));
 });
 
-test('Environment ALA arguments use mounted sources for skills, callbacks and Soul without private source binds', async t => {
+test('Environment ALA arguments use mounted sources for skills, callbacks and Soul, and Podman carries the workspace view and its masks', async t => {
     const { manager, paths, input } = await fixture(t);
-    const skills = path.join(paths.workspaceRoot, '.data', 'roboTeamAgent', 'skills');
+    const skills = path.join(paths.workspaceRoot, '.ploinky', 'repos', 'skills', 'one');
     const plain = path.join(paths.workspaceRoot, 'public-files');
     await fs.mkdir(path.join(paths.workspaceRoot, 'sibling'));
     for (const directory of [skills, plain, manager.toolCache.root, paths.home(input.robotId), paths.soul(input.robotId)]) await fs.mkdir(directory, { recursive: true });
+    await plantWorkspaceState(paths.workspaceRoot);
     const environment = new EnvironmentManager();
     environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/local/bin:/usr/bin:/bin' });
     manager.environment = environment;
@@ -483,30 +568,30 @@ test('Environment ALA arguments use mounted sources for skills, callbacks and So
     ], channels: [{ name: 'ploinky-runtime' }, { name: 'human-input' }, { name: 'task-failure', alias: 'own-task-failure' }] });
     const args = command.args.slice(command.args.indexOf('/opt/robowork-ala/bin/ala.mjs') + 1);
     const mounts = command.args.flatMap((value, index) => value === '--volume' ? [command.args[index + 1].split(':')] : []);
-    const folderArguments = [];
-    for (let index = 0; index < args.length; index++) {
-        if (args[index] !== '--folder') continue;
-        const folder = [args[++index]];
-        if (['as', 'at'].includes(args[index + 1])) folder.push(args[++index], args[++index]);
-        if (args[index + 1] === 'expose') folder.push(args[++index]);
-        folderArguments.push(folder);
-    }
-    assert.deepEqual(folderArguments, [
+    const folders = folderArguments(args);
+    assert.deepEqual(folders, [
+        [paths.workspaceRoot],
         ['/workspace/roboteam-skill-0', 'as', 'roboteam-skill-0', 'expose'],
-        [exported, 'at', exported, 'expose'], [repeated, 'at', repeated, 'expose'], [plain],
+        [exported, 'at', exported, 'expose'], [repeated, 'at', repeated, 'expose'], [plain, 'at', plain, 'expose'],
         ['/workspace/ploinky-runtime', 'as', 'ploinky-runtime'], ['/workspace/roboflow-human-input', 'as', 'roboflow-human-input'],
         ['/workspace/own-task-failure', 'as', 'own-task-failure'], ['/workspace/roboteam-soul', 'as', 'roboteam-soul'],
     ]);
-    for (const [source] of folderArguments) assert.ok(mounts.some(([, target]) => target === source), `ALA source is not mounted: ${source}`);
+    for (const [source] of folders) assert.ok(mounts.some(([, target]) => target === source), `ALA source is not mounted: ${source}`);
     assert.ok(!mounts.some(([, target]) => target.startsWith(paths.robot(input.robotId)) || target.startsWith(paths.run(input.runId))));
     assert.equal(args[args.indexOf('--home') + 1], '/home/aaa');
     assert.ok(command.args.includes(`ALA_SESSIONS=${path.join(input.cwd, '.roboteam', '.ala')}`));
-    assert.ok(args.some((value, index) => value === '--ignore' && args[index + 1] === path.join(input.cwd, '.roboteam')));
-    // The workspace is neither mounted nor named, and no private child needs a mask.
-    assert.ok(!mounts.some(([source, target]) => source === paths.workspaceRoot || target === paths.workspaceRoot));
+    // Inside the container ALA receives the root and the cwd's `.roboteam` only: it cannot name the /dev/null that Podman put over `.env`.
+    assert.deepEqual(ignoredArguments(args), [path.join(input.cwd, '.roboteam')]);
+    assert.ok(!args.includes(path.join(paths.workspaceRoot, '.env')));
+    // Podman shows the workspace read-only and recursive, masks each private entry, and mounts the working folder after the root.
+    assert.ok(mounts.some(([source, target, mode]) => source === paths.workspaceRoot && target === paths.workspaceRoot && mode === 'ro,rbind'));
+    const tmpfs = command.args.flatMap((value, index) => command.args[index - 1] === '--tmpfs' ? [value] : []);
+    assert.deepEqual(tmpfs, ['.data', '.ploinky', '.ploinky-box'].map(name => `${path.join(paths.workspaceRoot, name)}:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`));
+    assert.ok(mounts.some(([source, target, mode]) => source === '/dev/null' && target === path.join(paths.workspaceRoot, '.env') && mode === 'ro'));
     assert.ok(!mounts.some(([source]) => source === path.join(paths.workspaceRoot, 'sibling')));
-    assert.ok(!command.args.includes('--tmpfs'));
-    assert.deepEqual(args.flatMap((value, index) => value === '--ignore' ? [args[index + 1]] : []), [path.join(input.cwd, '.roboteam')]);
+    const root = command.args.findIndex((value, index) => command.args[index - 1] === '--volume' && value.startsWith(`${paths.workspaceRoot}:${paths.workspaceRoot}:`));
+    const working = command.args.findIndex((value, index) => command.args[index - 1] === '--volume' && value.endsWith(`:${input.cwd}:rw`));
+    assert.ok(root > 0 && working > root, 'The working folder is mounted after the workspace root');
 });
 
 test('native ALA host receives the controller-derived transcript directory through the actual launch allowlist', async t => {
@@ -533,8 +618,9 @@ test('Podman receives each granted folder through a descriptor, checked against 
     await fs.mkdir(folder);
     const environment = new EnvironmentManager();
     environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/bin:/bin' });
+    const workspace = await paths.workspaceView(input.robotId);
     const launchFor = identities => environment.buildLaunch({ environment: 'repo/agent', runId: 'r', robotId: input.robotId, home: paths.home(input.robotId),
-        cwd: input.cwd, cwdIdentity: identities.cwd, toolCache: root, ala: { source: root, target: '/opt/ala', entry: '/opt/ala/bin/ala.mjs' },
+        cwd: input.cwd, cwdIdentity: identities.cwd, workspace, toolCache: root, ala: { source: root, target: '/opt/ala', entry: '/opt/ala/bin/ala.mjs' },
         bwrap: { source: '/fixture/bwrap', target: '/opt/bwrap' }, folders: [{ source: folder, target: '/workspace/granted', readOnly: true, identity: identities.folder }], args: [] });
     const identities = { cwd: await identityOf(input.cwd), folder: await identityOf(folder) };
     const launch = await launchFor(identities);
@@ -549,6 +635,10 @@ test('Podman receives each granted folder through a descriptor, checked against 
     // A swap between the grant and the launch is refused here, and neither descriptor stays open.
     await fs.rename(folder, `${folder}-moved`); await fs.symlink(input.cwd, folder);
     await assert.rejects(launchFor(identities), { code: 'FOLDER_REFUSED', message: /changed before it was mounted/u });
+    // The view is required; a launch without it fails closed rather than showing a different workspace.
+    await assert.rejects(environment.buildLaunch({ environment: 'repo/agent', runId: 'r', robotId: input.robotId, home: paths.home(input.robotId),
+        cwd: input.cwd, toolCache: root, ala: { source: root, target: '/opt/ala', entry: '/opt/ala/bin/ala.mjs' },
+        bwrap: { source: '/fixture/bwrap', target: '/opt/bwrap' } }), { code: 'ENVIRONMENT_INVALID', statusCode: 400 });
 });
 
 test('every granted directory reaches ALA and the Environment launch with the identity recorded at grant time', async t => {
@@ -614,7 +704,7 @@ async function stubAla(root) {
     for (const name of ['config.mjs', 'coding-agents/logins.mjs']) await fs.writeFile(path.join(root, 'ala', 'src', name), '');
     await fs.writeFile(path.join(root, 'ala', 'src', 'coding-agents', 'discovery.mjs'), 'export const discoverCodingAgents = async () => [];');
     await fs.writeFile(path.join(root, 'ala', 'src', 'coding-agents', 'service.mjs'), `export const createCodingAgentService = options => ({
-    listModels: async () => [{ ignoredPaths: options.ignoredPaths, workspaceIdentity: options.workspaceIdentity, masked: await import('node:fs').then(fs => (options.ignoredPaths || []).map(file => fs.statSync(file).isDirectory())) }],
+    listModels: async () => [{ ignoredPaths: options.ignoredPaths, folders: options.folders, workspaceIdentity: options.workspaceIdentity, masked: await import('node:fs').then(fs => (options.ignoredPaths || []).map(file => fs.statSync(file).isDirectory())) }],
     close: async () => {} });`);
     return entry;
 }
@@ -624,20 +714,29 @@ test('model discovery masks private project data in a working folder and pins it
     const alaEntry = await stubAla(root);
     const script = fileURLToPath(new URL('../server/model-op.mjs', import.meta.url));
     await fs.mkdir(paths.home(input.robotId), { recursive: true });
+    await plantWorkspaceState(paths.workspaceRoot);
+    const workspace = await paths.workspaceView(input.robotId);
     const run = extra => {
-        const result = spawnSync(process.execPath, [script, JSON.stringify({ alaEntry, agent: 'codex', home: paths.home(input.robotId), soul: paths.soul(input.robotId), dataDir: paths.dataDir, robotId: input.robotId, ...extra })], { encoding: 'utf8' });
+        const result = spawnSync(process.execPath, [script, JSON.stringify({ alaEntry, agent: 'codex', workspace, home: paths.home(input.robotId), soul: paths.soul(input.robotId), dataDir: paths.dataDir, robotId: input.robotId, ...extra })], { encoding: 'utf8' });
         assert.equal(result.status, 0, result.stderr);
         return JSON.parse(result.stdout)[0];
     };
     const identity = await identityOf(input.cwd);
-    assert.deepEqual(run({ cwd: input.cwd, identity }), { ignoredPaths: [path.join(input.cwd, '.roboteam')], workspaceIdentity: identity, masked: [true] });
-    assert.deepEqual(run({ cwd: paths.home(input.robotId) }), { ignoredPaths: [], masked: [] });
+    const masks = ['.data', '.env', '.ploinky', '.ploinky-box'].map(name => path.join(paths.workspaceRoot, name));
+    const folders = [{ source: paths.workspaceRoot }, { source: paths.soul(input.robotId), alias: 'roboteam-soul' }];
+    // The query shows the same workspace as a run: the root read-only, every private entry masked, and the folder's records masked.
+    assert.deepEqual(run({ cwd: input.cwd, identity }), { ignoredPaths: [path.join(input.cwd, '.roboteam'), ...masks], folders, workspaceIdentity: identity, masked: [true, true, false, true, true] });
+    // The robot home holds no private project data, and the workspace masks apply there as well.
+    assert.deepEqual(run({ cwd: paths.home(input.robotId) }), { ignoredPaths: masks, folders, masked: [true, false, true, true] });
+    // The query refuses to start without the view.
+    const missing = spawnSync(process.execPath, [script, JSON.stringify({ alaEntry, agent: 'codex', cwd: input.cwd, identity, home: paths.home(input.robotId), soul: paths.soul(input.robotId), dataDir: paths.dataDir, robotId: input.robotId })], { encoding: 'utf8' });
+    assert.notEqual(missing.status, 0); assert.match(missing.stderr, /WORKSPACE_UNAVAILABLE|workspace view is required/u);
     // The identity is checked when the service is created, before the model cache reads anything a robot wrote.
     const touched = path.join(root, 'probe-touched');
     await fs.writeFile(path.join(root, 'ala', 'src', 'coding-agents', 'discovery.mjs'), `import fs from 'node:fs';
 export const discoverCodingAgents = async () => [{ name: 'opencode', available: true, get binary() { fs.writeFileSync(${JSON.stringify(touched)}, ''); return '/missing'; } }];`);
     await fs.writeFile(path.join(root, 'ala', 'src', 'coding-agents', 'service.mjs'), `export const createCodingAgentService = () => { throw new Error('refused'); };`);
-    const refused = spawnSync(process.execPath, [script, JSON.stringify({ alaEntry, agent: 'opencode', cwd: input.cwd, identity, home: paths.home(input.robotId), soul: paths.soul(input.robotId), dataDir: paths.dataDir, robotId: input.robotId })], { encoding: 'utf8' });
+    const refused = spawnSync(process.execPath, [script, JSON.stringify({ alaEntry, agent: 'opencode', workspace, cwd: input.cwd, identity, home: paths.home(input.robotId), soul: paths.soul(input.robotId), dataDir: paths.dataDir, robotId: input.robotId })], { encoding: 'utf8' });
     assert.notEqual(refused.status, 0); assert.match(refused.stderr, /refused/u);
     await assert.rejects(fs.lstat(touched), { code: 'ENOENT' });
     // The operation receives the identity recorded where the path was granted.
@@ -650,6 +749,7 @@ export const discoverCodingAgents = async () => [{ name: 'opencode', available: 
     robots.require = async () => ({ id: input.robotId, codingAgents: ['codex'] });
     await robots.models({ robotId: input.robotId, agent: 'codex', cwd: input.cwd });
     assert.ok(launched.includes(`"identity":"${identity}"`), launched);
+    assert.ok(launched.includes(`"workspace":{"root":${JSON.stringify(paths.workspaceRoot)},"masks":[`), launched);
 });
 
 test('a refused tool reports its status, so RoboTeam can pass the reason on', async t => {

@@ -629,6 +629,8 @@ export function createRoboTeamServer(options) {
             if (pathname === '/api/robots' && req.method === 'GET') {
                 const listing = await authorizeRobotListing(req, url, { internalToken });
                 if (!listing.ok) return sendError(res, listing.status, listing.error);
+                // A page that only needs to know whether the viewer administers robots does not wait for every robot's status.
+                if (url.searchParams.get('view') === 'access') return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin });
                 const robots = await robotStore.list();
                 const remote = await runtimeManager.roboWork.call('robot_status', { robotIds: robots.map(robot => robot.id), includeLogins: listing.canAdmin });
                 const statuses = new Map(remote.robots.map(robot => [robot.id, robot]));

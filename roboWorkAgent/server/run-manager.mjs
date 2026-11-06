@@ -9,6 +9,7 @@ import { RunChannels, validateChannels } from './run-channels.mjs';
 import { buildPrivateLaunch } from './launch.mjs';
 import { codingAgentEnvironment } from './coding-agents.mjs';
 import { MOUNT_REFUSED_EXIT } from './environment.mjs';
+import { alaWorkspaceOptions, isHiddenWorkspaceEntry } from './workspace-view.mjs';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 
 export const LOG_CAP = 64 * 1024 * 1024;
@@ -113,23 +114,29 @@ export class RunManager {
         const channels = validateChannels(input.channels);
         const aliases = new Set(channels.map(channel => channel.alias)); aliases.add('roboteam-soul');
         const folders = [];
+        const workspace = await fs.realpath(this.paths.workspaceRoot).catch(() => this.paths.workspaceRoot);
+        const hidden = await this.paths.hiddenEntries();
+        // A target under a hidden name is refused even where no such entry exists yet.
+        const hiddenName = value => [this.paths.workspaceRoot, workspace].some(root => within(root, value)
+            && isHiddenWorkspaceEntry(path.relative(root, value).split(path.sep)[0]));
         for (const folder of input.folders || []) {
             if (!folder || typeof folder !== 'object' || Array.isArray(folder)) throw fail('INVALID_INPUT', 'Invalid folder grant');
             if (folder.expose !== undefined && typeof folder.expose !== 'boolean') throw fail('INVALID_INPUT', 'Invalid folder exposure');
             const source = await this.paths.grant(folder?.source);
             if (folder.alias !== undefined && (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/u.test(folder.alias) || aliases.has(folder.alias))) throw fail('FOLDER_REFUSED', 'Invalid folder alias');
             if (folder.alias) aliases.add(folder.alias);
-            if (folder.at !== undefined && (typeof folder.at !== 'string' || !path.isAbsolute(folder.at)
-                || path.normalize(folder.at) !== folder.at || folder.alias !== undefined || folder.at.includes('\0')
+            // The workspace is a read-only folder of every run, so a folder inside it can only be an export over it, at its own path.
+            const granted = folder.alias === undefined && folder.at === undefined && within(workspace, source) ? { ...folder, at: source, expose: true } : folder;
+            if (granted.at !== undefined && (typeof granted.at !== 'string' || !path.isAbsolute(granted.at)
+                || path.normalize(granted.at) !== granted.at || granted.alias !== undefined || granted.at.includes('\0')
                 || ['/data', '/usr', '/etc', '/proc', '/sys', '/dev', '/bin', '/sbin', '/lib', '/lib64']
-                    .some(root => within(root, folder.at) || within(folder.at, root))
-                || (within('/home', folder.at) && !within(this.paths.workspaceRoot, folder.at))
-                || [this.paths.dataDir, this.paths.privateRoot, path.join(this.paths.workspaceRoot, '.data'),
-                    path.join(this.paths.workspaceRoot, '.ploinky'), path.join(this.paths.workspaceRoot, '.env'), path.join(cwd, '.roboteam')]
-                    .some(root => within(root, folder.at) || within(folder.at, root))
-                || folder.at === '/workspace'
-                || aliases.has(folder.at.slice('/workspace/'.length)))) throw fail('FOLDER_REFUSED', 'Invalid folder target');
-            folders.push({ ...folder, source, identity: await this.paths.identity(source) });
+                    .some(root => within(root, granted.at) || within(granted.at, root))
+                || (within('/home', granted.at) && !within(this.paths.workspaceRoot, granted.at))
+                || [this.paths.dataDir, this.paths.privateRoot, ...hidden, path.join(cwd, '.roboteam')]
+                    .some(root => within(root, granted.at) || within(granted.at, root)) || hiddenName(granted.at)
+                || granted.at === '/workspace'
+                || aliases.has(granted.at.slice('/workspace/'.length)))) throw fail('FOLDER_REFUSED', 'Invalid folder target');
+            folders.push({ ...granted, source, identity: await this.paths.identity(source) });
         }
         for (const ignored of input.ignore || []) if (typeof ignored !== 'string' || !path.isAbsolute(ignored)) throw fail('INVALID_INPUT', 'Ignore path must be absolute');
         const requestedMcp = Array.isArray(ala.mcpServers) ? ala.mcpServers.join(',') : String(ala.mcpServers || '');
@@ -169,17 +176,25 @@ export class RunManager {
             check();
             const runtimeEnv = codingAgentEnvironment(tools, { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8',
                 ALA_SESSIONS: path.join(cwd, '.roboteam', '.ala') }, this.toolCache.root);
-            const args = ['--home', input.environment ? homeTarget(input.robotId) : this.paths.home(input.robotId), '--cwd', cwd, '--session-id', ala.sessionId,
+            const home = input.environment ? homeTarget(input.robotId) : this.paths.home(input.robotId);
+            const args = ['--home', home, '--cwd', cwd, '--session-id', ala.sessionId,
                 '--control-stdin', '--permissions', ala.permissions || 'full-access', '--expect-dir', `${cwdIdentity}:${cwd}`];
             if (ala.turnId) args.push('--turn-id', ala.turnId);
             if (ala.model) args.push('--model', ala.model);
             if (ala.effort) args.push('--effort', ala.effort);
             if (ala.ca) args.push('--ca', ala.ca);
             if (ala.resume) args.push('--resume-session');
-            // The run sees its home, its cwd, the folders granted for it and the service mounts below, never the workspace.
-            for (const ignored of [path.join(cwd, '.roboteam'), ...input.ignore || []]) {
+            // The run sees its home, its cwd writable, the workspace read-only with its private entries masked, the folders granted
+            // for it and the service mounts below. RoboWork adds the workspace; a caller cannot grant, widen or remove it. A start
+            // that cannot show it safely is refused here, with no process.
+            const view = await this.paths.workspaceView(input.robotId);
+            check();
+            const shown = alaWorkspaceOptions(view, { cwd, home, environment: Boolean(input.environment) });
+            for (const { source, target, expose } of shown.folders) args.push('--folder', source, ...(target ? ['at', target] : []), ...(expose ? ['expose'] : []));
+            for (const ignored of shown.ignoredPaths) args.push('--ignore', ignored);
+            for (const ignored of input.ignore || []) {
                 if (typeof ignored !== 'string' || !path.isAbsolute(ignored)) throw fail('INVALID_INPUT', 'Ignore path must be absolute');
-                if (ignored !== path.join(cwd, '.roboteam') && !await fs.lstat(ignored).catch(error => { if (error.code !== 'ENOENT') throw error; return null; })) continue;
+                if (!await fs.lstat(ignored).catch(error => { if (error.code !== 'ENOENT') throw error; return null; })) continue;
                 args.push('--ignore', ignored);
             }
             for (const [index, folder] of folders.entries()) {
@@ -206,7 +221,7 @@ export class RunManager {
                 const bundle = await this.runtimeBundle.prepare({ signal });
                 check();
                 launch = await this.environment.buildLaunch({ environment: input.environment, runId: input.runId, robotId: input.robotId,
-                    home: this.paths.home(input.robotId), cwd, cwdIdentity,
+                    home: this.paths.home(input.robotId), cwd, cwdIdentity, workspace: view,
                     toolCache: this.toolCache.root,
                     ala: { source: bundle.ala.path, target: '/opt/robowork-ala', entry: '/opt/robowork-ala/bin/ala.mjs' },
                     bwrap: { source: bundle.bwrap.bin, target: '/opt/robowork-bwrap' },

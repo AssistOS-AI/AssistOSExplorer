@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { validateConfig, assertBox, assertVictimUnchanged, assertRefused, assertDeleted, assertEmptyPrivateListing, decodeMcpResult, assertProtectedPathRefusal, sha256 } from './controller/contracts.mjs';
 import { BASELINE_REVISION, BASELINE_METHOD, BASELINE_DIRECTORIES, baselineSymlinkControl } from './controller/baseline-control.mjs';
-import { runVerifiedScenario, dualHome, manifests, grantRefusals, symlinkHelpers, safeDelete, workspaceStorage } from './controller-scenarios.mjs';
+import { runVerifiedScenario, dualHome, manifests, grantRefusals, symlinkHelpers, safeDelete, walkUpAndDiscovery, workspaceStorage } from './controller-scenarios.mjs';
 import { explorerProtectedListing } from './controller/explorer-api.mjs';
 import { ControllerRuntime } from './controller/runtime.mjs';
 import { FREE_MODEL } from './controller/robots.mjs';
@@ -210,6 +210,7 @@ function isolationFixture({ leak = false, mutateVictim = false, admitted = false
             if (tool === 'gui_stop') { assert.equal(running, false); return { ok: true, result: { state: 'stopped' } }; }
             if (tool === 'run_start' && input.tag?.padding) {
                 const target = input.folders[0]?.source || input.cwd;
+                if (input.folders[0]?.source === input.cwd) return { ok: false, code: 'FOLDER_REFUSED' };
                 const code = target.includes('controller-grants-') && !target.endsWith('victim-link') ? 'INVALID_INPUT'
                     : input.folders.length ? 'FOLDER_REFUSED' : 'CWD_REFUSED';
                 return { ok: false, code };
@@ -229,14 +230,79 @@ test('I2 exercises all seven helper operations and refuses victim mutation or ou
     for (const options of [{ leak: true }, { mutateVictim: true }]) await assert.rejects(symlinkHelpers(isolationFixture(options)));
 });
 
-test('I10 retains all fourteen refusals and fails without the native terminal prerequisite', async () => {
+test('I10 retains all eighteen refusals, proves the private workspace targets exist, and fails without the native terminal prerequisite', async () => {
     await assert.rejects(grantRefusals(isolationFixture()), error => {
         assert.equal(error.code, 'CONTROLLER_PREREQUISITE');
-        assert.equal(error.evidence.observations.length, 14);
+        assert.equal(error.evidence.observations.length, 18);
         assert.deepEqual(new Set(error.evidence.observations.map(row => row.code)), new Set(['CWD_REFUSED', 'FOLDER_REFUSED']));
+        // Both new targets are refused as a cwd and as a folder.
+        const hashes = new Set(error.evidence.observations.map(row => row.pathHash));
+        for (const target of ['/task/fixture/.data/roboTeamAgent', '/task/fixture/.ploinky-box']) assert.ok(hashes.has(sha256(target)), target);
         assert.equal(error.sentinel, undefined); return true;
     });
     await assert.rejects(grantRefusals(isolationFixture({ admitted: true })), /unexpectedly admitted a native run/u);
+    // A target the service cannot see would make its refusal meaningless, so the scenario stops before any refusal.
+    const runtime = isolationFixture();
+    const node = runtime.node;
+    runtime.node = async (id, body, input) => { if (input?.op === 'exists') throw new Error('Refusal target is not a directory: /task/fixture/.ploinky-box'); return node(id, body, input); };
+    await assert.rejects(grantRefusals(runtime), /Refusal target is not a directory/u);
+    assert.ok(!runtime.observations.includes('run_start'), 'No refusal was attempted against a target that was not proven to exist.');
+});
+
+function walkFixture({ recorderRan = true, discoveryEntries = [], turnEntries = [], siblingLoaded = false, parentLoaded = false, ownLoaded = true, discoveryFails = false, turnExit = 0 } = {}) {
+    const state = { discovered: false, turned: false }, calls = [], owned = new Map();
+    const record = entries => ({ cwd: '/task/fixture/controller-w1/child', entries });
+    return { config: config(), calls, state, probes: {
+        owned,
+        async create() { calls.push('create'); owned.set('owned-w1', {}); return 'owned-w1'; },
+        async remove(id) { assert.equal(id, 'owned-w1'); calls.push('delete'); owned.delete(id); return { ok: true, result: { deleted: true } }; },
+    }, async node(id, body, input) {
+        calls.push(`node:${input.op}`);
+        if (input.op === 'folders') return { ino: 1, dev: 2 };
+        if (input.op === 'observe') {
+            const records = !recorderRan ? [] : state.turned ? [record(discoveryEntries), record(turnEntries)] : state.discovered ? [record(discoveryEntries)] : [];
+            return { records, sibling: siblingLoaded, parent: parentLoaded, own: ownLoaded };
+        }
+        return true;
+    }, async mcp(tool, input) {
+        calls.push(tool);
+        if (tool === 'robot_models') { state.discovered = true; return { ok: !discoveryFails, result: [] }; }
+        if (tool === 'run_start' || tool === 'run_input') return { ok: true, result: {} };
+        if (tool === 'run_read') { state.turned = true; return { ok: true, result: { state: 'exited', exit: { code: turnExit }, next: 1, records: [{ seq: 1, stream: 'stdout', data: '' }] } }; }
+        if (tool === 'run_list') return { ok: true, result: [] };
+        if (tool === 'gui_stop') return { ok: true, result: { state: 'stopped' } };
+        throw new Error(`Unexpected tool ${tool}`);
+    } };
+}
+
+test('W1 passes only when the working folder canary ran, the parent and sibling canaries stayed silent and the home recorder saw an empty .data twice', async () => {
+    const runtime = walkFixture();
+    const result = await walkUpAndDiscovery(runtime);
+    assert.deepEqual(result.markers, { own: true, parent: false, sibling: false });
+    assert.equal(result.discoveryRecords, 2);
+    assert.ok(runtime.calls.indexOf('robot_models') < runtime.calls.indexOf('run_start'), 'Discovery precedes the turn');
+    assert.equal(runtime.calls.at(-1), 'node:remove'); assert.ok(runtime.calls.includes('delete'));
+});
+
+test('W1 fails for each hole it can see and still removes what it created', async () => {
+    const fails = async (options, pattern) => {
+        const runtime = walkFixture(options);
+        await assert.rejects(walkUpAndDiscovery(runtime), pattern, JSON.stringify(options));
+        assert.equal(runtime.calls.at(-1), 'node:remove', 'The owned folders are removed');
+        assert.ok(runtime.calls.includes('delete') && runtime.probes.owned.size === 0, 'The owned robot is removed');
+    };
+    await fails({ siblingLoaded: true }, /sibling folder plugin was loaded/u);
+    await fails({ parentLoaded: true }, /parent folder plugin was loaded/u);
+    await fails({ ownLoaded: false }, /working folder canary did not run/u);
+    await fails({ recorderRan: false }, /home plugin never ran during model discovery/u);
+    await fails({ discoveryEntries: ['.private'] }, /Discovery saw workspace \.data entries/u);
+    await fails({ turnEntries: ['.private'] }, /robot saw workspace \.data entries/u);
+    await fails({ discoveryFails: true }, /Model discovery failed/u);
+    await fails({ turnExit: 5 }, /probe turn failed/u);
+    // A recorder that ran only in discovery proves nothing about the turn.
+    const runtime = walkFixture(); const mcp = runtime.mcp;
+    runtime.mcp = async (tool, input) => { const answer = await mcp(tool, input); if (tool === 'run_read') runtime.state.turned = false; return answer; };
+    await assert.rejects(walkUpAndDiscovery(runtime), /never ran during the turn/u);
 });
 
 test('I11 uses a newly provisioned deletion target and rejects changed victim bytes or modes', async () => {

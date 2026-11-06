@@ -26,6 +26,25 @@ const OWNER_PRINCIPAL = /^user:.+/u;
 const TRANSCRIPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const MESSAGE_TIMEOUT_MS = 35000;
 const PREDECESSOR_TIMEOUT_MS = 35000;
+const TASK_PREVIEW_LIMIT = 1024;
+const REATTACHED_TASK_PROMPT = 'Reattached task';
+
+// RoboWork returns the run tag in every inventory and caps it at 64 KiB. A
+// workflow prompt alone may reach 1 MiB, so the tag keeps what reattachment
+// and ownership need and only a short preview of the prompt. An attaching
+// wrapper never sends a prompt to the run.
+function runTaskTag(task, robot) {
+    const { task: prompt, systemPrompt: _systemPrompt, ...request } = task.request;
+    return { taskId: task.taskId, type: task.type, robotName: robot.name,
+        request: { ...request, taskPreview: typeof prompt === 'string' ? prompt.slice(0, TASK_PREVIEW_LIMIT) : '' },
+        ownerPrincipal: task.request.ownerPrincipal || null };
+}
+
+function reattachedTaskRequest(tag) {
+    const { taskPreview, ...request } = tag.request;
+    const task = [request.task, taskPreview].find(value => typeof value === 'string' && value.trim()) || REATTACHED_TASK_PROMPT;
+    return { ...request, task };
+}
 function appendTail(previous, chunk, limit) {
     const next = `${previous}${chunk}`;
     return next.length > limit ? next.slice(-limit) : next;
@@ -197,7 +216,7 @@ export class RuntimeManager {
             if (run.tag?.kind !== 'task') continue;
             const robot = await this.robotStore?.get(run.robotId);
             if (!robot || !run.tag.taskId || !run.tag.request) continue;
-            const request = { ...run.tag.request, runtimeTaskId: run.tag.taskId,
+            const request = { ...reattachedTaskRequest(run.tag), runtimeTaskId: run.tag.taskId,
                 alaSessionId: run.tag.sessionId, resumeSession: true,
                 ...(run.tag.ownerPrincipal ? { ownerPrincipal: run.tag.ownerPrincipal } : {}) };
             const task = this._newTask(robot, run.tag.type, request);
@@ -489,8 +508,7 @@ export class RuntimeManager {
             this._emitTaskEvent({ kind: 'state', robotId: robot.id, taskId: task.taskId, state: 'running' });
             await Promise.resolve();
             const childEnv = { ...process.env, ALA_EVENT_STREAM: '1',
-                ROBOTEAM_TASK_TAG: JSON.stringify({ taskId: task.taskId, type: task.type, robotName: robot.name,
-                    request: task.request, ownerPrincipal: task.request.ownerPrincipal || null }),
+                ROBOTEAM_TASK_TAG: JSON.stringify(runTaskTag(task, robot)),
                 ...(task.attachContext?.assistantMessageId ? { ROBOTEAM_ATTACH_RUN: JSON.stringify(task.attachContext) } : {}) };
             delete childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
             if (task.request.allowsHumanInput) {
@@ -531,6 +549,11 @@ export class RuntimeManager {
             const progressParser = createAlaProgressParser(appendProgress, (event) => {
                 if (event.type === 'run-started' && typeof event.runId === 'string') task.runId = event.runId;
                 if (event.type === 'task-failed' && typeof event.message === 'string') forcedFailure ||= new Error(event.message);
+                if (event.type === 'coding-agent-selected' && typeof event.agent === 'string') {
+                    const text = value => typeof value === 'string' && value ? value : null;
+                    task.codingAgent = { agent: event.agent, model: text(event.model), effort: text(event.effort) };
+                    this._emitTaskEvent({ kind: 'agent', robotId: robot.id, taskId: task.taskId, ...task.codingAgent });
+                }
                 if (event.type === 'skill-catalog') task.skillExecution = { revision: event.revision, policyVersion: event.policyVersion };
                 // Only the identifiers of the first turn are kept, never the event body.
                 if (event.type === 'turn-started' && !task.transcriptRef

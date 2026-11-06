@@ -39,3 +39,31 @@ test('a credential variable of the server never reaches the helper that detects 
     }
     assert.equal(JSON.stringify([args, options.env]).includes(SENTINEL), false);
 });
+
+test('the in-service status reads only the robot home: no server credential and no login reached through a link', async t => {
+    const { robotStatus } = await import('../server/home-op.mjs');
+    const { nativeEnvironment } = await import('../server/native-environment.mjs');
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'rw-status-')));
+    const previous = process.env.OPENAI_API_KEY;
+    t.after(async () => {
+        if (previous === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previous;
+        await fs.rm(root, { recursive: true, force: true });
+    });
+    process.env.OPENAI_API_KEY = SENTINEL;
+    const home = path.join(root, 'robot-a'), other = path.join(root, 'robot-b');
+    const auth = JSON.stringify({ openai: { type: 'oauth' } });
+    await fs.mkdir(path.join(other, '.local', 'share', 'opencode'), { recursive: true });
+    await fs.writeFile(path.join(other, '.local', 'share', 'opencode', 'auth.json'), auth);
+    await fs.mkdir(home);
+    const status = () => robotStatus(home, { includeLogins: true, codingAgents: ['opencode'] }, { env: nativeEnvironment({ PATH: '/usr/bin:/bin' }, home) });
+    // The server's own provider key is not a robot login.
+    assert.deepEqual((await status()).logins, { codex: false, opencode: false, pi: false, claude: false });
+    // Another home's login reached through a linked parent directory is not this robot's.
+    await fs.symlink(path.join(other, '.local'), path.join(home, '.local'));
+    assert.equal((await status()).logins.opencode, false);
+    // The robot's own login is.
+    await fs.rm(path.join(home, '.local'));
+    await fs.mkdir(path.join(home, '.local', 'share', 'opencode'), { recursive: true });
+    await fs.writeFile(path.join(home, '.local', 'share', 'opencode', 'auth.json'), auth);
+    assert.deepEqual(await status(), { activeAgent: 'opencode', logins: { codex: false, opencode: true, pi: false, claude: false } });
+});

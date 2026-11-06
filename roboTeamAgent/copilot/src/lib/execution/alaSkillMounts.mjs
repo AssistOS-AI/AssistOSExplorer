@@ -34,8 +34,14 @@ export async function skillOverlayTargets(cwd) {
     return { targets: [...new Set(places.values())], skipped };
 }
 
-// Every skill source is mounted, because a robot sees only its home, its cwd and
-// the folders granted for the run, never the workspace around them.
+// The required skill that reports a task as blocked. Its source can sit below `.ploinky/repos`, which RoboWork masks in the
+// workspace view, and ALA empties a folder that is not exported when a mask covers its source. The export keeps it readable.
+export function reportTaskBlockedFolder(source) {
+    return { source, alias: 'report-task-blocked', expose: true };
+}
+
+// Every skill source is mounted under an alias of its own or at a path of its own, never through the workspace view: a
+// source keeps its alias because the masks of that view may hide its canonical path.
 export function alaSkillMountArguments({ snapshot, cwd, targets = [path.join(cwd, '.agents', 'skills'), path.join(cwd, '.claude', 'skills')] }) {
     if (!snapshot.skillsDirectory) return [];
     const args = [];

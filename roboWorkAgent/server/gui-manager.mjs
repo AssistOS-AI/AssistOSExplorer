@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 import { MOUNT_REFUSED_EXIT } from './environment.mjs';
 import { RobotPaths, assertPrivateDirectory, directoryIdentity, fail, pinDirectory } from './robot-paths.mjs';
+import { podmanWorkspaceArguments } from './workspace-view.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
 import { ProxySettings } from './proxy-pool/proxy-settings.mjs';
 import { CHROMIUM_POLICY_TARGET, CONTAINER_PROXY_PORT, writeChromiumProxyPolicy } from './proxy-pool/chromium-policy.mjs';
@@ -86,8 +87,11 @@ function chromiumLanguageFlag(lang) {
     return lang && lang !== 'en-US' ? ` --lang=${lang}` : '';
 }
 
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, proxy = null, cwdIdentity = null, cwdSource = cwd, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
+// `workspaceArgs` is the Podman form of the workspace view (`podmanWorkspaceArguments(view, { volumeFlag: '-v' })`): the
+// workspace read-only with its masks. It is empty only where the view cannot be shown safely; a caller must still pass it.
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, workspaceArgs, proxy = null, cwdIdentity = null, cwdSource = cwd, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
+    if (!Array.isArray(workspaceArgs)) throw new Error('workspaceArgs must carry the workspace view, empty where it cannot be shown');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     if (proxy && (!Number.isInteger(proxy.relayPort) || proxy.relayPort < 1 || proxy.relayPort > 65535 || !path.isAbsolute(String(proxy.policyFile || '')))) {
         throw new Error('proxy needs a relay port and an absolute policy file');
@@ -132,6 +136,8 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             ] : []),
             '-v', `${homePath}:/config`, '-v', `${homePath}:${homeTarget}`,
             '-v', `${soulPath}:/workspace/roboteam-soul`,
+            // The workspace is mounted before the working folder, which is mounted over it.
+            ...workspaceArgs,
             // The folder's private data holds records RoboTeam acts on; a session needs nothing from it.
             ...(cwd === homeTarget ? [] : ['-v', `${cwdSource}:${cwd}:rw`, '--tmpfs', `${cwd}/.roboteam:ro,size=4k,mode=0555,notmpcopyup`]),
             '-w', cwd,
@@ -318,8 +324,12 @@ export class GuiManager {
             if (cwdIdentity) await assertPrivateDirectory(cwd, 'CWD_REFUSED');
             const pin = cwdIdentity ? await pinDirectory(cwd, cwdIdentity, 'CWD_REFUSED') : null;
             try {
+                // Computed last, so the masks and writable submounts are those of this start. A view that cannot be shown safely
+                // ends the session here, before a container exists.
+                const view = await this.paths.workspaceView(robotId);
+                const workspaceArgs = podmanWorkspaceArguments(view, { cwd, volumeFlag: '-v' });
                 const plan = buildRobotRunArgs({ robot: { ...robot, id: robotId }, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images,
-                    timezone: locale?.timezone || this.timezone, locale, cwd, cwdIdentity, cwdSource: pin?.source || cwd, toolsPath: tools.path, shellTools, proxy });
+                    timezone: locale?.timezone || this.timezone, locale, cwd, cwdIdentity, cwdSource: pin?.source || cwd, toolsPath: tools.path, shellTools, workspaceArgs, proxy });
                 Object.assign(session, { containerName: plan.containerName, sessionUrl: plan.subfolder });
                 check();
                 await this.execFileImpl(this.podmanCommand, plan.args, { timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: process.env, signal });

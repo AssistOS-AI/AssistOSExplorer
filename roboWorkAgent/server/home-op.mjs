@@ -32,6 +32,7 @@ export function createHomeOperations({ paths, alaEntry, toolCache, execFileImpl 
     };
 }
 
+const CONFIG_LIMIT = 1024 * 1024;
 const isRecord = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 // Without ALA the saved choice is read directly. An unsafe path or a file ALA would reject still fails, so a refused home never looks empty.
@@ -53,6 +54,48 @@ async function savedCodingAgent(home, agentConfigPath, names) {
     return config.codingAgent;
 }
 
+// Whether a directory, or the nearest part of it that exists, resolves inside the home. A login directory
+// reached through a link to another home or anywhere else counts as no login.
+async function insideHome(directory, homeReal) {
+    for (let current = directory; ; current = path.dirname(current)) {
+        try {
+            const real = await fs.realpath(current);
+            return real === homeReal || real.startsWith(homeReal + path.sep);
+        } catch (error) {
+            if (error.code !== 'ENOENT' || current === path.dirname(current)) return false;
+        }
+    }
+}
+
+// The status of one home only reads it: the configured agent through the same refusals as ALA, and each
+// login through ALA's passive detection, which opens only bounded regular files and follows no final link.
+// It runs in the service, so `env` must be the robot's own environment and never the service's.
+export async function robotStatus(home, input = {}, { env, api = null, unavailable = false, alaEntry } = {}) {
+    const { agentConfigPath } = await import('./agent-model-config.mjs');
+    const { resolveAlaInstallation } = await import('./ala-installation.mjs');
+    const { CODING_AGENT_NAMES, normalizeCodingAgents } = await import('./coding-agents.mjs');
+    if (!api && !unavailable) {
+        try { api = await resolveAlaInstallation({ entry: alaEntry }); }
+        catch { unavailable = true; }
+    }
+    const enabled = input.codingAgents === undefined ? CODING_AGENT_NAMES : normalizeCodingAgents(input.codingAgents);
+    const configFile = await agentConfigPath(home);
+    const configEntry = await fs.lstat(configFile).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
+    if (configEntry && configEntry.size > CONFIG_LIMIT) throw new Error('Invalid ALA model configuration');
+    const configured = unavailable ? await savedCodingAgent(home, agentConfigPath, CODING_AGENT_NAMES) : (await api.loadConfig(await agentConfigPath(home))).codingAgent;
+    const activeAgent = enabled.includes(configured) ? configured : enabled[0];
+    if (unavailable) return { activeAgent, alaUnavailable: true,
+        ...(input.includeLogins ? { logins: Object.fromEntries(CODING_AGENT_NAMES.map(name => [name, false])) } : {}) };
+    if (!input.includeLogins) return { activeAgent };
+    const homeReal = await fs.realpath(home);
+    const logins = Object.fromEntries(await Promise.all(CODING_AGENT_NAMES.map(async name => {
+        const files = api.codingAgentLoginFiles(name, { env });
+        const contained = (await Promise.all(files.map(file => insideHome(path.dirname(file), homeReal)))).every(Boolean);
+        return [name, contained && Boolean((await api.detectCodingAgentLogin(name, { env })).loggedIn)];
+    })));
+    return { activeAgent, logins };
+}
+
 export async function homeOperation(operation, input, home = process.env.HOME) {
     if (operation === 'delete') {
         for (const entry of await fs.readdir(home)) await fs.rm(path.join(home, entry), { recursive: true, force: true });
@@ -61,7 +104,6 @@ export async function homeOperation(operation, input, home = process.env.HOME) {
     const { prepareRobotShell } = await import('./robot-shell.mjs');
     const { ensureAgentConfig, DEFAULT_OPENCODE_MODEL, agentConfigPath } = await import('./agent-model-config.mjs');
     const { resolveAlaInstallation } = await import('./ala-installation.mjs');
-    const { CODING_AGENT_NAMES, normalizeCodingAgents } = await import('./coding-agents.mjs');
     if (operation === 'desktop-launchers') {
         const { prepareDesktopLaunchers } = await import('./desktop-launchers.mjs');
         return await prepareDesktopLaunchers(home, input) || { ok: true };
@@ -76,16 +118,7 @@ export async function homeOperation(operation, input, home = process.env.HOME) {
     let unavailable = false;
     try { api = await resolveAlaInstallation({ entry: process.env.ROBOWORK_ALA_ENTRY }); }
     catch (error) { if (operation !== 'status') throw error; unavailable = true; }
-    if (operation === 'status') {
-        const enabled = input.codingAgents === undefined ? CODING_AGENT_NAMES : normalizeCodingAgents(input.codingAgents);
-        const configured = unavailable ? await savedCodingAgent(home, agentConfigPath, CODING_AGENT_NAMES) : (await api.loadConfig(await agentConfigPath(home))).codingAgent;
-        const activeAgent = enabled.includes(configured) ? configured : enabled[0];
-        if (unavailable) return { activeAgent, alaUnavailable: true,
-            ...(input.includeLogins ? { logins: Object.fromEntries(CODING_AGENT_NAMES.map(name => [name, false])) } : {}) };
-        const logins = input.includeLogins ? Object.fromEntries(await Promise.all(CODING_AGENT_NAMES.map(async name =>
-            [name, Boolean((await api.detectCodingAgentLogin(name, { env: process.env })).loggedIn)]))) : undefined;
-        return { activeAgent, ...(logins ? { logins } : {}) };
-    }
+    if (operation === 'status') return robotStatus(home, input, { env: process.env, api, unavailable });
     const config = await api.loadConfig(await agentConfigPath(home));
     const agents = await api.discoverCodingAgents({ env: process.env });
     if (operation === 'config') return { homeTarget: home, ...config, defaultModels: { opencode: DEFAULT_OPENCODE_MODEL },

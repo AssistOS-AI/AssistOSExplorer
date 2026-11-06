@@ -3,6 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { resolveAlaInstallation } from './ala-installation.mjs';
 import { createOpenCodeModelCache } from './opencode-model-cache.mjs';
+import { alaWorkspaceOptions } from './workspace-view.mjs';
 
 // Runs only in the per-robot mount and network namespaces, before any native model query.
 const input = JSON.parse(process.argv[2]);
@@ -28,12 +29,14 @@ const gateway = async () => ({ async request(operation, body, querySignal) {
 const cache = input.agent === 'opencode' ? createOpenCodeModelCache({ root: input.dataDir, robotId: input.robotId, connect: gateway }) : null;
 const config = { agents, api, cwd: input.cwd, home: input.home, env };
 // A native catalog query runs OpenCode in the working folder, where other robots' conversations must stay hidden like
-// in a run. The mask needs an existing directory, and the robot home has no such folder.
-const ignoredPaths = input.cwd === input.home ? [] : [path.join(input.cwd, '.roboteam')];
+// in a run, and next to the same read-only view of the workspace with its private entries masked.
+const shown = alaWorkspaceOptions(input.workspace, { cwd: input.cwd, home: input.home });
+const ignoredPaths = shown.ignoredPaths;
 const service = api.createCodingAgentService({ agents, home: input.home, workspace: input.cwd, cwd: input.cwd, env,
-    workspaceIdentity: input.identity, ignoredPaths, folders: [{ source: input.soul, alias: 'roboteam-soul' }] });
+    workspaceIdentity: input.identity, ignoredPaths, folders: [...shown.folders, { source: input.soul, alias: 'roboteam-soul' }] });
 try {
-    for (const mask of ignoredPaths) await fs.mkdir(mask, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+    // The mask needs an existing directory, and the robot home has no such folder. The workspace masks exist or are absent.
+    if (input.cwd !== input.home) await fs.mkdir(path.join(input.cwd, '.roboteam'), { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
     const probe = cache ? await cache.probe(config, signal).catch(() => null) : null;
     const models = probe?.models || await service.listModels(input.agent, { signal, details: true });
     if (cache && !probe?.models) await cache.store(probe, models).catch(() => false);

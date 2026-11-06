@@ -309,7 +309,7 @@ async function selectionFixture() {
         phaseSelectionExplicit: false, stageView: 'empty', logRequest: null,
         document: { querySelector: () => null }, renderHeader() {}, renderPhases() {}, renderGraph() {},
         showRightView(view) { context.rightView = view; },
-        renderStage() { redraws++; }, liveUpdates: { reconnect() { reconnects++; } },
+        renderStage() { redraws++; }, renderStageTitle() {}, liveUpdates: { reconnect() { reconnects++; } },
         invocationLogKey: instance => instance.id, loadLog(instance) { context.logRequest = { key: instance.id, finalResponse: instance.finalResponse }; } };
     context.instanceForTask = taskId => [...context.currentFlow.instances].reverse().find(instance => instance.taskId === taskId);
     vm.runInNewContext(js.slice(js.indexOf('function selectDefaultPhase('), js.indexOf('function showGraph(')), context);
@@ -426,7 +426,7 @@ test('a phase opens on Logs with its name, state, prompt and settings in a Statu
         document: { createElement: make, querySelector: selector => ({ '#stageBody': body, '#stageTitle': title })[selector] },
         element: (tag, text) => Object.assign(make(tag), { textContent: text }), api: path => path,
         renderPhaseHeader: header => { placed.header = header; }, renderPhaseDetail: detail => { placed.detail = detail; },
-        renderPhaseComposer() {}, loadLog() {}, renderSubflows() {} };
+        renderPhaseComposer() {}, loadLog() {}, renderSubflows() {}, renderStageTitle() {} };
     vm.runInNewContext(js.slice(js.indexOf('function renderStage('), js.indexOf('function renderSubflows(')), context);
     vm.runInNewContext(js.slice(js.indexOf('function phaseTab('), js.indexOf('function renderPhaseHeader(')), context);
     context.renderStage();
@@ -443,4 +443,19 @@ test('a phase opens on Logs with its name, state, prompt and settings in a Statu
     // Selecting another phase renders it on the tab chosen last.
     context.renderStage();
     assert.deepEqual(body.children[0].children.slice(1).filter(panel => !panel.hidden).map(panel => panel.className), ['phase-status']);
+});
+
+test('the Phase logs title names the robot, coding agent and model of the phase as they become known', async () => {
+    const js = await read('roboflow.js');
+    const title = { dataset: {}, children: [], replaceChildren(...children) { this.children = children; }, append(...children) { this.children.push(...children); } };
+    const context = { document: { querySelector: () => title }, element: (tag, text) => ({ tag, textContent: text }) };
+    vm.runInNewContext(js.slice(js.indexOf('const CODING_AGENT_LABELS'), js.indexOf('function renderStageTitle(')), context);
+    vm.runInNewContext(js.slice(js.indexOf('function renderStageTitle('), js.indexOf('const api = path =>')), context);
+    context.renderStageTitle({ robotName: 'scout' });
+    assert.deepEqual(title.children.map(child => child.textContent ?? child), ['Phase logs', 'scout']);
+    context.renderStageTitle({ robotName: 'scout', codingAgent: 'claude', model: 'opus', effort: 'high' });
+    assert.equal(title.children[1].textContent, 'scout · Claude Code · opus (high)');
+    assert.equal(title.children[1].title, 'Robot: scout\nCoding agent: Claude Code\nModel: opus (high)');
+    context.renderStageTitle(null);
+    assert.deepEqual(title.children, ['Phase logs']);
 });
