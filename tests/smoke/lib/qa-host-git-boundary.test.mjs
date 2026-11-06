@@ -38,6 +38,8 @@ const REVIEWED = [
     ['.github/workflows/deploy-explorer-qa-ploinky.yml', /git ls-remote --symref "\$PLOINKY_URL" HEAD|^git clone --quiet --branch "\$BRANCH" "\$PLOINKY_URL" "\$CHECKOUT"$|git -C "\$CHECKOUT" /, 7, 'BOOTSTRAP_OUTSIDE_BOX'],
     ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^git -C "\$GITHUB_WORKSPACE\/\.qa-bizanso-source" archive --format=tar HEAD \| run_in_box "\$COPY_PROGRAM"$/, 1, 'runs on the GitHub runner, in a checkout actions/checkout just created; no Box can write it'],
     ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^if \[ ! -e ScriptaHubAgent \]; then git clone --quiet "\$url" ScriptaHubAgent; fi$|^test "\$\(git -C ScriptaHubAgent remote get-url origin\)" = "\$url"'$/, 2, 'a program run inside the Box through podman exec, never on the host'],
+    ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^PROMOTIONSCOUT_BRANCH="\$\(git -C "\$PROMOTIONSCOUT_SOURCE" symbolic-ref --short HEAD\)"$|^git -C "\$PROMOTIONSCOUT_SOURCE" bundle create - "refs\/heads\/\$PROMOTIONSCOUT_BRANCH" \| run_in_box "\$BUNDLE_PROGRAM"$/, 2, 'runs on the GitHub runner, in a checkout actions/checkout just created; no Box can write it'],
+    ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^heads=\$\(git bundle list-heads |^git -c core\.hooksPath=\/dev\/null clone --quiet --branch |^git -C "\$stage\/clone" remote set-url |git -C PromotionScoutV2 (?:remote get-url|symbolic-ref)|git -c core\.hooksPath=\/dev\/null -c core\.fsmonitor=false -C PromotionScoutV2 (?:fetch --quiet|status --porcelain|merge-base --is-ancestor|merge --quiet --ff-only)/, 9, 'a program run inside the Box through podman exec, never on the host; every Git call there is a reviewed fixed form'],
     ['.github/workflows/destroy-explorer-qa-ploinky.yml', /git ls-remote --symref "\$PLOINKY_URL" HEAD|^git clone --quiet --branch "\$BRANCH" "\$PLOINKY_URL" "\$CHECKOUT"$|git -C "\$CHECKOUT" /, 7, 'BOOTSTRAP_OUTSIDE_BOX'],
     ['.github/scripts/rollback-explorer-qa.mjs', /./, 7, 'IN_SANDBOX'],
     ['.github/scripts/rollback-explorer-qa.mjs', /'--entrypoint=\/usr\/bin\/git', image,/, 1, 'sandbox container entrypoint'],
@@ -45,7 +47,8 @@ const REVIEWED = [
     ['.github/scripts/update-explorer-qa.mjs', /'git-objects-only'/, 1, 'receipt label: the fetch changes only Git objects'],
     // Tests the QA workflows run on the GitHub runner. None touches a Box or a workspace.
     ['tests/smoke/lib/deploy-qa-destroy-workflow.test.mjs', /'podman', 'docker', 'sudo', 'git', 'ploinky'/, 1, 'stub tool names the destroy test proves are never run'],
-    ['tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs', /assert\.equal\(spawnSync\('git', args, \{ cwd: root \}\)\.status, 0\);|^git\(\) \{ echo archive; \}$/, 2, 'a temporary repository and a stub function in the test, on the runner; no Box'],
+    ['tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs', /assert\.equal\(spawnSync\('git', args, \{ cwd: root \}\)\.status, 0\);|^git\(\) \{ case "\$\*" in \*symbolic-ref\*\) echo main ;; \*\) echo archive ;; esac; \}$/, 2, 'a temporary repository and a stub function in the test, on the runner; no Box'],
+    ['tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs', /git\((?:source|repo), |^const git = \(cwd, \.\.\.args\) => \{$|spawnSync\('git', \['-c', 'user\.email|spawnSync\('git', \['-C', source, 'bundle'/, 16, 'a temporary repository and its bundle in the test, on the runner; no Box'],
     ['tests/smoke/lib/qa-teardown.test.mjs', /spawnSync\('git', \['-C', REPOSITORY, 'show'/, 1, 'reads this repository\'s own history on the runner; no Box'],
     ['tests/smoke/lib/retired-source-absence.test.mjs', /execFileSync\('git', \['ls-files'/, 1, 'GitHub-hosted runner over the repository checkout; no Box'],
 ];
