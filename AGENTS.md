@@ -99,7 +99,11 @@ needed to complete that selected task.
   and `destroy-explorer-qa.yml` (one `delete_data` checkbox: unchecked keeps
   the QA data, checked deletes it), plus `deploy-explorer-qa-ploinky.yml` and
   `destroy-explorer-qa-ploinky.yml`, which drive the same target through Ploinky
-  commands with the differences that `docs/deploy-explorer-qa.md` lists. Inspect the dispatched revision, inputs,
+  commands with the differences that `docs/deploy-explorer-qa.md` lists, plus
+  `deploy-explorer-qa-bizanso.yml` and `deploy-explorer-qa-scriptahub.yml`
+  (no inputs), which update only that product inside the running Box
+  ("Product workflows" in `docs/deploy-explorer-qa.md`).
+  Inspect the dispatched revision, inputs,
   exact target, ownership guards, secret prerequisites, and branch/fallback
   behavior before invocation.
 - This repository no longer deploys `skills.axiologic.dev`. Its
