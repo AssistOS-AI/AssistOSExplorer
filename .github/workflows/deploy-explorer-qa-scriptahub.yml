@@ -944,7 +944,7 @@ jobs:
             exit 1
           fi
           if ! PULL_OUTPUT="$(printf '%s\n%s\n' "$AGENT_REF" "$ROBOT_REF" | run_in_box "$SCRIPTAHUB_PULL_PROGRAM")"; then
-            echo "::error::Pulling the ScriptaHub images inside the Box failed; the checkout and the agents were not changed."
+            echo "::error::Pulling the ScriptaHub images inside the Box failed. Either image may be pulled and its :runtime tag moved; the checkout and the agents were not changed."
             exit 1
           fi
           pulled() { sed -n "s/^$1=//p" <<< "$PULL_OUTPUT" | tail -n 1; }
@@ -954,11 +954,11 @@ jobs:
           ROBOTEAM_ID="$(pulled ROBOTEAM_ID)"
           if [[ ! "$ROBOTEAM_ID" =~ ^[a-f0-9]{64}$ ]]; then ROBOTEAM_ID=''; fi
           if [[ ! "$AGENT_ID" =~ ^[a-f0-9]{64}$ ]] || [[ ! "$ROBOT_ID" =~ ^[a-f0-9]{64}$ ]]; then
-            echo "::error::The pull did not report both image IDs; the checkout and the agents were not changed."
+            echo "::error::The pull did not report both image IDs. The images may be pulled and their :runtime tags moved; the checkout and the agents were not changed."
             exit 1
           fi
           if [ "$ROBOT_REVISION" != "$SCRIPTA_ROBOT_REVISION" ]; then
-            echo "::error::The pulled robot image carries revision '$(printable "$ROBOT_REVISION")', not $SCRIPTA_ROBOT_REVISION, so the published tag moved during this run. The images were pulled; the checkout and the agents were not changed."
+            echo "::error::The pulled robot image carries revision '$(printable "$ROBOT_REVISION")', not $SCRIPTA_ROBOT_REVISION, so the published tag moved during this run. The images were pulled and the :runtime tags of docker.io/assistos/scriptahub-agent and docker.io/assistos/scriptahub-robot now name the pulled images; the checkout and the agents were not changed."
             exit 1
           fi
           CHECKOUT_MOVES=false
@@ -979,18 +979,18 @@ jobs:
             fi
             if [ "$CHECKOUT_MOVES" = true ]; then
               if ! printf '%s\n%s\n' "$SCRIPTA_HEAD" "$SCRIPTA_BRANCH" | run_in_box "$SCRIPTAHUB_MERGE_PROGRAM"; then
-                echo "::error::Post-mutation failure: the images were pulled, but the ScriptaHub checkout could not be fast-forwarded to $SCRIPTA_HEAD (it stays at $OLD_HEAD unless Git moved it). Nothing was retagged or restarted."
+                echo "::error::Post-mutation failure: the images were pulled and the :runtime tags of docker.io/assistos/scriptahub-agent and docker.io/assistos/scriptahub-robot now name the pulled images, but the ScriptaHub checkout could not be fast-forwarded to $SCRIPTA_HEAD (it stays at $OLD_HEAD unless Git moved it). roboteam-agent:runtime was not retagged and nothing was restarted."
                 exit 1
               fi
               # Post-mutation check: the copied paths of the moved checkout must be the ones the robot image was built from.
               if ! MOVED_OUTPUT="$(run_in_box "$SCRIPTAHUB_READ_PROGRAM" < /dev/null)"; then
-                echo "::error::Post-mutation failure: the moved ScriptaHub checkout could not be read back. Nothing was retagged or restarted."
+                echo "::error::Post-mutation failure: the images were pulled and the :runtime tags of docker.io/assistos/scriptahub-agent and docker.io/assistos/scriptahub-robot now name the pulled images, and the ScriptaHub checkout moved, but it could not be read back. roboteam-agent:runtime was not retagged and nothing was restarted."
                 exit 1
               fi
               NEW_HEAD="$(sed -n 's/^HEAD=//p' <<< "$MOVED_OUTPUT" | tail -n 1)"
               NEW_COPIED="$(sed -n 's/^COPIED=//p' <<< "$MOVED_OUTPUT" | tail -n 1)"
               if [ "$NEW_COPIED" != "$SCRIPTA_COPIED_TREES" ]; then
-                echo "::error::Post-mutation failure: the ScriptaHub checkout moved to $(printable "$NEW_HEAD"), but its copied trees ($(printable "$NEW_COPIED")) are not the ones the robot image was built from ($SCRIPTA_COPIED_TREES). Nothing was retagged or restarted; the checkout is left moved."
+                echo "::error::Post-mutation failure: the ScriptaHub checkout moved to $(printable "$NEW_HEAD"), but its copied trees ($(printable "$NEW_COPIED")) are not the ones the robot image was built from ($SCRIPTA_COPIED_TREES). The images were pulled and the :runtime tags of docker.io/assistos/scriptahub-agent and docker.io/assistos/scriptahub-robot now name the pulled images. roboteam-agent:runtime was not retagged and nothing was restarted; the checkout is left moved."
                 exit 1
               fi
               if [ "$NEW_HEAD" != "$SCRIPTA_HEAD" ]; then
@@ -999,7 +999,7 @@ jobs:
             fi
             if [ "$ROBOT_CHANGES" = true ]; then
               if ! printf '%s\n' "$ROBOT_ID" | run_in_box "$SCRIPTAHUB_TAG_PROGRAM"; then
-                echo "::error::Post-mutation failure: the ScriptaHub checkout is at $(printable "$NEW_HEAD"), but the robot image could not be tagged as roboteam-agent:runtime. Nothing was restarted."
+                echo "::error::Post-mutation failure: the ScriptaHub checkout is at $(printable "$NEW_HEAD"), but the robot image could not be tagged as roboteam-agent:runtime (the :runtime tags of docker.io/assistos/scriptahub-agent and docker.io/assistos/scriptahub-robot now name the pulled images). Nothing was restarted."
                 exit 1
               fi
             fi
@@ -1008,7 +1008,7 @@ jobs:
             RESTART_STATUS=0
             restart_product whole || RESTART_STATUS=$?
             if [ "$RESTART_STATUS" -ne 0 ]; then
-              echo "::error::Post-mutation failure: the ScriptaHub checkout is at $(printable "$NEW_HEAD") and the images are pulled and tagged, but the whole-workspace restart did not complete (exit $RESTART_STATUS)."
+              echo "::error::Post-mutation failure: the ScriptaHub checkout is at $(printable "$NEW_HEAD") and the images are pulled and tagged (the :runtime tags of docker.io/assistos/scriptahub-agent and docker.io/assistos/scriptahub-robot now name the pulled images), but the whole-workspace restart did not complete (exit $RESTART_STATUS)."
               exit "$RESTART_STATUS"
             fi
           else

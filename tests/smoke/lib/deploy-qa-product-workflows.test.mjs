@@ -468,6 +468,7 @@ case "$1" in
     echo "\${found#* }" | cut -d ' ' -f1 ;;
   tag)
     echo "podman $*" >> "$STUB/calls.log"
+    case "$3" in *roboteam-agent*) [ ! -f "$STUB/tag-fail" ] || exit 125 ;; esac
     found=$(row "$2")
     [ -n "$found" ] || exit 125
     set -- $found "$3"
@@ -1629,14 +1630,14 @@ test('ScriptaHub flow: a moved tag, a corrupted checkout or a lock held stop the
     const moved = scriptaBox(t, { robotRevisionPulled: 'b'.repeat(40) });
     const tagMoved = runScriptaFlow(moved);
     assert.notEqual(tagMoved.status, 0);
-    assert.match(tagMoved.stdout, /::error::The pulled robot image carries revision 'b{40}', not [0-9a-f]{40}, so the published tag moved during this run\. The images were pulled; the checkout and the agents were not changed\./);
+    assert.match(tagMoved.stdout, /::error::The pulled robot image carries revision 'b{40}', not [0-9a-f]{40}, so the published tag moved during this run\. The images were pulled and the :runtime tags of docker\.io\/assistos\/scriptahub-agent and docker\.io\/assistos\/scriptahub-robot now name the pulled images; the checkout and the agents were not changed\./);
     assert.equal(checkoutHead(moved), moved.base);
     assert.deepEqual(moved.calls().filter((line) => /^podman tag.*roboteam|^ploinky restart/.test(line)), []);
 
     const corrupted = scriptaBox(t);
     const bad = runScriptaFlow(corrupted, { SCRIPTA_COPIED_TREES: `${'1'.repeat(40)} ${'2'.repeat(40)} ${'3'.repeat(40)}` });
     assert.notEqual(bad.status, 0);
-    assert.match(bad.stdout, /::error::Post-mutation failure: the ScriptaHub checkout moved to [0-9a-f]{40}, but its copied trees .* are not the ones the robot image was built from .* Nothing was retagged or restarted; the checkout is left moved\./);
+    assert.match(bad.stdout, /::error::Post-mutation failure: the ScriptaHub checkout moved to [0-9a-f]{40}, but its copied trees .* are not the ones the robot image was built from .* The images were pulled and the :runtime tags of docker\.io\/assistos\/scriptahub-agent and docker\.io\/assistos\/scriptahub-robot now name the pulled images\. roboteam-agent:runtime was not retagged and nothing was restarted; the checkout is left moved\./);
     assert.equal(checkoutHead(corrupted), corrupted.head);
     assert.deepEqual(corrupted.calls().filter((line) => line.includes(ROBOTEAM_TAG) || /^ploinky restart/.test(line)), []);
 
@@ -1645,7 +1646,7 @@ test('ScriptaHub flow: a moved tag, a corrupted checkout or a lock held stop the
     const locked = runScriptaFlow(busy);
     assert.equal(locked.status, 75, logOf(locked));
     assert.match(locked.stdout, /::error::Another Explorer QA operation holds the host lock\./);
-    assert.match(locked.stdout, /::error::Post-mutation failure: the ScriptaHub checkout is at [0-9a-f]{40} and the images are pulled and tagged, but the whole-workspace restart did not complete \(exit 75\)\./);
+    assert.match(locked.stdout, /::error::Post-mutation failure: the ScriptaHub checkout is at [0-9a-f]{40} and the images are pulled and tagged \(the :runtime tags of .*\), but the whole-workspace restart did not complete \(exit 75\)\./);
     assert.deepEqual(busy.calls().filter((line) => /^ploinky restart/.test(line)), []);
 
     // A container that does not reach the new image fails the check, and the failure names the whole restart.
@@ -1838,4 +1839,26 @@ test('a container that runs the new image but started before the copy or the upd
     const old = runScriptaFlow(robowork);
     assert.notEqual(old.status, 0);
     assert.match(old.stdout, new RegExp(`::error::The robowork container runs image ${OLD_ROBOTEAM_ID}, not the robot image ${ROBOT_ID}\\.`));
+});
+
+test('ScriptaHub flow: a checkout that cannot be fast-forwarded, or a robot image that cannot be tagged, stops the run and names what was left changed', (t) => {
+    const moves = 'the :runtime tags of docker\\.io\\/assistos\\/scriptahub-agent and docker\\.io\\/assistos\\/scriptahub-robot now name the pulled images';
+    // The fetch of the move fails after every refusal passed.
+    const fetchFails = scriptaBox(t);
+    vcs(fetchFails.clone, 'config', `url.${path.join(fetchFails.dir, 'nowhere')}.insteadOf`, SCRIPTA_URL);
+    vcs(fetchFails.clone, 'config', '--unset', `url.${fetchFails.source}.insteadOf`);
+    const first = runScriptaFlow(fetchFails);
+    assert.notEqual(first.status, 0, logOf(first));
+    assert.match(first.stdout, new RegExp(`::error::Post-mutation failure: the images were pulled and ${moves}, but the ScriptaHub checkout could not be fast-forwarded to [0-9a-f]{40} \\(it stays at ${fetchFails.base} unless Git moved it\\)\\. roboteam-agent:runtime was not retagged and nothing was restarted\\.`));
+    assert.equal(checkoutHead(fetchFails), fetchFails.base);
+    assert.deepEqual(fetchFails.calls().filter((line) => line.includes(ROBOTEAM_TAG) || /^ploinky restart/.test(line)), []);
+
+    // The retag fails after the checkout moved.
+    const tagFails = scriptaBox(t);
+    tagFails.write('tag-fail', '1');
+    const second = runScriptaFlow(tagFails);
+    assert.notEqual(second.status, 0);
+    assert.match(second.stdout, new RegExp(`::error::Post-mutation failure: the ScriptaHub checkout is at ${tagFails.head}, but the robot image could not be tagged as roboteam-agent:runtime \\(${moves}\\)\\. Nothing was restarted\\.`));
+    assert.equal(checkoutHead(tagFails), tagFails.head);
+    assert.deepEqual(tagFails.calls().filter((line) => /^ploinky restart/.test(line)), []);
 });
