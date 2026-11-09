@@ -1,0 +1,1099 @@
+name: Deploy Explorer QA ScriptaHub
+
+# Updates only ScriptaHub inside the running Explorer QA Box, without the Ploinky checkout, the Box, the tunnel or any
+# other repository (docs/deploy-explorer-qa.md, "Product workflows"). The checkout moves to the ScriptaHubAgent default
+# branch head only when every path the robot image copies from the checkout is identical at the published robot image's
+# revision, so skill sources never meet a robot image built from different ones. Both images are pulled by digest, the
+# robot image is retagged as the RoboTeam runtime, and one whole-workspace restart activates everything. Actions are
+# pinned by commit: checkout as in container-image-builds, setup-node as in bizanso.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-explorer-qa
+  cancel-in-progress: false
+
+env:
+  SSH_USER: 'admin'
+  SSH_HOST: '45.136.70.141'
+  SSH_ED25519_FINGERPRINT: 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'
+  WORKSPACE: 'explorerQaWorkspace'
+  ROUTER_PORT: '8097'
+  PUBLIC_HOST: 'explorer-qa.axiologic.dev'
+  PUBLIC_URL: 'https://explorer-qa.axiologic.dev'
+  SOUL_GATEWAY_ROUTER_PORT: '8080'
+
+jobs:
+  deploy:
+    name: Deploy ScriptaHub to Explorer QA
+    runs-on: ubuntu-latest
+    # Pulling the robot image (about 11 GB of new layers) and a whole-workspace restart with its 6-minute route dwell.
+    timeout-minutes: 150
+    permissions:
+      contents: read
+
+    steps:
+      # The full history is fetched because the tests compare the shared shell blocks with the revision they were copied from.
+      - name: Check out the workflow tests
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4, as pinned in container-image-builds
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up the test runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4, as pinned in bizanso
+        with:
+          node-version: '24'
+
+      - name: Test these workflows
+        run: node --test tests/smoke/lib/deploy-qa-product-workflows.test.mjs
+
+      - name: Validate GitHub configuration
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_KEY:-}" ]; then
+            echo "::error::Missing required repository secret EXPLORER_QA_SSH_KEY"
+            exit 1
+          fi
+          if [ "$SSH_HOST" != '45.136.70.141' ] || [ "$SSH_USER" != 'admin' ] ||
+            [ "$WORKSPACE" != 'explorerQaWorkspace' ] || [ "$ROUTER_PORT" != '8097' ]; then
+            echo "::error::Explorer QA target identity is not the pinned admin@45.136.70.141/explorerQaWorkspace target"
+            exit 1
+          fi
+          if [ "$PUBLIC_HOST" != 'explorer-qa.axiologic.dev' ] || [ "$PUBLIC_URL" != "https://$PUBLIC_HOST" ]; then
+            echo "::error::PUBLIC_URL and PUBLIC_HOST must identify the fixed Explorer QA hostname"
+            exit 1
+          fi
+          HOST_KEY_CANDIDATE="$RUNNER_TEMP/explorer_qa_known_hosts"
+          ssh-keyscan -T 10 -t ed25519 "$SSH_HOST" > "$HOST_KEY_CANDIDATE"
+          HOST_KEY_FINGERPRINT="$({ ssh-keygen -lf "$HOST_KEY_CANDIDATE" -E sha256 || true; } | awk '{print $2}' | sort -u)"
+          if [ "$HOST_KEY_FINGERPRINT" != "$SSH_ED25519_FINGERPRINT" ]; then
+            echo "::error::Explorer QA ED25519 host fingerprint did not match the pinned identity"
+            exit 1
+          fi
+          chmod 600 "$HOST_KEY_CANDIDATE"
+          echo "Validated the pinned Explorer QA SSH host identity."
+
+      - name: Prepare SSH key
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          install -m 600 "$RUNNER_TEMP/explorer_qa_known_hosts" ~/.ssh/explorer_qa_known_hosts
+
+
+      # ScriptaHubAgent is public, so this checkout needs no key. The history is complete: it is searched for the revision
+      # the published robot image was built from.
+      - name: Check out ScriptaHub
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4, as pinned in container-image-builds
+        with:
+          repository: Axiologic/ScriptaHubAgent
+          path: .qa-scriptahub-source
+          persist-credentials: false
+          fetch-depth: 0
+
+      # No SSH here. The gate: the checkout moves only when the three paths the robot image copies from it (see its
+      # Dockerfile.robot) are identical at the revision the published robot image was built from. The robot index is
+      # read once as raw bytes; its labels are then read by that digest, so both describe the same image.
+      - name: Resolve the ScriptaHub source and the published images
+        run: |
+          set -euo pipefail
+          SOURCE="$GITHUB_WORKSPACE/.qa-scriptahub-source"
+          ROBOT_REPO=docker.io/assistos/scriptahub-robot
+          AGENT_REPO=docker.io/assistos/scriptahub-agent
+          source_git() { git -C "$SOURCE" "$@"; }
+          HEAD_COMMIT="$(source_git rev-parse HEAD)"
+          BRANCH="$(source_git symbolic-ref --short HEAD)"
+          if [[ ! "$HEAD_COMMIT" =~ ^[0-9a-f]{40}$ ]] || [[ ! "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "::error::The ScriptaHubAgent checkout is not on a named branch at a 40-hex commit"
+            exit 1
+          fi
+          index_digest() {
+            local sum
+            sum="$(docker buildx imagetools inspect --raw "$1" | sha256sum | cut -d ' ' -f1)" || return 1
+            if [[ ! "$sum" =~ ^[0-9a-f]{64}$ ]]; then return 1; fi
+            printf 'sha256:%s\n' "$sum"
+          }
+          # Prints the revision label of the linux/amd64 image, which for the robot image must be a 40-hex commit equal to
+          # the linux/arm64 one. With the info argument it prints unknown instead of failing.
+          image_revision() {
+            node --input-type=module - "$@" <<'NODE'
+          import fs from 'node:fs';
+
+          const [file, mode] = process.argv.slice(2);
+          const label = (image, platform) => image?.[platform]?.config?.Labels?.['org.opencontainers.image.revision'];
+          try {
+            const image = JSON.parse(fs.readFileSync(file, 'utf8'));
+            const amd64 = label(image, 'linux/amd64');
+            const arm64 = label(image, 'linux/arm64');
+            if (mode === 'info') {
+              process.stdout.write(typeof amd64 === 'string' && amd64 ? amd64 : 'unknown');
+            } else if (/^[0-9a-f]{40}$/.test(String(amd64)) && amd64 === arm64) {
+              process.stdout.write(amd64);
+            } else {
+              console.error('The robot image has no common 40-hex revision label on linux/amd64 and linux/arm64');
+              process.exit(1);
+            }
+          } catch (error) {
+            if (mode !== 'info') {
+              console.error('The robot image configuration could not be read: ' + error.message);
+              process.exit(1);
+            }
+            process.stdout.write('unknown');
+          }
+          NODE
+          }
+          if ! ROBOT_INDEX="$(index_digest "$ROBOT_REPO:runtime")" || ! AGENT_INDEX="$(index_digest "$AGENT_REPO:runtime")"; then
+            echo "::error::The published ScriptaHub image indexes could not be read from the registry. Nothing was changed."
+            exit 1
+          fi
+          docker buildx imagetools inspect "$ROBOT_REPO@$ROBOT_INDEX" --format '{{json .Image}}' > "$RUNNER_TEMP/qa-scriptahub-robot-image.json"
+          docker buildx imagetools inspect "$AGENT_REPO@$AGENT_INDEX" --format '{{json .Image}}' > "$RUNNER_TEMP/qa-scriptahub-agent-image.json" || true
+          ROBOT_REVISION="$(image_revision "$RUNNER_TEMP/qa-scriptahub-robot-image.json" strict)"
+          AGENT_REVISION="$(image_revision "$RUNNER_TEMP/qa-scriptahub-agent-image.json" info)"
+          REFUSAL="Publish matching images first: bump images/scriptahub-agent/sources.lock.json in container-image-builds, then run publish-scriptahub-agent-image.yml and publish-scriptahub-robot-image.yml there. This workflow never triggers them. Nothing was changed."
+          if ! source_git cat-file -e "$ROBOT_REVISION^{commit}" 2> /dev/null; then
+            echo "::error::The robot image revision $ROBOT_REVISION is not in the ScriptaHubAgent history. $REFUSAL"
+            exit 1
+          fi
+          if ! source_git merge-base --is-ancestor "$ROBOT_REVISION" "$HEAD_COMMIT"; then
+            echo "::error::The robot image revision $ROBOT_REVISION is not an ancestor of $BRANCH@$HEAD_COMMIT. $REFUSAL"
+            exit 1
+          fi
+          COPIED_TREES=''
+          for path in skills scriptahubAgent/deployment scriptahubAgent/site/reader/reader.css; do
+            at_head="$(source_git rev-parse "$HEAD_COMMIT:$path" 2> /dev/null)" || at_head=''
+            at_image="$(source_git rev-parse "$ROBOT_REVISION:$path" 2> /dev/null)" || at_image=''
+            if [[ ! "$at_head" =~ ^[0-9a-f]{40}$ ]] || [ "$at_head" != "$at_image" ]; then
+              echo "::error::$path differs between $BRANCH@$HEAD_COMMIT and the robot image revision $ROBOT_REVISION, and the robot image copies it from the checkout. $REFUSAL"
+              exit 1
+            fi
+            COPIED_TREES="${COPIED_TREES:+$COPIED_TREES }$at_head"
+          done
+          {
+            printf 'SCRIPTA_HEAD=%s\n' "$HEAD_COMMIT"
+            printf 'SCRIPTA_BRANCH=%s\n' "$BRANCH"
+            printf 'SCRIPTA_ROBOT_REVISION=%s\n' "$ROBOT_REVISION"
+            printf 'SCRIPTA_ROBOT_INDEX=%s\n' "$ROBOT_INDEX"
+            printf 'SCRIPTA_AGENT_INDEX=%s\n' "$AGENT_INDEX"
+            printf 'SCRIPTA_COPIED_TREES=%s\n' "$COPIED_TREES"
+            printf 'SCRIPTA_AGENT_REVISION=%s\n' "$AGENT_REVISION"
+          } >> "$GITHUB_ENV"
+          echo "[deploy-qa-scriptahub] Resolved $BRANCH@$HEAD_COMMIT; robot image $ROBOT_REPO@$ROBOT_INDEX (revision $ROBOT_REVISION); agent image $AGENT_REPO@$AGENT_INDEX"
+
+      - name: Deploy ScriptaHub through Ploinky commands
+        run: |
+          set -euo pipefail
+          umask 077
+
+          SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "${SSH_USER}@${SSH_HOST}")
+          LOCK=/home/admin/.qa-deployment-operation.lock
+          WORK_DIR="/home/admin/$WORKSPACE"
+          PLOINKY_BIN=/home/admin/.qa-deployment-tools/ploinky/bin/ploinky
+
+          # Refusal 2. Read-only apart from the idempotent Node install: nothing here moves the Ploinky checkout or the workspace.
+          echo '[deploy-qa-scriptahub] Checking the host and the Ploinky checkout; nothing is moved...'
+          PREFLIGHT_LOG="$RUNNER_TEMP/explorer-qa-product-preflight.log"
+          PREFLIGHT_STATUS=0
+          "${SSH[@]}" "flock -n -E 75 --close '$LOCK' bash -s" <<'REMOTE' | tee "$PREFLIGHT_LOG" || PREFLIGHT_STATUS=$?
+          set -euo pipefail
+          if [ "$(id -un)" != 'admin' ] || [ "$HOME" != '/home/admin' ]; then
+            echo '[qa] ERROR: the remote identity is not the pinned admin account.'
+            exit 1
+          fi
+          WORK_DIR=/home/admin/explorerQaWorkspace
+          if [ -L "$WORK_DIR" ] || [ ! -d "$WORK_DIR" ]; then
+            echo "[qa] ERROR: the workspace is not an existing real directory: $WORK_DIR"
+            exit 1
+          fi
+          # The older workflows park the router access policy and an install marker here, and only they
+          # restore them. Running over that state would silently lose the policy.
+          STATE_DIR=/home/admin/.qa-deployment-state
+          if [ -e "$STATE_DIR" ] && [ -n "$(ls -A "$STATE_DIR")" ]; then
+            echo "[qa] ERROR: $STATE_DIR holds state from deploy-explorer-qa.yml. Dispatch that workflow to finish it first."
+            exit 1
+          fi
+          for tool in git node curl podman flock; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "[qa] ERROR: missing required host tool '$tool'."
+              exit 1
+            fi
+          done
+          # BEGIN QA isolated Node runtime
+          install_qa_node() (
+            set -euo pipefail
+            umask 077
+            case "$(uname -m)" in
+              x86_64)
+                QA_NODE_ARCH=x64
+                QA_NODE_SHA=14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647
+                ;;
+              aarch64|arm64)
+                QA_NODE_ARCH=arm64
+                QA_NODE_SHA=01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc
+                ;;
+              *) echo '[deploy-qa] Unsupported QA Node architecture.' >&2; exit 1 ;;
+            esac
+            QA_TOOLS_ROOT=/home/admin/.qa-deployment-tools
+            QA_NODE_DIST="node-v24.19.0-linux-$QA_NODE_ARCH"
+            QA_NODE_TARGET="$QA_TOOLS_ROOT/$QA_NODE_DIST"
+            QA_NODE_ARCHIVE="$QA_TOOLS_ROOT/$QA_NODE_DIST.tar.xz"
+            node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_DIST" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [root, distribution] = process.argv.slice(2);
+          assert.equal(root, '/home/admin/.qa-deployment-tools');
+          assert(/^node-v24\.19\.0-linux-(x64|arm64)$/.test(distribution));
+          if (!fs.existsSync(root)) fs.mkdirSync(root, { mode: 0o700 });
+          for (const [file, directory, privateMode] of [
+              [root, true, true],
+              [path.join(root, `${distribution}.tar.xz`), false, true],
+              [path.join(root, distribution), true, false],
+              [path.join(root, distribution, 'bin/node'), false, false],
+          ]) {
+              let stat;
+              try { stat = fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+              assert(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile()), 'Unsafe QA Node path');
+              assert.equal(fs.realpathSync(file), file, 'QA Node path traverses a symlink');
+              assert.equal(stat.uid, process.getuid(), 'QA Node path has a different owner');
+              assert.equal(stat.mode & (privateMode ? 0o077 : 0o022), 0, 'Unsafe QA Node permissions');
+              if (!directory) assert.equal(stat.nlink, 1, 'QA Node file has multiple links');
+          }
+          NODE
+            QA_NODE_STAGE="$(mktemp -d "$QA_TOOLS_ROOT/.node-install-XXXXXXXX")"
+            cleanup_qa_node_stage() {
+              node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_STAGE" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [root, stage] = process.argv.slice(2);
+          assert.equal(root, '/home/admin/.qa-deployment-tools');
+          assert.equal(path.dirname(stage), root);
+          assert(/^\.node-install-[A-Za-z0-9]{8}$/.test(path.basename(stage)));
+          const stat = fs.lstatSync(stage);
+          assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid());
+          assert.equal(fs.realpathSync(stage), stage);
+          fs.rmSync(stage, { recursive: true });
+          NODE
+            }
+            trap cleanup_qa_node_stage EXIT
+            if [ ! -f "$QA_NODE_ARCHIVE" ]; then
+              curl -fsS --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 \
+                --max-filesize 104857600 \
+                "https://nodejs.org/dist/v24.19.0/$QA_NODE_DIST.tar.xz" -o "$QA_NODE_STAGE/archive.tar.xz"
+              printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_STAGE/archive.tar.xz" | timeout 30 sha256sum -c - >/dev/null
+              mv -T "$QA_NODE_STAGE/archive.tar.xz" "$QA_NODE_ARCHIVE"
+            fi
+            printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_ARCHIVE" | timeout 30 sha256sum -c - >/dev/null
+            if [ ! -e "$QA_NODE_TARGET" ]; then
+              timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" -C "$QA_NODE_STAGE"
+              mv -T "$QA_NODE_STAGE/$QA_NODE_DIST" "$QA_NODE_TARGET"
+            fi
+            # Validate an existing binary against the pinned archive too; a
+            # version string or cached marker alone is not integrity evidence.
+            timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" \
+              -C "$QA_NODE_STAGE" "$QA_NODE_DIST/bin/node"
+            timeout 30 cmp -s "$QA_NODE_STAGE/$QA_NODE_DIST/bin/node" "$QA_NODE_TARGET/bin/node"
+            [ "$(timeout 10 "$QA_NODE_TARGET/bin/node" --version)" = 'v24.19.0' ]
+            printf '%s\n' "$QA_NODE_TARGET"
+          )
+          QA_NODE_HOME="$(install_qa_node)"
+          export PATH="$QA_NODE_HOME/bin:$PATH"
+          # END QA isolated Node runtime
+          # The Ploinky checkout lies outside the workspace and a Box mounts it read-only. It is only read here.
+          CHECKOUT=/home/admin/.qa-deployment-tools/ploinky
+          if [ -L "$CHECKOUT" ] || [ ! -d "$CHECKOUT" ]; then
+            echo "[qa] ERROR: the Ploinky checkout is missing or a symlink: $CHECKOUT"
+            exit 1
+          fi
+          if [ "$(git -C "$CHECKOUT" remote get-url origin)" != 'https://github.com/AssistOS-AI/ploinky.git' ]; then
+            echo '[qa] ERROR: unexpected Ploinky checkout origin.'
+            exit 1
+          fi
+          printf 'PLOINKY_COMMIT=%s\n' "$(git -C "$CHECKOUT" rev-parse --short HEAD)"
+          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME"
+          REMOTE
+          if [ "$PREFLIGHT_STATUS" -eq 75 ]; then
+            echo "::error::Another Explorer QA operation holds the host lock."
+          fi
+          if [ "$PREFLIGHT_STATUS" -ne 0 ]; then
+            echo "::error::The host preflight failed (exit $PREFLIGHT_STATUS); nothing was changed."
+            exit 1
+          fi
+          QA_NODE_HOME="$(sed -n 's/^QA_NODE_HOME=//p' "$PREFLIGHT_LOG" | tail -n 1)"
+          if [[ ! "$QA_NODE_HOME" =~ ^/home/admin/\.qa-deployment-tools/node-v24\.19\.0-linux-(x64|arm64)$ ]]; then
+            echo "::error::The preflight did not report the pinned Node."
+            exit 1
+          fi
+          PLOINKY_COMMIT="$(sed -n 's/^PLOINKY_COMMIT=//p' "$PREFLIGHT_LOG" | tail -n 1)"
+          if [[ ! "$PLOINKY_COMMIT" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "::error::The preflight did not report the Ploinky checkout commit."
+            exit 1
+          fi
+          echo "[deploy-qa-scriptahub] Ploinky checkout $PLOINKY_COMMIT (not moved)."
+
+
+          # BEGIN QA product flow
+          echo "[deploy-qa-scriptahub] main $SCRIPTA_BRANCH@$SCRIPTA_HEAD; robot image revision $SCRIPTA_ROBOT_REVISION; agent image revision $SCRIPTA_AGENT_REVISION; copied trees equal"
+          REMOTE_ENV="cd '$WORK_DIR' && export PATH='$QA_NODE_HOME/bin':\"\$PATH\" PLOINKY_WORKSPACE_ROOT='$WORK_DIR'"
+          # Every argument below is a fixed word. A value only ever reaches a command through ssh stdin.
+          ploinky_locked() {
+            local status=0
+            "${SSH[@]}" "$REMOTE_ENV && exec flock -n -E 75 --close '$LOCK' '$PLOINKY_BIN' $*" || status=$?
+            if [ "$status" -eq 75 ]; then
+              echo "::error::Another Explorer QA operation holds the host lock."
+            fi
+            return "$status"
+          }
+          ploinky_read() {
+            "${SSH[@]}" "$REMOTE_ENV && exec '$PLOINKY_BIN' $*"
+          }
+          unrelated_containers() {
+            "${SSH[@]}" "set -o pipefail; podman ps -a --format '{{.ID}} {{.Names}}' | { grep -v ' ploinky-box-explorerqaworkspace-7a31ab7775eb$' || true; } | sort"
+          }
+          soul_healthy() {
+            "${SSH[@]}" "curl -sf 'http://127.0.0.1:${SOUL_GATEWAY_ROUTER_PORT}/base-agent-additional-server/soul-gateway/7000/healthz/' >/dev/null"
+          }
+
+          # Image housekeeping. Every removal is `podman image rm <id>` on an ID that was listed and validated first;
+          # podman refuses an image a container still uses. The prune never forces, never removes by a broad filter,
+          # and never fails the job: only the disk gate below can stop a run.
+          # BEGIN QA image cleanup
+          BOX_CONTAINER=ploinky-box-explorerqaworkspace-7a31ab7775eb
+          PRUNE_BOX_IMAGE=docker.io/assistos/ploinky-box
+          DISK_MIN_FREE_GIB=5
+          # Unpacked size of the ScriptaHub robot image not shared with the RoboTeam runtime (11.2 GB, 9 of 29 layers new).
+          ROBOT_IMAGE_NEW_GIB=11
+          DISK_WARN_FREE_GIB=10
+          # One podman call on the host or inside the Box, under the same host lock as every other mutation.
+          prune_podman() {
+            local scope="$1"
+            shift
+            if [ "$scope" = host ]; then
+              "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman $*" < /dev/null
+            else
+              "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' $BOX_CONTAINER podman $*" < /dev/null
+            fi
+          }
+          # Lists unused dangling images, removes each validated one, and reports the unused named ones. A host
+          # image is removed only when its name history shows it was the Box image; the host holds other images.
+          prune_scope() {
+            local scope="$1" phase="$2" listing id containers dangling rest names line is_box_image removed=0
+            if ! listing="$(prune_podman "$scope" image ls --filter dangling=true --format "'{{.ID}} {{.Containers}}'")"; then
+              echo "::warning::prune $scope failed ($phase): the image listing failed"
+              return 0
+            fi
+            while read -r id containers; do
+              [ -n "$id" ] || continue
+              if [[ ! "$id" =~ ^[a-f0-9]{12,64}$ ]]; then
+                echo "::warning::prune $scope: skipped an unexpected image ID in the listing"
+                continue
+              fi
+              if [ "$containers" != 0 ]; then
+                echo "[deploy-qa] prune $scope: kept $id in use by $containers container(s)"
+                continue
+              fi
+              if [ "$scope" = host ]; then
+                if ! names="$(prune_podman host image inspect --format "'{{range .NamesHistory}}{{println .}}{{end}}'" "$id")"; then
+                  echo "::warning::prune host failed ($phase): inspecting $id failed"
+                  continue
+                fi
+                is_box_image=false
+                while IFS= read -r line; do
+                  case "$line" in
+                    "$PRUNE_BOX_IMAGE"|"$PRUNE_BOX_IMAGE":*|"$PRUNE_BOX_IMAGE"@*) is_box_image=true ;;
+                  esac
+                done <<< "$names"
+                if [ "$is_box_image" != true ]; then
+                  echo "[deploy-qa] prune host: kept unrelated dangling image $id"
+                  continue
+                fi
+              fi
+              if prune_podman "$scope" image rm "$id" > /dev/null; then
+                echo "[deploy-qa] prune $scope: removed $id"
+                removed=$((removed + 1))
+              else
+                echo "::warning::prune $scope: podman kept $id"
+              fi
+            done <<< "$listing"
+            echo "[deploy-qa] prune $scope: removed $removed dangling image(s)"
+            if listing="$(prune_podman "$scope" image ls --format "'{{.ID}} {{.Containers}} {{.Dangling}} {{.Size}} {{.Names}}'")"; then
+              while read -r id containers dangling rest; do
+                if [ "$containers" = 0 ] && [ "$dangling" = false ]; then
+                  echo "[deploy-qa] prune $scope: kept unused named image $id $rest"
+                fi
+              done <<< "$listing"
+            fi
+            return 0
+          }
+          prune_images() {
+            local phase="$1"
+            echo "[deploy-qa] Pruning unused dangling images ($phase)..."
+            prune_scope host "$phase" || true
+            if [ "$phase" = post ] || [ "${BOX_STATE:-absent}" = present ]; then
+              prune_scope box "$phase" || true
+            else
+              echo '[deploy-qa] prune box: skipped, no Box exists yet'
+            fi
+          }
+          # Free GiB of the admin home filesystem.
+          free_disk_gib() {
+            local kib
+            kib="$("${SSH[@]}" "df -Pk /home/admin" < /dev/null | awk 'NR == 2 { print $4 }')"
+            if [[ ! "$kib" =~ ^[0-9]+$ ]]; then
+              return 1
+            fi
+            echo $((kib / 1048576))
+          }
+          require_free_disk() {
+            local free
+            if ! free="$(free_disk_gib)"; then
+              echo "::error::Could not read the free disk space of the QA host."
+              exit 1
+            fi
+            echo "[deploy-qa] free disk: $free GiB"
+            if [ "$free" -lt "$DISK_MIN_FREE_GIB" ]; then
+              echo "::error::Free disk $free GiB is below $DISK_MIN_FREE_GIB GiB; no agent or repository moved yet. See usage on the host with: du -xh --max-depth=2 $WORK_DIR | sort -h | tail; then free space or grow the disk."
+              exit 1
+            fi
+            if [ "$free" -lt "$DISK_WARN_FREE_GIB" ]; then
+              echo "::warning::QA host free disk $free GiB is below $DISK_WARN_FREE_GIB GiB"
+            fi
+          }
+          # END QA image cleanup
+
+          SOUL_UP_BEFORE=0
+          if soul_healthy; then SOUL_UP_BEFORE=1; fi
+          UNRELATED_BEFORE="$(unrelated_containers)"
+
+          # The graph this deploy expects. Every runtime of it, and Bizanso, PromotionScoutV2 and ScriptaHub beside it,
+          # must already run: this workflow only restarts what exists.
+          GRAPH_RUNTIMES='explorer gitAgent userPersistoAgent emailAgent dpuAgent roboTeamAgent soul-gateway workspaceMonitorAgent local-llm'
+          # Prints "agent state" for the runtime block of `ploinky status`, whose repository block also has badges.
+          runtime_states() {
+            awk '/^Agent runtimes:/ { on = 1; next }
+              on && match($0, /\[[a-z-]+\] \[[a-z-]+\]/) { split(substr($0, RSTART, RLENGTH), word, /[][ ]+/); state = word[2]; next }
+              on && state != "" && /agent:/ { for (i = 1; i <= NF; i++) if ($i == "agent:") print $(i + 1), state; state = "" }'
+          }
+          # Prints each installed repository of `ploinky list repos`, whose other lines name uninstalled ones.
+          installed_repos() {
+            awk '/^- / && /\[installed\]/ { name = $2; sub(/:$/, "", name); print name }'
+          }
+          # `ploinky status` overlays each detached runtime's semantic readiness on its state. Waiting also
+          # lets the detached launches settle before the next start or update.
+          wait_ready() {
+            local streak=0 states agent complete
+            for _ in $(seq 1 180); do
+              states="$(ploinky_read status | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)" || states=''
+              if grep -q ' failed$' <<< "$states"; then
+                printf '%s\n' "$states"
+                echo "::error::A runtime reported failed readiness."
+                return 1
+              fi
+              complete=1
+              for agent in $GRAPH_RUNTIMES; do
+                grep -qx "$agent running" <<< "$states" || complete=0
+              done
+              if [ "$complete" = 1 ]; then
+                streak=$((streak + 1))
+                if [ "$streak" -ge 3 ]; then
+                  printf '%s\n' "$states"
+                  return 0
+                fi
+              else
+                streak=0
+              fi
+              sleep 10
+            done
+            printf '%s\n' "$states"
+            echo "::error::Timed out waiting for the graph runtimes to stay ready."
+            return 1
+          }
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
+
+          # In-Box programs are fixed strings without a single quote, because run_in_box embeds them in one. A value
+          # reaches a program only on stdin, and the program checks it again.
+          run_in_box() {
+            "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec -i --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' ploinky-box-explorerqaworkspace-7a31ab7775eb sh -c '$1' sh"
+          }
+          # BEGIN QA product routes
+          # The public paths of the three products that share this Router. They are fetched from the runner, so a Router
+          # that answers on loopback but is cut off from the edge counts as lost.
+          route_code() {
+            : > "$RUNNER_TEMP/qa-product-route-body"
+            curl -sS --max-time 15 -o "$RUNNER_TEMP/qa-product-route-body" -w '%{http_code}' "$1" || true
+          }
+          routes_alive() {
+            local explorer bizanso scriptahub
+            explorer="$(route_code "${PUBLIC_URL%/}/auth/login?agent=explorer")"
+            if [ "$explorer" = 303 ] || [ "$explorer" = 200 ]; then
+              if grep -Eqi 'EDGE_GENERATION_INACTIVE|cloudflare tunnel error|error code: 1033' "$RUNNER_TEMP/qa-product-route-body"; then
+                explorer=inactive
+              fi
+            fi
+            bizanso="$(route_code "${PUBLIC_URL%/}/base-agent-additional-server/bizanso/8787/how-it-works/")"
+            scriptahub="$(route_code "${PUBLIC_URL%/}/base-agent-additional-server/scriptahubAgent/3002/health")"
+            ROUTES_STATE="explorer=$explorer bizanso=$bizanso scriptahub=$scriptahub"
+            { [ "$explorer" = 303 ] || [ "$explorer" = 200 ]; } && [ "$bizanso" = 200 ] && [ "$scriptahub" = 200 ]
+          }
+          await_routes() {
+            local attempts="${1:-18}" attempt
+            for attempt in $(seq 1 "$attempts"); do
+              if routes_alive; then return 0; fi
+              echo "[deploy-qa-product] routes $ROUTES_STATE"
+              if [ "$attempt" -lt "$attempts" ]; then sleep 10; fi
+            done
+            return 1
+          }
+          # The Box monitor and snapshot run every 5 minutes, so a route lost by them shows up within this window.
+          routes_dwell() {
+            local poll
+            echo '[deploy-qa-product] routes must stay alive for 6 minutes (24 polls, 15 s apart).'
+            for poll in $(seq 1 24); do
+              sleep 15
+              if ! routes_alive; then
+                echo "[deploy-qa-product] routes lost on dwell poll $poll: $ROUTES_STATE"
+                return 1
+              fi
+            done
+            return 0
+          }
+          # END QA product routes
+
+          PRODUCT_AGENT=ScriptaHubAgent/scriptahubAgent
+          PRODUCT_RUNTIME=scriptahubAgent
+          # Prints the image ID, start time and name of the one container whose name starts with the key's prefix.
+          PROBE_PROGRAM='set -eu
+          read -r key
+          case "$key" in
+            scripta) prefix=ploinky_ScriptaHubAgent_scriptahubAgent_ ;;
+            roboteam) prefix=ploinky_AchillesIDE_roboTeamAgent_ ;;
+            robowork) prefix=ploinky_AchillesIDE_roboWorkAgent_ ;;
+            *) echo "Unexpected container probe." >&2; exit 1 ;;
+          esac
+          podman ps --no-trunc --filter "name=^$prefix" --format "{{.ImageID}} {{.StartedAt}} {{.Names}}"'
+          # ScriptaHub is an ordinary checkout of the public repository at the workspace root. Every Git call is read-only
+          # and has hooks and fsmonitor off, because the Box can write the checkout's Git configuration.
+          SCRIPTAHUB_READ_PROGRAM='set -eu
+          url=https://github.com/Axiologic/ScriptaHubAgent.git
+          test -d ScriptaHubAgent
+          test ! -L ScriptaHubAgent
+          test -e ScriptaHubAgent/.git
+          test ! -L ScriptaHubAgent/.git
+          test ! -e .ploinky/repos/ScriptaHubAgent
+          test ! -L .ploinky/repos/ScriptaHubAgent
+          g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C ScriptaHubAgent "$@"; }
+          test "$(g config --get remote.origin.url)" = "$url"
+          state=$(g status --porcelain)
+          test -z "$state"
+          branch=$(g symbolic-ref --short HEAD)
+          head=$(g rev-parse HEAD)
+          copied=$(g rev-parse HEAD:skills HEAD:scriptahubAgent/deployment HEAD:scriptahubAgent/site/reader/reader.css)
+          printf "BRANCH=%s\n" "$branch"
+          printf "HEAD=%s\n" "$head"
+          printf "COPIED=%s\n" "$(echo $copied)"'
+          # The local robot image keeps its index digest in RepoDigests when it was pulled by digest. Any error counts as absent.
+          SCRIPTAHUB_DIGEST_PROGRAM='set -eu
+          podman image inspect --format "{{range .RepoDigests}}{{println .}}{{end}}" docker.io/assistos/scriptahub-robot:runtime'
+          # Both references arrive on stdin, are checked again here, and are pulled by digest and then tagged runtime, so the
+          # images are exactly the ones the runner described.
+          SCRIPTAHUB_PULL_PROGRAM='set -eu
+          read -r agent
+          read -r robot
+          agent_repo=docker.io/assistos/scriptahub-agent@sha256:
+          robot_repo=docker.io/assistos/scriptahub-robot@sha256:
+          case "$agent" in
+            "$agent_repo"*) ;;
+            *) echo "Unexpected ScriptaHub agent image reference." >&2; exit 1 ;;
+          esac
+          case "$robot" in
+            "$robot_repo"*) ;;
+            *) echo "Unexpected ScriptaHub robot image reference." >&2; exit 1 ;;
+          esac
+          test "${#agent}" -eq $((${#agent_repo} + 64))
+          test "${#robot}" -eq $((${#robot_repo} + 64))
+          case "${agent#"$agent_repo"}${robot#"$robot_repo"}" in
+            *[!0-9a-f]*) echo "Unexpected ScriptaHub image digest." >&2; exit 1 ;;
+          esac
+          podman pull -q "$agent" > /dev/null
+          podman pull -q "$robot" > /dev/null
+          podman tag "$agent" docker.io/assistos/scriptahub-agent:runtime
+          podman tag "$robot" docker.io/assistos/scriptahub-robot:runtime
+          printf "AGENT_ID=%s\n" "$(podman image inspect --format "{{.Id}}" "$agent")"
+          printf "AGENT_REVISION=%s\n" "$(podman image inspect --format "{{index .Labels \"org.opencontainers.image.revision\"}}" "$agent")"
+          printf "ROBOT_ID=%s\n" "$(podman image inspect --format "{{.Id}}" "$robot")"
+          printf "ROBOT_REVISION=%s\n" "$(podman image inspect --format "{{index .Labels \"org.opencontainers.image.revision\"}}" "$robot")"
+          printf "ROBOTEAM_ID=%s\n" "$(podman image inspect --format "{{.Id}}" docker.io/assistos/roboteam-agent:runtime 2> /dev/null || true)"'
+          # The commit and the branch arrive on stdin. The checkout fast-forwards to exactly that commit, and only when it is
+          # clean, on that branch, behind it, and the commit is reachable from the fetched branch.
+          SCRIPTAHUB_MERGE_PROGRAM='set -eu
+          read -r head
+          read -r branch
+          url=https://github.com/Axiologic/ScriptaHubAgent.git
+          case "$head" in
+            ""|*[!0-9a-f]*) echo "Unexpected commit." >&2; exit 1 ;;
+          esac
+          test "${#head}" -eq 40
+          case "$branch" in
+            ""|-*|/*|*/|*..*|*//*|*.lock|*[!A-Za-z0-9._/-]*) echo "Unexpected branch." >&2; exit 1 ;;
+          esac
+          test -d ScriptaHubAgent
+          test ! -L ScriptaHubAgent
+          test -e ScriptaHubAgent/.git
+          test ! -L ScriptaHubAgent/.git
+          test ! -e .ploinky/repos/ScriptaHubAgent
+          g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C ScriptaHubAgent "$@"; }
+          test "$(g config --get remote.origin.url)" = "$url"
+          state=$(g status --porcelain)
+          test -z "$state"
+          test "$(g symbolic-ref --short HEAD)" = "$branch"
+          g fetch --quiet origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+          if ! g merge-base --is-ancestor HEAD "$head"; then
+            echo "ScriptaHubAgent has commits that $head lacks, or does not know it; left untouched." >&2; exit 1
+          fi
+          if ! g merge-base --is-ancestor "$head" "refs/remotes/origin/$branch"; then
+            echo "$head is not reachable from origin/$branch; left untouched." >&2; exit 1
+          fi
+          g merge --quiet --ff-only "$head"'
+          # The image ID arrives on stdin: the pulled robot image becomes the RoboTeam runtime.
+          SCRIPTAHUB_TAG_PROGRAM='set -eu
+          read -r id
+          case "$id" in
+            ""|*[!0-9a-f]*) echo "Unexpected image ID." >&2; exit 1 ;;
+          esac
+          test "${#id}" -eq 64
+          podman tag "$id" docker.io/assistos/roboteam-agent:runtime'
+
+          # Sets CONTAINER_LINE to the probe's one line. Not run in a substitution, so its error reaches the log.
+          # A value read back from the Box is printed with everything but plain characters replaced.
+          printable() { printf '%s' "${1//[^A-Za-z0-9._\/: -]/?}"; }
+          container_line() {
+            local key="$1" output count
+            CONTAINER_LINE=''
+            if ! output="$(printf '%s\n' "$key" | run_in_box "$PROBE_PROGRAM")"; then
+              echo "::error::The container probe for $key failed."
+              return 1
+            fi
+            count="$(printf '%s\n' "$output" | grep -c . || true)"
+            if [ "$count" != 1 ]; then
+              echo "::error::Expected exactly one $key container, found $count."
+              return 1
+            fi
+            CONTAINER_LINE="$output"
+          }
+          # Passes when the agent runs the pulled agent image and started after the update, and RoboTeam and RoboWork both
+          # run the pulled robot image (5 s of clock skew allowed on the start time).
+          product_check() {
+            local key image started name summary=''
+            for key in scripta roboteam robowork; do
+              if ! container_line "$key"; then return 1; fi
+              read -r image started name <<< "$CONTAINER_LINE"
+              if [[ ! "$image" =~ ^[a-f0-9]{64}$ ]] || [[ ! "$started" =~ ^[0-9]+$ ]]; then
+                echo "::error::The $key container probe returned an unexpected image ID or start time."
+                return 1
+              fi
+              if [ "$key" = scripta ]; then
+                if [ "$image" != "$AGENT_ID" ]; then
+                  echo "::error::The ScriptaHub agent container runs image $image, not $AGENT_ID."
+                  return 1
+                fi
+                if [ "$started" -lt $((UPDATE_EPOCH - 5)) ]; then
+                  echo "::error::The ScriptaHub agent started at $started, before the update at $UPDATE_EPOCH."
+                  return 1
+                fi
+              elif [ "$image" != "$ROBOT_ID" ]; then
+                echo "::error::The $key container runs image $image, not the robot image $ROBOT_ID."
+                return 1
+              fi
+              summary="${summary:+$summary$'\n'}container $(printable "$name") image $image started $started"
+            done
+            PRODUCT_CHECK_SUMMARY="$summary"
+          }
+          # BEGIN QA product restart
+          # Expects PRODUCT_AGENT (<repository>/<agent>), PRODUCT_RUNTIME and product_check to be defined first. Sets
+          # RESTART_RESULT. A refused targeted drain is never answered with another restart: a whole restart would stop
+          # every agent and then refuse its graph. Only an operator accepts a drain.
+          DRAIN_ROUTING_PROGRAM='set -eu
+          cat .ploinky/routing.json'
+          DRAIN_AGENTS_PROGRAM='set -eu
+          cat .ploinky/agents.json'
+          # Runs a command, shows its output and keeps it in a file; returns the command's own status.
+          run_logged() {
+            local log="$1" status=0
+            shift
+            : > "$log"
+            set +e
+            "$@" 2>&1 | tee -a "$log"
+            status="${PIPESTATUS[0]}"
+            set -e
+            return "$status"
+          }
+          product_settled() {
+            local poll misses=0 states
+            for poll in $(seq 1 30); do
+              states="$(ploinky_read status | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)" || states=''
+              if grep -qxF "$PRODUCT_RUNTIME running" <<< "$states"; then return 0; fi
+              if grep -qxE "$PRODUCT_RUNTIME (running|starting)" <<< "$states"; then
+                misses=0
+              else
+                misses=$((misses + 1))
+                if [ "$misses" -ge 3 ]; then
+                  echo "[deploy-qa-product] $PRODUCT_RUNTIME is not running or starting on 3 polls in a row."
+                  return 1
+                fi
+              fi
+              sleep 10
+            done
+            echo "[deploy-qa-product] $PRODUCT_RUNTIME did not reach running within 30 polls."
+            return 1
+          }
+          # Print yes, no or unknown for the product's route in a copy of .ploinky/routing.json: the draining flag that
+          # a refused targeted drain leaves. Print the 64-hex containerId of the product's agent record in a copy of
+          # .ploinky/agents.json. Neither file is ever printed.
+          product_route_flag() {
+            node --input-type=module - "$@" 2> /dev/null <<'NODE'
+          import fs from 'node:fs';
+          const [file, repo, agent] = process.argv.slice(2);
+          let routes = null;
+          try { routes = JSON.parse(fs.readFileSync(file, 'utf8'))?.routes; } catch { routes = null; }
+          if (!routes || typeof routes !== 'object') {
+            process.stdout.write('unknown');
+          } else {
+            const prefix = 'ploinky_' + repo + '_' + agent + '_';
+            const mine = Object.entries(routes).filter(([key, route]) => key === agent
+              || String(route?.container || '').startsWith(prefix));
+            process.stdout.write(mine.some(([, route]) => route?.draining === true) ? 'yes' : 'no');
+          }
+          NODE
+          }
+          product_container_id() {
+            node --input-type=module - "$@" 2> /dev/null <<'NODE'
+          import fs from 'node:fs';
+          const [file, repo, agent] = process.argv.slice(2);
+          const agents = JSON.parse(fs.readFileSync(file, 'utf8'));
+          const mine = Object.values(agents || {}).filter((record) => record?.type === 'agent' && !record.alias
+            && record.agentName === agent && record.repoName === repo && /^[a-f0-9]{64}$/.test(String(record.containerId || '')));
+          if (mine.length === 1) process.stdout.write(mine[0].containerId);
+          NODE
+          }
+          # Prints yes, no or unknown: has a targeted drain of the product been refused? The output text of the restart
+          # is one witness, the draining flag of the product's route the other.
+          # The log of a targeted restart concerns the product alone. A whole restart logs for every agent, so only the
+          # line that names the product counts there.
+          product_drain_state() {
+            local log="$1" mode="$2" file="$RUNNER_TEMP/qa-product-routing.json" state
+            if [ "$mode" = targeted ] && grep -Eq 'did not exit cleanly|refusing removal or recreate' "$log"; then
+              echo yes
+              return 0
+            fi
+            if grep -qF "$PRODUCT_AGENT: keeping its stopped runtime after a refused targeted drain" "$log"; then
+              echo yes
+              return 0
+            fi
+            if ! run_in_box "$DRAIN_ROUTING_PROGRAM" < /dev/null > "$file" 2> /dev/null; then
+              echo unknown
+              return 0
+            fi
+            if ! state="$(product_route_flag "$file" "${PRODUCT_AGENT%%/*}" "${PRODUCT_AGENT#*/}")"; then
+              echo unknown
+              return 0
+            fi
+            echo "$state"
+          }
+          product_drain_error() {
+            local id='' file="$RUNNER_TEMP/qa-product-agents.json"
+            if run_in_box "$DRAIN_AGENTS_PROGRAM" < /dev/null > "$file" 2> /dev/null; then
+              id="$(product_container_id "$file" "${PRODUCT_AGENT%%/*}" "${PRODUCT_AGENT#*/}")" || id=''
+            fi
+            if [[ ! "$id" =~ ^[a-f0-9]{64}$ ]]; then
+              id='<the 64-hex containerId of the agent record in .ploinky/agents.json>'
+            fi
+            echo "::error::The targeted drain of $PRODUCT_AGENT was refused: Ploinky keeps its stopped container and the route stays draining, so nothing further was restarted (a whole restart would refuse its graph). An operator must run, under the host lock: ploinky restart $PRODUCT_AGENT --accept-failed-drain $id"
+          }
+          # mode is targeted or whole.
+          restart_product() {
+            local mode="$1" status=0 log drain
+            RESTART_RESULT=failed
+            if [ "$mode" = targeted ]; then
+              log="$RUNNER_TEMP/qa-product-targeted.log"
+              run_logged "$log" ploinky_locked restart "$PRODUCT_AGENT" || status=$?
+              if [ "$status" -eq 75 ]; then return 75; fi
+              if [ "$status" -eq 0 ] && product_settled && wait_ready && await_routes && product_check && routes_dwell; then
+                RESTART_RESULT=targeted
+                return 0
+              fi
+              drain="$(product_drain_state "$log" targeted)"
+              case "$drain" in
+                yes) product_drain_error; return 1 ;;
+                no) ;;
+                *)
+                  echo "::error::The targeted restart of $PRODUCT_AGENT failed and a refused drain cannot be ruled out, so no whole restart was tried. Read .ploinky/routing.json inside the Box, then recover with deploy-explorer-qa-ploinky.yml or, for a refused drain, ploinky restart $PRODUCT_AGENT --accept-failed-drain <containerId>."
+                  return 1
+                  ;;
+              esac
+              echo "::warning::The targeted restart of $PRODUCT_AGENT exited $status or a runtime, route or image check failed; recovering with a whole-workspace restart."
+            fi
+            log="$RUNNER_TEMP/qa-product-restart.log"
+            status=0
+            run_logged "$log" ploinky_locked restart || status=$?
+            if [ "$status" -eq 75 ]; then return 75; fi
+            if [ "$status" -eq 0 ] && product_settled && wait_ready && await_routes && product_check && routes_dwell; then
+              if [ "$mode" = targeted ]; then RESTART_RESULT=whole-after-targeted; else RESTART_RESULT=whole; fi
+              return 0
+            fi
+            drain="$(product_drain_state "$log" whole)"
+            if [ "$drain" = yes ]; then
+              product_drain_error
+            else
+              echo "::error::$PRODUCT_AGENT is not ready after a whole-workspace restart (exit $status). Recover with deploy-explorer-qa-ploinky.yml."
+            fi
+            return 1
+          }
+          # END QA product restart
+
+          # Refusal 3: the Box must exist and belong to the Ploinky-command workflows.
+          if ! STATUS_OUTPUT="$(ploinky_read status)"; then
+            printf '%s\n' "$STATUS_OUTPUT"
+            echo "::error::Status failed: this QA Box is not one the Ploinky-command workflows manage. Nothing was changed. Dispatch deploy-explorer-qa-ploinky.yml (see docs/deploy-explorer-qa.md)."
+            exit 1
+          fi
+          if [[ "$STATUS_OUTPUT" == *'Ploinky Box: absent'* ]]; then
+            echo "::error::There is no QA Box. Nothing was changed. Dispatch deploy-explorer-qa-ploinky.yml to install it."
+            exit 1
+          fi
+          BOX_STATE=present
+          # Refusal 4: every runtime of the graph, and the three products, must already run. This and the route check below
+          # are the only guards of the whole-workspace restart at the end.
+          STATUS_STATES="$(printf '%s\n' "$STATUS_OUTPUT" | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"
+          for agent in $GRAPH_RUNTIMES; do
+            if ! grep -qx "$agent running" <<< "$STATUS_STATES"; then
+              echo "::error::Runtime $agent is not running, so the QA graph is not healthy. Nothing was changed. Dispatch deploy-explorer-qa-ploinky.yml."
+              exit 1
+            fi
+          done
+          # Refusal 5: the product check. Read-only.
+          runner_git() { git -C "$GITHUB_WORKSPACE/.qa-scriptahub-source" "$@"; }
+          if ! LIVE_OUTPUT="$(run_in_box "$SCRIPTAHUB_READ_PROGRAM" < /dev/null)"; then
+            echo "::error::The product check failed: ScriptaHubAgent must be a clean checkout of https://github.com/Axiologic/ScriptaHubAgent.git on a named branch at the workspace root, with a real .git and not also under .ploinky/repos (or the host lock is held). Nothing was changed. deploy-explorer-qa-ploinky.yml installs or repairs it."
+            exit 1
+          fi
+          OLD_BRANCH="$(sed -n 's/^BRANCH=//p' <<< "$LIVE_OUTPUT" | tail -n 1)"
+          OLD_HEAD="$(sed -n 's/^HEAD=//p' <<< "$LIVE_OUTPUT" | tail -n 1)"
+          if [ "$OLD_BRANCH" != "$SCRIPTA_BRANCH" ] || [[ ! "$OLD_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The product check found the QA checkout on '$(printable "$OLD_BRANCH")' at '$(printable "$OLD_HEAD")', but ScriptaHubAgent main is $SCRIPTA_BRANCH. Nothing was changed."
+            exit 1
+          fi
+          if [ "$OLD_HEAD" != "$SCRIPTA_HEAD" ]; then
+            if ! runner_git cat-file -e "$OLD_HEAD^{commit}" 2> /dev/null || ! runner_git merge-base --is-ancestor "$OLD_HEAD" "$SCRIPTA_HEAD"; then
+              echo "::error::The QA checkout is at $OLD_HEAD, which is not an ancestor of $SCRIPTA_BRANCH@$SCRIPTA_HEAD (QA checkout has commits main lacks). Nothing was changed."
+              exit 1
+            fi
+          fi
+          for key in scripta roboteam robowork; do
+            if ! container_line "$key"; then
+              echo "::error::The product check found no single running $key container. Nothing was changed. Dispatch deploy-explorer-qa-ploinky.yml."
+              exit 1
+            fi
+            read -r image _ <<< "$CONTAINER_LINE"
+            case "$key" in
+              scripta) LIVE_AGENT_ID="$image" ;;
+              roboteam) LIVE_ROBOTEAM_ID="$image" ;;
+              robowork) LIVE_ROBOWORK_ID="$image" ;;
+            esac
+          done
+          # Refusal 6: restarting must never be what first shows a broken edge.
+          if ! await_routes 3; then
+            echo "::error::QA routes are not healthy before this run ($ROUTES_STATE). Nothing was changed. Dispatch deploy-explorer-qa-ploinky.yml."
+            exit 1
+          fi
+          # Refusal 7: free what earlier rollouts left behind, then refuse to start on a full disk. The robot image is
+          # pulled only with room for its new layers, unless the Box already holds the published index.
+          prune_images pre
+          require_free_disk
+          if ROBOT_DIGESTS="$(run_in_box "$SCRIPTAHUB_DIGEST_PROGRAM" < /dev/null 2> /dev/null)" &&
+            grep -qxF "docker.io/assistos/scriptahub-robot@$SCRIPTA_ROBOT_INDEX" <<< "$ROBOT_DIGESTS"; then
+            DISK_NEEDED_GIB=$DISK_MIN_FREE_GIB
+          else
+            DISK_NEEDED_GIB=$((DISK_MIN_FREE_GIB + ROBOT_IMAGE_NEW_GIB))
+          fi
+          if ! DISK_NOW_GIB="$(free_disk_gib)"; then
+            echo "::error::Could not read the free disk space of the QA host. Nothing was changed."
+            exit 1
+          fi
+          if [ "$DISK_NOW_GIB" -lt "$DISK_NEEDED_GIB" ]; then
+            echo "::error::Free disk $DISK_NOW_GIB GiB is below the $DISK_NEEDED_GIB GiB this run needs; nothing moved. The previous ScriptaHub agent image is freed only by a restart: dispatch deploy-explorer-qa-ploinky.yml, which restarts before it pulls the robot image."
+            exit 1
+          fi
+
+          # From here on the QA Box changes. Each later failure says what is left changed.
+          AGENT_REF="docker.io/assistos/scriptahub-agent@$SCRIPTA_AGENT_INDEX"
+          ROBOT_REF="docker.io/assistos/scriptahub-robot@$SCRIPTA_ROBOT_INDEX"
+          if [[ ! "$AGENT_REF" =~ ^docker\.io/assistos/scriptahub-agent@sha256:[0-9a-f]{64}$ ]] ||
+            [[ ! "$ROBOT_REF" =~ ^docker\.io/assistos/scriptahub-robot@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The resolved image references are malformed. Nothing was changed."
+            exit 1
+          fi
+          if ! PULL_OUTPUT="$(printf '%s\n%s\n' "$AGENT_REF" "$ROBOT_REF" | run_in_box "$SCRIPTAHUB_PULL_PROGRAM")"; then
+            echo "::error::Pulling the ScriptaHub images inside the Box failed; the checkout and the agents were not changed."
+            exit 1
+          fi
+          pulled() { sed -n "s/^$1=//p" <<< "$PULL_OUTPUT" | tail -n 1; }
+          AGENT_ID="$(pulled AGENT_ID)"
+          ROBOT_ID="$(pulled ROBOT_ID)"
+          ROBOT_REVISION="$(pulled ROBOT_REVISION)"
+          ROBOTEAM_ID="$(pulled ROBOTEAM_ID)"
+          if [[ ! "$ROBOTEAM_ID" =~ ^[a-f0-9]{64}$ ]]; then ROBOTEAM_ID=''; fi
+          if [[ ! "$AGENT_ID" =~ ^[a-f0-9]{64}$ ]] || [[ ! "$ROBOT_ID" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "::error::The pull did not report both image IDs; the checkout and the agents were not changed."
+            exit 1
+          fi
+          if [ "$ROBOT_REVISION" != "$SCRIPTA_ROBOT_REVISION" ]; then
+            echo "::error::The pulled robot image carries revision '$(printable "$ROBOT_REVISION")', not $SCRIPTA_ROBOT_REVISION, so the published tag moved during this run. The images were pulled; the checkout and the agents were not changed."
+            exit 1
+          fi
+          CHECKOUT_MOVES=false
+          if [ "$OLD_HEAD" != "$SCRIPTA_HEAD" ]; then CHECKOUT_MOVES=true; fi
+          ROBOT_CHANGES=false
+          if [ "$ROBOT_ID" != "$ROBOTEAM_ID" ] || [ "$ROBOT_ID" != "$LIVE_ROBOTEAM_ID" ] || [ "$ROBOT_ID" != "$LIVE_ROBOWORK_ID" ]; then ROBOT_CHANGES=true; fi
+          AGENT_CHANGES=false
+          if [ "$AGENT_ID" != "$LIVE_AGENT_ID" ]; then AGENT_CHANGES=true; fi
+
+          RESTART_RESULT=none
+          NEW_HEAD="$OLD_HEAD"
+          PRODUCT_CHECK_SUMMARY=''
+          if [ "$CHECKOUT_MOVES" = true ] || [ "$ROBOT_CHANGES" = true ] || [ "$AGENT_CHANGES" = true ]; then
+            UPDATE_EPOCH="$("${SSH[@]}" 'date +%s' < /dev/null)"
+            if [[ ! "$UPDATE_EPOCH" =~ ^[0-9]{9,12}$ ]]; then
+              echo "::error::The host clock could not be read; the checkout and the agents were not changed."
+              exit 1
+            fi
+            if [ "$CHECKOUT_MOVES" = true ]; then
+              if ! printf '%s\n%s\n' "$SCRIPTA_HEAD" "$SCRIPTA_BRANCH" | run_in_box "$SCRIPTAHUB_MERGE_PROGRAM"; then
+                echo "::error::Post-mutation failure: the images were pulled, but the ScriptaHub checkout could not be fast-forwarded to $SCRIPTA_HEAD (it stays at $OLD_HEAD unless Git moved it). Nothing was retagged or restarted."
+                exit 1
+              fi
+              # Post-mutation check: the copied paths of the moved checkout must be the ones the robot image was built from.
+              if ! MOVED_OUTPUT="$(run_in_box "$SCRIPTAHUB_READ_PROGRAM" < /dev/null)"; then
+                echo "::error::Post-mutation failure: the moved ScriptaHub checkout could not be read back. Nothing was retagged or restarted."
+                exit 1
+              fi
+              NEW_HEAD="$(sed -n 's/^HEAD=//p' <<< "$MOVED_OUTPUT" | tail -n 1)"
+              NEW_COPIED="$(sed -n 's/^COPIED=//p' <<< "$MOVED_OUTPUT" | tail -n 1)"
+              if [ "$NEW_COPIED" != "$SCRIPTA_COPIED_TREES" ]; then
+                echo "::error::Post-mutation failure: the ScriptaHub checkout moved to $(printable "$NEW_HEAD"), but its copied trees ($(printable "$NEW_COPIED")) are not the ones the robot image was built from ($SCRIPTA_COPIED_TREES). Nothing was retagged or restarted; the checkout is left moved."
+                exit 1
+              fi
+              if [ "$NEW_HEAD" != "$SCRIPTA_HEAD" ]; then
+                echo "[deploy-qa-scriptahub] The checkout is at $(printable "$NEW_HEAD"), not $SCRIPTA_HEAD, but its copied trees are equal."
+              fi
+            fi
+            if [ "$ROBOT_CHANGES" = true ]; then
+              if ! printf '%s\n' "$ROBOT_ID" | run_in_box "$SCRIPTAHUB_TAG_PROGRAM"; then
+                echo "::error::Post-mutation failure: the ScriptaHub checkout is at $(printable "$NEW_HEAD"), but the robot image could not be tagged as roboteam-agent:runtime. Nothing was restarted."
+                exit 1
+              fi
+            fi
+            echo "[deploy-qa-scriptahub] checkout $OLD_HEAD -> $(printable "$NEW_HEAD")"
+            echo "[deploy-qa-scriptahub] agent image $AGENT_ID; robot image $ROBOT_ID; roboteam-agent:runtime before ${ROBOTEAM_ID:-none}"
+            RESTART_STATUS=0
+            restart_product whole || RESTART_STATUS=$?
+            if [ "$RESTART_STATUS" -ne 0 ]; then
+              echo "::error::Post-mutation failure: the ScriptaHub checkout is at $(printable "$NEW_HEAD") and the images are pulled and tagged, but the whole-workspace restart did not complete (exit $RESTART_STATUS)."
+              exit "$RESTART_STATUS"
+            fi
+          else
+            echo "[deploy-qa-scriptahub] checkout $OLD_HEAD -> $OLD_HEAD"
+            echo "[deploy-qa-scriptahub] agent image $AGENT_ID; robot image $ROBOT_ID; roboteam-agent:runtime before ${ROBOTEAM_ID:-none}"
+          fi
+          echo "[deploy-qa-scriptahub] restart result: $RESTART_RESULT"
+          if [ -n "$PRODUCT_CHECK_SUMMARY" ]; then
+            while IFS= read -r summary_line; do
+              echo "[deploy-qa-scriptahub] $summary_line"
+            done <<< "$PRODUCT_CHECK_SUMMARY"
+          fi
+
+          if [ "$SOUL_UP_BEFORE" = 1 ] && ! soul_healthy; then
+            echo "::error::Protected Soul Gateway became unhealthy during the deployment."
+            exit 1
+          fi
+          if [ "$UNRELATED_BEFORE" != "$(unrelated_containers)" ]; then
+            echo "::error::An unrelated host container changed during the deployment."
+            exit 1
+          fi
+          # After the readiness checks, so a prune problem can never mask them. It only warns.
+          prune_images post
+          if FREE_AFTER="$(free_disk_gib)"; then
+            echo "[deploy-qa] free disk after prune: $FREE_AFTER GiB"
+          else
+            echo '::warning::Could not read the free disk space after the prune.'
+          fi
+          # END QA product flow
+
+      - name: Verify the QA routes
+        run: |
+          set -euo pipefail
+          BODY="$RUNNER_TEMP/qa-product-verify-body"
+          fetch_code() {
+            : > "$BODY"
+            curl -sS --max-time 15 -o "$BODY" -w '%{http_code}' "$1" || true
+          }
+          for attempt in $(seq 1 60); do
+            explorer="$(fetch_code "${PUBLIC_URL%/}/auth/login?agent=explorer")"
+            if { [ "$explorer" = 303 ] || [ "$explorer" = 200 ]; } && grep -Eqi 'EDGE_GENERATION_INACTIVE|cloudflare tunnel error|error code: 1033' "$BODY"; then
+              explorer=inactive
+            fi
+            bizanso="$(fetch_code "${PUBLIC_URL%/}/base-agent-additional-server/bizanso/8787/how-it-works/")"
+            scriptahub="$(fetch_code "${PUBLIC_URL%/}/base-agent-additional-server/scriptahubAgent/3002/health")"
+            if { [ "$explorer" = 303 ] || [ "$explorer" = 200 ]; } && [ "$bizanso" = 200 ] && [ "$scriptahub" = 200 ]; then
+              echo "[deploy-qa-scriptahub] The Explorer login, Bizanso and ScriptaHub answer through the public edge."
+              break
+            fi
+            if [ "$attempt" = 60 ]; then
+              echo "::error::The QA routes did not answer; last HTTP codes explorer=${explorer:-none} bizanso=${bizanso:-none} scriptahub=${scriptahub:-none}"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Create summary
+        if: always()
+        run: |
+          {
+            echo "## Explorer QA ScriptaHub Deploy"
+            echo ""
+            echo "- Host: \`${SSH_USER}@${SSH_HOST}\`, workspace \`~/${WORKSPACE}\`"
+            echo "- Scope: the ScriptaHub checkout and images inside the running Box. The Ploinky checkout, the Box, the tunnel and every other repository are untouched"
+            echo "- Source: ScriptaHubAgent \`${SCRIPTA_BRANCH:-not-resolved}@${SCRIPTA_HEAD:-not-resolved}\`, robot image revision \`${SCRIPTA_ROBOT_REVISION:-not-resolved}\`"
+            echo "- Images: robot \`${SCRIPTA_ROBOT_INDEX:-not-resolved}\`, agent \`${SCRIPTA_AGENT_INDEX:-not-resolved}\`"
+            echo "- Restart result: the \`restart result\` line of the deploy step. A change always takes one whole-workspace restart, guarded only by the running-graph and route checks before it"
+            echo "- A whole-workspace restart interrupts in-flight robot work on QA"
+            echo "- Concurrency: any dispatch in the group \`deploy-explorer-qa\` (the full QA deploys, both destroys, the Bizanso workflow) cancels a queued, not running, run of the same group"
+            echo "- ScriptaHub: \`${PUBLIC_URL}/base-agent-additional-server/scriptahubAgent/3002/\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f \
+            ~/.ssh/deploy_key \
+            ~/.ssh/explorer_qa_known_hosts \
+            "$RUNNER_TEMP/explorer_qa_known_hosts" \
+            "$RUNNER_TEMP/explorer-qa-product-preflight.log" \
+            "$RUNNER_TEMP/qa-scriptahub-robot-image.json" \
+            "$RUNNER_TEMP/qa-scriptahub-agent-image.json" \
+            "$RUNNER_TEMP/qa-product-route-body" \
+            "$RUNNER_TEMP/qa-product-verify-body" \
+            "$RUNNER_TEMP/qa-product-routing.json" \
+            "$RUNNER_TEMP/qa-product-agents.json" \
+            "$RUNNER_TEMP/qa-product-targeted.log" \
+            "$RUNNER_TEMP/qa-product-restart.log"
