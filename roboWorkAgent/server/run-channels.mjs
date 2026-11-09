@@ -74,7 +74,8 @@ export class RunChannels {
             try { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(address, resolve); }); }
             catch (error) { await handle?.close(); throw error; }
             if (handle) this.directories.push(handle);
-            await fs.chmod(socket, 0o600);
+            // A macOS Podman virtiofs /data refuses chmod on a Unix socket with EINVAL; the 0700 directory still guards it.
+            await fs.chmod(socket, 0o600).catch(error => { if (error.code !== 'EINVAL') throw error; });
             if (definition.name === 'ploinky-runtime') {
                 await fs.unlink(path.join(directory, 'tasks.sock')).catch(error => { if (error.code !== 'ENOENT') throw error; });
                 await fs.symlink('request.sock', path.join(directory, 'tasks.sock'));
