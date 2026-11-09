@@ -93,6 +93,23 @@ test('workflow files in <repository>/flows and <repository>/<folder>/flows are l
     assert.deepEqual(registry.fileErrors, []);
 });
 
+test('workflow files in Ploinky-managed repositories under .ploinky/repos are listed', async t => {
+    const { registry, write } = await workspace(t);
+    await write('.ploinky/repos/Managed/flows/managed-flow.json', definition('Managed flow'));
+    await write('.ploinky/repos/Managed/agent/flows/managed-deep.json', definition('Managed deep'));
+    await write('.ploinky/repos/Managed/agent/inner/flows/managed-too-deep.json', definition('Too deep'));
+    await write('.ploinky/repos/.hidden/flows/managed-hidden.json', definition('Hidden'));
+    // A managed checkout that is also a workspace repository is scanned only once, from the workspace.
+    await write('Shared/flows/shared-flow.json', definition('Shared flow'));
+    await write('.ploinky/repos/Shared/flows/shared-flow.json', definition('Shared flow'));
+    const workflows = await registry.list();
+    assert.deepEqual(workflows.map(workflow => workflow.id).sort(), ['managed-deep', 'managed-flow', 'shared-flow']);
+    assert.deepEqual(workflows.find(workflow => workflow.id === 'managed-flow').source,
+        { kind: 'file', path: '.ploinky/repos/Managed/flows/managed-flow.json' });
+    assert.deepEqual(workflows.find(workflow => workflow.id === 'shared-flow').source, { kind: 'file', path: 'Shared/flows/shared-flow.json' });
+    assert.deepEqual(registry.fileErrors, []);
+});
+
 test('a workflow can be created as a file, edited with a stale-save check and deleted', async t => {
     const { root, registry } = await workspace(t);
     await fs.mkdir(path.join(root, 'Repo', 'agent'), { recursive: true });

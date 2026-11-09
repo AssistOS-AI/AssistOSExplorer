@@ -6,6 +6,7 @@ import { WORKFLOW_ID_PATTERN } from './constants.mjs';
 import { invalid, normalizeWorkflow, workflowDefaultObjective } from './graph.mjs';
 
 export const FLOWS_FOLDER = 'flows';
+const PLOINKY_REPOS = path.join('.ploinky', 'repos');
 const MAX_FILE_BYTES = 1024 * 1024;
 const fail = (message, statusCode = 400) => Object.assign(invalid(message), { statusCode });
 const skipped = name => name.startsWith('.') || name === 'node_modules';
@@ -20,7 +21,7 @@ async function ordinaryDirectories(directory) {
 }
 
 // Workflow types kept as JSON files in the workspace, in `<repository>/flows/` or
-// `<repository>/<folder>/flows/`, and in the agent's internal workflows folder (see
+// `<repository>/<folder>/flows/` (repositories include `.ploinky/repos/*`), and in the agent's internal workflows folder (see
 // WorkflowRegistry). The file name is the workflow id. A file holds only the
 // definition; its revision is the hash of its content, so a change on disk makes
 // a stale editor save fail like a concurrent edit. Skill selections inside the
@@ -31,10 +32,18 @@ export class WorkflowFiles {
         this.folders = folders;
     }
     rootSync() { return fsSync.realpathSync(this.workspaceRoot); }
+    // Repositories are the ordinary folders of the workspace root and the Ploinky-managed
+    // checkouts in .ploinky/repos; a managed checkout whose name is also a workspace
+    // repository is the same repository, so only the workspace copy is scanned.
+    async repositoryDirectories(root) {
+        const workspace = await ordinaryDirectories(root);
+        const managedRoot = path.join(root, PLOINKY_REPOS);
+        const managed = (await ordinaryDirectories(managedRoot)).filter(name => !workspace.includes(name));
+        return [...workspace.map(name => path.join(root, name)), ...managed.map(name => path.join(managedRoot, name))];
+    }
     async flowsDirectories(root) {
         const directories = [];
-        for (const repository of await ordinaryDirectories(root)) {
-            const base = path.join(root, repository);
+        for (const base of await this.repositoryDirectories(root)) {
             for (const folder of await ordinaryDirectories(base)) {
                 if (folder === FLOWS_FOLDER) directories.push(path.join(base, folder));
                 else if ((await ordinaryDirectories(path.join(base, folder))).includes(FLOWS_FOLDER)) directories.push(path.join(base, folder, FLOWS_FOLDER));
