@@ -748,6 +748,8 @@ jobs:
           BOX_CONTAINER=ploinky-box-explorerqaworkspace-7a31ab7775eb
           PRUNE_BOX_IMAGE=docker.io/assistos/ploinky-box
           DISK_MIN_FREE_GIB=5
+          # Unpacked size of the ScriptaHub robot image not shared with the RoboTeam runtime (11.2 GB, 9 of 29 layers new).
+          ROBOT_IMAGE_NEW_GIB=11
           DISK_WARN_FREE_GIB=10
           # One podman call on the host or inside the Box, under the same host lock as every other mutation.
           prune_podman() {
@@ -1066,14 +1068,9 @@ jobs:
 
           # BEGIN QA ScriptaHub images
           # Ploinky pulls an image only when it is missing, and ScriptaHub refuses skill sources its image was not built
-          # from, so the published runtime images are pulled before the repositories move. ScriptaHub workflows run
-          # their skills inside the robots, so on QA the RoboTeam runtime tag names the ScriptaHub robot profile, which
-          # extends the RoboTeam runtime with them. The restart below starts the agents on these images.
-          IMAGES_PROGRAM='set -eu
-          podman pull -q docker.io/assistos/scriptahub-agent:runtime
-          podman pull -q docker.io/assistos/scriptahub-robot:runtime
-          podman tag docker.io/assistos/scriptahub-robot:runtime docker.io/assistos/roboteam-agent:runtime'
-          run_in_box "$IMAGES_PROGRAM" < /dev/null
+          # from, so its published runtime image is pulled before the repositories move and the restart below starts it.
+          run_in_box 'set -eu
+          podman pull -q docker.io/assistos/scriptahub-agent:runtime' < /dev/null
           # END QA ScriptaHub images
 
           # Start never fetches a checkout that exists, so kept sources move forward here. A full `ploinky update`
@@ -1096,6 +1093,24 @@ jobs:
           done
           ploinky_locked restart
           wait_ready
+
+          # BEGIN QA ScriptaHub robot image
+          # ScriptaHub workflows run their skills inside the robots, so on QA the RoboTeam runtime tag names the ScriptaHub
+          # robot profile, which extends the RoboTeam runtime with them. It is about 11 GB, so it is pulled only after the
+          # restart has released the previous ScriptaHub image and the prune has removed it, and only with room to spare;
+          # a run stopped here leaves every agent on its current image. A second restart starts the robots on it.
+          prune_images robot
+          ROBOT_FREE_GIB="$(free_disk_gib)" || { echo "::error::Could not read the free disk space of the QA host."; exit 1; }
+          if [ "$ROBOT_FREE_GIB" -lt $((DISK_MIN_FREE_GIB + ROBOT_IMAGE_NEW_GIB)) ]; then
+            echo "::error::Free disk $ROBOT_FREE_GIB GiB is below the $DISK_MIN_FREE_GIB GiB floor plus the ScriptaHub robot image's $ROBOT_IMAGE_NEW_GIB GiB; repositories and agents are updated, the robots keep their current image. Free space or grow the disk, then deploy again."
+            exit 1
+          fi
+          run_in_box 'set -eu
+          podman pull -q docker.io/assistos/scriptahub-robot:runtime
+          podman tag docker.io/assistos/scriptahub-robot:runtime docker.io/assistos/roboteam-agent:runtime' < /dev/null
+          ploinky_locked restart
+          wait_ready
+          # END QA ScriptaHub robot image
 
           # Handles only: this document never holds a secret value.
           EDGE_DOCUMENT="$(node --input-type=module <<'NODE'
