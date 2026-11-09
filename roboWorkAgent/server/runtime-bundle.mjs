@@ -5,9 +5,9 @@ import { randomUUID } from 'node:crypto';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 
 // The tools a robot phase needs inside another Ploinky agent's container, kept in the tool cache
-// (`/data/tool-cache`, the workspace folder `.data/roboTeamAgent/tool-cache`) beside the coding agents,
-// where every global-mode agent sees them at the same path:
-//   bwrap - a fully static Bubblewrap, built once in RoboTeam's nested Podman from the checksum-pinned
+// (RoboWork's `/data/tool-cache`) beside the coding agents, which RoboWork bind-mounts read-only
+// at the same path into the environment containers it launches from that agent's image:
+//   bwrap - a fully static Bubblewrap, built once in RoboWork's nested Podman from the checksum-pinned
 //           upstream release, for images without bwrap;
 //   ala   - ALA itself, only when its package is outside the workspace (normally the link-installed
 //           workspace checkout is used as it is).

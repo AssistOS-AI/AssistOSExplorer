@@ -9,6 +9,7 @@ import { LiveSessionsRegistry } from './live-sessions/registry.mjs';
 import { startLiveSessionsIpc } from './live-sessions/ipc-server.mjs';
 import { RuntimeLiveSource, composeTaskObservers } from './live-sessions/runtime-source.mjs';
 import { RoboWorkClient } from './run-client.mjs';
+import { removeLegacyRuntimeData } from './legacy-runtime-cleanup.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
@@ -88,6 +89,13 @@ const liveSessionsIpc = await startProductionIpc();
 
 server.listen(port, host, () => {
     console.log(`RoboTeamAgent listening on ${host}:${port}`);
+    // Background removal of the nested Podman store and tool cache RoboWork replaced; it must not delay readiness.
+    try {
+        void removeLegacyRuntimeData({ dataDir, log: (line) => console.log(line) })
+            .catch((error) => console.error(`[roboTeamAgent] legacy runtime cleanup failed: ${error.code || error.message}`));
+    } catch (error) {
+        console.error(`[roboTeamAgent] legacy runtime cleanup failed: ${error.code || error.message}`);
+    }
     roboflow.scheduler.start();
     // Downloads must not delay service readiness; requests share this cache's pending preparations.
     runtimeManager.resumeAttachedTasks();
