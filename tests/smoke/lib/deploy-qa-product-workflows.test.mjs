@@ -173,8 +173,8 @@ function inBoxPrograms(source) {
 
 test('no in-Box program contains a single quote, and each is valid shell', () => {
     const expected = {
-        bizanso: ['DRAIN_ROUTING_PROGRAM', 'DRAIN_AGENTS_PROGRAM', 'PROBE_PROGRAM', 'BIZANSO_READ_PROGRAM', 'BIZANSO_MANIFEST_PROGRAM', 'BIZANSO_PULL_PROGRAM', 'COPY_PROGRAM'],
-        scriptahub: ['DRAIN_ROUTING_PROGRAM', 'DRAIN_AGENTS_PROGRAM', 'PROBE_PROGRAM', 'SCRIPTAHUB_READ_PROGRAM', 'SCRIPTAHUB_DIGEST_PROGRAM', 'SCRIPTAHUB_PULL_PROGRAM', 'SCRIPTAHUB_MERGE_PROGRAM', 'SCRIPTAHUB_TAG_PROGRAM'],
+        bizanso: ['DRAIN_ROUTING_PROGRAM', 'DRAIN_AGENTS_PROGRAM', 'DRAIN_RUNNING_PROGRAM', 'PROBE_PROGRAM', 'BIZANSO_READ_PROGRAM', 'BIZANSO_MANIFEST_PROGRAM', 'BIZANSO_PULL_PROGRAM', 'COPY_PROGRAM'],
+        scriptahub: ['DRAIN_ROUTING_PROGRAM', 'DRAIN_AGENTS_PROGRAM', 'DRAIN_RUNNING_PROGRAM', 'PROBE_PROGRAM', 'SCRIPTAHUB_READ_PROGRAM', 'SCRIPTAHUB_DIGEST_PROGRAM', 'SCRIPTAHUB_PULL_PROGRAM', 'SCRIPTAHUB_MERGE_PROGRAM', 'SCRIPTAHUB_TAG_PROGRAM'],
     };
     for (const key of KEYS) {
         const programs = inBoxPrograms(deployBody(key));
@@ -281,6 +281,7 @@ const MARKERS = {
             'echo "::error::Runtime $agent is not running',
             'run_in_box "$BIZANSO_READ_PROGRAM" < /dev/null)"',
             'echo "::error::The product check found no single running bizanso container.',
+            'if [ "$(any_route_draining)" != no ]; then',
             'if ! await_routes 3; then',
             '\nprune_images pre\nrequire_free_disk\n',
         ],
@@ -297,6 +298,7 @@ const MARKERS = {
             'echo "::error::Runtime $agent is not running',
             'run_in_box "$SCRIPTAHUB_READ_PROGRAM" < /dev/null)"',
             'echo "::error::The product check found no single running $key container.',
+            'if [ "$(any_route_draining)" != no ]; then',
             'if ! await_routes 3; then',
             '\nprune_images pre\nrequire_free_disk\n',
             'run_in_box "$SCRIPTAHUB_DIGEST_PROGRAM" < /dev/null',
@@ -453,8 +455,9 @@ case "$1" in
   ps)
     shift
     if [ "$1" = -a ]; then cat "$STUB/ps-a" 2> /dev/null; exit 0; fi
-    prefix=""
-    for arg in "$@"; do case "$arg" in name=^*) prefix="\${arg#name=^}" ;; esac; done
+    prefix=""; cid=""
+    for arg in "$@"; do case "$arg" in name=^*) prefix="\${arg#name=^}" ;; id=*) cid="\${arg#id=}" ;; esac; done
+    if [ -n "$cid" ]; then echo "podman ps id=$cid" >> "$STUB/calls.log"; cat "$STUB/running.$cid" 2> /dev/null; exit 0; fi
     echo "podman ps $prefix" >> "$STUB/calls.log"
     cat "$STUB/ps.$prefix" 2> /dev/null; exit 0 ;;
   pull)
@@ -1335,7 +1338,7 @@ test('ScriptaHub gate: malformed or inconsistent registry answers refuse the run
         const tolerant = scriptaBox(t, { agentJson });
         const resolved = resolveScripta(tolerant);
         assert.equal(resolved.result.status, 0, logOf(resolved.result));
-        assert.match(resolved.env.SCRIPTA_AGENT_REVISION, agentJson === 'garbage' ? /^unknown$/ : /^not-a-revision$/);
+        assert.equal(resolved.env.SCRIPTA_AGENT_REVISION, 'unknown');
     }
 });
 
@@ -1861,4 +1864,81 @@ test('ScriptaHub flow: a checkout that cannot be fast-forwarded, or a robot imag
     assert.match(second.stdout, new RegExp(`::error::Post-mutation failure: the ScriptaHub checkout is at ${tagFails.head}, but the robot image could not be tagged as roboteam-agent:runtime \\(${moves}\\)\\. Nothing was restarted\\.`));
     assert.equal(checkoutHead(tagFails), tagFails.head);
     assert.deepEqual(tagFails.calls().filter((line) => /^ploinky restart/.test(line)), []);
+});
+
+test('ScriptaHub resolve: nothing but regex-checked values reaches GITHUB_ENV, and a hostile agent label becomes unknown', (t) => {
+    const injected = `${'a'.repeat(40)}\nSCRIPTA_ROBOT_INDEX=sha256:${'0'.repeat(64)}\nSCRIPTA_HEAD=${'0'.repeat(40)}`;
+    for (const label of [injected, `${'a'.repeat(40)}\n`, 'x'.repeat(41), `${'A'.repeat(40)}`, '']) {
+        const box = scriptaBox(t, { agentJson: platformJson(label) });
+        const { result, env } = resolveScripta(box);
+        assert.equal(result.status, 0, logOf(result));
+        assert.equal(env.SCRIPTA_AGENT_REVISION, 'unknown', JSON.stringify(label));
+        const lines = fs.readFileSync(box.githubEnv, 'utf8').split('\n').filter(Boolean);
+        assert.deepEqual(lines.map((line) => line.split('=')[0]), ['SCRIPTA_HEAD', 'SCRIPTA_BRANCH', 'SCRIPTA_ROBOT_REVISION', 'SCRIPTA_ROBOT_INDEX', 'SCRIPTA_AGENT_INDEX', 'SCRIPTA_COPIED_TREES', 'SCRIPTA_AGENT_REVISION']);
+        assert.equal(env.SCRIPTA_ROBOT_INDEX, box.robotIndex);
+        assert.equal(env.SCRIPTA_HEAD, box.head);
+    }
+    const good = scriptaBox(t);
+    const resolved = resolveScripta(good);
+    assert.equal(resolved.env.SCRIPTA_AGENT_REVISION, good.base);
+    const shapes = { SCRIPTA_HEAD: /^[0-9a-f]{40}$/, SCRIPTA_BRANCH: /^[A-Za-z0-9][A-Za-z0-9._/-]*$/, SCRIPTA_ROBOT_REVISION: /^[0-9a-f]{40}$/, SCRIPTA_ROBOT_INDEX: /^sha256:[0-9a-f]{64}$/, SCRIPTA_AGENT_INDEX: /^sha256:[0-9a-f]{64}$/, SCRIPTA_COPIED_TREES: /^[0-9a-f]{40}( [0-9a-f]{40}){2}$/, SCRIPTA_AGENT_REVISION: /^(?:[0-9a-f]{40}|unknown)$/ };
+    for (const [name, shape] of Object.entries(shapes)) assert.match(resolved.env[name], shape, name);
+    // The Bizanso step writes four values, each checked or built from the runner's own temp path.
+    const biz = bizansoBox(t);
+    const { env } = resolveBizanso(biz);
+    assert.deepEqual(Object.keys(env), ['BIZANSO_SOURCE_COMMIT', 'BIZANSO_IMAGE', 'BIZANSO_SOURCE_TREE', 'BIZANSO_INCOMING_DIR']);
+    assert.match(env.BIZANSO_SOURCE_COMMIT, /^[0-9a-f]{40}$/);
+    assert.match(env.BIZANSO_SOURCE_TREE, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(env.BIZANSO_INCOMING_DIR, path.join(biz.runner, 'qa-bizanso-incoming'));
+});
+
+test('refusal 5: a malformed live container line, and a draining route on any agent, stop both flows before any mutation', (t) => {
+    const cases = [
+        ['bizanso', 'a podman date string for StartedAt', (box) => box.ps(BIZ_PREFIX, [`${hex('a')} 2026-11-09 17:00:00 +0000 UTC ${BIZ_PREFIX}abc`]), /::error::The product check read a malformed bizanso container line \(image ID or start time\)\. Nothing was changed\./],
+        ['bizanso', 'a short image ID', (box) => box.ps(BIZ_PREFIX, [`abc123 1700000000 ${BIZ_PREFIX}abc`]), /malformed bizanso container line/],
+        ['bizanso', 'a draining route on another agent', (box) => writeJson(box, 'routing.json', { routes: { dpuAgent: { container: 'ploinky_AchillesIDE_dpuAgent_x', draining: true } } }), /::error::A route in \.ploinky\/routing\.json is draining, or the routes could not be read\. Nothing was changed\./],
+        ['bizanso', 'an unreadable routing file', (box) => fs.writeFileSync(path.join(box.ws, '.ploinky/routing.json'), 'not json'), /A route in \.ploinky\/routing\.json is draining, or the routes could not be read/],
+        ['scriptahub', 'a podman date string for StartedAt', (box) => box.ps(PREFIX.roboteam, [`${OLD_ROBOTEAM_ID} 2026-11-09 17:00:00 +0000 UTC ${PREFIX.roboteam}abc`]), /::error::The product check read a malformed roboteam container line \(image ID or start time\)\. Nothing was changed\./],
+        ['scriptahub', 'a non-hex image ID', (box) => box.ps(PREFIX.scripta, [`${'z'.repeat(64)} 1700000000 ${PREFIX.scripta}abc`]), /malformed scripta container line/],
+        ['scriptahub', 'a draining route on another agent', (box) => writeJson(box, 'routing.json', { routes: { emailAgent: { draining: true } } }), /::error::A route in \.ploinky\/routing\.json is draining, or the routes could not be read\. Nothing was changed\./],
+        ['scriptahub', 'an unreadable routing file', (box) => fs.writeFileSync(path.join(box.ws, '.ploinky/routing.json'), '[1'), /A route in \.ploinky\/routing\.json is draining, or the routes could not be read/],
+    ];
+    for (const [key, name, setup, message] of cases) {
+        const box = key === 'bizanso' ? bizansoBox(t, { source: { 'bizanso/src/runtime.mjs': 'export default 2;\n' } }) : scriptaBox(t);
+        setup(box);
+        const before = key === 'scriptahub' ? checkoutHead(box) : null;
+        const result = key === 'bizanso' ? runBizansoFlow(box) : runScriptaFlow(box);
+        assert.notEqual(result.status, 0, `${key}: ${name}: ${logOf(result)}`);
+        assert.match(result.stdout, message, `${key}: ${name}`);
+        assert.deepEqual(box.calls().filter((line) => /^podman (?:pull|tag|image rm)|^ploinky (?:restart|var)/.test(line)), [], `${key}: ${name}`);
+        if (key === 'bizanso') assert.equal(fs.existsSync(path.join(box.ws, '.ploinky/.qa-private-copy')), false, name);
+        else assert.equal(checkoutHead(box), before, name);
+    }
+});
+
+test('restart_product: a drain timeout counts as a refused drain, and the error says whether the container is still running', (t) => {
+    const TIMEOUT_TEXT = "targeted drain for 'bizanso' exceeded 35000ms and the container remains running; refusing SIGKILL, removal, recreate, or selector activation";
+    const run = (running) => {
+        const box = makeBox(t);
+        writeJson(box, 'agents.json', AGENT_RECORDS);
+        box.hook('bizanso_bizanso', `echo "${TIMEOUT_TEXT}"; exit 1`);
+        if (running) box.write(`running.${AGENTS_JSON_ID}`, `${AGENTS_JSON_ID}\n`);
+        return { box, result: box.exec(restartScript(box, 'bizanso')) };
+    };
+    const still = run(true);
+    assert.deepEqual(outcome(still.result), { status: 1, result: 'failed' });
+    assert.deepEqual(restartCalls(still.box), ['ploinky restart bizanso/bizanso']);
+    assert.match(still.result.stdout, new RegExp(`::error::The targeted drain of bizanso/bizanso timed out: its container ${AGENTS_JSON_ID} is still running.*The container must exit first; then an operator must run, under the host lock: ploinky restart bizanso/bizanso --accept-failed-drain ${AGENTS_JSON_ID}$`, 'm'));
+    assert.doesNotMatch(still.result.stdout, /Ploinky keeps its stopped container/);
+    const stopped = run(false);
+    assert.deepEqual(outcome(stopped.result), { status: 1, result: 'failed' });
+    assert.match(stopped.result.stdout, /Ploinky keeps its stopped container/);
+    assert.doesNotMatch(stopped.result.stdout, /still running/);
+    assert.equal(stopped.box.calls().some((line) => line.includes('--accept-failed-drain')), false);
+    // The timeout code alone is enough too.
+    const code = makeBox(t);
+    code.hook('bizanso_bizanso', 'echo "TARGETED_DRAIN_TIMEOUT"; exit 1');
+    const coded = code.exec(restartScript(code, 'bizanso'));
+    assert.deepEqual(restartCalls(code), ['ploinky restart bizanso/bizanso']);
+    assert.match(coded.stdout, /::error::The targeted drain of bizanso\/bizanso/);
 });

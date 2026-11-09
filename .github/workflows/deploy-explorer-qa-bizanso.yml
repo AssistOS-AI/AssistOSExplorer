@@ -618,6 +618,14 @@ jobs:
           cat .ploinky/routing.json'
           DRAIN_AGENTS_PROGRAM='set -eu
           cat .ploinky/agents.json'
+          # The container ID arrives on stdin. Prints it when that container is running.
+          DRAIN_RUNNING_PROGRAM='set -eu
+          read -r id
+          case "$id" in
+            ""|*[!0-9a-f]*) echo "Unexpected container ID." >&2; exit 1 ;;
+          esac
+          test "${#id}" -eq 64
+          podman ps --no-trunc --quiet --filter "id=$id"'
           # Runs a command, shows its output and keeps it in a file; returns the command's own status.
           run_logged() {
             local log="$1" status=0
@@ -679,11 +687,37 @@ jobs:
           }
           # Prints yes, no or unknown: has a targeted drain of the product been refused? The output text of the restart
           # is one witness, the draining flag of the product's route the other.
+          # Prints yes, no or unknown: does any route in a copy of .ploinky/routing.json carry the draining flag?
+          routes_draining_flag() {
+            node --input-type=module - "$@" 2> /dev/null <<'NODE'
+          import fs from 'node:fs';
+          let routes = null;
+          try { routes = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))?.routes; } catch { routes = null; }
+          if (!routes || typeof routes !== 'object') {
+            process.stdout.write('unknown');
+          } else {
+            process.stdout.write(Object.values(routes).some((route) => route?.draining === true) ? 'yes' : 'no');
+          }
+          NODE
+          }
+          # A whole restart stops every agent and then refuses its graph while any route is draining, so it is read first.
+          any_route_draining() {
+            local file="$RUNNER_TEMP/qa-product-all-routes.json" state
+            if ! run_in_box "$DRAIN_ROUTING_PROGRAM" < /dev/null > "$file" 2> /dev/null; then
+              echo unknown
+              return 0
+            fi
+            if ! state="$(routes_draining_flag "$file")"; then
+              echo unknown
+              return 0
+            fi
+            echo "$state"
+          }
           # The log of a targeted restart concerns the product alone. A whole restart logs for every agent, so only the
           # line that names the product counts there.
           product_drain_state() {
             local log="$1" mode="$2" file="$RUNNER_TEMP/qa-product-routing.json" state
-            if [ "$mode" = targeted ] && grep -Eq 'did not exit cleanly|refusing removal or recreate' "$log"; then
+            if [ "$mode" = targeted ] && grep -Eq 'did not exit cleanly|refusing removal or recreate|remains running|TARGETED_DRAIN_TIMEOUT' "$log"; then
               echo yes
               return 0
             fi
@@ -702,14 +736,20 @@ jobs:
             echo "$state"
           }
           product_drain_error() {
-            local id='' file="$RUNNER_TEMP/qa-product-agents.json"
+            local id='' running='' file="$RUNNER_TEMP/qa-product-agents.json"
             if run_in_box "$DRAIN_AGENTS_PROGRAM" < /dev/null > "$file" 2> /dev/null; then
               id="$(product_container_id "$file" "${PRODUCT_AGENT%%/*}" "${PRODUCT_AGENT#*/}")" || id=''
             fi
             if [[ ! "$id" =~ ^[a-f0-9]{64}$ ]]; then
               id='<the 64-hex containerId of the agent record in .ploinky/agents.json>'
+            else
+              running="$(printf '%s\n' "$id" | run_in_box "$DRAIN_RUNNING_PROGRAM" 2> /dev/null)" || running=''
             fi
-            echo "::error::The targeted drain of $PRODUCT_AGENT was refused: Ploinky keeps its stopped container and the route stays draining, so nothing further was restarted (a whole restart would refuse its graph). An operator must run, under the host lock: ploinky restart $PRODUCT_AGENT --accept-failed-drain $id"
+            if [ "$running" = "$id" ]; then
+              echo "::error::The targeted drain of $PRODUCT_AGENT timed out: its container $id is still running, Ploinky never signals it again, and the route stays draining, so nothing further was restarted (a whole restart would refuse its graph). The container must exit first; then an operator must run, under the host lock: ploinky restart $PRODUCT_AGENT --accept-failed-drain $id"
+            else
+              echo "::error::The targeted drain of $PRODUCT_AGENT was refused: Ploinky keeps its stopped container and the route stays draining, so nothing further was restarted (a whole restart would refuse its graph). An operator must run, under the host lock: ploinky restart $PRODUCT_AGENT --accept-failed-drain $id"
+            fi
           }
           # mode is targeted or whole.
           restart_product() {
@@ -838,7 +878,16 @@ jobs:
             echo "::error::The product check found no single running bizanso container. Nothing was changed. Dispatch deploy-explorer-qa-ploinky.yml."
             exit 1
           fi
-          read -r LIVE_IMAGE _ <<< "$CONTAINER_LINE"
+          read -r LIVE_IMAGE LIVE_STARTED _ <<< "$CONTAINER_LINE"
+          if [[ ! "$LIVE_IMAGE" =~ ^[a-f0-9]{64}$ ]] || [[ ! "$LIVE_STARTED" =~ ^[0-9]+$ ]]; then
+            echo "::error::The product check read a malformed bizanso container line (image ID or start time). Nothing was changed."
+            exit 1
+          fi
+          # A draining route on any agent would make the whole restart refuse its graph after it stopped everything.
+          if [ "$(any_route_draining)" != no ]; then
+            echo "::error::A route in .ploinky/routing.json is draining, or the routes could not be read. Nothing was changed. An operator must resolve the refused drain first: ploinky restart <agent> --accept-failed-drain <containerId>."
+            exit 1
+          fi
           # Refusal 6: restarting must never be what first shows a broken edge.
           if ! await_routes 3; then
             echo "::error::QA routes are not healthy before this run ($ROUTES_STATE). Nothing was changed. Dispatch deploy-explorer-qa-ploinky.yml."
