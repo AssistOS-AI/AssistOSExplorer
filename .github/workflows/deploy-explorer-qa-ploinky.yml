@@ -1064,6 +1064,18 @@ jobs:
           fi
           GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
 
+          # BEGIN QA ScriptaHub images
+          # Ploinky pulls an image only when it is missing, and ScriptaHub refuses skill sources its image was not built
+          # from, so the published runtime images are pulled before the repositories move. ScriptaHub workflows run
+          # their skills inside the robots, so on QA the RoboTeam runtime tag names the ScriptaHub robot profile, which
+          # extends the RoboTeam runtime with them. The restart below starts the agents on these images.
+          IMAGES_PROGRAM='set -eu
+          podman pull -q docker.io/assistos/scriptahub-agent:runtime
+          podman pull -q docker.io/assistos/scriptahub-robot:runtime
+          podman tag docker.io/assistos/scriptahub-robot:runtime docker.io/assistos/roboteam-agent:runtime'
+          run_in_box "$IMAGES_PROGRAM" < /dev/null
+          # END QA ScriptaHub images
+
           # Start never fetches a checkout that exists, so kept sources move forward here. A full `ploinky update`
           # fails on an enabled repository with no Git checkout, so each other repository moves on its own; a
           # dirty or diverged required source fails the run and is left untouched. The restart activates them
