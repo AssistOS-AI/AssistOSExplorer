@@ -197,7 +197,7 @@ owner of any architecture change needed to activate that lane.
 
 ## Ploinky-command workflows
 
-`deploy-explorer-qa-ploinky.yml` and `destroy-explorer-qa-ploinky.yml` target the same host and workspace through Ploinky commands instead of helpers that inspect or change the workspace directly. They share the `deploy-explorer-qa` concurrency group and the host lock with the workflows above. They refuse to run while `/home/admin/.qa-deployment-state` holds anything, because only `deploy-explorer-qa.yml` restores the access policy parked there. Their tunnel checks, DNS checks and public verification are the same runner-side steps.
+`deploy-explorer-qa-ploinky.yml` and `destroy-explorer-qa-ploinky.yml` target the same host and workspace through Ploinky commands instead of helpers that inspect or change the workspace directly. They share the `deploy-explorer-qa` concurrency group and the host lock with the workflows above. They refuse to run while `/home/admin/.qa-deployment-state` holds anything, because only `deploy-explorer-qa.yml` restores the access policy parked there. Their tunnel checks, DNS checks and public verification are the same runner-side steps. `deploy-explorer-qa-ploinky.yml` also prunes unused dangling images before it changes anything and after the readiness checks: on the host only those whose name history is `docker.io/assistos/ploinky-box`, inside the Box every unused dangling one, each by `podman image rm <id>` with no force, warn-only. It stops before anything moves when the admin home has less than 5 GiB free and warns below 10 GiB.
 
 | Work | Command |
 | --- | --- |

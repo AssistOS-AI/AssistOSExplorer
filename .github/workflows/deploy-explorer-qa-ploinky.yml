@@ -741,6 +741,111 @@ jobs:
             "${SSH[@]}" "curl -sf 'http://127.0.0.1:${SOUL_GATEWAY_ROUTER_PORT}/base-agent-additional-server/soul-gateway/7000/healthz/' >/dev/null"
           }
 
+          # Image housekeeping. Every removal is `podman image rm <id>` on an ID that was listed and validated first;
+          # podman refuses an image a container still uses. The prune never forces, never removes by a broad filter,
+          # and never fails the job: only the disk gate below can stop a run.
+          # BEGIN QA image cleanup
+          BOX_CONTAINER=ploinky-box-explorerqaworkspace-7a31ab7775eb
+          PRUNE_BOX_IMAGE=docker.io/assistos/ploinky-box
+          DISK_MIN_FREE_GIB=5
+          DISK_WARN_FREE_GIB=10
+          # One podman call on the host or inside the Box, under the same host lock as every other mutation.
+          prune_podman() {
+            local scope="$1"
+            shift
+            if [ "$scope" = host ]; then
+              "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman $*" < /dev/null
+            else
+              "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' $BOX_CONTAINER podman $*" < /dev/null
+            fi
+          }
+          # Lists unused dangling images, removes each validated one, and reports the unused named ones. A host
+          # image is removed only when its name history shows it was the Box image; the host holds other images.
+          prune_scope() {
+            local scope="$1" phase="$2" listing id containers dangling rest names line is_box_image removed=0
+            if ! listing="$(prune_podman "$scope" image ls --filter dangling=true --format "'{{.ID}} {{.Containers}}'")"; then
+              echo "::warning::prune $scope failed ($phase): the image listing failed"
+              return 0
+            fi
+            while read -r id containers; do
+              [ -n "$id" ] || continue
+              if [[ ! "$id" =~ ^[a-f0-9]{12,64}$ ]]; then
+                echo "::warning::prune $scope: skipped an unexpected image ID in the listing"
+                continue
+              fi
+              if [ "$containers" != 0 ]; then
+                echo "[deploy-qa] prune $scope: kept $id in use by $containers container(s)"
+                continue
+              fi
+              if [ "$scope" = host ]; then
+                if ! names="$(prune_podman host image inspect --format "'{{range .NamesHistory}}{{println .}}{{end}}'" "$id")"; then
+                  echo "::warning::prune host failed ($phase): inspecting $id failed"
+                  continue
+                fi
+                is_box_image=false
+                while IFS= read -r line; do
+                  case "$line" in
+                    "$PRUNE_BOX_IMAGE"|"$PRUNE_BOX_IMAGE":*|"$PRUNE_BOX_IMAGE"@*) is_box_image=true ;;
+                  esac
+                done <<< "$names"
+                if [ "$is_box_image" != true ]; then
+                  echo "[deploy-qa] prune host: kept unrelated dangling image $id"
+                  continue
+                fi
+              fi
+              if prune_podman "$scope" image rm "$id" > /dev/null; then
+                echo "[deploy-qa] prune $scope: removed $id"
+                removed=$((removed + 1))
+              else
+                echo "::warning::prune $scope: podman kept $id"
+              fi
+            done <<< "$listing"
+            echo "[deploy-qa] prune $scope: removed $removed dangling image(s)"
+            if listing="$(prune_podman "$scope" image ls --format "'{{.ID}} {{.Containers}} {{.Dangling}} {{.Size}} {{.Names}}'")"; then
+              while read -r id containers dangling rest; do
+                if [ "$containers" = 0 ] && [ "$dangling" = false ]; then
+                  echo "[deploy-qa] prune $scope: kept unused named image $id $rest"
+                fi
+              done <<< "$listing"
+            fi
+            return 0
+          }
+          prune_images() {
+            local phase="$1"
+            echo "[deploy-qa] Pruning unused dangling images ($phase)..."
+            prune_scope host "$phase" || true
+            if [ "$phase" = post ] || [ "${BOX_STATE:-absent}" = present ]; then
+              prune_scope box "$phase" || true
+            else
+              echo '[deploy-qa] prune box: skipped, no Box exists yet'
+            fi
+          }
+          # Free GiB of the admin home filesystem.
+          free_disk_gib() {
+            local kib
+            kib="$("${SSH[@]}" "df -Pk /home/admin" < /dev/null | awk 'NR == 2 { print $4 }')"
+            if [[ ! "$kib" =~ ^[0-9]+$ ]]; then
+              return 1
+            fi
+            echo $((kib / 1048576))
+          }
+          require_free_disk() {
+            local free
+            if ! free="$(free_disk_gib)"; then
+              echo "::error::Could not read the free disk space of the QA host."
+              exit 1
+            fi
+            echo "[deploy-qa] free disk: $free GiB"
+            if [ "$free" -lt "$DISK_MIN_FREE_GIB" ]; then
+              echo "::error::Free disk $free GiB is below $DISK_MIN_FREE_GIB GiB; no agent or repository moved yet. See usage on the host with: du -xh --max-depth=2 $WORK_DIR | sort -h | tail; then free space or grow the disk."
+              exit 1
+            fi
+            if [ "$free" -lt "$DISK_WARN_FREE_GIB" ]; then
+              echo "::warning::QA host free disk $free GiB is below $DISK_WARN_FREE_GIB GiB"
+            fi
+          }
+          # END QA image cleanup
+
           SOUL_UP_BEFORE=0
           if soul_healthy; then SOUL_UP_BEFORE=1; fi
           UNRELATED_BEFORE="$(unrelated_containers)"
@@ -801,6 +906,9 @@ jobs:
           BOX_STATE=present
           if [[ "$STATUS_OUTPUT" == *'Ploinky Box: absent'* ]]; then BOX_STATE=absent; fi
           echo "[deploy-qa] Box before this run: $BOX_STATE; recreate requested: $RECREATE_BOX."
+          # Nothing has moved yet: free what earlier rollouts left behind, then refuse to start on a full disk.
+          prune_images pre
+          require_free_disk
           if [ "$BOX_STATE" = present ] && [ "$RECREATE_BOX" = true ]; then
             ploinky_locked destroy
             BOX_STATE=absent
@@ -1020,6 +1128,13 @@ jobs:
             exit 1
           fi
           echo '[deploy-qa] Explorer QA Box is ready.'
+          # After the readiness checks, so a prune problem can never mask them. It only warns.
+          prune_images post
+          if FREE_AFTER="$(free_disk_gib)"; then
+            echo "[deploy-qa] free disk after prune: $FREE_AFTER GiB"
+          else
+            echo '::warning::Could not read the free disk space after the prune.'
+          fi
 
       - name: Verify public URL
         run: |

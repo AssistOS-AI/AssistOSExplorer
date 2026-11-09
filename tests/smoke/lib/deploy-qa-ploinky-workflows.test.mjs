@@ -14,6 +14,7 @@ const legacyDeploy = read('deploy-explorer-qa.yml');
 const legacyDestroy = read('destroy-explorer-qa.yml');
 
 const WORKSPACE_REPOSITORIES_BLOCK = /# BEGIN QA workspace repositories[\s\S]*# END QA workspace repositories/;
+const IMAGE_PRUNE_BLOCK = /# BEGIN QA image cleanup[\s\S]*# END QA image cleanup/;
 
 function runBlocks(source) {
     const blocks = [];
@@ -76,8 +77,10 @@ for (const [name, source] of [['deploy', deploy], ['destroy', destroy]]) {
             /\/opt\/ploinky\/cli/, /qa-teardown/, /update-explorer-qa/, /quiesce-explorer-qa/,
             /\.ploinky\/(?:repos|running|data)/, /rm -rf/,
         ]) {
-            // Placing the repositories at the workspace root is the one exception, and has its own tests.
-            assert.doesNotMatch(source.replace(WORKSPACE_REPOSITORIES_BLOCK, ''), forbidden);
+            // Placing the repositories at the workspace root is an exception for every pattern, and listing images
+            // inside the Box one for `container exec` only. Both have their own tests.
+            const exempt = forbidden.source.startsWith('container') ? [WORKSPACE_REPOSITORIES_BLOCK, IMAGE_PRUNE_BLOCK] : [WORKSPACE_REPOSITORIES_BLOCK];
+            assert.doesNotMatch(exempt.reduce((text, block) => text.replace(block, ''), source), forbidden);
         }
     });
 
@@ -417,4 +420,199 @@ test('the runner-side Cloudflare and public checks stay identical to the older w
         step(destroy, 'Delete the dedicated Cloudflare publication').replace(' && inputs.delete_data', ''),
         step(legacyDestroy, 'Delete the dedicated Cloudflare publication'),
     );
+});
+
+test('deploy: the image prune removes only listed, validated IDs with `podman image rm` and never forces', () => {
+    const prune = deploy.match(IMAGE_PRUNE_BLOCK)?.[0];
+    assert.ok(prune, 'the image prune block');
+    assert.match(prune, /image rm "\$id"/);
+    assert.equal((prune.match(/image rm/g) || []).length, 1);
+    assert.match(prune, /image ls --filter dangling=true --format "'\{\{\.ID\}\} \{\{\.Containers\}\}'"/);
+    assert.match(prune, /\^\[a-f0-9\]\{12,64\}\$/);
+    assert.match(prune, /\[ "\$containers" != 0 \]/);
+    // No broad removal anywhere in the workflow, and no forced or all-image form of the removal.
+    assert.doesNotMatch(deploy, /image prune/);
+    assert.doesNotMatch(deploy, /podman[^\n]*\bimage rm\b[^\n]*(?:\s-[a-zA-Z]*[fa]\b|--force|--all)/);
+    assert.doesNotMatch(deploy, /\bimage ls\b[^\n]*\s-a\b/);
+    assert.doesNotMatch(deploy, /--external|\bsystem prune\b|\brmi\b/);
+});
+
+test('deploy: the host prune keeps only images whose name history is the Box image', () => {
+    const prune = deploy.match(IMAGE_PRUNE_BLOCK)[0];
+    assert.match(prune, /PRUNE_BOX_IMAGE=docker\.io\/assistos\/ploinky-box\n/);
+    assert.match(prune, /image inspect --format "'\{\{range \.NamesHistory\}\}\{\{println \.\}\}\{\{end\}\}'" "\$id"/);
+    assert.match(prune, /"\$PRUNE_BOX_IMAGE"\|"\$PRUNE_BOX_IMAGE":\*\|"\$PRUNE_BOX_IMAGE"@\*\) is_box_image=true/);
+    assert.match(prune, /if \[ "\$scope" = host \]; then\n\s+if ! names=/);
+    assert.match(prune, /kept unrelated dangling image \$id/);
+    // The Box scope runs inside the Box container, as the workspace-repository helper does, under the host lock.
+    assert.match(prune, /flock -n -E 75 --close '\$LOCK' podman container exec --user podman .* \$BOX_CONTAINER podman \$\*/);
+    assert.match(prune, /BOX_CONTAINER=ploinky-box-explorerqaworkspace-7a31ab7775eb\n/);
+});
+
+test('deploy: a pre prune and the disk gate run before anything moves, a post prune after the readiness checks', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const order = [
+        'unrelated_containers() {',
+        '# BEGIN QA image cleanup',
+        '# END QA image cleanup',
+        'UNRELATED_BEFORE="$(unrelated_containers)"',
+        'BOX_STATE=present',
+        '          prune_images pre\n          require_free_disk\n',
+        'ploinky_locked destroy',
+        'ploinky_locked --port "$ROUTER_PORT" start explorer\n            wait_ready',
+        '# BEGIN QA workspace repositories',
+        'ploinky_locked restart\n          wait_ready',
+        'An unrelated host container changed during the deployment.',
+        "echo '[deploy-qa] Explorer QA Box is ready.'",
+        '          prune_images post\n',
+        'free disk after prune: $FREE_AFTER GiB',
+    ];
+    let cursor = 0;
+    for (const marker of order) {
+        const found = body.indexOf(marker, cursor);
+        assert.notEqual(found, -1, marker);
+        cursor = found;
+    }
+    assert.equal((body.match(/^\s+prune_images (?:pre|post)$/gm) || []).length, 2);
+    assert.equal((body.match(/^\s+require_free_disk$/gm) || []).length, 1);
+});
+
+test('deploy: the prune only warns, and only the disk gate fails the job', () => {
+    const prune = deploy.match(IMAGE_PRUNE_BLOCK)[0];
+    const scope = prune.slice(prune.indexOf('prune_scope() {'), prune.indexOf('prune_images() {'));
+    assert.doesNotMatch(scope, /\bexit\b/);
+    assert.equal((scope.match(/return 0/g) || []).length, 2);
+    assert.match(scope, /::warning::prune \$scope failed \(\$phase\): the image listing failed/);
+    assert.match(scope, /::warning::prune \$scope: podman kept \$id/);
+    const images = prune.slice(prune.indexOf('prune_images() {'), prune.indexOf('free_disk_gib() {'));
+    assert.doesNotMatch(images, /\bexit\b/);
+    assert.match(images, /prune_scope host "\$phase" \|\| true/);
+    assert.match(images, /prune_scope box "\$phase" \|\| true/);
+    // The disk gate: df of the admin home, 5 GiB hard stop naming a read-only du command, 10 GiB warning.
+    assert.match(prune, /DISK_MIN_FREE_GIB=5\n/);
+    assert.match(prune, /DISK_WARN_FREE_GIB=10\n/);
+    assert.match(prune, /df -Pk \/home\/admin/);
+    assert.match(prune, /no agent or repository moved yet\. See usage on the host with: du -xh --max-depth=2 \$WORK_DIR \| sort -h \| tail/);
+    assert.match(prune, /::warning::QA host free disk \$free GiB is below \$DISK_WARN_FREE_GIB GiB/);
+    const tail = deploy.slice(deploy.indexOf("echo '[deploy-qa] Explorer QA Box is ready.'"));
+    assert.match(tail.slice(0, tail.indexOf('- name: Verify public URL')), /::warning::Could not read the free disk space after the prune\./);
+});
+
+// Runs the deployed image cleanup block itself under `set -euo pipefail`, with stub executables in place of
+// ssh, flock, podman and df, and records every podman argv.
+function runCleanup(t, { call, env = {} }) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-cleanup-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const stub = (name, body) => fs.writeFileSync(path.join(dir, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+    stub('fakessh', 'eval "${@: -1}"');
+    stub('flock', 'shift 5; exec "$@"');
+    stub('df', '[ "${DF_FAIL:-}" = 1 ] && exit 1; printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/x 1 1 %s 9%% /\\n" "$FREE_KIB"');
+    stub('podman', `scope=host
+if [ "$1" = container ]; then
+  while [[ "$1" != ploinky-box-* ]]; do shift; done
+  shift; shift; scope=box
+fi
+printf '%s: %s\\n' "$scope" "$*" >> "$PODMAN_LOG"
+if [ "$1 $2" = "image ls" ]; then
+  if [[ "$*" == *dangling=true* ]]; then
+    var="LIST_$scope"; exit_var="LIST_EXIT_$scope"
+    [ -z "\${!exit_var:-}" ] || exit "\${!exit_var}"
+    printf '%b' "\${!var:-}"
+  else
+    printf '%b' "\${NAMED_LIST:-}"
+  fi
+elif [ "$1 $2" = "image inspect" ]; then
+  var="NAMES_\${@: -1}"
+  printf '%b' "\${!var:-}"
+elif [ "$1 $2" = "image rm" ]; then
+  case " \${RM_FAIL:-} " in *" $3 "*) exit 2 ;; esac
+  echo "$3"
+fi`);
+    fs.writeFileSync(path.join(dir, 'block.sh'), deploy.match(IMAGE_PRUNE_BLOCK)[0]);
+    const log = path.join(dir, 'podman.log');
+    fs.writeFileSync(log, '');
+    const script = `set -euo pipefail
+SSH=(fakessh); LOCK=/lock; WORK_DIR=/work; BOX_STATE=present
+source "${dir}/block.sh"
+${call}
+echo "completed"`;
+    const result = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, PODMAN_LOG: log, ...env },
+    });
+    return { ...result, calls: fs.readFileSync(log, 'utf8').split('\n').filter(Boolean) };
+}
+
+const GIB_KIB = 1048576;
+
+test('deploy: the disk gate stops the job below 5 GiB, warns below 10 GiB and is silent above', (t) => {
+    const low = runCleanup(t, { call: 'require_free_disk', env: { FREE_KIB: String(4 * GIB_KIB) } });
+    assert.notEqual(low.status, 0);
+    assert.match(low.stdout, /^::error::Free disk 4 GiB is below 5 GiB; no agent or repository moved yet\. See usage on the host with: du -xh --max-depth=2 \/work \| sort -h \| tail/m);
+    assert.doesNotMatch(low.stdout, /completed/);
+
+    const warn = runCleanup(t, { call: 'require_free_disk', env: { FREE_KIB: String(7 * GIB_KIB) } });
+    assert.equal(warn.status, 0, warn.stderr);
+    assert.match(warn.stdout, /^::warning::QA host free disk 7 GiB is below 10 GiB$/m);
+    assert.match(warn.stdout, /completed/);
+
+    const fine = runCleanup(t, { call: 'require_free_disk', env: { FREE_KIB: String(12 * GIB_KIB) } });
+    assert.equal(fine.status, 0, fine.stderr);
+    assert.doesNotMatch(fine.stdout, /::warning::|::error::/);
+    assert.match(fine.stdout, /\[deploy-qa\] free disk: 12 GiB/);
+
+    // An unreadable df stops the job with an annotation.
+    const broken = runCleanup(t, { call: 'require_free_disk', env: { DF_FAIL: '1', FREE_KIB: '0' } });
+    assert.notEqual(broken.status, 0);
+    assert.match(broken.stdout, /^::error::Could not read the free disk space of the QA host\.$/m);
+});
+
+test('deploy: the host prune removes only Box-image leftovers with exactly `image rm <id>`', (t) => {
+    const result = runCleanup(t, {
+        call: 'prune_images pre',
+        env: {
+            LIST_host: 'aaaaaaaaaaaa 0\\nbbbbbbbbbbbb 0\\ncccccccccccc 0\\ndddddddddddd 1\\n../x 0\\neeeeeeeeeeee 0\\nffffffffffff 0\\n',
+            NAMES_aaaaaaaaaaaa: 'docker.io/assistos/ploinky-box:latest\\n',
+            NAMES_bbbbbbbbbbbb: 'docker.io/library/postgres:16\\n',
+            NAMES_cccccccccccc: '',
+            NAMES_eeeeeeeeeeee: 'docker.io/assistos/ploinky-box@sha256:abc\\n',
+            NAMES_ffffffffffff: 'docker.io/assistos/ploinky-box-other:latest\\n',
+            RM_FAIL: 'aaaaaaaaaaaa',
+            LIST_box: '111111111111 0\\n222222222222 0\\n',
+        },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const removals = result.calls.filter((line) => / image rm /.test(line));
+    // A refusal on the first ID does not stop later IDs, and nothing else is ever removed.
+    assert.deepEqual(removals, [
+        'host: image rm aaaaaaaaaaaa',
+        'host: image rm eeeeeeeeeeee',
+        'box: image rm 111111111111',
+        'box: image rm 222222222222',
+    ]);
+    assert.match(result.stdout, /^::warning::prune host: podman kept aaaaaaaaaaaa$/m);
+    assert.match(result.stdout, /^\[deploy-qa\] prune host: removed eeeeeeeeeeee$/m);
+    assert.match(result.stdout, /^\[deploy-qa\] prune host: kept unrelated dangling image bbbbbbbbbbbb$/m);
+    assert.match(result.stdout, /^\[deploy-qa\] prune host: kept unrelated dangling image cccccccccccc$/m);
+    assert.match(result.stdout, /^\[deploy-qa\] prune host: kept unrelated dangling image ffffffffffff$/m);
+    assert.match(result.stdout, /^\[deploy-qa\] prune host: kept dddddddddddd in use by 1 container\(s\)$/m);
+    assert.match(result.stdout, /^::warning::prune host: skipped an unexpected image ID in the listing$/m);
+    assert.match(result.stdout, /^\[deploy-qa\] prune box: removed 111111111111$/m);
+    assert.equal(result.calls.some((line) => /(?:prune|--force| -f\b| -a\b|--all)/.test(line)), false, result.calls.join('\n'));
+    assert.equal(result.calls.some((line) => /dddddddddddd|\.\.\/x/.test(line) && / image rm /.test(line)), false);
+    // Only the host scope reads name history; the Box scope removes every unused dangling image.
+    assert.ok(result.calls.every((line) => !/^box: image inspect/.test(line)));
+    assert.ok(result.calls.some((line) => /^host: image inspect --format \{\{range \.NamesHistory\}\}\{\{println \.\}\}\{\{end\}\} aaaaaaaaaaaa$/.test(line)), result.calls.join('\n'));
+});
+
+test('deploy: a failing listing only warns and the prune returns success', (t) => {
+    const result = runCleanup(t, {
+        call: 'prune_images post',
+        env: { LIST_EXIT_host: '125', LIST_EXIT_box: '125' },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^::warning::prune host failed \(post\): the image listing failed$/m);
+    assert.match(result.stdout, /^::warning::prune box failed \(post\): the image listing failed$/m);
+    assert.match(result.stdout, /completed/);
+    assert.equal(result.calls.some((line) => / image rm /.test(line)), false);
 });
