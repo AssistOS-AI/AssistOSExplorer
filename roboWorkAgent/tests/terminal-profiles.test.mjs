@@ -64,6 +64,29 @@ test('catalog and resolve are readonly, even before first preparation; compound 
     await assert.rejects(fs.access(path.join(f.paths.dataDir, 'server-state')), { code: 'ENOENT' });
 });
 
+test('live resolution uses the real home without preparing images and refuses substituted homes', async t => {
+    const f = await fixture(t);
+    f.environment.list = f.environment.require = async () => { throw new Error('image access is forbidden'); };
+    const request = async (body, access = ADMIN) => {
+        const res = { writeHead(status) { this.status = status; }, end(text) { this.body = JSON.parse(text); } };
+        await f.api.handle({ method: 'POST' }, res, new URL('/api/terminal-profiles/resolve', 'http://fixture'),
+            { ...access, body: Buffer.from(JSON.stringify(body)) });
+        return res;
+    };
+    const body = { version: 2, action: 'resolve', id: PROFILE, mode: 'live-agent' };
+    assert.deepEqual((await request(body)).body, { allowed: true, profile: { id: PROFILE, label: 'Robot A',
+        home: { root: 'private', path: 'robots/robot-a/home' } } });
+    assert.equal((await request(body, { ...ADMIN, internal: true })).status, 403);
+    assert.equal((await request(body, { ...ADMIN, canAdmin: false })).status, 403);
+    assert.equal((await request({ ...body, extra: true })).status, 400);
+    for (const id of ['robot-a.YWdlbnQ', 'robot-b.default', '../bad.default']) assert.deepEqual((await request({ ...body, id })).body, { allowed: false });
+    await fs.rename(f.paths.home('robot-a'), f.paths.home('robot-a') + '-saved');
+    await fs.symlink(f.paths.home('robot-a') + '-saved', f.paths.home('robot-a'));
+    assert.deepEqual((await request(body)).body, { allowed: false });
+    assert.deepEqual(f.calls, { tools: 0, runtime: 0, ala: 0, home: [], pulls: 0 });
+    assert.deepEqual(await fs.readdir(f.stub), []);
+});
+
 test('prepare confines home writes, records only protected metadata and deduplicates simultaneous requests', async t => {
     const f = await fixture(t);
     const answers = await Promise.all([f.api.prepare(PROFILE), f.api.prepare(PROFILE)]);

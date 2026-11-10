@@ -63,14 +63,16 @@ export function sortTerminalTargets(targets) {
 }
 
 function normalizeDiscoveryProfile(profile, expected) {
-    if (!hasExactKeys(profile, ['provider', 'id', 'label'])
+    if (!hasExactKeys(profile, ['provider', 'id', 'label', ...(expected.mode ? ['mode'] : [])])
         || profile.provider !== expected.provider || profile.id !== expected.id
+        || profile.mode !== expected.mode
         || !PROFILE_ID_PATTERN.test(profile.id)) {
         throw new Error('Invalid terminal discovery profile.');
     }
     return Object.freeze({
         provider: profile.provider,
         id: profile.id,
+        ...(profile.mode ? { mode: profile.mode } : {}),
         label: safeDisplayText(profile.label, 128, 'profile label'),
     });
 }
@@ -80,6 +82,9 @@ function normalizeDiscoveryProfile(profile, expected) {
 // and only then may a row omit `launch` and carry a known `unavailable` reason instead.
 export function normalizeTerminalDiscoveryPayload(payload, options = {}) {
     const expectedProfile = options?.profile || null;
+    if (expectedProfile?.mode !== undefined && expectedProfile.mode !== 'live-agent') {
+        throw new Error('Invalid terminal profile mode.');
+    }
     if (!hasExactKeys(payload, ['ok', 'discovery']) || payload.ok !== true
         || !hasExactKeys(payload.discovery, [
             'id', 'directory', 'expiresAt', 'agentTargetsAvailable', 'targets',
@@ -101,7 +106,8 @@ export function normalizeTerminalDiscoveryPayload(payload, options = {}) {
     if (typeof source.agentTargetsAvailable !== 'boolean') {
         throw new Error('Invalid terminal agent availability.');
     }
-    if (!Array.isArray(source.targets) || !source.targets.length || source.targets.length > MAX_TARGETS) {
+    const live = expectedProfile?.mode === 'live-agent';
+    if (!Array.isArray(source.targets) || (!live && !source.targets.length) || source.targets.length > MAX_TARGETS) {
         throw new Error('Invalid terminal target list.');
     }
     const profile = expectedProfile ? normalizeDiscoveryProfile(source.profile, expectedProfile) : null;
@@ -140,7 +146,7 @@ export function normalizeTerminalDiscoveryPayload(payload, options = {}) {
             cwdDisplay: safeDisplayText(target.cwdDisplay, 4096, 'working directory'),
         });
     });
-    if (targets.filter((target) => target.kind === 'box').length !== 1) {
+    if (targets.filter((target) => target.kind === 'box').length !== (live ? 0 : 1)) {
         throw new Error('Terminal target discovery did not return one Box target.');
     }
 
@@ -235,7 +241,8 @@ async function readJsonResponse(response) {
 
 export async function requestTerminalTargetDiscovery(directory, options = {}) {
     const fetchImpl = options.fetchImpl || globalThis.fetch;
-    const profile = options.profile ? { provider: options.profile.provider, id: options.profile.id } : null;
+    const profile = options.profile ? { provider: options.profile.provider, id: options.profile.id,
+        ...(options.profile.mode ? { mode: options.profile.mode } : {}) } : null;
     const response = await fetchImpl(DISCOVERY_PATH, {
         method: 'POST',
         credentials: 'same-origin',
@@ -326,6 +333,7 @@ export function discoverTerminalProfileSources(appPlugins = globalThis.assistOS?
             label: displayLabel(source.label, source.agent),
             base: config.base,
             ...(config.environments ? { environments: true } : {}),
+            ...(config.liveAgents ? { liveAgents: true } : {}),
         }));
     }
     return sources;
@@ -515,6 +523,9 @@ export class TerminalTargetModal {
     selectedProfile() {
         const robot = this.selectedRobot();
         if (!robot) return null;
+        if (robot.liveAgents && this.selectedEnvironmentKey === 'live-agents') {
+            return { provider: robot.agent, id: `${robot.id}.default`, mode: 'live-agent' };
+        }
         if (!robot.environments) return { provider: robot.agent, id: robot.id };
         const environment = robot.environments.find(entry => entry.key === this.selectedEnvironmentKey
             && (entry.available || entry.reason === 'image cannot be pulled'));
@@ -562,6 +573,7 @@ export class TerminalTargetModal {
                     label: profile.label,
                     display: sources.length > 1 ? `${profile.label} (${source.label})` : profile.label,
                     ...(source.environments ? { environments: profiles.environments } : {}),
+                    ...(source.liveAgents ? { liveAgents: true } : {}),
                 });
             }
         });
@@ -602,10 +614,11 @@ export class TerminalTargetModal {
     rowState(target) {
         const robot = this.selectedRobot();
         if (!robot) return { disabled: true, reason: 'Choose a robot first' };
-        if (robot.environments && (!this.selectedProfile() || target.kind !== 'agent'
+        const isolated = robot.environments && this.selectedProfile()?.mode !== 'live-agent';
+        if (isolated && (!this.selectedProfile() || target.kind !== 'agent'
             || target.detail !== `AchillesIDE/${robot.agent}`)) return { disabled: true, reason: 'Choose the robot environment' };
-        if (robot.environments && target.access !== 'rw') return { disabled: true, reason: 'This terminal can only read the robot home' };
-        if (robot.environments && this.currentDiscovery?.targets.filter(row => row.kind === 'agent'
+        if (isolated && target.access !== 'rw') return { disabled: true, reason: 'This terminal can only read the robot home' };
+        if (isolated && this.currentDiscovery?.targets.filter(row => row.kind === 'agent'
             && row.detail === `AchillesIDE/${robot.agent}` && row.access === 'rw').length !== 1) {
             return { disabled: true, reason: 'No unique RoboWork terminal is available' };
         }
@@ -625,6 +638,7 @@ export class TerminalTargetModal {
         const profile = this.selectedProfile();
         if (this.closed || this.handedOff || this.opening || this.viewState !== 'ready' || !robot || !target
             || !profile || !discovery?.profile || discovery.profile.provider !== profile.provider || discovery.profile.id !== profile.id
+            || discovery.profile.mode !== profile.mode
             || this.rowState(target).disabled
             || Date.now() >= discovery.expiresAt) {
             return null;
@@ -637,10 +651,10 @@ export class TerminalTargetModal {
         const target = this.targetsByLaunch.get(this.selectedLaunch) || null;
         if (this.robotSelect) this.robotSelect.disabled = this.opening || !this.robots.length;
         if (this.environmentSelect) {
-            this.environmentSelect.hidden = !robot?.environments;
-            this.environmentSelect.disabled = this.opening || !robot?.environments;
+            this.environmentSelect.hidden = !(robot?.environments || robot?.liveAgents);
+            this.environmentSelect.disabled = this.opening || !(robot?.environments || robot?.liveAgents);
         }
-        if (this.environmentLabel) this.environmentLabel.hidden = !robot?.environments;
+        if (this.environmentLabel) this.environmentLabel.hidden = !(robot?.environments || robot?.liveAgents);
         if (this.openButton) this.openButton.disabled = !this.openGate();
         if (this.refreshButton) this.refreshButton.disabled = this.opening || this.viewState !== 'ready';
         if (this.retryButton) this.retryButton.disabled = this.opening;
@@ -656,11 +670,13 @@ export class TerminalTargetModal {
             return;
         }
         const sentences = [`HOME will be ${robot.label}'s home folder. Settings the robot wrote there (git, ssh, coding-agent configuration) can run commands when you use those tools here, and logins, history and files you create there are stored where the robot can read them.`];
+        if (this.selectedProfile()?.mode === 'live-agent') sentences.push('Ordinary processes in the selected agent can access this robot home.');
         if (target?.kind === 'box') {
             sentences.push('The Box runs the Ploinky router and controls every agent container.');
         }
         // The robot's own tool setup is loaded only inside the agent that declares the profile.
-        if (target && !(target.kind === 'agent' && target.detail.split('/').pop() === robot.agent)) {
+        if (target && (this.selectedProfile()?.mode === 'live-agent'
+            || !(target.kind === 'agent' && target.detail.split('/').pop() === robot.agent))) {
             sentences.push("The robot's tool setup is not loaded here.");
         }
         this.disclosureElement.replaceChildren(...sentences.map((sentence) => createTextElement('p', '', sentence)));
@@ -747,7 +763,8 @@ export class TerminalTargetModal {
         this.listElement.replaceChildren();
         const fragment = document.createDocumentFragment();
         const robot = this.selectedRobot();
-        const targets = robot?.environments ? discovery.targets.filter(target =>
+        const live = this.selectedProfile()?.mode === 'live-agent';
+        const targets = robot?.environments && !live ? discovery.targets.filter(target =>
             target.kind === 'agent' && target.detail === `AchillesIDE/${robot.agent}`) : discovery.targets;
         for (const target of targets) {
             if (target.launch) this.targetsByLaunch.set(target.launch, target);
@@ -759,7 +776,13 @@ export class TerminalTargetModal {
 
         const agentCount = discovery.targets.filter((target) => target.kind === 'agent').length;
         this.noticeElement.hidden = agentCount === 0;
-        if (!discovery.agentTargetsAvailable) {
+        if (live && (!agentCount || !discovery.agentTargetsAvailable)) {
+            this.warningElement.textContent = discovery.agentTargetsAvailable
+                ? 'No eligible running agents are available for this folder.'
+                : 'Agent terminals are temporarily unavailable.';
+            this.warningElement.dataset.state = discovery.agentTargetsAvailable ? 'info' : 'warning';
+            this.warningElement.hidden = false;
+        } else if (!discovery.agentTargetsAvailable) {
             this.warningElement.textContent = 'Agent terminals are temporarily unavailable. Ploinky Box remains available.';
             this.warningElement.dataset.state = 'warning';
             this.warningElement.hidden = false;
@@ -884,9 +907,10 @@ export class TerminalTargetModal {
         if (this.closed || this.handedOff || this.opening) return false;
         const robot = this.robots.find((candidate) => candidate.key === key) || null;
         this.selectedRobotKey = robot ? robot.key : '';
-        this.selectedEnvironmentKey = 'default';
+        this.selectedEnvironmentKey = robot?.liveAgents ? 'live-agents' : 'default';
         if (this.environmentSelect) {
-            this.environmentSelect.replaceChildren(...(robot?.environments || []).map(entry => {
+            const choices = [...(robot?.liveAgents ? [{ key: 'live-agents', label: 'Running agents', available: true, reason: '' }] : []), ...(robot?.environments || [])];
+            this.environmentSelect.replaceChildren(...choices.map(entry => {
                 const option = document.createElement('option');
                 option.value = entry.key;
                 const retry = !entry.available && entry.reason === 'image cannot be pulled';
@@ -949,7 +973,7 @@ export class TerminalTargetModal {
         const timer = setTimeout(() => controller.abort(), PREPARE_TIMEOUT_MS);
         let failure = '';
         try {
-            await prepareTerminalProfile(robot, this.selectedProfile().id, { signal: controller.signal });
+            if (this.selectedProfile().mode !== 'live-agent') await prepareTerminalProfile(robot, this.selectedProfile().id, { signal: controller.signal });
         } catch (error) {
             failure = prepareFailure(error, robot);
         } finally {

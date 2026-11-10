@@ -8,7 +8,7 @@
   "health": { "readiness": { "interval": 1, "timeout": 1, "failureThreshold": 45, "successThreshold": 1 } },
   "webtty": {
     "homeProfiles": {
-      "version": 1,
+      "version": 2,
       "resolve": "/base-agent-additional-server/roboWorkAgent/3001/api/terminal-profiles/resolve"
     }
   },

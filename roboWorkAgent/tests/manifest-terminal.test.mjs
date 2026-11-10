@@ -9,12 +9,13 @@ test('the manifest and the Explorer plugin declare the same terminal profile sur
     const manifest = await read('../manifest.json');
     const plugin = await read('../IDE-plugins/terminal-profile-source/config.json');
     const { resolve } = manifest.webtty.homeProfiles;
-    assert.equal(manifest.webtty.homeProfiles.version, 1);
+    assert.equal(manifest.webtty.homeProfiles.version, 2);
     assert.equal(plugin.terminalProfiles.version, 1);
     assert.match(resolve, /\/api\/terminal-profiles\/resolve$/u);
     assert.equal(resolve.slice(0, -'/resolve'.length), plugin.terminalProfiles.base);
     assert.ok(plugin.terminalProfiles.base.startsWith(`${PREFIX}/`));
     assert.equal(plugin.terminalProfiles.environments, true);
+    assert.equal(plugin.terminalProfiles.liveAgents, true);
     assert.deepEqual([plugin.pluginCategory, plugin.contributionType, plugin.location], ['application', 'terminal-profile-source', ['terminal-profiles:source']]);
     // The router admits the profile calls through the agent's authenticated route and no other.
     assert.deepEqual(manifest.routerAccess.httpRoutes, [{ path: `${PREFIX}/*`, access: 'authenticated' }]);

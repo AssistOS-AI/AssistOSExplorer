@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { fail, robotId } from './robot-paths.mjs';
+import { directoryIdentity, fail, robotId } from './robot-paths.mjs';
 
 export const TERMINAL_PROFILE_ADMIN_REQUIRED = 'administrator access by a signed-in user is required';
 export function terminalProfileAccess(access) {
@@ -82,6 +82,17 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         } catch { return { allowed: false }; }
     }
 
+    async function resolveLive(profile) {
+        try {
+            const { id, key } = parseTerminalProfile(profile);
+            if (key !== 'default') return { allowed: false };
+            const robot = await robots.require(id);
+            await directoryIdentity(paths.home(id));
+            return { allowed: true, profile: { id: profile, label: robot.name,
+                home: { root: 'private', path: `robots/${id}/home` } } };
+        } catch { return { allowed: false }; }
+    }
+
     async function prepareNow(profile) {
         if (prepareOperations.has(profile)) return prepareOperations.get(profile);
         const operation = (async () => {
@@ -135,8 +146,10 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         const body = access.body ? JSON.parse(access.body.toString('utf8') || '{}') : {};
         if (pathname === '/api/terminal-profiles' && req.method === 'GET') return reply(200, await catalog());
         if (pathname === '/api/terminal-profiles/resolve' && req.method === 'POST') {
-            if (!body || Object.keys(body).sort().join(',') !== 'id,version' || body.version !== 1) return reply(400, { ok: false, error: 'Invalid terminal profile request' });
-            return reply(200, await resolve(body.id));
+            if (body && !Array.isArray(body) && Object.keys(body).sort().join(',') === 'id,version' && body.version === 1) return reply(200, await resolve(body.id));
+            if (body && !Array.isArray(body) && Object.keys(body).sort().join(',') === 'action,id,mode,version'
+                && body.version === 2 && body.action === 'resolve' && body.mode === 'live-agent') return reply(200, await resolveLive(body.id));
+            return reply(400, { ok: false, error: 'Invalid terminal profile request' });
         }
         const match = pathname.match(/^\/api\/terminal-profiles\/([^/]+)\/prepare$/u);
         if (match && req.method === 'POST') {
@@ -149,5 +162,5 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         }
         return reply(404, { ok: false, error: 'not_found' });
     }
-    return { handle, catalog, resolve, prepare };
+    return { handle, catalog, resolve, resolveLive, prepare };
 }

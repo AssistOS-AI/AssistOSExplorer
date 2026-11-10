@@ -1347,6 +1347,39 @@ const ENVIRONMENTS = [
     { key: 'unavailable', label: 'Unavailable agent', available: false, reason: 'image cannot be pulled' },
 ];
 
+test('live agents are the default, render every returned agent and launch without preparation', async t => {
+    const source = { ...WORK_SOURCE, terminalProfiles: { ...WORK_SOURCE.terminalProfiles, liveAgents: true } };
+    let empty = false;
+    const page = pageHarness(t, { sources: [source], respond: async ({ method, url, body }) => {
+        if (method === 'GET') return { body: { ok: true, profiles: ROBOTS, environments: ENVIRONMENTS } };
+        if (method !== 'POST' || url !== '/webtty/target-discoveries') return null;
+        const request = JSON.parse(body);
+        if (!request.profile) return null;
+        const rows = empty ? [] : [
+            { ...profiledTargets()[1], launch: id32('work-row'), detail: 'AchillesIDE/roboWorkAgent', label: 'RoboWork' },
+            { ...profiledTargets()[1], launch: id32('git-row'), detail: 'AchillesIDE/gitAgent', label: 'Git' },
+        ];
+        return { body: profiledPayload({ ...request.profile, label: 'Robot A' }, rows, id32(empty ? 'empty' : 'live')) };
+    } });
+    page.modal.afterRender(); await page.settle(); await page.chooseRobot('Robot A');
+    assert.equal(page.$('Environment').children[0].textContent, 'Running agents');
+    assert.deepEqual(page.modal.selectedProfile(), { provider: 'roboWorkAgent', id: 'robot-a.default', mode: 'live-agent' });
+    assert.equal(page.rows().length, 2);
+    await page.chooseRow(/Git/);
+    assert.match(textTree(page.$('Disclosure')), /Ordinary processes/);
+    page.modal.currentDiscovery = { ...page.modal.currentDiscovery, profile: { ...page.modal.currentDiscovery.profile, mode: undefined } };
+    assert.equal(page.modal.openGate(), null);
+    empty = true;
+    await page.modal.refreshTargets();
+    assert.equal(page.rows().length, 0);
+    assert.match(page.$('Warning').textContent, /No eligible running agents/);
+    assert.ok(fetchLog(page.log, 'DELETE').length >= 1);
+    empty = false;
+    await page.modal.refreshTargets(); await page.chooseRow(/Git/);
+    assert.equal(await page.modal.openTerminal(), true);
+    assert.ok(!page.log.some(entry => String(entry[2]).endsWith('/prepare')));
+});
+
 test('environment declaration survives plugin normalization and validates exact environment payloads', async () => {
     const runtime = normalizeRuntimePlugins({ application: { 'terminal-profiles:source': [WORK_SOURCE] } });
     const sources = discoverTerminalProfileSources(runtime.application);

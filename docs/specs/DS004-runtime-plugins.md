@@ -98,7 +98,7 @@ A toolbar plugin normally mounts on its first click. A plugin config may set `mo
 
 An owning agent declares an application contribution with `id`, `label`, `contributionType: 'terminal-profile-source'`, `location: ['terminal-profiles:source']` and `terminalProfiles: {version: 1, base}` in its `IDE-plugins/*/config.json`. It needs no component, and the `location` array must hold exactly that one value. Server discovery assigns the declaring agent from the source directory, applies the same `base` validation as a Live Session source, including both route forms `/<agent>/...` and `/base-agent-additional-server/<agent>/<port>/...`, and drops invalid declarations. Browser normalization preserves this contribution type and repeats the validation without registering a component. The agent's own `manifest.json` declaration that lets Ploinky resolve a profile into a home folder is a separate contract and names only the agent-port form; see [DS002](specsLoader.html?spec=DS002-ploinky-runtime.md).
 
-Explorer's Open Terminal Here dialog reads each source and requires administrator access. Every source authorizes each call from its verified Router identity, never from a client-declared actor.
+A source may declare `liveAgents: true` alongside `environments: true`. The chooser then defaults to Running agents, sends the robot's `<id>.default` profile with `mode: 'live-agent'`, and skips preparation for that mode. Legacy environment choices retain their preparation behavior. Explorer's Open Terminal Here dialog reads each source and requires administrator access. Every source authorizes each call from its verified Router identity, never from a client-declared actor.
 
 | Endpoint | Contract |
 | --- | --- |
