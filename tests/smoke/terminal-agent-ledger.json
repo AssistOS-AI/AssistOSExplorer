@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "coverage": "terminal-live-agent",
+  "runner": "npm test -- --project=chromium --workers=1 --retries=0 specs/12-terminal-live-agent.spec.mjs",
+  "requiredForFinal": false,
+  "identities": [
+    {
+      "identity": "12-terminal-live-agent.spec.mjs::Open Terminal Here preserves the selected folder and robot home in a running agent",
+      "title": "Open Terminal Here preserves the selected folder and robot home in a running agent",
+      "selection": { "spec": "specs/12-terminal-live-agent.spec.mjs" },
+      "cohort": "terminal-live-agent",
+      "requiredFlags": { "SMOKE_TERMINAL_LIVE_AGENT": "1" },
+      "privateInputNamesOrCategories": []
+    }
+  ]
+}
