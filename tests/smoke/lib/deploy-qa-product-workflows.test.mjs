@@ -148,7 +148,9 @@ test('every shared block is byte-identical to the full deploy at the recorded ba
     for (const key of KEYS) {
         const source = workflow(key);
         for (const name of SHARED_BY[key]) {
-            const expected = block(base, name);
+            const expected = name === 'cleanup'
+                ? block(base, name).replace('# Unpacked size of the ScriptaHub robot image not shared with the RoboTeam runtime (11.2 GB, 9 of 29 layers new).', '# Reserve space for the prepared ScriptaHub agent image before pulling new layers.').replaceAll('ROBOT_IMAGE_NEW_GIB', 'SCRIPTA_AGENT_IMAGE_NEW_GIB')
+                : block(base, name);
             assert.ok(expected.length > 20, name);
             assert.equal(source.split(expected).length - 1, 1, `${key}: ${name} appears exactly once, identical to ${BASE}`);
             assert.equal(block(ploinkyNow, name), expected, `${name} of the full deploy changed since ${BASE}; copy the change into both product workflows`);
@@ -1175,7 +1177,7 @@ test('Bizanso copy program: an archive carrying Git metadata or nothing is refus
 // ScriptaHub
 
 const SCRIPTA_URL = 'https://github.com/Axiologic/ScriptaHubAgent.git';
-const ROBOT_REPO = 'docker.io/assistos/scriptahub-robot';
+const ROBOT_REPO = 'docker.io/assistos/roboteam-agent';
 const AGENT_REPO = 'docker.io/assistos/scriptahub-agent';
 const ROBOTEAM_TAG = 'docker.io/assistos/roboteam-agent:runtime';
 const PREFIX = {
@@ -1195,10 +1197,10 @@ const scriptaFiles = (extra = {}) => ({
     'README.md': 'one\n',
     ...extra,
 });
-const platformJson = (revision, other = revision) => JSON.stringify({
-    'linux/amd64': { config: { Labels: { 'org.opencontainers.image.revision': revision } } },
-    'linux/arm64': { config: { Labels: { 'org.opencontainers.image.revision': other } } },
-});
+const platformJson = (revision, other = revision, trees = ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)]) => {
+    const labels = (value) => ({ 'org.opencontainers.image.revision': value, 'io.assistos.scriptahub.skills-tree': trees[0], 'io.assistos.scriptahub.deployment-tree': trees[1], 'io.assistos.scriptahub.reader-css-blob': trees[2], 'io.assistos.scriptahub.assets-image': `docker.io/assistos/scriptahub-assets@sha256:${'d'.repeat(64)}` });
+    return JSON.stringify({ 'linux/amd64': { config: { Labels: labels(revision) } }, 'linux/arm64': { config: { Labels: labels(other) } } });
+};
 
 // A source checkout on the runner with the image revision T and the head H, the QA checkout in the Box at `old`, and the
 // registry, the local images and the containers the full update starts from.
@@ -1225,14 +1227,15 @@ function scriptaBox(t, options = {}) {
     box.write(`imagetools.raw.${refKey(`${ROBOT_REPO}:runtime`)}`, robotRaw);
     box.write(`imagetools.raw.${refKey(`${AGENT_REPO}:runtime`)}`, agentRaw);
     box.write(`imagetools.json.${refKey(`${ROBOT_REPO}@${robotIndex}`)}`, robotJson ?? platformJson(imageRevision));
-    box.write(`imagetools.json.${refKey(`${AGENT_REPO}@${agentIndex}`)}`, agentJson ?? platformJson(base));
+    const trees = ['skills', 'scriptahubAgent/deployment', 'scriptahubAgent/site/reader/reader.css'].map((p) => vcs(source, 'rev-parse', `${base}:${p}`));
+    box.write(`imagetools.json.${refKey(`${AGENT_REPO}@${agentIndex}`)}`, agentJson ?? robotJson ?? platformJson(imageRevision, imageRevision, trees));
     box.registry([
-        [`${AGENT_REPO}@${agentIndex}`, AGENT_ID, base, '-'],
+        [`${AGENT_REPO}@${agentIndex}`, AGENT_ID, robotRevisionPulled ?? imageRevision, '-'],
         [`${ROBOT_REPO}@${robotIndex}`, ROBOT_ID, robotRevisionPulled ?? imageRevision, '-'],
     ]);
     box.images([
         [ROBOTEAM_TAG, OLD_ROBOTEAM_ID, 'x', '-'],
-        ...(localRobot ? [[`${ROBOT_REPO}:runtime`, ROBOT_ID, imageRevision, `${ROBOT_REPO}@${robotIndex}`]] : []),
+        ...(localRobot ? [[`${AGENT_REPO}:runtime`, AGENT_ID, imageRevision, `${AGENT_REPO}@${agentIndex}`]] : []),
     ]);
     const clone = path.join(box.ws, 'ScriptaHubAgent');
     vcs(box.ws, 'clone', '--quiet', source, 'ScriptaHubAgent');
@@ -1267,7 +1270,7 @@ const noScriptaMutation = (box, before) => {
     assert.equal(checkoutHead(box), before, 'the QA checkout did not move');
 };
 
-test('ScriptaHub gate: the checkout moves only when the three copied paths equal those of the robot image revision', (t) => {
+test('ScriptaHub gate: the checkout moves only when the three copied paths equal those of the agent image revision', (t) => {
     const accepted = {
         'the image was built from the head': { image: 'head' },
         'only README.md changed after the image revision': {},
@@ -1279,12 +1282,12 @@ test('ScriptaHub gate: the checkout moves only when the three copied paths equal
         assert.equal(result.status, 0, `${name}: ${logOf(result)}`);
         assert.equal(env.SCRIPTA_HEAD, box.head, name);
         assert.equal(env.SCRIPTA_BRANCH, 'main', name);
-        assert.equal(env.SCRIPTA_ROBOT_REVISION, box.imageRevision, name);
-        assert.equal(env.SCRIPTA_ROBOT_INDEX, box.robotIndex, name);
+        assert.equal(env.SCRIPTA_AGENT_REVISION, box.imageRevision, name);
+        assert.equal(env.SCRIPTA_ROBOTEAM_INDEX, box.robotIndex, name);
         assert.equal(env.SCRIPTA_AGENT_INDEX, box.agentIndex, name);
         assert.equal(env.SCRIPTA_COPIED_TREES.split(' ').length, 3, name);
         assert.match(env.SCRIPTA_COPIED_TREES, /^[0-9a-f]{40}( [0-9a-f]{40}){2}$/, name);
-        assert.equal(env.SCRIPTA_AGENT_REVISION, box.base, name);
+        assert.equal(env.SCRIPTA_AGENT_REVISION, box.imageRevision, name);
     }
     const refused = {
         'skills changed after the image': { headFiles: { 'skills/a/SKILL.md': 'changed\n' }, path: 'skills' },
@@ -1292,22 +1295,22 @@ test('ScriptaHub gate: the checkout moves only when the three copied paths equal
         'the deployment folder changed': { headFiles: { 'scriptahubAgent/deployment/start.mjs': 'changed\n' }, path: 'scriptahubAgent/deployment' },
         'the reader stylesheet changed': { headFiles: { 'scriptahubAgent/site/reader/reader.css': 'body { color: red }\n' }, path: 'scriptahubAgent/site/reader/reader.css' },
         'the image revision is not an ancestor of the head': { image: 'divergent', path: null, message: /is not an ancestor of main@/ },
-        'the image revision is not in the history': { image: 'unknown', path: null, message: /is not in the ScriptaHubAgent history/ },
+        'the image revision is not in the history': { image: 'unknown', path: null, message: /is not an ancestor of main@/ },
     };
     for (const [name, options] of Object.entries(refused)) {
         const box = scriptaBox(t, options);
         const { result } = resolveScripta(box);
         assert.notEqual(result.status, 0, name);
         const log = logOf(result);
-        assert.match(log, options.message || new RegExp(`::error::${options.path.replace(/\//g, '\\/')} differs between main@[0-9a-f]{40} and the robot image revision [0-9a-f]{40}`), name);
-        for (const word of ['images/scriptahub-agent/sources.lock.json', 'publish-scriptahub-robot-image.yml', 'publish-scriptahub-agent-image.yml', 'Nothing was changed']) {
+        assert.match(log, options.message || new RegExp(`::error::${options.path.replace(/\//g, '\\/')} differs from the agent image source labels`), name);
+        for (const word of ['publish-scriptahub-agent-image.yml', 'Nothing was changed']) {
             assert.ok(log.includes(word), `${name}: ${word}`);
         }
         assert.equal(box.calls().some((line) => /^(?:ploinky|podman)/.test(line)), false);
     }
 });
 
-test('ScriptaHub gate: malformed or inconsistent registry answers refuse the run, and the agent label is only informational', (t) => {
+test('ScriptaHub gate: malformed or inconsistent registry answers refuse the run, and the agent labels are required', (t) => {
     const T = 'c'.repeat(40);
     const bad = {
         'a non-JSON answer': 'not json at all',
@@ -1323,7 +1326,7 @@ test('ScriptaHub gate: malformed or inconsistent registry answers refuse the run
         const box = scriptaBox(t, { robotJson });
         const { result } = resolveScripta(box);
         assert.notEqual(result.status, 0, name);
-        assert.match(logOf(result), /The robot image has no common 40-hex revision label|The robot image configuration could not be read/, name);
+        assert.match(logOf(result), /Invalid ScriptaHub image labels/, name);
         assert.equal(fs.readFileSync(box.githubEnv, 'utf8'), '', `${name}: nothing exported`);
         assert.equal(fs.existsSync(path.join(box.github, 'pwned')), false);
     }
@@ -1332,13 +1335,27 @@ test('ScriptaHub gate: malformed or inconsistent registry answers refuse the run
     fs.rmSync(path.join(box.stub, `imagetools.raw.${refKey(`${AGENT_REPO}:runtime`)}`));
     const { result } = resolveScripta(box);
     assert.notEqual(result.status, 0);
-    assert.match(logOf(result), /The published ScriptaHub image indexes could not be read from the registry\. Nothing was changed\./);
-    // The agent image's label never decides anything.
+    assert.match(logOf(result), /Published image indexes could not be read\. Nothing was changed\./);
+    // The agent image labels are mandatory on both native platforms.
     for (const agentJson of ['garbage', platformJson('not-a-revision')]) {
-        const tolerant = scriptaBox(t, { agentJson });
-        const resolved = resolveScripta(tolerant);
-        assert.equal(resolved.result.status, 0, logOf(resolved.result));
-        assert.equal(resolved.env.SCRIPTA_AGENT_REVISION, 'unknown');
+        const invalid = scriptaBox(t, { agentJson });
+        const resolved = resolveScripta(invalid);
+        assert.notEqual(resolved.result.status, 0, logOf(resolved.result));
+    }
+});
+
+test('ScriptaHub gate rejects missing or inconsistent copied-input labels on either platform', (t) => {
+    for (const key of ['io.assistos.scriptahub.skills-tree', 'io.assistos.scriptahub.deployment-tree', 'io.assistos.scriptahub.reader-css-blob', 'io.assistos.scriptahub.assets-image']) {
+        for (const platform of ['linux/amd64', 'linux/arm64']) {
+            const box = scriptaBox(t);
+            const file = path.join(box.stub, `imagetools.json.${refKey(`${AGENT_REPO}@${box.agentIndex}`)}`);
+            const config = JSON.parse(fs.readFileSync(file, 'utf8'));
+            config[platform].config.Labels[key] = '0'.repeat(40);
+            fs.writeFileSync(file, JSON.stringify(config));
+            const { result } = resolveScripta(box);
+            assert.notEqual(result.status, 0, `${key} ${platform}`);
+            assert.equal(fs.readFileSync(box.githubEnv, 'utf8'), '');
+        }
     }
 });
 
@@ -1449,8 +1466,8 @@ test('ScriptaHub pull and tag programs: only exact references by digest are pull
     box.images([[ROBOTEAM_TAG, OLD_ROBOTEAM_ID, 'x', '-']]);
     const good = runProgram(box, pull, `${agent}\n${robot}\n`);
     assert.equal(good.status, 0, good.stderr);
-    assert.equal(good.stdout, `AGENT_ID=${AGENT_ID}\nAGENT_REVISION=ra\nROBOT_ID=${ROBOT_ID}\nROBOT_REVISION=rr\nROBOTEAM_ID=${OLD_ROBOTEAM_ID}\n`);
-    assert.deepEqual(box.calls(), [`podman pull -q ${agent}`, `podman pull -q ${robot}`, `podman tag ${agent} ${AGENT_REPO}:runtime`, `podman tag ${robot} ${ROBOT_REPO}:runtime`]);
+    assert.equal(good.stdout, `AGENT_ID=${AGENT_ID}\nAGENT_REVISION=ra\nROBOT_ID=${ROBOT_ID}\nROBOTEAM_ID=${OLD_ROBOTEAM_ID}\n`);
+    assert.deepEqual(box.calls(), [`podman pull -q ${agent}`, `podman pull -q ${robot}`, `podman tag ${agent} ${AGENT_REPO}:runtime`, ]);
     const refusals = [
         [`${AGENT_REPO}:runtime`, robot],
         [agent, `${ROBOT_REPO}:runtime`],
@@ -1484,15 +1501,15 @@ test('ScriptaHub pull and tag programs: only exact references by digest are pull
     }
 });
 
-test('ScriptaHub flow: a source and image change moves the checkout, tags the robot image and restarts the whole workspace once', (t) => {
+test('ScriptaHub flow: a source and image change moves the checkout, tags the generic RoboTeam image and restarts the whole workspace once', (t) => {
     const box = scriptaBox(t);
     const result = runScriptaFlow(box);
     assert.equal(result.status, 0, logOf(result));
     const env = exported(box);
     inOrder(result.stdout, [
-        new RegExp(`\\[deploy-qa-scriptahub\\] main main@${box.head}; robot image revision ${box.imageRevision}; agent image revision ${box.base}; copied trees equal\\n`),
+        new RegExp(`\\[deploy-qa-scriptahub\\] main main@${box.head}; agent image revision ${box.imageRevision}; copied trees equal\\n`),
         new RegExp(`\\[deploy-qa-scriptahub\\] checkout ${box.base} -> ${box.head}\\n`),
-        new RegExp(`\\[deploy-qa-scriptahub\\] agent image ${AGENT_ID}; robot image ${ROBOT_ID}; roboteam-agent:runtime before ${OLD_ROBOTEAM_ID}\\n`),
+        new RegExp(`\\[deploy-qa-scriptahub\\] agent image ${AGENT_ID}; RoboTeam image ${ROBOT_ID}; roboteam-agent:runtime before ${OLD_ROBOTEAM_ID}\\n`),
         /\[deploy-qa-scriptahub\] restart result: whole\n/,
         new RegExp(`\\[deploy-qa-scriptahub\\] container ${PREFIX.scripta}new image ${AGENT_ID} started \\d+\\n`),
         new RegExp(`\\[deploy-qa-scriptahub\\] container ${PREFIX.roboteam}new image ${ROBOT_ID} started \\d+\\n`),
@@ -1506,12 +1523,11 @@ test('ScriptaHub flow: a source and image change moves the checkout, tags the ro
         `podman pull -q ${AGENT_REPO}@${box.agentIndex}`,
         `podman pull -q ${ROBOT_REPO}@${box.robotIndex}`,
         `podman tag ${AGENT_REPO}@${box.agentIndex} ${AGENT_REPO}:runtime`,
-        `podman tag ${ROBOT_REPO}@${box.robotIndex} ${ROBOT_REPO}:runtime`,
         `podman tag ${ROBOT_ID} ${ROBOTEAM_TAG}`,
         'ploinky restart',
     ]);
     assert.equal(box.calls().some((line) => line.startsWith('ploinky var')), false, 'ScriptaHub sets no value');
-    // The Box held the previous images only by tag; the tag now names the new robot image.
+    // The Box held the previous images only by tag; the tag now names the generic RoboTeam image.
     assert.match(fs.readFileSync(path.join(box.stub, 'images'), 'utf8'), new RegExp(`^${ROBOTEAM_TAG.replace(/[.]/g, '\\.')} ${ROBOT_ID} `, 'm'));
 
     // A second run finds the checkout at the head, the images equal and the containers on them: nothing at all.
@@ -1525,7 +1541,7 @@ test('ScriptaHub flow: a source and image change moves the checkout, tags the ro
     assert.equal(checkoutHead(box), box.head);
 });
 
-test('ScriptaHub flow: equal heads and image IDs make no restart, and a robot image running anywhere else does', (t) => {
+test('ScriptaHub flow: equal heads and image IDs make no restart, and a different RoboTeam image running does', (t) => {
     const noop = scriptaBox(t, { old: 'head', localRobot: true });
     noop.images([[ROBOTEAM_TAG, ROBOT_ID, 'x', '-'], [`${ROBOT_REPO}:runtime`, ROBOT_ID, noop.imageRevision, `${ROBOT_REPO}@${noop.robotIndex}`]]);
     for (const key of ['roboteam', 'robowork']) noop.ps(PREFIX[key], [`${ROBOT_ID} ${epoch() - 3600} ${PREFIX[key]}abc`]);
@@ -1536,7 +1552,7 @@ test('ScriptaHub flow: equal heads and image IDs make no restart, and a robot im
     assert.deepEqual(noop.calls().filter((line) => /^podman tag .*roboteam-agent|^podman image rm|^ploinky (?:restart|var)/.test(line)), []);
     assert.equal(checkoutHead(noop), noop.head);
 
-    // The tag already names the robot image, but RoboTeam still runs another one: whole restart, not a no-op.
+    // The tag already names the generic RoboTeam image, but RoboTeam still runs another one: whole restart, not a no-op.
     for (const [name, mutate] of Object.entries({
         'RoboTeam runs another image': (box) => box.ps(PREFIX.roboteam, [`${hex('9')} ${epoch() - 3600} ${PREFIX.roboteam}abc`]),
         'RoboWork runs another image': (box) => box.ps(PREFIX.robowork, [`${hex('9')} ${epoch() - 3600} ${PREFIX.robowork}abc`]),
@@ -1566,7 +1582,7 @@ test('ScriptaHub flow: the disk gate asks for 5 GiB when the Box holds the publi
 
     const missing = attempt(15, { localRobot: false });
     assert.notEqual(missing.result.status, 0);
-    assert.match(missing.result.stdout, /::error::Free disk 15 GiB is below the 16 GiB this run needs; nothing moved\. The previous ScriptaHub agent image is freed only by a restart: dispatch deploy-explorer-qa-ploinky\.yml, which restarts before it pulls the robot image\./);
+    assert.match(missing.result.stdout, /::error::Free disk 15 GiB is below the 16 GiB this run needs; nothing moved\. Free space or grow the disk before retrying\./);
     noScriptaMutation(missing.box, missing.box.base);
 
     // Exactly 16 GiB passes; 15.99 GiB is 15 and does not.
@@ -1575,7 +1591,7 @@ test('ScriptaHub flow: the disk gate asks for 5 GiB when the Box holds the publi
     assert.notEqual(just.result.status, 0);
     assert.match(just.result.stdout, /Free disk 15 GiB is below the 16 GiB/);
 
-    // Another local robot image, or an inspect that fails, is "not held".
+    // Another local agent image, or an inspect that fails, is "not held".
     const otherDigest = scriptaBox(t, {});
     otherDigest.images([[ROBOTEAM_TAG, OLD_ROBOTEAM_ID, 'x', '-'], [`${ROBOT_REPO}:runtime`, hex('9'), 'r', `${ROBOT_REPO}@sha256:${'9'.repeat(64)}`]]);
     otherDigest.freeGib(15);
@@ -1633,23 +1649,23 @@ test('ScriptaHub flow: a moved tag, a corrupted checkout or a lock held stop the
     const moved = scriptaBox(t, { robotRevisionPulled: 'b'.repeat(40) });
     const tagMoved = runScriptaFlow(moved);
     assert.notEqual(tagMoved.status, 0);
-    assert.match(tagMoved.stdout, /::error::The pulled robot image carries revision 'b{40}', not [0-9a-f]{40}, so the published tag moved during this run\. The images were pulled and the :runtime tags of docker\.io\/assistos\/scriptahub-agent and docker\.io\/assistos\/scriptahub-robot now name the pulled images; the checkout and the agents were not changed\./);
+    assert.match(tagMoved.stdout, /The pulled agent image carries revision 'b{40}', not [0-9a-f]{40}.*agent runtime tag may have moved; the checkout and agents were not changed\./);
     assert.equal(checkoutHead(moved), moved.base);
     assert.deepEqual(moved.calls().filter((line) => /^podman tag.*roboteam|^ploinky restart/.test(line)), []);
 
     const corrupted = scriptaBox(t);
     const bad = runScriptaFlow(corrupted, { SCRIPTA_COPIED_TREES: `${'1'.repeat(40)} ${'2'.repeat(40)} ${'3'.repeat(40)}` });
     assert.notEqual(bad.status, 0);
-    assert.match(bad.stdout, /::error::Post-mutation failure: the ScriptaHub checkout moved to [0-9a-f]{40}, but its copied trees .* are not the ones the robot image was built from .* The images were pulled and the :runtime tags of docker\.io\/assistos\/scriptahub-agent and docker\.io\/assistos\/scriptahub-robot now name the pulled images\. roboteam-agent:runtime was not retagged and nothing was restarted; the checkout is left moved\./);
+    assert.match(bad.stdout, /Post-mutation failure: the ScriptaHub checkout moved to [0-9a-f]{40}, but its copied trees .* are not the ones the agent image was built from .*scriptahub-agent:runtime tag names the pulled agent image\. roboteam-agent:runtime was not retagged and nothing was restarted; the checkout is left moved\./);
     assert.equal(checkoutHead(corrupted), corrupted.head);
-    assert.deepEqual(corrupted.calls().filter((line) => line.includes(ROBOTEAM_TAG) || /^ploinky restart/.test(line)), []);
+    assert.deepEqual(corrupted.calls().filter((line) => /^podman tag /.test(line) && line.endsWith(ROBOTEAM_TAG) || /^ploinky restart/.test(line)), []);
 
     const busy = scriptaBox(t);
     busy.write('flock-busy', 'ploinky restart');
     const locked = runScriptaFlow(busy);
     assert.equal(locked.status, 75, logOf(locked));
     assert.match(locked.stdout, /::error::Another Explorer QA operation holds the host lock\./);
-    assert.match(locked.stdout, /::error::Post-mutation failure: the ScriptaHub checkout is at [0-9a-f]{40} and the images are pulled and tagged \(the :runtime tags of .*\), but the whole-workspace restart did not complete \(exit 75\)\./);
+    assert.match(locked.stdout, /::error::Post-mutation failure: the ScriptaHub checkout is at [0-9a-f]{40} and the images are pulled and tagged \(the scriptahub-agent:runtime tag names the pulled agent image\), but the whole-workspace restart did not complete \(exit 75\)\./);
     assert.deepEqual(busy.calls().filter((line) => /^ploinky restart/.test(line)), []);
 
     // A container that does not reach the new image fails the check, and the failure names the whole restart.
@@ -1836,16 +1852,16 @@ test('a container that runs the new image but started before the copy or the upd
     assert.match(stale.stdout, /::error::The ScriptaHub agent started at \d+, before the update at \d+\./);
     assert.deepEqual(scripta.calls().filter((line) => /^ploinky restart/.test(line)), ['ploinky restart']);
 
-    // And a RoboWork container still on the old robot image fails it too.
+    // And a RoboWork container still on the old RoboTeam image fails it too.
     const robowork = scriptaBox(t);
     robowork.hook('whole', ['scripta', 'roboteam'].map((key) => `printf '%s %s %s\\n' ${key === 'scripta' ? AGENT_ID : ROBOT_ID} "$(date +%s)" ${PREFIX[key]}new > "$STUB/ps.${PREFIX[key]}"`).join('\n'));
     const old = runScriptaFlow(robowork);
     assert.notEqual(old.status, 0);
-    assert.match(old.stdout, new RegExp(`::error::The robowork container runs image ${OLD_ROBOTEAM_ID}, not the robot image ${ROBOT_ID}\\.`));
+    assert.match(old.stdout, new RegExp(`::error::The robowork container runs image ${OLD_ROBOTEAM_ID}, not the registry-resolved RoboTeam image ${ROBOT_ID}\\.`));
 });
 
-test('ScriptaHub flow: a checkout that cannot be fast-forwarded, or a robot image that cannot be tagged, stops the run and names what was left changed', (t) => {
-    const moves = 'the :runtime tags of docker\\.io\\/assistos\\/scriptahub-agent and docker\\.io\\/assistos\\/scriptahub-robot now name the pulled images';
+test('ScriptaHub flow: a checkout that cannot be fast-forwarded, or a RoboTeam image that cannot be tagged, stops the run and names what was left changed', (t) => {
+    const moves = 'the scriptahub-agent:runtime tag names the pulled agent image';
     // The fetch of the move fails after every refusal passed.
     const fetchFails = scriptaBox(t);
     vcs(fetchFails.clone, 'config', `url.${path.join(fetchFails.dir, 'nowhere')}.insteadOf`, SCRIPTA_URL);
@@ -1854,34 +1870,30 @@ test('ScriptaHub flow: a checkout that cannot be fast-forwarded, or a robot imag
     assert.notEqual(first.status, 0, logOf(first));
     assert.match(first.stdout, new RegExp(`::error::Post-mutation failure: the images were pulled and ${moves}, but the ScriptaHub checkout could not be fast-forwarded to [0-9a-f]{40} \\(it stays at ${fetchFails.base} unless Git moved it\\)\\. roboteam-agent:runtime was not retagged and nothing was restarted\\.`));
     assert.equal(checkoutHead(fetchFails), fetchFails.base);
-    assert.deepEqual(fetchFails.calls().filter((line) => line.includes(ROBOTEAM_TAG) || /^ploinky restart/.test(line)), []);
+    assert.deepEqual(fetchFails.calls().filter((line) => /^podman tag /.test(line) && line.endsWith(ROBOTEAM_TAG) || /^ploinky restart/.test(line)), []);
 
     // The retag fails after the checkout moved.
     const tagFails = scriptaBox(t);
     tagFails.write('tag-fail', '1');
     const second = runScriptaFlow(tagFails);
     assert.notEqual(second.status, 0);
-    assert.match(second.stdout, new RegExp(`::error::Post-mutation failure: the ScriptaHub checkout is at ${tagFails.head}, but the robot image could not be tagged as roboteam-agent:runtime \\(${moves}\\)\\. Nothing was restarted\\.`));
+    assert.match(second.stdout, new RegExp(`::error::Post-mutation failure: the ScriptaHub checkout is at ${tagFails.head}, but the RoboTeam tag operation failed; roboteam-agent:runtime may have moved \\(${moves}\\)\\. Nothing was restarted\\.`));
     assert.equal(checkoutHead(tagFails), tagFails.head);
     assert.deepEqual(tagFails.calls().filter((line) => /^ploinky restart/.test(line)), []);
 });
 
-test('ScriptaHub resolve: nothing but regex-checked values reaches GITHUB_ENV, and a hostile agent label becomes unknown', (t) => {
-    const injected = `${'a'.repeat(40)}\nSCRIPTA_ROBOT_INDEX=sha256:${'0'.repeat(64)}\nSCRIPTA_HEAD=${'0'.repeat(40)}`;
+test('ScriptaHub resolve: nothing but regex-checked values reaches GITHUB_ENV, and a hostile agent label is rejected', (t) => {
+    const injected = `${'a'.repeat(40)}\nSCRIPTA_ROBOTEAM_INDEX=sha256:${'0'.repeat(64)}\nSCRIPTA_HEAD=${'0'.repeat(40)}`;
     for (const label of [injected, `${'a'.repeat(40)}\n`, 'x'.repeat(41), `${'A'.repeat(40)}`, '']) {
         const box = scriptaBox(t, { agentJson: platformJson(label) });
-        const { result, env } = resolveScripta(box);
-        assert.equal(result.status, 0, logOf(result));
-        assert.equal(env.SCRIPTA_AGENT_REVISION, 'unknown', JSON.stringify(label));
-        const lines = fs.readFileSync(box.githubEnv, 'utf8').split('\n').filter(Boolean);
-        assert.deepEqual(lines.map((line) => line.split('=')[0]), ['SCRIPTA_HEAD', 'SCRIPTA_BRANCH', 'SCRIPTA_ROBOT_REVISION', 'SCRIPTA_ROBOT_INDEX', 'SCRIPTA_AGENT_INDEX', 'SCRIPTA_COPIED_TREES', 'SCRIPTA_AGENT_REVISION']);
-        assert.equal(env.SCRIPTA_ROBOT_INDEX, box.robotIndex);
-        assert.equal(env.SCRIPTA_HEAD, box.head);
+        const { result } = resolveScripta(box);
+        assert.notEqual(result.status, 0, JSON.stringify(label));
+        assert.equal(fs.readFileSync(box.githubEnv, 'utf8'), '');
     }
     const good = scriptaBox(t);
     const resolved = resolveScripta(good);
     assert.equal(resolved.env.SCRIPTA_AGENT_REVISION, good.base);
-    const shapes = { SCRIPTA_HEAD: /^[0-9a-f]{40}$/, SCRIPTA_BRANCH: /^[A-Za-z0-9][A-Za-z0-9._/-]*$/, SCRIPTA_ROBOT_REVISION: /^[0-9a-f]{40}$/, SCRIPTA_ROBOT_INDEX: /^sha256:[0-9a-f]{64}$/, SCRIPTA_AGENT_INDEX: /^sha256:[0-9a-f]{64}$/, SCRIPTA_COPIED_TREES: /^[0-9a-f]{40}( [0-9a-f]{40}){2}$/, SCRIPTA_AGENT_REVISION: /^(?:[0-9a-f]{40}|unknown)$/ };
+    const shapes = { SCRIPTA_HEAD: /^[0-9a-f]{40}$/, SCRIPTA_BRANCH: /^[A-Za-z0-9][A-Za-z0-9._/-]*$/, SCRIPTA_ROBOTEAM_INDEX: /^sha256:[0-9a-f]{64}$/, SCRIPTA_AGENT_INDEX: /^sha256:[0-9a-f]{64}$/, SCRIPTA_COPIED_TREES: /^[0-9a-f]{40}( [0-9a-f]{40}){2}$/, SCRIPTA_AGENT_REVISION: /^[0-9a-f]{40}$/ };
     for (const [name, shape] of Object.entries(shapes)) assert.match(resolved.env[name], shape, name);
     // The Bizanso step writes four values, each checked or built from the runner's own temp path.
     const biz = bizansoBox(t);

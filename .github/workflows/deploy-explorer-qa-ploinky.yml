@@ -326,6 +326,78 @@ jobs:
           install -m 600 "$RUNNER_TEMP/explorer_qa_known_hosts" ~/.ssh/explorer_qa_known_hosts
 
       # The key stays on the runner: neither the QA host nor the Box ever holds it.
+      - name: Check out ScriptaHub
+        uses: actions/checkout@v4
+        with:
+          repository: Axiologic/ScriptaHubAgent
+          path: .qa-scriptahub-source
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Resolve immutable indexes and validate both native image configurations against the selected source.
+      - name: Resolve the ScriptaHub source and the published images
+        run: |
+          set -euo pipefail
+          SOURCE="$GITHUB_WORKSPACE/.qa-scriptahub-source"
+          AGENT_REPO=docker.io/assistos/scriptahub-agent
+          ROBOTEAM_REPO=docker.io/assistos/roboteam-agent
+          source_git() { git -C "$SOURCE" "$@"; }
+          HEAD_COMMIT="$(source_git rev-parse HEAD)"
+          BRANCH="$(source_git symbolic-ref --short HEAD)"
+          [[ "$HEAD_COMMIT" =~ ^[0-9a-f]{40}$ ]] && [[ "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo "::error::Invalid ScriptaHub source identity. Nothing was changed."; exit 1; }
+          index_digest() {
+            local sum
+            sum="$(docker buildx imagetools inspect --raw "$1" | sha256sum | cut -d ' ' -f1)" || return 1
+            [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || return 1
+            printf 'sha256:%s\n' "$sum"
+          }
+          if ! AGENT_INDEX="$(index_digest "$AGENT_REPO:runtime")" || ! ROBOTEAM_INDEX="$(index_digest "$ROBOTEAM_REPO:runtime")"; then
+            echo "::error::Published image indexes could not be read. Nothing was changed."
+            exit 1
+          fi
+          docker buildx imagetools inspect "$AGENT_REPO@$AGENT_INDEX" --format '{{json .Image}}' > "$RUNNER_TEMP/qa-scriptahub-agent-image.json"
+          IMAGE_LABELS="$(node --input-type=module - "$RUNNER_TEMP/qa-scriptahub-agent-image.json" <<'NODE'
+          import fs from 'node:fs';
+          const image = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const keys = ['org.opencontainers.image.revision', 'io.assistos.scriptahub.skills-tree', 'io.assistos.scriptahub.deployment-tree', 'io.assistos.scriptahub.reader-css-blob'];
+          const values = keys.map((key) => {
+            const a = image?.['linux/amd64']?.config?.Labels?.[key];
+            const b = image?.['linux/arm64']?.config?.Labels?.[key];
+            if (typeof a !== 'string' || a.length !== 40 || !/^[0-9a-f]{40}$/.test(a) || a !== b) throw new Error(`Invalid or inconsistent image label ${key}`);
+            return a;
+          });
+          const assets = image?.['linux/amd64']?.config?.Labels?.['io.assistos.scriptahub.assets-image'];
+          if (typeof assets !== 'string' || assets.length !== 108 || !/^docker\.io\/assistos\/scriptahub-assets@sha256:[0-9a-f]{64}$/.test(assets) || assets !== image?.['linux/arm64']?.config?.Labels?.['io.assistos.scriptahub.assets-image']) throw new Error('Invalid or inconsistent assets image label');
+          process.stdout.write(values.join(' '));
+          NODE
+          )" || { echo "::error::Invalid ScriptaHub image labels. Nothing was changed."; exit 1; }
+          read -r AGENT_REVISION SKILLS_TREE DEPLOYMENT_TREE READER_BLOB <<< "$IMAGE_LABELS"
+          REFUSAL="Publish a matching agent image from a committed source lock using publish-scriptahub-agent-image.yml. Nothing was changed."
+          if ! source_git cat-file -e "$AGENT_REVISION^{commit}" 2> /dev/null || ! source_git merge-base --is-ancestor "$AGENT_REVISION" "$HEAD_COMMIT"; then
+            echo "::error::The agent image revision is not an ancestor of $BRANCH@$HEAD_COMMIT. $REFUSAL"
+            exit 1
+          fi
+          COPIED_TREES=''
+          for pair in "skills:$SKILLS_TREE" "scriptahubAgent/deployment:$DEPLOYMENT_TREE" "scriptahubAgent/site/reader/reader.css:$READER_BLOB"; do
+            path="${pair%%:*}"; expected="${pair#*:}"
+            at_head="$(source_git rev-parse "$HEAD_COMMIT:$path" 2> /dev/null)" || at_head=''
+            at_image="$(source_git rev-parse "$AGENT_REVISION:$path" 2> /dev/null)" || at_image=''
+            if [ "$at_head" != "$expected" ] || [ "$at_image" != "$expected" ]; then
+              echo "::error::$path differs from the agent image source labels. $REFUSAL"
+              exit 1
+            fi
+            COPIED_TREES="${COPIED_TREES:+$COPIED_TREES }$expected"
+          done
+          {
+            printf 'SCRIPTA_HEAD=%s\n' "$HEAD_COMMIT"
+            printf 'SCRIPTA_BRANCH=%s\n' "$BRANCH"
+            printf 'SCRIPTA_AGENT_REVISION=%s\n' "$AGENT_REVISION"
+            printf 'SCRIPTA_AGENT_INDEX=%s\n' "$AGENT_INDEX"
+            printf 'SCRIPTA_ROBOTEAM_INDEX=%s\n' "$ROBOTEAM_INDEX"
+            printf 'SCRIPTA_COPIED_TREES=%s\n' "$COPIED_TREES"
+          } >> "$GITHUB_ENV"
+          echo "[deploy-qa-scriptahub] Resolved $BRANCH@$HEAD_COMMIT; agent image $AGENT_REPO@$AGENT_INDEX revision $AGENT_REVISION; RoboTeam $ROBOTEAM_REPO@$ROBOTEAM_INDEX"
+
       - name: Check out Bizanso
         uses: actions/checkout@v4
         with:
@@ -748,8 +820,8 @@ jobs:
           BOX_CONTAINER=ploinky-box-explorerqaworkspace-7a31ab7775eb
           PRUNE_BOX_IMAGE=docker.io/assistos/ploinky-box
           DISK_MIN_FREE_GIB=5
-          # Unpacked size of the ScriptaHub robot image not shared with the RoboTeam runtime (11.2 GB, 9 of 29 layers new).
-          ROBOT_IMAGE_NEW_GIB=11
+          # Reserve space for the prepared ScriptaHub agent image before pulling new layers.
+          SCRIPTA_AGENT_IMAGE_NEW_GIB=11
           DISK_WARN_FREE_GIB=10
           # One podman call on the host or inside the Box, under the same host lock as every other mutation.
           prune_podman() {
@@ -1067,10 +1139,41 @@ jobs:
           GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
 
           # BEGIN QA ScriptaHub images
-          # Ploinky pulls an image only when it is missing, and ScriptaHub refuses skill sources its image was not built
-          # from, so its published runtime image is pulled before the repositories move and the restart below starts it.
-          run_in_box 'set -eu
-          podman pull -q docker.io/assistos/scriptahub-agent:runtime' < /dev/null
+          # Both images are pinned to registry indexes resolved on the runner. The generic RoboTeam tag may
+          # still name an older custom image, so it is always restored from the registry-resolved image.
+          IMAGE_FREE_GIB="$(free_disk_gib)" || { echo "::error::Could not read free disk; repositories may already have changed."; exit 1; }
+          if [ "$IMAGE_FREE_GIB" -lt $((DISK_MIN_FREE_GIB + SCRIPTA_AGENT_IMAGE_NEW_GIB)) ]; then
+            echo "::error::Insufficient disk for the prepared agent image; repositories may already have changed, no image was pulled or restarted."
+            exit 1
+          fi
+          if ! printf '%s\n%s\n%s\n' "$SCRIPTA_AGENT_INDEX" "$SCRIPTA_ROBOTEAM_INDEX" "$SCRIPTA_AGENT_REVISION" | run_in_box 'set -eu
+          read -r agent_digest
+          read -r robot_digest
+          read -r revision
+          case "$agent_digest$robot_digest" in *[!a-z0-9:]*) exit 1 ;; esac
+          case "$agent_digest" in sha256:*) ;; *) exit 1 ;; esac
+          case "$robot_digest" in sha256:*) ;; *) exit 1 ;; esac
+          test "${#agent_digest}" -eq 71
+          test "${#robot_digest}" -eq 71
+          case "${agent_digest#sha256:}${robot_digest#sha256:}" in *[!0-9a-f]*) exit 1 ;; esac
+          agent=docker.io/assistos/scriptahub-agent@$agent_digest
+          robot=docker.io/assistos/roboteam-agent@$robot_digest
+          podman pull -q "$agent" > /dev/null
+          podman pull -q "$robot" > /dev/null
+          test "$(podman image inspect --format "{{index .Labels \"org.opencontainers.image.revision\"}}" "$agent")" = "$revision"
+          podman tag "$agent" docker.io/assistos/scriptahub-agent:runtime
+          podman tag "$robot" docker.io/assistos/roboteam-agent:runtime
+          printf "AGENT_ID=%s\n" "$(podman image inspect --format "{{.Id}}" "$agent")"
+          printf "ROBOTEAM_ID=%s\n" "$(podman image inspect --format "{{.Id}}" "$robot")"' > "$RUNNER_TEMP/qa-scriptahub-pull.txt"; then
+            echo "::error::Image preparation failed; images may have been pulled and runtime tags may have moved. Repositories may already have changed; no restart has occurred."
+            exit 1
+          fi
+          AGENT_ID="$(sed -n 's/^AGENT_ID=//p' "$RUNNER_TEMP/qa-scriptahub-pull.txt" | tail -n 1)"
+          ROBOTEAM_ID="$(sed -n 's/^ROBOTEAM_ID=//p' "$RUNNER_TEMP/qa-scriptahub-pull.txt" | tail -n 1)"
+          if [[ ! "$AGENT_ID" =~ ^[0-9a-f]{64}$ ]] || [[ ! "$ROBOTEAM_ID" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Image IDs were not reported; images were pulled and tags may have moved. No restart has occurred."
+            exit 1
+          fi
           # END QA ScriptaHub images
 
           # Start never fetches a checkout that exists, so kept sources move forward here. A full `ploinky update`
@@ -1091,26 +1194,33 @@ jobs:
               ploinky_locked update repo "$repo"
             fi
           done
-          ploinky_locked restart
-          wait_ready
-
-          # BEGIN QA ScriptaHub robot image
-          # ScriptaHub workflows run their skills inside the robots, so on QA the RoboTeam runtime tag names the ScriptaHub
-          # robot profile, which extends the RoboTeam runtime with them. It is about 11 GB, so it is pulled only after the
-          # restart has released the previous ScriptaHub image and the prune has removed it, and only with room to spare;
-          # a run stopped here leaves every agent on its current image. A second restart starts the robots on it.
-          prune_images robot
-          ROBOT_FREE_GIB="$(free_disk_gib)" || { echo "::error::Could not read the free disk space of the QA host."; exit 1; }
-          if [ "$ROBOT_FREE_GIB" -lt $((DISK_MIN_FREE_GIB + ROBOT_IMAGE_NEW_GIB)) ]; then
-            echo "::error::Free disk $ROBOT_FREE_GIB GiB is below the $DISK_MIN_FREE_GIB GiB floor plus the ScriptaHub robot image's $ROBOT_IMAGE_NEW_GIB GiB; repositories and agents are updated, the robots keep their current image. Free space or grow the disk, then deploy again."
+          # Check the exact selected source and copied objects after repository updates and before restart.
+          if ! printf '%s\n%s\n' "$SCRIPTA_HEAD" "$SCRIPTA_COPIED_TREES" | run_in_box 'set -eu
+          read -r head
+          read -r expected
+          g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C ScriptaHubAgent "$@"; }
+          test -z "$(g status --porcelain)"
+          test "$(g rev-parse HEAD)" = "$head"
+          actual=$(g rev-parse HEAD:skills HEAD:scriptahubAgent/deployment HEAD:scriptahubAgent/site/reader/reader.css)
+          test "$(echo $actual)" = "$expected"'; then
+            echo "::error::ScriptaHub checkout did not match the selected source; repositories and image tags may have changed, no restart has occurred."
             exit 1
           fi
-          run_in_box 'set -eu
-          podman pull -q docker.io/assistos/scriptahub-robot:runtime
-          podman tag docker.io/assistos/scriptahub-robot:runtime docker.io/assistos/roboteam-agent:runtime' < /dev/null
           ploinky_locked restart
           wait_ready
-          # END QA ScriptaHub robot image
+          # Verify actual running image IDs, rather than relying on mutable local tags.
+          if ! printf '%s\n%s\n' "$AGENT_ID" "$ROBOTEAM_ID" | run_in_box 'set -eu
+          read -r agent_id
+          read -r robot_id
+          for spec in "ploinky_ScriptaHubAgent_scriptahubAgent_:$agent_id" "ploinky_AchillesIDE_roboTeamAgent_:$robot_id" "ploinky_AchillesIDE_roboWorkAgent_:$robot_id"; do
+            prefix=${spec%:*}; expected=${spec#*:}
+            lines=$(podman ps --no-trunc --format "{{.Names}} {{.ImageID}}" | awk -v p="$prefix" "index(\$1,p)==1 {print \$2}")
+            test "$(printf "%s\n" "$lines" | grep -c .)" -eq 1
+            test "$lines" = "$expected"
+          done'; then
+            echo "::error::Post-restart image verification failed; repositories and image tags have changed and the workspace was restarted."
+            exit 1
+          fi
 
           # Handles only: this document never holds a secret value.
           EDGE_DOCUMENT="$(node --input-type=module <<'NODE'

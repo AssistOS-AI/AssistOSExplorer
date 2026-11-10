@@ -320,8 +320,8 @@ jobs:
           BOX_CONTAINER=ploinky-box-explorerqaworkspace-7a31ab7775eb
           PRUNE_BOX_IMAGE=docker.io/assistos/ploinky-box
           DISK_MIN_FREE_GIB=5
-          # Unpacked size of the ScriptaHub robot image not shared with the RoboTeam runtime (11.2 GB, 9 of 29 layers new).
-          ROBOT_IMAGE_NEW_GIB=11
+          # Reserve space for the prepared ScriptaHub agent image before pulling new layers.
+          SCRIPTA_AGENT_IMAGE_NEW_GIB=11
           DISK_WARN_FREE_GIB=10
           # One podman call on the host or inside the Box, under the same host lock as every other mutation.
           prune_podman() {

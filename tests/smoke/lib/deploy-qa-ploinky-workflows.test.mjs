@@ -122,14 +122,13 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         'ploinky_locked enable agent PromotionScoutV2/promotionScout',
         'ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent',
         'GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"',
-        'podman pull -q docker.io/assistos/scriptahub-agent:runtime',
+        'podman pull -q "$agent"',
+        'podman pull -q "$robot"',
+        'podman tag "$robot" docker.io/assistos/roboteam-agent:runtime',
         'ploinky_locked update repo "$repo"',
+        'test "$(g rev-parse HEAD)" = "$head"',
         'ploinky_locked restart\n          wait_ready',
-        'prune_images robot',
-        'if [ "$ROBOT_FREE_GIB" -lt $((DISK_MIN_FREE_GIB + ROBOT_IMAGE_NEW_GIB)) ]; then',
-        'podman pull -q docker.io/assistos/scriptahub-robot:runtime',
-        'podman tag docker.io/assistos/scriptahub-robot:runtime docker.io/assistos/roboteam-agent:runtime',
-        'ploinky_locked restart\n          wait_ready\n          # END QA ScriptaHub robot image',
+        'Post-restart image verification failed',
         '| ploinky_locked edge set -',
         'ploinky_locked --port "$ROUTER_PORT" start explorer\n\n          wait_ready',
     ];
@@ -621,4 +620,35 @@ test('deploy: a failing listing only warns and the prune returns success', (t) =
     assert.match(result.stdout, /^::warning::prune box failed \(post\): the image listing failed$/m);
     assert.match(result.stdout, /completed/);
     assert.equal(result.calls.some((line) => / image rm /.test(line)), false);
+});
+
+
+test('deploy: ScriptaHub registry gate is shared with the product deploy and checks running image IDs', () => {
+    const product = fs.readFileSync(path.join(ROOT, '.github/workflows/deploy-explorer-qa-scriptahub.yml'), 'utf8');
+    assert.equal(step(deploy, 'Resolve the ScriptaHub source and the published images'), step(product, 'Resolve the ScriptaHub source and the published images'));
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    assert.match(body, /docker\.io\/assistos\/roboteam-agent@\$robot_digest/);
+    for (const prefix of ['ploinky_ScriptaHubAgent_scriptahubAgent_', 'ploinky_AchillesIDE_roboTeamAgent_', 'ploinky_AchillesIDE_roboWorkAgent_']) assert.ok(body.includes(prefix));
+    assert.match(body, /test "\$lines" = "\$expected"/);
+});
+
+test('deploy: the image verification program rejects a wrong running RoboWork image', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const program = body.match(/\| run_in_box '(set -eu\n\s+read -r agent_id\n[\s\S]*?)'; then/);
+    assert.ok(program);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-image-check-'));
+    try {
+        const agent = 'e'.repeat(64);
+        const robot = 'f'.repeat(64);
+        fs.writeFileSync(path.join(root, 'podman'), `#!/bin/sh\nprintf '%s\\n' 'ploinky_ScriptaHubAgent_scriptahubAgent_x ${agent}' 'ploinky_AchillesIDE_roboTeamAgent_x ${robot}' "ploinky_AchillesIDE_roboWorkAgent_x \${WRONG_ID:-${robot}}"\n`, { mode: 0o755 });
+        for (const [wrong, expected] of [['', 0], ['1'.repeat(64), 1]]) {
+            const result = spawnSync('sh', ['-c', program[1]], {
+                input: `${agent}\n${robot}\n`, encoding: 'utf8',
+                env: { ...process.env, PATH: `${root}:/usr/bin:/bin`, WRONG_ID: wrong },
+            });
+            assert.equal(result.status, expected, result.stderr);
+        }
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });
