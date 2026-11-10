@@ -557,3 +557,18 @@ test('a three-core-only native map is refused when the release evidence contains
     }
     assert.throws(() => validateNativeEvidence({ ...record, repositories: { ...record.repositories, webmeet: { ...record.repositories.webmeet, commit: 'e'.repeat(40) } } }, options), /complete verified source graph/);
 });
+
+test('terminal live-agent profile is a fixed opt-in ledger with strict outcomes', () => {
+    const terminalArgs = ['--project=chromium', '--workers=1', '--retries=0', 'specs/12-terminal-live-agent.spec.mjs'];
+    const env = { ...baseEnv, SMOKE_TERMINAL_LIVE_AGENT: '1' };
+    const profile = validateAcceptanceProfile(terminalArgs, env);
+    assert.equal(profile.coverage, 'terminal-live-agent');
+    assert.equal(profile.accounts.secondary, false);
+    assert.equal(profile.cases.length, 1);
+    assertLedgerResults(profile.cases, profile.cases.map(record), { terminal: true });
+    assert.throws(() => assertLedgerResults(profile.cases, [], { terminal: true }));
+    assert.throws(() => validateAcceptanceProfile(terminalArgs, baseEnv));
+    assert.throws(() => validateAcceptanceProfile([...terminalArgs, '--grep', 'no such test'], env));
+    assert.throws(() => validateAcceptanceProfile([...terminalArgs, 'specs/01-webtty-core.spec.mjs'], env));
+    assert.throws(() => validateAcceptanceProfile(terminalArgs, { ...env, SMOKE_ROBOWORK_RESTART: '1' }));
+});

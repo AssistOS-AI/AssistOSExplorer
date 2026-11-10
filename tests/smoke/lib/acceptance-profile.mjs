@@ -8,8 +8,10 @@ import { requireFreeCopilotSetup, requiresFreeCopilotSetup } from './copilot-fre
 
 export const acceptanceLedger = JSON.parse(fs.readFileSync(new URL('../acceptance-ledger.json', import.meta.url), 'utf8'));
 export const roboWorkRestartLedger = JSON.parse(fs.readFileSync(new URL('../robowork-restart-ledger.json', import.meta.url), 'utf8'));
+export const terminalAgentLedger = JSON.parse(fs.readFileSync(new URL('../terminal-agent-ledger.json', import.meta.url), 'utf8'));
 const enabled = value => /^(1|true|yes|on)$/i.test(String(value || '').trim());
 const plannedProfiles = [
+    { flag: 'SMOKE_TERMINAL_LIVE_AGENT', spec: 'specs/12-terminal-live-agent.spec.mjs', coverage: 'terminal-live-agent', ledger: terminalAgentLedger },
     { flag: 'SMOKE_ROBOWORK_RESTART', spec: 'specs/08-robowork-restart.spec.mjs', coverage: 'planned-robowork-ra7', residentEvidence: true,
         ledger: roboWorkRestartLedger },
 ];
@@ -121,7 +123,7 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
     if (liveSessions && !listing && (selection.specs.length !== 1 || selection.cases.length !== 2)) {
         throw new Error('Fresh Live Sessions acceptance requires its own separate two-test cohort.');
     }
-    const dualAccounts = Boolean(planned) || selection.cases.some(entry => entry.title === 'two Explorer accounts can join one room and exchange chat'
+    const dualAccounts = Boolean(planned?.residentEvidence) || selection.cases.some(entry => entry.title === 'two Explorer accounts can join one room and exchange chat'
         || entry.cohort === 'fresh-webtty' || entry.cohort === 'fresh-live-sessions' || entry.cohort === 'supporting-61');
     const guestOnly = selection.cases.length > 0 && selection.cases.every(entry => entry.cohort === 'supporting-15');
     const accounts = { enabled: (acceptance || freeCopilotSetup) && !guestOnly, secondary: dualAccounts, primaryAdmin: true, freeCopilotSetup,
