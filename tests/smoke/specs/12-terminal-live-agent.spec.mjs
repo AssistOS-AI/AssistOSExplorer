@@ -10,10 +10,11 @@ import { browserMutation, createRobot, deleteRobot } from '../lib/robot-terminal
 import { cleanupWebttyTerminals, registerCreatedTerminal } from '../lib/webtty-terminal-cleanup.mjs';
 import { collectWebttyRuntimeEvidence, requireAgentEvidence } from '../lib/webtty-runtime-evidence.mjs';
 import { probeRobotHome } from '../lib/terminal-agent-home.mjs';
+import { gitAgentTarget, matchesProfileDiscovery, safePrimaryFailure } from '../lib/terminal-agent-chooser.mjs';
 
 const enabled = /^(1|true|yes|on)$/i.test(String(process.env.SMOKE_TERMINAL_LIVE_AGENT || ''));
 
-test('Open Terminal Here preserves the selected folder and robot home in a running agent', async ({ page }) => {
+test('Open Terminal Here preserves the selected folder and robot home in a running agent', async ({ page }, testInfo) => {
   test.skip(!enabled, 'Select the terminal live-agent profile explicitly.');
   test.setTimeout(480_000);
   const root = fs.realpathSync(smokeConfig.workspaceRoot);
@@ -27,6 +28,7 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
   let primaryFailure = null;
   let liveCreationAttempted = false;
   let created = false;
+  let phase = 'setup';
   try {
     await openExplorer(page);
     await assertExplorerDirectory(page, '/');
@@ -46,6 +48,7 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
     const homeInode = probeRobotHome(runtime, provider, robot, marker, 'seed').inode;
     const agent = requireAgentEvidence(runtime, 'gitAgent', { eligible: true });
     expect(agent.mapping.access).toBe('rw');
+    phase = 'chooser';
     await directoryRow(page, directory).locator('.action-menu-trigger').click();
     await directoryRow(page, directory).getByRole('menuitem', { name: 'Open Terminal Here' }).click();
     const chooser = page.getByRole('dialog', { name: 'Open terminal in' });
@@ -55,9 +58,12 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
     const defaultOption = select.locator('option').filter({ hasText: /^default$/i });
     await expect(defaultOption).toHaveCount(1);
     const choose = async (value) => {
-      const response = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/webtty/target-discoveries' && r.status() === 201);
+      const id = /^\d+:([a-z0-9][a-z0-9-]{2,63})$/.exec(value || '')?.[1];
+      expect(id).toBeTruthy();
+      const response = page.waitForResponse(r => matchesProfileDiscovery(r, `${id}.default`));
       await select.selectOption(value);
       const result = await response;
+      expect(result.status(), 'profiled target discovery must succeed').toBe(201);
       const request = result.request().postDataJSON();
       const body = await result.json();
       expect(request.profile.mode).toBe('live-agent');
@@ -70,7 +76,7 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
     const defaultProfile = await choose(defaultValue);
     expect(defaultProfile.id).toBe(`${defaultId}.default`);
     await expect(chooser.locator('#terminalTargetEnvironment')).toHaveValue('live-agents');
-    const target = chooser.locator('.terminal-target-button').filter({ has: chooser.locator('.terminal-target-detail', { hasText: 'AchillesIDE/gitAgent' }) });
+    const target = gitAgentTarget(page, chooser);
     await expect(target).toHaveCount(1);
     await expect(target).toBeEnabled();
     await target.click();
@@ -82,6 +88,7 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
     await expect(target).toHaveCount(1);
     await expect(target).toBeEnabled();
     await target.click();
+    phase = 'terminal creation';
     const popupPromise = page.context().waitForEvent('page');
     const creationPromise = page.context().waitForEvent('response', { predicate: r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/webtty/sessions' });
     liveCreationAttempted = true;
@@ -91,6 +98,7 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
     const payload = await response.json().catch(() => null);
     const terminal = await registerCreatedTerminal(terminals, payload);
     terminal.terminalPage = await popupPromise;
+    phase = 'shell proof';
     expect(payload.session.cwd).toBe(name);
     expect(payload.session.target.cwdDisplay).toBe(agent.mapping.translatedCwd);
     await expect(terminal.terminalPage.locator('#status')).toHaveText('Connected', { timeout: smokeConfig.timeouts.navigation });
@@ -113,6 +121,8 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
     expect(probeRobotHome(runtime, provider, robot, marker, 'verify', homeInode).inode).toBe(homeInode);
   } catch (error) {
     primaryFailure = error;
+    const evidence = safePrimaryFailure(error, phase);
+    await testInfo.attach('terminal-primary-failure.json', { body: JSON.stringify(evidence), contentType: 'application/json' }).catch(() => {});
     throw error;
   } finally {
     await cleanupWebttyTerminals({
@@ -127,6 +137,13 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
       },
       closeContexts: async () => {
         const failures = [];
+        try {
+          const chooser = page.getByRole('dialog', { name: 'Open terminal in' });
+          if (await chooser.isVisible()) {
+            await chooser.getByRole('button', { name: 'Cancel', exact: true }).click();
+            await expect(chooser).toBeHidden();
+          }
+        } catch (error) { failures.push(error); }
         if ((liveCreationAttempted && !terminals.length) || terminals.some(terminal => !terminal.cleaned)) {
           failures.push(new Error('Live terminal cleanup is unproven; retaining the robot and its home.'));
         }
