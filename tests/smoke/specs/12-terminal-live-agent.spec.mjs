@@ -6,9 +6,10 @@ import { test, expect } from '../lib/fixtures.mjs';
 import { openExplorer, assertExplorerDirectory } from '../lib/explorer.mjs';
 import { createDirectory, deleteDirectoryIfPresent, directoryRow } from '../lib/copilot.mjs';
 import { smokeConfig } from '../lib/config.mjs';
-import { browserMutation, createRobot, deleteRobot, openRobotShell } from '../lib/robot-terminal.mjs';
+import { browserMutation, createRobot, deleteRobot } from '../lib/robot-terminal.mjs';
 import { cleanupWebttyTerminals, registerCreatedTerminal } from '../lib/webtty-terminal-cleanup.mjs';
 import { collectWebttyRuntimeEvidence, requireAgentEvidence } from '../lib/webtty-runtime-evidence.mjs';
+import { probeRobotHome } from '../lib/terminal-agent-home.mjs';
 
 const enabled = /^(1|true|yes|on)$/i.test(String(process.env.SMOKE_TERMINAL_LIVE_AGENT || ''));
 
@@ -23,20 +24,13 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
   const marker = `terminal-${suffix}`;
   const terminals = [];
   let robot;
-  let robotShell;
-  let robotShellAttempted = false;
+  let primaryFailure = null;
   let liveCreationAttempted = false;
   let created = false;
   try {
     await openExplorer(page);
     await assertExplorerDirectory(page, '/');
     robot = await createRobot(page, `terminal-${suffix}`, ['opencode']);
-    robotShellAttempted = true;
-    robotShell = await openRobotShell(page, robot.id);
-    const homeProof = await robotShell.run(`printf '%s' '${marker}' > "$HOME/terminal-proof"; stat -c '%i' "$HOME/terminal-proof"`);
-    expect(homeProof.code).toBe(0);
-    const homeInode = homeProof.text.match(/^\s*(\d+)\s*$/m)?.[1];
-    expect(homeInode).toBeTruthy();
     expect(fs.existsSync(hostDirectory)).toBe(false);
     created = true;
     await createDirectory(page, name, directory);
@@ -48,6 +42,8 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
       expectedImageRef: process.env.SMOKE_EXPECT_BOX_IMAGE_REF,
       requireFreshImage: false,
     });
+    const provider = requireAgentEvidence(runtime, 'roboWorkAgent');
+    const homeInode = probeRobotHome(runtime, provider, robot, marker, 'seed').inode;
     const agent = requireAgentEvidence(runtime, 'gitAgent', { eligible: true });
     expect(agent.mapping.access).toBe('rw');
     await directoryRow(page, directory).locator('.action-menu-trigger').click();
@@ -68,8 +64,11 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
       expect(body.discovery.profile).toMatchObject(request.profile);
       return request.profile;
     };
-    const defaultProfile = await choose(await defaultOption.getAttribute('value'));
-    expect(defaultProfile.id).toBe('default.default');
+    const defaultValue = await defaultOption.getAttribute('value');
+    const defaultId = /^\d+:([a-z0-9][a-z0-9-]{2,63})$/.exec(defaultValue || '')?.[1];
+    expect(defaultId).toBeTruthy();
+    const defaultProfile = await choose(defaultValue);
+    expect(defaultProfile.id).toBe(`${defaultId}.default`);
     await expect(chooser.locator('#terminalTargetEnvironment')).toHaveValue('live-agents');
     const target = chooser.locator('.terminal-target-button').filter({ has: chooser.locator('.terminal-target-detail', { hasText: 'AchillesIDE/gitAgent' }) });
     await expect(target).toHaveCount(1);
@@ -111,13 +110,13 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
     const hostInode = fs.statSync(path.join(hostDirectory, 'cwd-proof')).ino;
     await expect.poll(() => rows.innerText(), { timeout: smokeConfig.timeouts.navigation }).toContain(`__FILE__${hostInode}__`);
     await expect.poll(() => rows.innerText(), { timeout: smokeConfig.timeouts.navigation }).toContain('__DONE__');
-    const writeback = await robotShell.run('cat "$HOME/terminal-proof"; printf "\\n"; stat -c %i "$HOME/terminal-proof"');
-    expect(writeback.code).toBe(0);
-    expect(writeback.text).toContain(`${marker}-writeback`);
-    expect(writeback.text).toMatch(new RegExp(`^\\s*${homeInode}\\s*$`, 'm'));
+    expect(probeRobotHome(runtime, provider, robot, marker, 'verify', homeInode).inode).toBe(homeInode);
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
   } finally {
     await cleanupWebttyTerminals({
-      terminals, authenticate: async () => page,
+      terminals, priorFailure: primaryFailure, authenticate: async () => page,
       closeTerminal: async (terminal, { requestPage }) => {
         const result = await browserMutation(requestPage, `/webtty/sessions/${encodeURIComponent(terminal.session.id)}`, { method: 'DELETE' });
         if (result.status === 200) expect(result.payload).toMatchObject({ ok: true });
@@ -128,18 +127,6 @@ test('Open Terminal Here preserves the selected folder and robot home in a runni
       },
       closeContexts: async () => {
         const failures = [];
-        if (robotShell) {
-          try {
-            await page.evaluate(() => { window.__robotShellSource?.close(); });
-            const result = await browserMutation(page, `/webtty/sessions/${encodeURIComponent(robotShell.session.id)}`, { method: 'DELETE' });
-            if (result.status === 200) expect(result.payload).toMatchObject({ ok: true });
-            else if (result.status === 404) expect(result.payload).toEqual({ ok: false, error: 'not_found' });
-            else throw new Error(`Robot terminal cleanup failed: HTTP ${result.status}`);
-          } catch (error) { failures.push(error); }
-        }
-        if (robotShellAttempted && !robotShell) {
-          failures.push(new Error('Robot terminal creation may have succeeded without a returned session; retaining the robot and its home.'));
-        }
         if ((liveCreationAttempted && !terminals.length) || terminals.some(terminal => !terminal.cleaned)) {
           failures.push(new Error('Live terminal cleanup is unproven; retaining the robot and its home.'));
         }
