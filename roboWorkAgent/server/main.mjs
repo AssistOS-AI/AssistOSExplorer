@@ -7,6 +7,8 @@ import { EnvironmentManager } from './environment.mjs';
 import { createHomeOperations } from './home-op.mjs';
 import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { createRoboWorkServer } from './http-server.mjs';
+import { GitCredentialStore } from './git-credentials.mjs';
+import { createGitCredentialSockets } from './git-credential-socket.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { PUBLIC_BASE_PATH } from './constants.mjs';
 import { GuiManager, proxySessionHttp, proxySessionWebSocket } from './gui-manager.mjs';
@@ -20,8 +22,12 @@ const alaEntry = resolveAlaCommand();
 const toolCache = new ToolCache();
 const soulGateway = createSoulGatewayService();
 const homeOperation = createHomeOperations({ paths, alaEntry, toolCache });
-const robots = new RobotManager({ paths, toolCache, homeOperation, soulGateway, alaEntry });
+const gitStore = new GitCredentialStore({ dataDir: paths.dataDir });
+if (!gitStore.available) console.error('[git-credentials] ROBOWORK_CREDENTIALS_KEY is not configured; robot git credentials are unavailable');
+const gitCredentials = { store: gitStore, sockets: createGitCredentialSockets({ store: gitStore }) };
+const robots = new RobotManager({ paths, toolCache, homeOperation, soulGateway, alaEntry, gitCredentials });
 await robots.initialize();
+await robots.restoreGitCredentials().catch(error => console.error(`[git-credentials] startup restore failed: ${error.code || 'FAILED'}`));
 const environment = new EnvironmentManager();
 const runtimeBundle = new RuntimeBundle({ toolCache, workspaceRoot: paths.workspaceRoot, alaEntry });
 const runs = new RunManager({ paths, robots, toolCache, environment, runtimeBundle, alaEntry });
@@ -52,7 +58,7 @@ let closing;
 async function close() {
     if (closing) return closing;
     closing = (async () => {
-        server.close(); await runs.close(); await gui.shutdown(); await runtimeBundle.close(); await soulGateway.close(); server.closeAllConnections();
+        server.close(); await runs.close(); await gui.shutdown(); await runtimeBundle.close(); await soulGateway.close(); await gitCredentials.sockets.close(); server.closeAllConnections();
     })();
     return closing;
 }

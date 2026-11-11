@@ -11,7 +11,9 @@ import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
 import { ROBOFLOW_ENTITLEMENT_ERROR, ROBOTEAM_ENTITLEMENT_ERROR, authorizeRobotListing, authorizeWorkspaceRequest, liveSessionsAccess } from './listing-access.mjs';
 import { projectRobotView } from './robot-projection.mjs';
+import { DEFAULT_ROBOT_NAME, defaultRobotProtectedError } from './robot-store.mjs';
 import { importEmailRobots } from './robot-import.mjs';
+import { CALLER_REFUSED, RobotGitCredentials, credentialUser, mayManageCredentials, normalizeUserId } from './git-credentials.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
 import { robotCodingAgents } from './coding-agents.mjs';
 import { findProjectRecord, projectForSessionRecord } from './project-storage.mjs';
@@ -607,6 +609,10 @@ export function createRoboTeamServer(options) {
     const publicDir = path.resolve(options.publicDir || DEFAULT_PUBLIC_DIR);
     const mcpPort = Number(options.mcpPort) || 7000;
     const liveSessions = options.liveSessions || null;
+    // RoboWork is resolved per call, so a runtime manager whose client is replaced later is still used.
+    const gitCredentials = options.gitCredentials || new RobotGitCredentials({
+        robotStore, roboWork: { call: (tool, input) => runtimeManager.roboWork.call(tool, input) },
+    });
     const liveStreamLifetimeMs = Number.isSafeInteger(options.liveSessionsStreamLifetimeMs) && options.liveSessionsStreamLifetimeMs > 0
         ? options.liveSessionsStreamLifetimeMs : LIVE_STREAM_LIFETIME_MS;
 
@@ -615,6 +621,16 @@ export function createRoboTeamServer(options) {
         privileged: req[ACCESS]?.internal === false && req[ACCESS].canAdmin === true,
         workspaceRoot: runtimeManager.workspaceRoot,
     });
+
+    // An unavailable credential status never hides the robot; the card then shows no credential line.
+    async function robotCredentialsView(robot, viewer) {
+        try {
+            const summary = await gitCredentials.summary(robot.id);
+            return { ...summary, canRemove: summary.configured === true && mayManageCredentials(summary, viewer) };
+        } catch {
+            return null;
+        }
+    }
 
     const server = http.createServer(async (req, res) => {
         try {
@@ -634,11 +650,15 @@ export function createRoboTeamServer(options) {
                 const robots = await robotStore.list();
                 const remote = await runtimeManager.roboWork.call('robot_status', { robotIds: robots.map(robot => robot.id), includeLogins: listing.canAdmin });
                 const statuses = new Map(remote.robots.map(robot => [robot.id, robot]));
+                // A verified dashboard viewer sees each robot's non-secret git credential metadata and whether it may remove them.
+                const viewer = typeof listing.principal === 'string' ? { id: normalizeUserId(listing.principal), canAdmin: listing.canAdmin === true } : null;
                 const views = await Promise.all(robots.map(async (robot) => {
                     const view = publicRobot(robot, runtimeManager.status(robot.id), { privileged: listing.canAdmin, workspaceRoot: runtimeManager.workspaceRoot });
                     const status = statuses.get(robot.id);
+                    const credentials = viewer ? await robotCredentialsView(robot, viewer) : null;
                     return { ...view, codingAgent: status?.activeAgent || null,
-                        ...(listing.canAdmin ? { codingAgentLogins: status?.logins || {} } : {}) };
+                        ...(listing.canAdmin ? { codingAgentLogins: status?.logins || {} } : {}),
+                        ...(credentials ? { gitCredentials: credentials } : {}) };
                 }));
                 return sendJson(res, 200, { ok: true, canAdmin: listing.canAdmin, robots: views });
             }
@@ -734,6 +754,27 @@ export function createRoboTeamServer(options) {
                 return sendText(res, 200, log);
             }
 
+            // Robot git credentials for gitAgent. control.mjs calls these only after it verified that the
+            // AgentServer grant names gitAgent acting for a delegated non-guest user, whose identity it forwards.
+            const gitCredentialsOperation = pathname.match(/^\/api\/git-credentials\/(targets|save|delete)$/)?.[1];
+            if (gitCredentialsOperation && req.method === 'POST') {
+                const user = actor.internal ? credentialUser(actor) : null;
+                if (!user) return sendJson(res, 403, { ok: false, code: CALLER_REFUSED, error: 'robot git credentials are available only to gitAgent acting for a signed-in user' });
+                const body = await readJsonBody(req);
+                if (gitCredentialsOperation === 'targets') return sendJson(res, 200, await gitCredentials.targets(user));
+                if (gitCredentialsOperation === 'save') return sendJson(res, 200, await gitCredentials.save(user, body));
+                return sendJson(res, 200, await gitCredentials.removeByName(user, body.robotName));
+            }
+            // Dashboard removal: only the signed principal and signed administrator decision of this request count.
+            const credentialsId = matchRobotPath(pathname, '/git-credentials');
+            if (credentialsId && req.method === 'DELETE') {
+                const access = req[ACCESS];
+                if (access?.internal !== false || typeof access.principal !== 'string') return sendError(res, 403, 'a signed-in user is required');
+                const robot = await robotStore.get(credentialsId);
+                if (!robot) return sendError(res, 404, 'robot not found');
+                const user = { id: normalizeUserId(access.principal), canAdmin: access.canAdmin === true };
+                return sendJson(res, 200, await gitCredentials.remove(user, robot));
+            }
             if (pathname === '/api/robots' && req.method === 'POST') {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const body = await readJsonBody(req);
@@ -811,6 +852,7 @@ export function createRoboTeamServer(options) {
                 const operation = String(body.operation || '');
                 if (operation === 'robot-delete') {
                     if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
+                    if (robot.name === DEFAULT_ROBOT_NAME) return sendError(res, 409, defaultRobotProtectedError().message);
                     const status = runtimeManager.status(robot.id);
                     if (status.state !== 'stopped' || runtimeManager.hasUnfinishedTasks?.(robot.id)
                         || ['queued', 'starting', 'running', 'pausing'].includes(status.task?.state)) {

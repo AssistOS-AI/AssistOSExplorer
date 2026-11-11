@@ -19,7 +19,7 @@ RoboWork provides persistent robot accounts and isolated execution for RoboTeam'
 
 ### Persistent robot homes
 
-RoboTeam creates or configures a robot through `robot_ensure`, `robot_config_set` and related tools. RoboWork keeps its home under workspace `.data/.private/roboWorkAgent` and presents it as `/home/<id>`. Confined helpers prepare and inspect home configuration without following robot-controlled links into another home. Deletion refuses active runs or GUI resources and removes only that robot's owned state. Administrator plain-terminal access and indirect workflow prompting retain the limits stated in DS002.
+RoboTeam creates or configures a robot through `robot_ensure`, `robot_config_set` and related tools. RoboWork keeps its home under workspace `.data/.private/roboWorkAgent` and presents it as `/home/<id>`. Confined helpers prepare and inspect home configuration without following robot-controlled links into another home. Deletion refuses active runs or GUI resources and removes only that robot's owned state. Administrator plain-terminal access and indirect workflow prompting retain the limits stated in DS002. RoboTeam may give a robot GitHub credentials through `robot_git_credentials_set`; RoboWork keeps the token encrypted outside the robot tree and serves it to git in the robot's processes through a credential helper and the robot's own socket, never writing it to the home (DS002).
 
 ### Resident task execution
 

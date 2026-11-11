@@ -55,6 +55,7 @@ The public plugin mounts and coordinates dependent components such as:
 - `git-commit-actions`
 - `git-commit-body`
 - `git-credentials-prompt`
+- `git-robot-credentials`
 - `git-diff-viewer`
 - `git-conflict-helper`
 
@@ -130,6 +131,16 @@ A staged Token removal is confined to Token mode. Switching to GitHub discards t
 Preferences retains its own Save and Cancel controls regardless of authentication method. Preferences Save persists only preferences and never applies an unsaved Token or pending credential removal.
 
 Successful GitHub authentication keeps the credentials container open, including when it was first displayed by the credentials gate. GitHub Authentication provides a Close button instead of Save/Cancel. Close dismisses the credentials container and abandons unsaved preferences or identity drafts; it does not disconnect or undo the saved GitHub session. It also stops panel-owned polling and ignores late UI responses if clicked while authorization is pending. Token and Preferences retain their existing Save/Cancel behavior.
+
+### Robot Access
+
+The Authentication tab contains `git-robot-credentials`, a Robot access section that applies to GitHub sign-in and to manual tokens. When the credentials container opens it loads `git_robot_credentials_targets`. The robot selector (Explorer `custom-select`) lists the robots, preselects the robot named `default` and always offers Don't save to a robot; a selection made in the open panel is kept across reloads while that robot exists.
+
+When the selected robot holds credentials saved by another user, the section warns with the GitHub login, the saving workspace user and the date, never the token. A non-administrator is told that only an administrator can overwrite them and cannot save; an administrator sees Overwrite robot credentials instead of Save to robot. Credentials the user saved show a notice that saving again replaces them.
+
+After a fresh GitHub device-flow approval or a successful manual token save, the panel automatically calls `git_robot_credentials_save` for the selected robot with the identity shown in Authentication, unless Don't save to a robot is selected or the robot is occupied for a non-administrator. The result appears in the section and in the panel status line. Save to robot is shown while a GitHub credential is stored, so a connected user can save later without signing in again; Remove from robot is shown when the selected robot has credentials the user saved or the user is an administrator. These requests never block sign-in.
+
+The section states that credentials saved in a robot can be used by anyone with access to that robot, recommends a token limited to the needed repositories, says that the default robot's credentials are also used by `ploinky update` for private repositories, and that Disconnect does not remove credentials from robots. If RoboTeam is unavailable or the user is a guest, the selector is hidden behind a short note and GitHub sign-in keeps working.
 
 ### Commit Selection And Completion
 

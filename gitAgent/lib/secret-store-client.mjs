@@ -66,7 +66,7 @@ function resolveConsumerPrincipal() {
   throw new Error('PLOINKY_AGENT_PRINCIPAL is required and must use canonical agent:<repo>/<agent> form.');
 }
 
-async function loadCreateAgentClient() {
+export async function loadCreateAgentClient() {
   const agentLibDir = String(process.env.PLOINKY_AGENT_LIB_DIR || '/Agent').replace(/\/+$/, '');
   const candidates = [
     `${agentLibDir}/client/AgentMcpClient.mjs`,

@@ -29,6 +29,8 @@ export function requestActor(req, internalToken) {
         const right = Buffer.from(internalToken);
         if (left.length === right.length && cryptoSafeEqual(left, right)) {
             const id = String(req?.headers?.['x-roboteam-user-id'] || '').trim();
+            let username = '';
+            try { username = decodeURIComponent(String(req?.headers?.['x-roboteam-user-name'] || '')).trim(); } catch { username = ''; }
             let roles = [];
             try {
                 const parsed = JSON.parse(String(req?.headers?.['x-roboteam-user-roles'] || '[]'));
@@ -42,7 +44,7 @@ export function requestActor(req, internalToken) {
             const forwardsUser = Object.keys(req?.headers || {})
                 .some((name) => name.toLowerCase().startsWith('x-roboteam-user-'));
             const origin = String(req?.headers?.['x-roboteam-listing-origin'] || '').trim();
-            return { id, username: '', roles, internal: true, listingOrigin: !forwardsUser && origin === 'agent' ? 'agent' : '' };
+            return { id, username, roles, internal: true, listingOrigin: !forwardsUser && origin === 'agent' ? 'agent' : '' };
         }
     }
     const user = routerUser(req);

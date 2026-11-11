@@ -126,7 +126,8 @@ export function createGitCommitActions(ctx) {
         syncSelectedRepos: (...args) => syncSelectedRepos?.(...args),
         getSelectedReposForBatch,
         getExplicitActionRepoPaths: ctx.getExplicitActionRepoPaths,
-        getPrimaryExplicitActionRepoPath: ctx.getPrimaryExplicitActionRepoPath
+        getPrimaryExplicitActionRepoPath: ctx.getPrimaryExplicitActionRepoPath,
+        onGitCredentialsStored: ctx.onGitCredentialsStored
     });
     const {
         showGitAuthPrompt,

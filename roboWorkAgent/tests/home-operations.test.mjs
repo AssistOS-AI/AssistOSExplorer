@@ -8,7 +8,8 @@ import { RobotPaths } from '../server/robot-paths.mjs';
 
 const SENTINEL = 'sentinel-credential-value';
 const CREDENTIALS = ['OPENAI_API_KEY', 'CODEX_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'GITHUB_TOKEN', 'PLOINKY_AGENT_SECRET',
-    'ROBOWORK_INTERNAL_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_HOME', 'XDG_DATA_HOME', 'HOME', 'NODE_OPTIONS'];
+    'ROBOWORK_INTERNAL_TOKEN', 'ROBOWORK_CREDENTIALS_KEY', 'ROBOWORK_GIT_MIRROR_KEY', 'ROBOWORK_GIT_MIRROR_DIR',
+    'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_HOME', 'XDG_DATA_HOME', 'HOME', 'NODE_OPTIONS'];
 
 test('a credential variable of the server never reaches the helper that detects a robot login', async t => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'rw-home-op-')));

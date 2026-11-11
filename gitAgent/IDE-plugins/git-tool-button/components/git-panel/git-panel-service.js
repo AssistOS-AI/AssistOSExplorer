@@ -46,6 +46,18 @@ export function createGitCommitService({ callTool, callAgentTool, isActive, onAb
             token: payload?.token || ''
         };
     };
+    // Robot credential tools answer with structured { ok, code, message } results; a transport
+    // failure becomes a structured failure too so the UI can show it without breaking sign-in.
+    const callRobotCredentialsJson = async (toolName, args = {}) => {
+        try {
+            const rawResult = await callAgentTool('gitAgent', toolName, args, { raw: true });
+            const payload = parseJsonToolResult(rawResult);
+            if (payload && typeof payload === 'object') return payload;
+            return { ok: false, code: 'ROBOT_CREDENTIALS_FAILED', message: extractToolText(rawResult) || 'The robot credential request failed.' };
+        } catch (error) {
+            return { ok: false, code: 'ROBOT_CREDENTIALS_FAILED', message: String(error?.message || error || 'The robot credential request failed.') };
+        }
+    };
     return {
         gitDiff: (args) => callAgentTool('gitAgent', 'git_diff', args),
         gitInfo: (path) => callAgentTool('gitAgent', 'git_info', { path }),
@@ -84,6 +96,12 @@ export function createGitCommitService({ callTool, callAgentTool, isActive, onAb
         pollGithubDeviceFlow: () => callGitAuthJson('git_auth_poll'),
         disconnectGithubAuth: () => callGitAuthJson('git_auth_disconnect'),
         storeManualGitToken: (token) => callGitAuthJson('git_auth_store_token', { token }),
+        robotCredentialsTargets: () => callRobotCredentialsJson('git_robot_credentials_targets'),
+        saveRobotCredentials: ({ robotName, name = '', email = '' }) => callRobotCredentialsJson(
+            'git_robot_credentials_save',
+            compact({ robotName, name: name || null, email: email || null })
+        ),
+        deleteRobotCredentials: (robotName) => callRobotCredentialsJson('git_robot_credentials_delete', { robotName }),
         getStoredGitToken: async () => {
             const result = await callGitAuthJson('git_auth_status');
             return result?.token || '';

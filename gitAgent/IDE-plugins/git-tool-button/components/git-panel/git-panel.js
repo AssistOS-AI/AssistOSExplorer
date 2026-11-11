@@ -120,7 +120,8 @@ export class GitPanel {
             loadRepoInfo: this.loadRepoInfo.bind(this),
             loadRepoOverviews: this.loadRepoOverviews.bind(this),
             refreshAll: this.refreshAll.bind(this),
-            refreshAfterGitOperation: this.refreshAfterGitOperation.bind(this)
+            refreshAfterGitOperation: this.refreshAfterGitOperation.bind(this),
+            onGitCredentialsStored: this.saveRobotCredentialsAfterSignIn.bind(this)
         });
         this.invalidate();
     }
@@ -571,6 +572,7 @@ export class GitPanel {
                 if (this.isGithubAuthSelected()) {
                     await this.prefillCredentialsPanel();
                     await this.actions.completeGithubAuthentication();
+                    void this.saveRobotCredentialsAfterSignIn();
                     await this.refreshAll({ force: true });
                 }
                 this.updateAuthPrompt();
@@ -1238,6 +1240,36 @@ export class GitPanel {
 
     async saveGitToken(payload = {}) {
         return this.actions.saveGitToken(payload);
+    }
+
+    listRobotCredentialTargets() {
+        return this.service.robotCredentialsTargets();
+    }
+
+    // The token stays server-side; only the robot and the git identity shown in Authentication are sent.
+    saveRobotCredentials(robotName) {
+        const remembered = getRememberedGitIdentity();
+        return this.service.saveRobotCredentials({
+            robotName,
+            name: String(this.state.identityPrompt?.name || remembered.name || '').trim(),
+            email: String(this.state.identityPrompt?.email || remembered.email || '').trim()
+        });
+    }
+
+    deleteRobotCredentials(robotName) {
+        return this.service.deleteRobotCredentials(robotName);
+    }
+
+    async saveRobotCredentialsAfterSignIn() {
+        try {
+            const presenter = this.element?.querySelector?.('git-robot-credentials')?.webSkelPresenter;
+            if (!presenter?.saveAfterSignIn || this.unloaded) return null;
+            const outcome = await presenter.saveAfterSignIn();
+            if (outcome?.message && !this.unloaded) this.setStatusLine(outcome.message, !outcome.saved);
+            return outcome;
+        } catch (_) {
+            return null;
+        }
     }
 
     async saveGitCredentials(payload = {}) {

@@ -865,6 +865,93 @@
       }
     },
     {
+      "name": "git_robot_credentials_targets",
+      "title": "Git Robot Credentials Targets",
+      "description": "List RoboTeam robots that can receive the current user's GitHub credentials, with non-secret credential status (GitHub login, saver, date) and whether the user is an administrator.",
+      "command": "tools/git_tool.sh",
+      "cwd": "workspace",
+      "inputSchema": {},
+      "delegations": [
+        {
+          "key": "roboTeamGitCredentials",
+          "targetAgentId": "agent:./roboTeamAgent",
+          "tools": ["robot_git_credentials_targets"],
+          "scopes": ["robot:git-credentials"],
+          "ttlSeconds": 120
+        }
+      ],
+      "env": {
+        "TOOL_NAME": "git_robot_credentials_targets"
+      }
+    },
+    {
+      "name": "git_robot_credentials_save",
+      "title": "Git Robot Credentials Save",
+      "description": "Save the current user's stored GitHub token with git user.name/user.email into a RoboTeam robot. The token is read from the user's DPU secrets and never returned. Fails with ROBOT_CREDENTIALS_OCCUPIED when another user's credentials are stored and the caller is not an administrator.",
+      "command": "tools/git_tool.sh",
+      "cwd": "workspace",
+      "inputSchema": {
+        "robotName": {
+          "type": "string",
+          "optional": false
+        },
+        "name": {
+          "type": "string",
+          "optional": true,
+          "description": "git user.name for the robot; defaults to the GitHub profile name or login."
+        },
+        "email": {
+          "type": "string",
+          "optional": true,
+          "description": "git user.email for the robot; defaults to the GitHub profile email."
+        }
+      },
+      "delegations": [
+        {
+          "key": "dpuGitSecrets",
+          "targetAgentId": "agent:./dpuAgent",
+          "tools": ["dpu_secret_get"],
+          "scopes": ["secret:read"],
+          "ttlSeconds": 120
+        },
+        {
+          "key": "roboTeamGitCredentials",
+          "targetAgentId": "agent:./roboTeamAgent",
+          "tools": ["robot_git_credentials_save"],
+          "scopes": ["robot:git-credentials"],
+          "ttlSeconds": 120
+        }
+      ],
+      "env": {
+        "TOOL_NAME": "git_robot_credentials_save"
+      }
+    },
+    {
+      "name": "git_robot_credentials_delete",
+      "title": "Git Robot Credentials Delete",
+      "description": "Remove git credentials from a RoboTeam robot. Allowed for the user who saved them or an administrator.",
+      "command": "tools/git_tool.sh",
+      "cwd": "workspace",
+      "inputSchema": {
+        "robotName": {
+          "type": "string",
+          "optional": false
+        }
+      },
+      "delegations": [
+        {
+          "key": "roboTeamGitCredentials",
+          "targetAgentId": "agent:./roboTeamAgent",
+          "tools": ["robot_git_credentials_delete"],
+          "scopes": ["robot:git-credentials"],
+          "ttlSeconds": 120
+        }
+      ],
+      "env": {
+        "TOOL_NAME": "git_robot_credentials_delete"
+      }
+    },
+    {
       "name": "git_push",
       "title": "Git Push",
       "description": "Push the current branch to a remote. Outgoing blobs >= 50 MiB return large_files_warning before pushing or creating a remote. Ask the user before retrying with the listed approvedLargeFileOids.",

@@ -64,6 +64,10 @@
       "type": "modal"
     },
     {
+      "component": "git-robot-credentials",
+      "presenter": "GitRobotCredentials"
+    },
+    {
       "component": "git-credentials-prompt",
       "presenter": "GitCredentialsPrompt"
     },

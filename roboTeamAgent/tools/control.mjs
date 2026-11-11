@@ -36,6 +36,40 @@ function agentOwnBehalf(payload) {
         && !payload.metadata.user;
 }
 
+const GIT_CREDENTIALS_OPERATIONS = {
+    'git-credentials-targets': 'targets',
+    'git-credentials-save': 'save',
+    'git-credentials-delete': 'delete',
+};
+
+// The only caller of the robot git credential tools: gitAgent of RoboTeam's own repository, named from
+// RoboTeam's principal (agent:<repo>/roboTeamAgent) unless ROBOTEAM_GIT_CREDENTIALS_CALLER names it exactly.
+function gitCredentialsCaller(env = process.env) {
+    const override = String(env.ROBOTEAM_GIT_CREDENTIALS_CALLER || '').trim();
+    if (override) return override;
+    const own = String(env.PLOINKY_AGENT_PRINCIPAL || env.PLOINKY_AGENT_ID || '').trim();
+    const repository = own.match(/^agent:([^/]+)\/[^/]+$/u)?.[1];
+    return repository ? `agent:${repository}/gitAgent` : '';
+}
+
+// The AgentServer-verified grant must name gitAgent acting as itself (sub === actor.id) for a delegated
+// user that is not a guest. A direct user, another agent, an agent without a delegated user, or a
+// delegation that does not list the invoked tool is refused before any HTTP request is made.
+function gitCredentialsUser(payload, toolName, env = process.env) {
+    const grant = payload?.metadata?.invocation;
+    const caller = gitCredentialsCaller(env);
+    if (!caller || !grant || typeof grant !== 'object') return null;
+    if (grant.actor?.kind !== 'agent' || grant.sub !== caller || grant.actor.id !== caller) return null;
+    const delegated = grant.usr;
+    if (!delegated || typeof delegated !== 'object' || !grant.delegation || typeof grant.delegation !== 'object') return null;
+    if (Array.isArray(grant.delegation.tools) && !grant.delegation.tools.includes(toolName)) return null;
+    const id = String(delegated.id || '').replace(/^user:/iu, '').trim();
+    const roles = Array.isArray(delegated.roles) ? delegated.roles.map((role) => String(role || '').trim()) : [];
+    if (!id || roles.some((role) => role.toLowerCase() === 'guest')) return null;
+    const username = String(delegated.username || delegated.displayName || delegated.email || id).trim();
+    return { id, username, roles };
+}
+
 async function request(pathname, { method = 'GET', body, user = {}, listingOrigin = '', timeoutMs = 29000 }) {
     const port = Number(process.env.ROBOTEAM_SERVICE_PORT || 3001);
     const token = String(process.env.ROBOTEAM_INTERNAL_TOKEN || '');
@@ -47,13 +81,18 @@ async function request(pathname, { method = 'GET', body, user = {}, listingOrigi
             'x-roboteam-internal-token': token,
             ...(user.id ? { 'x-roboteam-user-id': user.id } : {}),
             ...(user.roles?.length ? { 'x-roboteam-user-roles': JSON.stringify(user.roles) } : {}),
+            ...(user.username ? { 'x-roboteam-user-name': encodeURIComponent(user.username) } : {}),
             ...(listingOrigin ? { 'x-roboteam-listing-origin': listingOrigin } : {}),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
     });
     const result = await response.json().catch(() => ({ ok: false, error: 'invalid service response' }));
-    if (!response.ok) throw new Error(result.error || `RoboTeam request failed with ${response.status}`);
+    if (!response.ok) {
+        throw Object.assign(new Error(result.error || `RoboTeam request failed with ${response.status}`), {
+            statusCode: response.status, ...(typeof result.code === 'string' ? { code: result.code } : {}),
+        });
+    }
     return result;
 }
 
@@ -184,6 +223,9 @@ const expectedToolNames = {
     'task-status': 'getTaskStatusForRobot', 'desktop-url': 'getSessionUrlForRobotDesktop',
     'browser-url': 'getSessionUrlForRobotBrowser', 'stop-desktop-container': 'stopDesktopContainerForRobot',
     'stop-browser-container': 'stopBrowserContainerForRobot',
+    'git-credentials-targets': 'robot_git_credentials_targets',
+    'git-credentials-save': 'robot_git_credentials_save',
+    'git-credentials-delete': 'robot_git_credentials_delete',
 };
 
 async function main() {
@@ -194,7 +236,20 @@ async function main() {
     const user = invocationUser(payload);
     let result;
 
-    if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, codingAgents: input.codingAgents }, user });
+    if (GIT_CREDENTIALS_OPERATIONS[operation]) {
+        const delegated = gitCredentialsUser(payload, expectedToolNames[operation]);
+        if (!delegated) {
+            throw Object.assign(new Error('Access denied: robot git credentials are available only to gitAgent acting for a signed-in user.'), {
+                code: 'ROBOT_CREDENTIALS_CALLER_REFUSED', statusCode: 403,
+            });
+        }
+        // Only the documented fields are forwarded; the token is never written to output or logs.
+        const body = operation === 'git-credentials-save'
+            ? { robotName: input.robotName, token: input.token, githubLogin: input.githubLogin, name: input.name, email: input.email }
+            : operation === 'git-credentials-delete' ? { robotName: input.robotName } : {};
+        result = await request(`/api/git-credentials/${GIT_CREDENTIALS_OPERATIONS[operation]}`, { method: 'POST', body, user: delegated, timeoutMs: 55000 });
+    }
+    else if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, codingAgents: input.codingAgents }, user });
     else if (operation === 'robot-list') {
         if (!agentOwnBehalf(payload)) throw new Error('Access denied: robot_list is available only to an agent acting on its own behalf.');
         result = await request('/api/robots', { listingOrigin: 'agent' });
@@ -217,6 +272,12 @@ async function main() {
 }
 
 main().catch((error) => {
-    process.stderr.write(`${error?.message || error}\n`);
+    // Robot git credential tools report a structured failure that gitAgent can show; it never contains the token.
+    if (GIT_CREDENTIALS_OPERATIONS[operation]) {
+        process.stderr.write(`${JSON.stringify({ ok: false, code: typeof error?.code === 'string' ? error.code : 'ROBOT_CREDENTIALS_FAILED',
+            statusCode: Number.isInteger(error?.statusCode) ? error.statusCode : 500, error: String(error?.message || 'robot git credentials request failed') })}\n`);
+    } else {
+        process.stderr.write(`${error?.message || error}\n`);
+    }
     process.exitCode = 1;
 });

@@ -165,6 +165,39 @@ async function stopRobot(robot, button) {
     }
 }
 
+// Git credentials a robot holds: GitHub login, saving workspace user and date only; the token never reaches the page.
+function gitCredentialsLabel(credentials) {
+    const savedAt = credentials.savedAt ? new Date(credentials.savedAt) : null;
+    const date = savedAt && !Number.isNaN(savedAt.getTime()) ? ` · ${savedAt.toLocaleDateString()}` : '';
+    const saver = credentials.savedBy?.username || credentials.savedBy?.id || 'unknown user';
+    const label = `GitHub: ${credentials.githubLogin || 'unknown account'} · saved by ${saver}${date}`;
+    return credentials.readable === false ? `${label} (unreadable; save them again)` : label;
+}
+
+function showRobotGitCredentials(card, robot) {
+    const credentials = robot.gitCredentials;
+    const configured = credentials?.configured === true;
+    const label = card.querySelector('.robot-git-credentials');
+    label.hidden = !configured;
+    label.textContent = configured ? gitCredentialsLabel(credentials) : '';
+    label.classList.toggle('unreadable', configured && credentials.readable === false);
+    label.title = configured ? 'Anyone with access to this robot can use these credentials for GitHub.' : '';
+    const remove = card.querySelector('.remove-git-credentials');
+    // The server decides again: only the user who saved the credentials or an administrator may remove them.
+    remove.hidden = !(configured && credentials.canRemove === true);
+    remove.addEventListener('click', async () => {
+        const updateNote = robot.name === 'default' ? ' ploinky update will no longer use them for private repositories.' : '';
+        if (!confirm(`Remove the GitHub credentials of ${credentials.githubLogin || 'this account'} from robot ${robot.name}? The robot can no longer use them for git.${updateNote}`)) return;
+        remove.disabled = true;
+        try {
+            await api(`api/robots/${encodeURIComponent(robot.id)}/git-credentials`, { method: 'DELETE' });
+            formMessage.textContent = `Git credentials removed from ${robot.name}.`;
+            formMessage.className = 'message success';
+            await loadRobots();
+        } catch (error) { showError(error); remove.disabled = false; }
+    });
+}
+
 function applyRobotFilters() {
     // Only administrators receive login state, so the login filter does not apply to anyone else.
     document.querySelector('#robotLoginFilterField').hidden = !canCreateRobots;
@@ -218,8 +251,10 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
         });
         card.querySelector('.manage-skills').addEventListener('click', () => openSkillsDialog(robot, { api, onChanged: loadRobots, canAdmin }));
         const deleteButton = card.querySelector('.delete-robot');
-        deleteButton.hidden = !canAdmin;
-        card.querySelector('.robot-danger-actions').hidden = !canAdmin;
+        // The default robot is permanent; the server refuses its deletion as well.
+        const deletable = canAdmin && robot.name !== 'default';
+        deleteButton.hidden = !deletable;
+        card.querySelector('.robot-danger-actions').hidden = !deletable;
         deleteButton.disabled = robot.run.state !== 'stopped'
             || ['queued', 'starting', 'running', 'pausing'].includes(robot.run.task?.state);
         deleteButton.title = 'Stop the container and all unfinished tasks before deleting this robot.';
@@ -246,6 +281,7 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
             agentLine.append(marker);
         }
         card.dataset.robotId = robot.id;
+        showRobotGitCredentials(card, robot);
         const releaseProxy = card.querySelector('.release-proxy');
         releaseProxy.disabled = robot.run.state !== 'stopped';
         releaseProxy.title = robot.run.state === 'stopped' ? 'The robot receives a proxy again when its workstation next starts' : 'Stop the workstation before releasing its proxy';
