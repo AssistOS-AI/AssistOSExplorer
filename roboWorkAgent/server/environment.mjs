@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { pinDirectory } from './robot-paths.mjs';
 import { podmanWorkspaceArguments } from './workspace-view.mjs';
+import { refreshImages } from './image-refresh.mjs';
 
 const execute = promisify(execFile);
 const REF = /^[A-Za-z0-9._-]{1,128}\/[A-Za-z0-9._-]{1,128}$/u;
@@ -117,6 +118,17 @@ export class EnvironmentManager {
             throw failure('ENVIRONMENT_UNAVAILABLE', `Agent environment unavailable: ${entry.reason}`);
         }
         return { ...entry };
+    }
+
+    // Refreshes tagged images already present locally, so an updated agent image reaches new environment runs.
+    // Images never selected are not downloaded here; a chosen step still pulls a missing one.
+    async refreshImages(options = {}) {
+        let entries;
+        try { entries = await this._entries(); } catch { return []; }
+        const results = await refreshImages(entries.filter(entry => entry.available && entry.image).map(entry => entry.image),
+            { podmanCommand: this.podmanCommand, execFileImpl: this.execFileImpl, onlyPresent: true, ...options });
+        this.cached = null;
+        return results;
     }
 
     // Only an actual selected step prepares an image. Discovery and profile resolution stay read-only.

@@ -14,6 +14,7 @@ import { PUBLIC_BASE_PATH } from './constants.mjs';
 import { GuiManager, proxySessionHttp, proxySessionWebSocket } from './gui-manager.mjs';
 import { ProxyAgentClient } from './proxy-pool/proxy-client.mjs';
 import { createTerminalProfiles } from './terminal-profiles.mjs';
+import { refreshImages } from './image-refresh.mjs';
 
 const internalToken = process.env.ROBOWORK_INTERNAL_TOKEN;
 if (!internalToken) throw new Error('ROBOWORK_INTERNAL_TOKEN is required');
@@ -50,6 +51,12 @@ server.listen(Number(process.env.ROBOWORK_SERVICE_PORT || 3001), process.env.ROB
     void runtimeBundle.warmup().then(() => console.log('[runtime-bundle] startup preparation ready'), error => {
         console.error(`[runtime-bundle] startup preparation failed; will retry on demand: ${error.code || 'BUILD_FAILED'}`);
     });
+    // Tagged images are pulled again in the background, so a build published under the same tag reaches robots.
+    // GUI images are always refreshed; agent environment images only when already present.
+    void (async () => {
+        await refreshImages(Object.values(gui.images), { podmanCommand: gui.podmanCommand });
+        await environment.refreshImages();
+    })().catch(error => console.error(`[image-refresh] startup refresh failed: ${error.code || 'FAILED'}`));
     void toolCache.warmup().catch(error => {
         console.error(`[tool-cache] startup preparation failed: ${error.message}`);
     });
