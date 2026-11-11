@@ -20,13 +20,28 @@ const METHOD_LABELS = {
     password: 'Password', emailCode: 'Email code', passkey: 'Passkey', totp: 'Authenticator app', google: 'Google',
 };
 
+// The Router answers a stale browser proof with 403 browser_csrf_invalid (or 503 edge_generation_changed
+// when its routing generation changed) and refreshes the proof cookie on that same response, so one
+// immediate resend succeeds. `send` issues the request afresh each time; never retry more than once.
+async function retryOnStaleBrowserProof(send) {
+    const response = await send();
+    const expected = { 403: 'browser_csrf_invalid', 503: 'edge_generation_changed' }[response?.status];
+    if (!expected || typeof response.clone !== 'function') return response;
+    try {
+        if ((await response.clone().json())?.error !== expected) return response;
+    } catch (_) {
+        return response;
+    }
+    return send();
+}
+
 export async function dashboardApi(path, payload) {
-    const response = await fetch(`api/${path}`, {
+    const response = await retryOnStaleBrowserProof(() => fetch(`api/${path}`, {
         method: payload === undefined ? 'GET' : 'POST',
         credentials: 'same-origin',
         headers: { Accept: 'application/json', ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
-    });
+    }));
     const result = await response.json().catch(() => ({}));
     if (!response.ok || result.ok === false || result.error) {
         const error = new Error(result.error || result.reason || 'Request failed');

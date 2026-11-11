@@ -157,6 +157,27 @@ function redirectToPloinkyLogin() {
     window.location.href = `/auth/login?returnTo=${encodeURIComponent(returnTo)}`;
 }
 
+// The Router answers a stale browser proof with 403 browser_csrf_invalid (or 503 edge_generation_changed
+// when its routing generation changed) and refreshes the proof cookie on that same response, so one
+// immediate resend succeeds. That 403 is not a sign-in problem and must not send the user to the login page.
+const STALE_PROOF_ANSWERS = { 403: 'browser_csrf_invalid', 503: 'edge_generation_changed' };
+
+async function isStaleBrowserProof(res) {
+    const expected = STALE_PROOF_ANSWERS[res?.status];
+    if (!expected || typeof res.clone !== 'function') return false;
+    try {
+        return (await res.clone().json())?.error === expected;
+    } catch {
+        return false;
+    }
+}
+
+// `send` issues the request afresh each time; never retry more than once.
+async function retryOnStaleBrowserProof(send) {
+    const res = await send();
+    return (await isStaleBrowserProof(res)) ? send() : res;
+}
+
 // ---- Helpers ----
 const api = {
     _headers() {
@@ -168,6 +189,12 @@ const api = {
             new URL(res.url, window.location.origin).pathname.startsWith(
                 '/auth/login'
             );
+        if (res.status === 403 && (await isStaleBrowserProof(res))) {
+            // Still stale after the one retry: the session is valid, so report an error instead of a login redirect.
+            throw new Error(
+                'The browser session proof was rejected. Reload the page and try again.'
+            );
+        }
         if (res.status === 401 || res.status === 403 || redirectedToLogin) {
             window.dispatchEvent(new CustomEvent('sg-auth-required'));
             redirectToPloinkyLogin();
@@ -176,36 +203,44 @@ const api = {
         return res.json();
     },
     async get(path) {
-        const res = await fetch(managementUrl(path), {
-            headers: this._headers(),
-            credentials: 'include',
-        });
+        const res = await retryOnStaleBrowserProof(() =>
+            fetch(managementUrl(path), {
+                headers: this._headers(),
+                credentials: 'include',
+            })
+        );
         return this._handleResponse(res);
     },
     async post(path, body) {
-        const res = await fetch(managementUrl(path), {
-            method: 'POST',
-            headers: this._headers(),
-            credentials: 'include',
-            body: JSON.stringify(body),
-        });
+        const res = await retryOnStaleBrowserProof(() =>
+            fetch(managementUrl(path), {
+                method: 'POST',
+                headers: this._headers(),
+                credentials: 'include',
+                body: JSON.stringify(body),
+            })
+        );
         return this._handleResponse(res);
     },
     async patch(path, body) {
-        const res = await fetch(managementUrl(path), {
-            method: 'PATCH',
-            headers: this._headers(),
-            credentials: 'include',
-            body: JSON.stringify(body),
-        });
+        const res = await retryOnStaleBrowserProof(() =>
+            fetch(managementUrl(path), {
+                method: 'PATCH',
+                headers: this._headers(),
+                credentials: 'include',
+                body: JSON.stringify(body),
+            })
+        );
         return this._handleResponse(res);
     },
     async del(path) {
-        const res = await fetch(managementUrl(path), {
-            method: 'DELETE',
-            headers: this._headers(),
-            credentials: 'include',
-        });
+        const res = await retryOnStaleBrowserProof(() =>
+            fetch(managementUrl(path), {
+                method: 'DELETE',
+                headers: this._headers(),
+                credentials: 'include',
+            })
+        );
         return this._handleResponse(res);
     },
 };
@@ -3041,12 +3076,19 @@ function keysPage(lazyPage = null) {
         },
 
         async _mintUserKey(userId) {
-            const res = await fetch('/api/router/identity/user-api-key', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({ userId }),
-            });
+            const res = await retryOnStaleBrowserProof(() =>
+                fetch('/api/router/identity/user-api-key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ userId }),
+                })
+            );
+            if (res.status === 403 && (await isStaleBrowserProof(res))) {
+                throw new Error(
+                    'The browser session proof was rejected. Reload the page and try again.'
+                );
+            }
             if (res.status === 401 || res.status === 403) {
                 redirectToPloinkyLogin();
                 throw new Error('Ploinky admin session required.');

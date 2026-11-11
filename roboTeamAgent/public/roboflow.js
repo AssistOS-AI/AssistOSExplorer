@@ -39,20 +39,35 @@ async function get(path, text = false) {
     return text ? response.text() : response.json();
 }
 
+// The Router answers a stale browser proof with 403 browser_csrf_invalid (or 503 edge_generation_changed
+// when its routing generation changed) and refreshes the proof cookie on that same response, so one
+// immediate resend succeeds. `send` issues the request afresh each time; never retry more than once.
+async function retryOnStaleBrowserProof(send) {
+    const response = await send();
+    const expected = { 403: 'browser_csrf_invalid', 503: 'edge_generation_changed' }[response?.status];
+    if (!expected || typeof response.clone !== 'function') return response;
+    try {
+        if ((await response.clone().json())?.error !== expected) return response;
+    } catch (_) {
+        return response;
+    }
+    return send();
+}
+
 async function post(path) {
-    const response = await fetch(api(path), { method: 'POST', credentials: 'include' });
+    const response = await retryOnStaleBrowserProof(() => fetch(api(path), { method: 'POST', credentials: 'include' }));
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
     return payload;
 }
 
 async function postJson(path, body) {
-    const response = await fetch(api(path), {
+    const response = await retryOnStaleBrowserProof(() => fetch(api(path), {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
-    });
+    }));
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
     return payload;

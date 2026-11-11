@@ -2,6 +2,7 @@
 import { buildFileExpHash, showContextPasteMenu } from "./file-exp-utils.js";
 import { callToolWithLoader } from "../../../utils/globalLoader.js";
 import { getNewFileInitialContent } from "../../../services/onlyoffice/onlyoffice-new-file-content.js";
+import { retryOnStaleBrowserProof } from "../../../services/infrastructure/browserMutationRetry.js";
 import { FILE_EXP_UI_ACTIONS } from "./file-exp-ui-controller.js";
 import { PREVIEW_ACTIONS } from "./file-exp-preview-controller.js";
 import {
@@ -220,13 +221,13 @@ export function attachFsActions(fileExp) {
                         }
                         for (const file of files) {
                             const targetPath = this.joinPath(targetDir, file.name);
-                            const response = await fetch(`/upload?path=${encodeURIComponent(targetPath)}`, {
+                            const response = await retryOnStaleBrowserProof(() => fetch(`/upload?path=${encodeURIComponent(targetPath)}`, {
                                 method: 'POST',
                                 headers: {
                                     'Content-Type': file.type || 'application/octet-stream'
                                 },
                                 body: file
-                            });
+                            }));
                             const payload = await response.json().catch(() => ({}));
                             if (!response.ok || payload?.ok === false) {
                                 throw new Error(payload?.error || `Failed to upload ${file.name}.`);
