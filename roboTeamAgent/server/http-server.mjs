@@ -626,7 +626,7 @@ export function createRoboTeamServer(options) {
     async function robotCredentialsView(robot, viewer) {
         try {
             const summary = await gitCredentials.summary(robot.id);
-            return { ...summary, canRemove: summary.configured === true && mayManageCredentials(summary, viewer) };
+            return { ...summary, canRemove: summary.configured === true && mayManageCredentials(viewer) };
         } catch {
             return null;
         }

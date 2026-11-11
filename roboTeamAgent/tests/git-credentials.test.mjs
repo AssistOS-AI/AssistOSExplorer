@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 import {
-    CREDENTIALS_FORBIDDEN, CREDENTIALS_OCCUPIED, RobotGitCredentials, credentialSummary, credentialUser, mayManageCredentials,
+    CREDENTIALS_FORBIDDEN, RobotGitCredentials, credentialSummary, credentialUser, mayManageCredentials,
 } from '../server/git-credentials.mjs';
 
 const AGENT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -67,43 +67,35 @@ test('only a non-guest user with an id may act on robot credentials', () => {
     assert.equal(credentialUser({ id: 'a', roles: ['admin', 'Guest'] }), null);
     assert.deepEqual(alice, { id: 'alice', username: 'alice', roles: ['user'], canAdmin: false });
     assert.equal(admin.canAdmin, true);
-    assert.equal(mayManageCredentials({ configured: false }, bob), true);
-    assert.equal(mayManageCredentials({ configured: true, savedBy: { id: 'alice' } }, alice), true);
-    assert.equal(mayManageCredentials({ configured: true, savedBy: { id: 'alice' } }, bob), false);
-    assert.equal(mayManageCredentials({ configured: true, savedBy: { id: '' } }, bob), false);
-    assert.equal(mayManageCredentials({ configured: true, savedBy: { id: 'alice' } }, admin), true);
+    assert.equal(mayManageCredentials(alice), false);
+    assert.equal(mayManageCredentials(null), false);
+    assert.equal(mayManageCredentials(admin), true);
     assert.deepEqual(credentialSummary({ configured: true, readable: false, metadata: { githubLogin: 'x', savedBy: { id: 'user:a', username: 'a' }, savedAt: 'd', token: TOKEN } }),
         { configured: true, readable: false, githubLogin: 'x', savedBy: { id: 'a', username: 'a' }, savedAt: 'd' });
 });
 
-test('save allows an empty robot and the saver, refuses an occupied robot and lets an administrator overwrite', async (t) => {
+test('only administrators save, and an administrator may overwrite any credentials', async (t) => {
     const { robotStore, roboWork, credentials } = await withStore(t);
     const robot = await robotStore.create({ name: 'Builder' });
-    const saved = await credentials.save(alice, saveInput('Builder'));
-    assert.deepEqual(saved.robot, { id: robot.id, name: 'Builder', isDefault: false });
-    assert.equal(saved.metadata.githubLogin, 'alice-gh');
-    assert.deepEqual(saved.metadata.savedBy, { id: 'alice', username: 'alice' });
-    assert.equal(JSON.stringify(saved).includes(TOKEN), false);
-    const set = roboWork.calls.find(call => call.tool === 'robot_git_credentials_set');
-    assert.deepEqual(set.input, { robotId: robot.id, token: TOKEN, githubLogin: 'alice-gh', name: 'Alice', email: 'alice@example.com',
-        savedBy: { id: 'alice', username: 'alice' }, workspaceDefault: false });
-
-    await credentials.save(alice, saveInput('Builder', { githubLogin: 'alice-second' }));
-    assert.equal(roboWork.stored.get(robot.id).metadata.githubLogin, 'alice-second');
-
-    await assert.rejects(credentials.save(bob, saveInput('Builder', { githubLogin: 'bob-gh' })), (error) => {
-        assert.equal(error.code, CREDENTIALS_OCCUPIED);
-        assert.equal(error.statusCode, 409);
-        assert.match(error.message, /alice-second/);
-        assert.match(error.message, /saved by alice/);
-        assert.match(error.message, /2026-11-10T10:00:00.000Z/);
+    await assert.rejects(credentials.save(alice, saveInput('Builder')), (error) => {
+        assert.equal(error.code, CREDENTIALS_FORBIDDEN);
+        assert.equal(error.statusCode, 403);
         assert.equal(error.message.includes(TOKEN), false);
         return true;
     });
-    assert.equal(roboWork.stored.get(robot.id).metadata.githubLogin, 'alice-second');
-
-    await credentials.save(admin, saveInput('Builder', { githubLogin: 'admin-gh' }));
-    assert.deepEqual(roboWork.stored.get(robot.id).metadata.savedBy, { id: 'root', username: 'root' });
+    assert.equal(roboWork.calls.some(call => call.tool === 'robot_git_credentials_set'), false);
+    const saved = await credentials.save(admin, saveInput('Builder'));
+    assert.deepEqual(saved.robot, { id: robot.id, name: 'Builder', isDefault: false });
+    assert.equal(saved.metadata.githubLogin, 'alice-gh');
+    assert.deepEqual(saved.metadata.savedBy, { id: 'root', username: 'root' });
+    assert.equal(JSON.stringify(saved).includes(TOKEN), false);
+    const set = roboWork.calls.find(call => call.tool === 'robot_git_credentials_set');
+    assert.deepEqual(set.input, { robotId: robot.id, token: TOKEN, githubLogin: 'alice-gh', name: 'Alice', email: 'alice@example.com',
+        savedBy: { id: 'root', username: 'root' }, workspaceDefault: false });
+    const otherAdmin = credentialUser({ id: 'ops', username: 'ops', roles: ['admin'] });
+    await credentials.save(otherAdmin, saveInput('Builder', { githubLogin: 'ops-gh' }));
+    assert.equal(roboWork.stored.get(robot.id).metadata.githubLogin, 'ops-gh');
+    assert.deepEqual(roboWork.stored.get(robot.id).metadata.savedBy, { id: 'ops', username: 'ops' });
 });
 
 test('workspaceDefault is set only for the robot named default', async (t) => {
@@ -111,46 +103,45 @@ test('workspaceDefault is set only for the robot named default', async (t) => {
     const fallback = await robotStore.ensureDefaultRobot();
     await robotStore.create({ name: 'Default' });
     await robotStore.create({ name: 'default-copy' });
-    for (const name of ['default', 'Default', 'default-copy']) await credentials.save(alice, saveInput(name));
+    for (const name of ['default', 'Default', 'default-copy']) await credentials.save(admin, saveInput(name));
     const flags = roboWork.calls.filter(call => call.tool === 'robot_git_credentials_set').map(call => call.input.workspaceDefault);
     assert.deepEqual(flags, [true, false, false]);
-    const removed = await credentials.removeByName(alice, 'default');
+    const removed = await credentials.removeByName(admin, 'default');
     assert.deepEqual(removed, { ok: true, robot: { id: fallback.id, name: 'default', isDefault: true }, deleted: true });
     const deletion = roboWork.calls.find(call => call.tool === 'robot_git_credentials_delete');
     assert.deepEqual(deletion.input, { robotId: fallback.id, workspaceDefault: true });
 });
 
-test('delete is limited to the saver or an administrator and is a no-op without credentials', async (t) => {
+test('delete is limited to administrators and is a no-op without credentials', async (t) => {
     const { robotStore, roboWork, credentials } = await withStore(t);
     const robot = await robotStore.create({ name: 'Builder' });
-    assert.deepEqual(await credentials.removeByName(bob, 'Builder'), { ok: true, robot: { id: robot.id, name: 'Builder', isDefault: false }, deleted: false });
+    assert.deepEqual(await credentials.removeByName(admin, 'Builder'), { ok: true, robot: { id: robot.id, name: 'Builder', isDefault: false }, deleted: false });
     assert.equal(roboWork.calls.some(call => call.tool === 'robot_git_credentials_delete'), false);
-    await credentials.save(alice, saveInput('Builder'));
-    await assert.rejects(credentials.removeByName(bob, 'Builder'), { code: CREDENTIALS_FORBIDDEN, statusCode: 403 });
+    await credentials.save(admin, saveInput('Builder'));
+    await assert.rejects(credentials.removeByName(alice, 'Builder'), { code: CREDENTIALS_FORBIDDEN, statusCode: 403 });
     assert.equal((await credentials.removeByName(admin, 'Builder')).deleted, true);
-    await credentials.save(alice, saveInput('Builder'));
-    assert.equal((await credentials.removeByName(alice, 'Builder')).deleted, true);
-    await assert.rejects(credentials.removeByName(alice, 'Missing'), { code: 'ROBOT_NOT_FOUND', statusCode: 404 });
+    await assert.rejects(credentials.removeByName(admin, 'Missing'), { code: 'ROBOT_NOT_FOUND', statusCode: 404 });
 });
 
 test('targets list every robot with non-secret status, and invalid input never echoes the token', async (t) => {
     const { robotStore, credentials } = await withStore(t);
     await robotStore.ensureDefaultRobot();
     await robotStore.create({ name: 'Builder' });
-    await credentials.save(alice, saveInput('Builder'));
-    const targets = await credentials.targets(bob);
+    await credentials.save(admin, saveInput('Builder'));
+    await assert.rejects(credentials.targets(bob), { code: CREDENTIALS_FORBIDDEN, statusCode: 403 });
+    const targets = await credentials.targets(admin);
     assert.equal(targets.ok, true);
-    assert.equal(targets.canAdmin, false);
-    assert.equal(targets.userId, 'bob');
+    assert.equal(targets.canAdmin, true);
+    assert.equal(targets.userId, 'root');
     const byName = Object.fromEntries(targets.robots.map(robot => [robot.name, robot]));
     assert.deepEqual(byName.default.credentials, { configured: false });
     assert.equal(byName.default.isDefault, true);
     assert.deepEqual(byName.Builder.credentials, { configured: true, readable: true, githubLogin: 'alice-gh',
-        savedBy: { id: 'alice', username: 'alice' }, savedAt: '2026-11-10T10:00:00.000Z' });
+        savedBy: { id: 'root', username: 'root' }, savedAt: '2026-11-10T10:00:00.000Z' });
     assert.equal(JSON.stringify(targets).includes(TOKEN), false);
     for (const input of [saveInput('Builder', { token: '' }), saveInput('Builder', { token: `${TOKEN} extra` }), saveInput('Builder', { githubLogin: '' }),
         saveInput('Builder', { name: 'Al\nice' })]) {
-        await assert.rejects(credentials.save(alice, input), (error) => error.statusCode === 400 && !error.message.includes(TOKEN));
+        await assert.rejects(credentials.save(admin, input), (error) => error.statusCode === 400 && !error.message.includes(TOKEN));
     }
 });
 
@@ -248,7 +239,7 @@ test('the credential tools refuse every caller except gitAgent with a delegated 
 
 test('ROBOTEAM_GIT_CREDENTIALS_CALLER names the caller exactly, and service refusals stay structured', async (t) => {
     const { port, requests } = await serviceStub(t, (request) => request.url.endsWith('/delete')
-        ? { status: 409, body: { ok: false, code: CREDENTIALS_OCCUPIED, error: 'Robot Builder already holds git credentials' } }
+        ? { status: 403, body: { ok: false, code: CREDENTIALS_FORBIDDEN, error: 'Only administrators can configure the git credentials of robots.' } }
         : { status: 200, body: { ok: true, robots: [], canAdmin: false, userId: 'alice' } });
     const custom = 'agent:Custom/gitBridge';
     const grant = delegatedGrant({ sub: custom, actor: { kind: 'agent', id: custom } });
@@ -261,7 +252,7 @@ test('ROBOTEAM_GIT_CREDENTIALS_CALLER names the caller exactly, and service refu
     assert.equal(original.code, 1);
     const refused = await runTool(port, 'git-credentials-delete', { tool: 'robot_git_credentials_delete', input: { robotName: 'Builder' }, metadata: { invocation: delegatedGrant() } });
     assert.equal(refused.code, 1);
-    assert.deepEqual(JSON.parse(refused.stderr.trim()), { ok: false, code: CREDENTIALS_OCCUPIED, statusCode: 409, error: 'Robot Builder already holds git credentials' });
+    assert.deepEqual(JSON.parse(refused.stderr.trim()), { ok: false, code: CREDENTIALS_FORBIDDEN, statusCode: 403, error: 'Only administrators can configure the git credentials of robots.' });
     assert.deepEqual(requests.map(request => [request.url, request.body]), [['/api/git-credentials/targets', {}], ['/api/git-credentials/delete', { robotName: 'Builder' }]]);
 });
 
@@ -312,34 +303,39 @@ async function startServer(t) {
     return { base, roboWork, robotStore, internal, browser };
 }
 
-test('internal credential routes require a forwarded non-guest user and apply the ownership rules', async (t) => {
+test('internal credential routes require a forwarded administrator', async (t) => {
     const { robotStore, roboWork, internal } = await startServer(t);
     await robotStore.ensureDefaultRobot();
+    const root = { id: 'root', roles: ['admin'] };
     assert.equal((await internal('/api/git-credentials/targets', {}, null)).status, 403);
     assert.equal((await internal('/api/git-credentials/targets', {}, { id: 'g', roles: ['guest'] })).status, 403);
-    const saved = await internal('/api/git-credentials/save', saveInput('default'));
+    const userTargets = await internal('/api/git-credentials/targets', {});
+    assert.equal(userTargets.status, 403);
+    assert.equal((await userTargets.json()).code, CREDENTIALS_FORBIDDEN);
+    const userSave = await internal('/api/git-credentials/save', saveInput('default'));
+    const userSaveBody = await userSave.json();
+    assert.equal(userSave.status, 403);
+    assert.equal(userSaveBody.code, CREDENTIALS_FORBIDDEN);
+    assert.equal(JSON.stringify(userSaveBody).includes(TOKEN), false);
+    assert.equal(roboWork.calls.some(call => call.tool === 'robot_git_credentials_set'), false);
+    const saved = await internal('/api/git-credentials/save', saveInput('default'), root);
     const savedBody = await saved.json();
     assert.equal(saved.status, 200, JSON.stringify(savedBody));
     assert.equal(savedBody.robot.isDefault, true);
     assert.equal(JSON.stringify(savedBody).includes(TOKEN), false);
     assert.equal(roboWork.calls.find(call => call.tool === 'robot_git_credentials_set').input.workspaceDefault, true);
-    const occupied = await internal('/api/git-credentials/save', saveInput('default'), { id: 'bob', roles: ['user'] });
-    const occupiedBody = await occupied.json();
-    assert.equal(occupied.status, 409);
-    assert.equal(occupiedBody.code, CREDENTIALS_OCCUPIED);
-    assert.equal(JSON.stringify(occupiedBody).includes(TOKEN), false);
-    assert.equal((await internal('/api/git-credentials/delete', { robotName: 'default' }, { id: 'bob', roles: ['user'] })).status, 403);
-    const targets = await (await internal('/api/git-credentials/targets', {}, { id: 'root', roles: ['admin'] })).json();
+    assert.equal((await internal('/api/git-credentials/delete', { robotName: 'default' })).status, 403);
+    const targets = await (await internal('/api/git-credentials/targets', {}, root)).json();
     assert.equal(targets.canAdmin, true);
     assert.equal(targets.robots[0].credentials.githubLogin, 'alice-gh');
-    assert.deepEqual(await (await internal('/api/git-credentials/delete', { robotName: 'default' }, { id: 'root', roles: ['admin'] })).json(),
+    assert.deepEqual(await (await internal('/api/git-credentials/delete', { robotName: 'default' }, root)).json(),
         { ok: true, robot: { id: targets.robots[0].id, name: 'default', isDefault: true }, deleted: true });
 });
 
-test('the dashboard shows credential status and lets only the saver or an administrator remove it', async (t) => {
+test('the dashboard shows credential status and lets only an administrator remove it', async (t) => {
     const { base, robotStore, internal, browser } = await startServer(t);
     const robot = await robotStore.ensureDefaultRobot();
-    await internal('/api/git-credentials/save', saveInput('default'));
+    await internal('/api/git-credentials/save', saveInput('default'), { id: 'alice', roles: ['admin'] });
     const route = `/api/robots/${robot.id}/git-credentials`;
 
     assert.equal((await browser(route, { method: 'DELETE' })).status, 401);
@@ -352,17 +348,18 @@ test('the dashboard shows credential status and lets only the saver or an admini
     assert.deepEqual(bobListing.robots[0].gitCredentials, { configured: true, readable: true, githubLogin: 'alice-gh',
         savedBy: { id: 'alice', username: 'alice' }, savedAt: '2026-11-10T10:00:00.000Z', canRemove: false });
     assert.equal(JSON.stringify(bobListing).includes(TOKEN), false);
-    assert.equal((await (await browser('/api/robots', { auth: signed('alice') })).json()).robots[0].gitCredentials.canRemove, true);
+    assert.equal((await (await browser('/api/robots', { auth: signed('alice') })).json()).robots[0].gitCredentials.canRemove, false, 'the saver is no exception');
     assert.equal((await (await browser('/api/robots', { auth: signed('root', ['admin']) })).json()).robots[0].gitCredentials.canRemove, true);
 
     const refused = await browser(route, { method: 'DELETE', auth: signed('bob') });
     assert.equal(refused.status, 403);
     assert.equal((await refused.json()).code, CREDENTIALS_FORBIDDEN);
-    assert.equal((await browser('/api/robots/missing-a1b2c3/git-credentials', { method: 'DELETE', auth: signed('alice') })).status, 404);
-    const removed = await browser(route, { method: 'DELETE', auth: signed('alice') });
+    assert.equal((await browser(route, { method: 'DELETE', auth: signed('alice') })).status, 403);
+    assert.equal((await browser('/api/robots/missing-a1b2c3/git-credentials', { method: 'DELETE', auth: signed('root', ['admin']) })).status, 404);
+    const removed = await browser(route, { method: 'DELETE', auth: signed('root', ['admin']) });
     assert.equal(removed.status, 200);
     assert.equal((await removed.json()).deleted, true);
-    assert.deepEqual((await (await browser('/api/robots', { auth: signed('alice') })).json()).robots[0].gitCredentials, { configured: false, canRemove: false });
+    assert.deepEqual((await (await browser('/api/robots', { auth: signed('root', ['admin']) })).json()).robots[0].gitCredentials, { configured: false, canRemove: false });
 });
 
 // --- Dashboard source and MCP configuration ---
@@ -401,7 +398,7 @@ test('the three credential tools are authenticated-class so only a delegated git
 test('an administrator removal of the default robot reaches RoboWork even without a visible record', async (t) => {
     const { robotStore, roboWork, credentials } = await withStore(t);
     const fallback = await robotStore.ensureDefaultRobot();
-    assert.equal((await credentials.removeByName(alice, 'default')).deleted, false);
+    await assert.rejects(credentials.removeByName(alice, 'default'), { code: CREDENTIALS_FORBIDDEN });
     assert.equal(roboWork.calls.some(call => call.tool === 'robot_git_credentials_delete'), false, 'a non-administrator cannot trigger the cleanup');
     await credentials.removeByName(admin, 'default');
     const deletion = roboWork.calls.find(call => call.tool === 'robot_git_credentials_delete');

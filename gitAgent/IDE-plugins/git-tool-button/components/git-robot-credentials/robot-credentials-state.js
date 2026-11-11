@@ -1,10 +1,10 @@
 // View-facing state rules for saving the user's GitHub credentials to RoboTeam robots.
-// Pure functions: the presenter projects their results; RoboTeam remains the authority on permissions.
+// Pure functions: the presenter projects their results. Only administrators configure robot git credentials;
+// RoboTeam enforces it and refuses everyone else, so the section is shown only to administrators.
 
 export const DEFAULT_ROBOT_NAME = 'default';
 
 export const ROBOT_CREDENTIAL_CODES = Object.freeze({
-    occupied: 'ROBOT_CREDENTIALS_OCCUPIED',
     forbidden: 'ROBOT_CREDENTIALS_FORBIDDEN',
     unavailable: 'ROBOTEAM_UNAVAILABLE',
     signInRequired: 'GIT_SIGN_IN_REQUIRED',
@@ -12,7 +12,6 @@ export const ROBOT_CREDENTIAL_CODES = Object.freeze({
 });
 
 const UNAVAILABLE_NOTE = 'RoboTeam is not available. GitHub sign-in still works; credentials cannot be saved to a robot right now.';
-const ADMIN_ONLY_NOTE = 'Only an administrator can overwrite credentials saved by another user.';
 
 function text(value) {
     return typeof value === 'string' ? value.trim() : '';
@@ -20,16 +19,7 @@ function text(value) {
 
 export function normalizeRobotTargets(payload) {
     if (!payload || typeof payload !== 'object' || payload.ok === false) {
-        const signInRequired = payload?.code === ROBOT_CREDENTIAL_CODES.signInRequired;
-        return {
-            available: false,
-            robots: [],
-            canAdmin: false,
-            userId: '',
-            note: signInRequired
-                ? 'Sign in to the workspace to save git credentials to a robot.'
-                : UNAVAILABLE_NOTE
-        };
+        return { available: false, robots: [], canAdmin: false, userId: '' };
     }
     const robots = (Array.isArray(payload.robots) ? payload.robots : [])
         .map((robot) => {
@@ -57,24 +47,18 @@ export function normalizeRobotTargets(payload) {
         available: true,
         robots,
         canAdmin: payload.canAdmin === true,
-        userId: text(String(payload.userId ?? '')),
-        note: robots.length ? '' : 'No robots are available.'
+        userId: text(String(payload.userId ?? ''))
     };
 }
 
-// What the current user may do with one robot's credentials.
-export function robotAccess(robot, targets) {
+// Whether the section is shown: RoboTeam answered and the user is an administrator.
+export function showRobotAccess(targets) {
+    return targets?.available === true && targets.canAdmin === true;
+}
+
+function ownedByUser(robot, targets) {
     const credentials = robot?.credentials || { configured: false };
-    const ownedByUser = Boolean(credentials.configured && credentials.savedBy?.id && credentials.savedBy.id === targets?.userId);
-    const ownedByOther = Boolean(credentials.configured && !ownedByUser);
-    const blocked = ownedByOther && targets?.canAdmin !== true;
-    return {
-        configured: Boolean(credentials.configured),
-        ownedByUser,
-        ownedByOther,
-        blocked,
-        canRemove: Boolean(credentials.configured) && (ownedByUser || targets?.canAdmin === true)
-    };
+    return Boolean(credentials.configured && credentials.savedBy?.id && credentials.savedBy.id === targets?.userId);
 }
 
 export function formatSavedAt(value) {
@@ -89,54 +73,50 @@ function savedByLabel(savedBy = {}) {
     return text(savedBy.username) || text(savedBy.id) || 'another user';
 }
 
-// One robot card: its credential status and which actions it offers.
+// One robot card: its credential status and which actions it offers to the administrator.
 export function describeRobotRow(robot, targets, { connected = false } = {}) {
-    const access = robotAccess(robot, targets);
     const credentials = robot.credentials || { configured: false };
     const login = credentials.githubLogin || 'an unknown GitHub account';
     const when = formatSavedAt(credentials.savedAt);
     let status = 'No git credentials';
     let tone = 'empty';
     let saveLabel = 'Add credentials';
-    if (access.ownedByUser) {
+    if (credentials.configured && ownedByUser(robot, targets)) {
         status = `Your credentials (GitHub ${login}), saved on ${when}`;
         tone = 'own';
         saveLabel = 'Replace credentials';
-    } else if (access.ownedByOther) {
+    } else if (credentials.configured) {
         status = `GitHub ${login}, saved by ${savedByLabel(credentials.savedBy)} on ${when}`;
         tone = 'other';
         saveLabel = 'Overwrite credentials';
     }
-    if (access.configured && credentials.readable === false) status += '; can no longer be read, add them again';
+    if (credentials.configured && credentials.readable === false) status += '; can no longer be read, add them again';
     return {
         name: robot.name,
         label: robot.isDefault ? `${robot.name} (default)` : robot.name,
         isDefault: robot.isDefault,
         status,
         tone,
-        note: access.blocked ? ADMIN_ONLY_NOTE : '',
-        canSave: Boolean(connected) && !access.blocked,
+        canSave: Boolean(connected),
         saveLabel,
-        canRemove: access.canRemove
+        canRemove: Boolean(credentials.configured)
     };
 }
 
-// A fresh GitHub login or token save also goes to the default robot when it is free or holds the user's own
-// credentials. Credentials another user saved are never overwritten automatically, not even by an administrator.
+// A fresh GitHub login or token save by an administrator also goes to the default robot when it is free or holds
+// that administrator's own credentials. Credentials someone else saved are replaced only through Overwrite credentials.
 export function planAutomaticRobotSave({ targets }) {
-    if (!targets?.available) return { save: false, robotNames: [], message: '' };
+    if (!showRobotAccess(targets)) return { save: false, robotNames: [], message: '' };
     const robot = targets.robots.find((entry) => entry.name === DEFAULT_ROBOT_NAME) || targets.robots.find((entry) => entry.isDefault);
     if (!robot) return { save: false, robotNames: [], message: '' };
-    const access = robotAccess(robot, targets);
-    if (access.ownedByOther) {
+    if (robot.credentials.configured && !ownedByUser(robot, targets)) {
         const login = robot.credentials.githubLogin || 'another GitHub account';
-        const action = access.blocked ? ADMIN_ONLY_NOTE : 'Use Overwrite credentials on the robot to replace them.';
         return {
             save: false,
             robotNames: [],
             robotName: robot.name,
             tone: 'warning',
-            message: `Not saved to robot ${robot.name}: it holds the GitHub credentials of ${login}, saved by ${savedByLabel(robot.credentials.savedBy)}. ${action}`
+            message: `Not saved to robot ${robot.name}: it holds the GitHub credentials of ${login}, saved by ${savedByLabel(robot.credentials.savedBy)}. Use Overwrite credentials on the robot to replace them.`
         };
     }
     return { save: true, robotNames: [robot.name], message: '' };
@@ -153,9 +133,6 @@ export function describeRobotSaveResult(result, robotName) {
         };
     }
     const message = text(result?.message);
-    if (result?.code === ROBOT_CREDENTIAL_CODES.occupied) {
-        return { tone: 'warning', text: message || `Robot ${robotName} already holds credentials saved by another user. ${ADMIN_ONLY_NOTE}` };
-    }
     if (result?.code === ROBOT_CREDENTIAL_CODES.unavailable) {
         return { tone: 'error', text: UNAVAILABLE_NOTE };
     }

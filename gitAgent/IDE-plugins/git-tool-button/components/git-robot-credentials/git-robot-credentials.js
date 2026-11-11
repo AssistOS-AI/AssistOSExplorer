@@ -1,5 +1,6 @@
 import {
     normalizeRobotTargets,
+    showRobotAccess,
     describeRobotRow,
     planAutomaticRobotSave,
     describeRobotSaveResult,
@@ -9,6 +10,7 @@ import {
 
 // Robot access section of the Git credentials prompt. It lists every RoboTeam robot with its own actions to add or
 // remove the user's GitHub credentials through the git panel's service; sign-in also saves them to the default robot.
+// It is shown only to administrators, the only users RoboTeam lets configure robot git credentials.
 // The token never reaches the browser: gitAgent reads it from DPU on the server side.
 export class GitRobotCredentials {
     constructor(element, invalidate) {
@@ -33,8 +35,6 @@ export class GitRobotCredentials {
 
     afterRender() {
         this.root = this.element.querySelector('.git-robot-credentials');
-        this.unavailableNode = this.element.querySelector('[data-role="unavailable"]');
-        this.bodyNode = this.element.querySelector('[data-role="body"]');
         this.listNode = this.element.querySelector('[data-role="list"]');
         this.renderedListKey = '';
         const context = this.element.closest('git-credentials-prompt')?.webSkelPresenter?.getRobotCredentialsContext?.();
@@ -210,18 +210,10 @@ export class GitRobotCredentials {
 
     project() {
         if (!this.root) return;
-        const { targets, loading } = this.state;
-        let stateName = 'ready';
-        if (loading && !this.state.loaded) stateName = 'loading';
-        else if (!targets.available) stateName = 'unavailable';
-        this.root.dataset.state = stateName;
-
-        if (this.unavailableNode) {
-            const note = stateName === 'loading' ? 'Loading robots…' : (targets.note || '');
-            this.unavailableNode.hidden = !note || (stateName === 'ready' && targets.robots.length > 0);
-            this.unavailableNode.textContent = note;
-        }
-        if (this.bodyNode) this.bodyNode.hidden = stateName !== 'ready' || targets.robots.length === 0;
-        this.syncList();
+        const visible = showRobotAccess(this.state.targets);
+        // Hidden until RoboTeam confirms an administrator; everyone else never sees the section.
+        this.element.hidden = !visible;
+        this.root.dataset.state = visible ? 'ready' : 'hidden';
+        if (visible) this.syncList();
     }
 }

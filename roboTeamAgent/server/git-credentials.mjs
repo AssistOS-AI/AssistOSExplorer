@@ -5,7 +5,6 @@ import { isAdminActor } from './request-identity.mjs';
 // credential helper; RoboTeam decides who may save or remove it. The token passes through this module once,
 // on save, straight into the RoboWork call: it is never logged, stored, projected or returned.
 
-export const CREDENTIALS_OCCUPIED = 'ROBOT_CREDENTIALS_OCCUPIED';
 export const CREDENTIALS_FORBIDDEN = 'ROBOT_CREDENTIALS_FORBIDDEN';
 export const CREDENTIALS_INVALID = 'ROBOT_CREDENTIALS_INVALID';
 export const ROBOT_NOT_FOUND = 'ROBOT_NOT_FOUND';
@@ -66,18 +65,15 @@ export function credentialSummary(status) {
     };
 }
 
-// The saver of the stored credentials or an administrator may replace or remove them.
-export function mayManageCredentials(summary, user) {
-    if (!user) return false;
-    if (summary?.configured !== true) return true;
-    return user.canAdmin === true || (Boolean(summary.savedBy?.id) && summary.savedBy.id === user.id);
+// Only administrators configure robot git credentials: they list, save, overwrite and remove them.
+export function mayManageCredentials(user) {
+    return user?.canAdmin === true;
 }
 
-function occupiedMessage(robot, summary) {
-    const login = summary.githubLogin || 'an unknown GitHub account';
-    const saver = summary.savedBy?.username || summary.savedBy?.id || 'another user';
-    const when = summary.savedAt ? ` on ${summary.savedAt}` : '';
-    return `Robot ${robot.name} already holds git credentials for GitHub user ${login}, saved by ${saver}${when}. Only an administrator can overwrite them.`;
+function requireAdministrator(user) {
+    if (!mayManageCredentials(user)) {
+        throw failure('Only administrators can configure the git credentials of robots.', CREDENTIALS_FORBIDDEN, 403);
+    }
 }
 
 function field(input, name, { required = false } = {}) {
@@ -133,20 +129,20 @@ export class RobotGitCredentials {
     }
 
     async targets(user) {
+        requireAdministrator(user);
         const robots = await this.robotStore.list();
         const listed = await Promise.all(robots.map(async (robot) => ({ ...robotReference(robot), credentials: await this.summary(robot.id) })));
         return { ok: true, robots: listed, canAdmin: user.canAdmin === true, userId: user.id };
     }
 
     async save(user, input = {}) {
+        requireAdministrator(user);
         const robot = await this.robotByName(input.robotName);
         const token = tokenField(input);
         const githubLogin = field(input, 'githubLogin', { required: true });
         const name = field(input, 'name');
         const email = field(input, 'email');
         return this.withRobotLock(robot.id, async () => {
-            const current = await this.summary(robot.id);
-            if (!mayManageCredentials(current, user)) throw failure(occupiedMessage(robot, current), CREDENTIALS_OCCUPIED, 409);
             const result = await this.roboWork.call('robot_git_credentials_set', {
                 robotId: robot.id, token, githubLogin, name, email,
                 savedBy: { id: user.id, username: user.username },
@@ -157,23 +153,20 @@ export class RobotGitCredentials {
     }
 
     async remove(user, robot) {
+        requireAdministrator(user);
         return this.withRobotLock(robot.id, async () => {
             const current = await this.summary(robot.id);
             const workspaceDefault = robot.name === DEFAULT_ROBOT_NAME;
-            if (current.configured !== true) {
-                // The default robot's token lives in the workspace file Ploinky reads; if its RoboWork record is gone,
-                // an administrator's removal still reaches RoboWork so that file is cleared too.
-                if (!(workspaceDefault && user?.canAdmin === true)) return { ok: true, robot: robotReference(robot), deleted: false };
-            } else if (!mayManageCredentials(current, user)) {
-                throw failure(`Only ${current.savedBy?.username || 'the user who saved them'} or an administrator can remove the git credentials of robot ${robot.name}.`,
-                    CREDENTIALS_FORBIDDEN, 403);
-            }
+            // The default robot's token lives in the workspace file Ploinky reads; if its RoboWork record is gone,
+            // the removal still reaches RoboWork so that file is cleared too.
+            if (current.configured !== true && !workspaceDefault) return { ok: true, robot: robotReference(robot), deleted: false };
             const result = await this.roboWork.call('robot_git_credentials_delete', { robotId: robot.id, workspaceDefault });
             return { ok: true, robot: robotReference(robot), deleted: result?.deleted !== false };
         });
     }
 
     async removeByName(user, robotName) {
+        requireAdministrator(user);
         return this.remove(user, await this.robotByName(robotName));
     }
 }
