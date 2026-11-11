@@ -15,11 +15,10 @@ const VIEW_ID = 'V'.repeat(32);
 const STREAM_PATH = `/webtty/sessions/${SESSION_ID}/stream?view=${VIEW_ID}`;
 const INTENT_PATH = `/webtty/sessions/${SESSION_ID}/close-intents`;
 const PRIOR_SECRET = 'private-fixture-value';
-const NEW_SECRET = 'private-new-session';
+const CHANGED_SECRET = 'private-new-session';
 const PRINCIPAL = { id: 'USER.Owner', roles: ['admin'] };
-const refusalBody = (mode, requestPath) => (mode === 'sso'
-    ? { ok: false, error: 'not_authenticated', login: `/auth/login?${new URLSearchParams({ returnTo: requestPath })}` }
-    : { ok: false, error: 'not_found' });
+// The retired shell is absent for both modes: an SSO session survives the Router restart, so it is refused like a local one.
+const refusalBody = () => ({ ok: false, error: 'not_found' });
 
 if (process.argv.includes('--router-recovery-fixture-server')) {
     const client = fs.readFileSync(process.argv.at(-1));
@@ -53,8 +52,8 @@ if (process.argv.includes('--router-recovery-fixture-server')) {
         }
         if (url.pathname === '/state') return json(res, 200, { count, events });
         if (url.pathname === '/auth/token') {
-            // The prior SSO session expired with the Router restart; a local JWT survives it.
-            return mode === 'sso' ? json(res, 401, { ok: false, error: 'session_expired' }) : json(res, 200, { user: PRINCIPAL });
+            // Both the SSO session and the local JWT survive the Router restart.
+            return json(res, 200, { user: PRINCIPAL });
         }
         if (url.pathname === '/other') {
             res.writeHead(200, { 'content-type': 'text/html' });
@@ -86,7 +85,7 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
         if (url.pathname === '/webtty/sessions' && req.method === 'POST') {
             return json(res, 200, { session: { id: SESSION_ID, role: 'owner', closePolicy: 'keep', target: { kind: 'box', label: 'Fixture', access: 'rw', cwdDisplay: '/fixture' } }, view: { id: VIEW_ID } });
         }
-        if (req.method === 'DELETE') { record('delete'); return json(res, mode === 'sso' ? 401 : 404, refusalBody(mode, req.url)); }
+        if (req.method === 'DELETE') { record('delete'); return json(res, 404, refusalBody()); }
         if (url.pathname === INTENT_PATH) {
             const chunks = [];
             for await (const chunk of req) chunks.push(chunk);
@@ -95,21 +94,21 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
             record('close-intent', { method: req.method, validBody, jsonType: req.headers['content-type'] === 'application/json', originMatches: req.headers.origin === `http://${req.headers.host}` });
             if (holdIntentBody) {
                 // Headers arrive; the body never finishes. Only the server's own stop ends it.
-                res.writeHead(mode === 'sso' ? 401 : 404, { 'content-type': 'application/json', 'content-length': '512' });
+                res.writeHead(404, { 'content-type': 'application/json', 'content-length': '512' });
                 res.write('{"ok"');
                 held.add(res);
                 return undefined;
             }
-            return json(res, mode === 'sso' ? 401 : 404, refusalBody(mode, INTENT_PATH));
+            return json(res, 404, refusalBody());
         }
         if (req.url === STREAM_PATH && req.method === 'GET') {
             if (req.headers['user-agent'] === 'node') {
-                // The Node probes: the retired route answers the prior credential with its mode-specific body and a
-                // renewed session with plain absence.
-                const renewed = /private-new-session/.test(req.headers.cookie || '');
-                record(renewed ? 'renewed-probe' : 'direct-probe', { priorCookieMatches: req.headers.cookie === `${mode === 'sso' ? 'ploinky_sso' : 'ploinky_jwt'}=${PRIOR_SECRET}`, acceptMatches: req.headers.accept === 'text/event-stream' });
-                if (badProbe && !renewed) return json(res, 200, { ok: true });
-                return renewed ? json(res, 404, { ok: false, error: 'not_found' }) : json(res, mode === 'sso' ? 401 : 404, refusalBody(mode, STREAM_PATH));
+                // The Node probes: the retired route answers the prior credential with plain absence. The body probe
+                // asks for an event stream; the final absence probe after the terminal close asks for JSON.
+                const streamProbe = req.headers.accept === 'text/event-stream';
+                record(streamProbe ? 'direct-probe' : 'absence-probe', { priorCookieMatches: req.headers.cookie === `${mode === 'sso' ? 'ploinky_sso' : 'ploinky_jwt'}=${PRIOR_SECRET}`, acceptMatches: streamProbe });
+                if (badProbe && streamProbe) return json(res, 200, { ok: true });
+                return json(res, 404, refusalBody());
             }
             if (!fault) {
                 record('original');
@@ -122,15 +121,15 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
             record(count === holdAt ? 'held-start' : 'refusal', { number: count });
             if (count === holdAt) {
                 if (holdHeaders) {
-                    res.writeHead(mode === 'sso' ? 401 : 404, { 'content-type': 'application/json' });
-                    res.write(JSON.stringify(refusalBody(mode, STREAM_PATH)).slice(0, 10));
+                    res.writeHead(404, { 'content-type': 'application/json' });
+                    res.write(JSON.stringify(refusalBody()).slice(0, 10));
                 }
                 held.add(res);
                 res.on('close', () => record('held-closed', { finished: res.writableFinished }));
                 resolveWaiters();
                 return undefined;
             }
-            json(res, mode === 'sso' ? 401 : 404, refusalBody(mode, STREAM_PATH));
+            json(res, 404, refusalBody());
             resolveWaiters();
             return undefined;
         }
@@ -164,7 +163,8 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
         const api = async (path) => (await bound(fetch(origin + path, { signal: AbortSignal.timeout(15_000) }), `fixture ${path}`)).json();
         await api(`/settings?mode=${mode}&holdAt=${holdAt}&headers=${holdHeaders ? 1 : 0}&intentBody=${holdIntentBody ? 'hold' : 'normal'}&probe=${badProbe ? 'bad' : 'good'}`);
         const context = await browser.newContext();
-        await context.addCookies([{ name: 'fixture_auth', value: 'private-fixture-value', url: origin }]);
+        // The browser jar holds the prior credential of the selected mode; the recovery must find it unchanged.
+        await context.addCookies([{ name: mode === 'sso' ? 'ploinky_sso' : 'ploinky_jwt', value: PRIOR_SECRET, url: origin }]);
         let stopped = false;
         const stop = async () => {
             if (stopped) return;
@@ -261,8 +261,7 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
                 diagnostics.acknowledgeExact(closeCheckpoint, []);
                 s.validation = validation;
             },
-            signIn: async () => { trace.push('sign-in'); if (mode === 'local') assert.fail('a surviving local JWT must not reauthenticate'); return PRINCIPAL; },
-            readCookies: async () => [loopbackCookie('sso', NEW_SECRET)],
+            readCookies: async () => { trace.push('cookies'); return target.context.cookies(target.origin); },
         });
         s.trace = trace;
         s.result = result;
@@ -277,13 +276,15 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
                 await induceRefusals(s);
                 await recover(s, { oldOracle: refusals === 2 });
                 const events = await serverEvents(s);
-                assert.deepEqual(s.trace, mode === 'sso' ? ['cleanup', 'stop', 'close', 'sign-in'] : ['cleanup', 'stop', 'close']);
+                assert.deepEqual(s.trace, mode === 'sso' ? ['cleanup', 'stop', 'close', 'cookies'] : ['cleanup', 'stop', 'close'], 'no sign-in takes place in either mode');
+                assert.equal(s.result.priorAuthenticationStatus, 200);
+                assert.equal(s.result.ssoCookieUnchanged, mode === 'sso' ? true : null);
                 assert.equal(s.validation.summary.refusals, refusals);
                 assert.equal(events.filter((e) => e.kind === 'close-intent').length, 1, 'exactly one close intent, none from the final native close');
                 assert.equal(events.filter((e) => e.kind === 'close-intent' && e.validBody && e.jsonType && e.originMatches).length, 1);
                 assert.equal(events.filter((e) => e.kind === 'delete' || e.kind === 'unexpected').length, 0);
                 assert.equal(events.filter((e) => e.kind === 'direct-probe' && e.priorCookieMatches && e.acceptMatches).length, 1, 'one direct body probe with the prior credential');
-                assert.equal(events.filter((e) => e.kind === 'renewed-probe').length, mode === 'sso' ? 1 : 0);
+                assert.equal(events.filter((e) => e.kind === 'absence-probe' && e.priorCookieMatches).length, 1, 'one final absence probe with the same, unchanged credential');
                 assert.ok(events.find((e) => e.kind === 'cleanup-complete').at <= s.stop.before, 'independent cleanup precedes the pagehide dispatch');
             });
         }
@@ -299,7 +300,7 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
         assert.equal((await serverEvents(s)).filter((e) => e.kind === 'held-start').length, 1);
     });
 
-    for (const [label, block] of [['held 401 header with an unfinished body', false], ['held 401 header with a blocked callback backlog', true]]) {
+    for (const [label, block] of [['held 404 header with an unfinished body', false], ['held 404 header with a blocked callback backlog', true]]) {
         test(`sso: a ${label} is a refusal whose abort is attached to the same request`, { timeout: 120_000 }, async (t) => {
             const s = await scenario(t, { mode: 'sso', refusals: 1, held: 'headers' });
             await induceRefusals(s, { block });
@@ -315,6 +316,15 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
         await induceRefusals(s, { block: true });
         await recover(s);
         assert.equal(s.validation.summary.refusals, 2);
+    });
+
+    test('sso: a replaced SSO cookie in the browser jar fails the recovery after the terminal close, with no sign-in', { timeout: 120_000 }, async (t) => {
+        const s = await scenario(t, { mode: 'sso', refusals: 1 });
+        await induceRefusals(s);
+        // A new sign-in would leave a different ploinky_sso value in the same jar.
+        await s.target.context.addCookies([{ name: 'ploinky_sso', value: CHANGED_SECRET, url: s.target.origin }]);
+        await assert.rejects(recover(s), /SSO session cookie to be unchanged/);
+        assert.equal((await serverEvents(s)).filter((e) => e.kind === 'absence-probe').length, 0, 'the final absence probe never runs on a replaced credential');
     });
 
     test('another frame issuing the identical stream URL is rejected as foreign', { timeout: 120_000 }, async (t) => {
@@ -372,7 +382,7 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
         // A validation after the failed settlement is still a prompt, classified refusal (the intent has no terminal yet), never a hang.
         await assert.rejects(s.observation.validate(), (error) => error instanceof RouterRecoveryProofError && `${error.stage}: ${error.classification}` === 'join: timing');
         const projection = s.observation.project({ failure: new RouterRecoveryProofError('stop', 'settle-deadline') });
-        assert.ok(projection.requests.length >= 3 && projection.requests.some((r) => r.role === 'intent' && r.status === 401));
+        assert.ok(projection.requests.length >= 3 && projection.requests.some((r) => r.role === 'intent' && r.status === 404));
         s.diagnostics.closeWithoutAcknowledgement(s.checkpoint);
         const closed = await s.observation.dispose();
         assert.equal(closed.cdpDetachFailed, 0);
@@ -395,8 +405,7 @@ window.FitAddon={FitAddon:class{fit(){}}};window.__ploinkyTakeWebttyHandoff=()=>
                     verifyCleanup: async () => { trace.push('cleanup'); if (failing === 'cleanup') throw new Error('PRIMARY-CLEANUP-FAILURE'); await s.target.api('/cleanup-marker'); },
                     stopProducer: async () => { trace.push('stop'); await s.observation.stopAfterCleanup(); },
                     closeTerminal: async () => { trace.push('close'); },
-                    signIn: async () => { trace.push('sign-in'); return PRINCIPAL; },
-                    readCookies: async () => [loopbackCookie('sso', NEW_SECRET)],
+                    readCookies: async () => { trace.push('cookies'); return s.target.context.cookies(s.target.origin); },
                 });
             } catch (error) {
                 primary = error;

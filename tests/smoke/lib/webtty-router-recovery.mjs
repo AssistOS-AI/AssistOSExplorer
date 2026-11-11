@@ -20,7 +20,7 @@ function requireSameAdministrator(principal, expectedId) {
 
 export function recoveryConsoleText(mode) {
     if (!['sso', 'local'].includes(mode)) throw new Error('Unproven Router authentication mode.');
-    return `Failed to load resource: the server responded with a status of ${mode === 'sso' ? '401 (Unauthorized)' : '404 (Not Found)'}`;
+    return 'Failed to load resource: the server responded with a status of 404 (Not Found)';
 }
 
 const VIEW_ID = /^[A-Za-z0-9_-]{32,128}$/;
@@ -33,7 +33,7 @@ export function expectedRouterRecoveryDiagnostics(baseURL, sessionId, mode, view
     return [
         diagnosticEventSignature({ kind: 'requestfailed', type: 'error', url, method: 'GET', failure: 'net::ERR_INCOMPLETE_CHUNKED_ENCODING' }),
         diagnosticEventSignature({ kind: 'console', type: 'error', text: 'Failed to load resource: net::ERR_INCOMPLETE_CHUNKED_ENCODING', location: { url } }),
-        diagnosticEventSignature({ kind: 'response', type: 'error', status: mode === 'sso' ? 401 : 404, url, method: 'GET' }),
+        diagnosticEventSignature({ kind: 'response', type: 'error', status: 404, url, method: 'GET' }),
         diagnosticEventSignature({ kind: 'console', type: 'error', text, location: { url } }),
     ];
 }
@@ -77,10 +77,7 @@ export function captureRouterRecoveryAuthentication({ baseURL, cookies, principa
     // browser's EventSource attempts, which are never readable.
     async function probeRetired(streamPath) {
         const result = await probe(streamPath, prior, 'text/event-stream');
-        const expected = mode === 'sso'
-            ? { status: 401, payload: { ok: false, error: 'not_authenticated', login: `/auth/login?${new URLSearchParams({ returnTo: streamPath })}` } }
-            : { status: 404, payload: { ok: false, error: 'not_found' } };
-        if (result.status !== expected.status || !isDeepStrictEqual(result.payload, expected.payload)) {
+        if (result.status !== 404 || !isDeepStrictEqual(result.payload, { ok: false, error: 'not_found' })) {
             throw new Error('The retired stream route must refuse the prior credential with its exact body.');
         }
         return Object.freeze({ status: result.status, bodyValid: true });
@@ -90,43 +87,39 @@ export function captureRouterRecoveryAuthentication({ baseURL, cookies, principa
         probeRetiredStream: probeRetired,
         async proveRestartedAuthentication() {
             const result = await probe('/auth/token', prior);
-            if (mode === 'sso') {
-                if (result.status !== 401 || !isDeepStrictEqual(result.payload, { ok: false, error: 'session_expired' })) {
-                    throw new Error('The prior SSO session must expire after Router restart.');
-                }
-            } else {
-                if (result.status !== 200) throw new Error('The local JWT session must survive Router restart.');
-                requireSameAdministrator(result.payload?.user, expectedId);
-            }
+            // The Router restores an SSO session from its session file, so both credentials survive the restart.
+            if (result.status !== 200) throw new Error(`The ${mode === 'sso' ? 'SSO' : 'local JWT'} session must survive Router restart.`);
+            requireSameAdministrator(result.payload?.user, expectedId);
             priorAuthenticationProved = true;
         },
         // Backend cleanup is verified first. Only then is the producer stopped through the client's own pagehide
-        // lifecycle, and only after that is the terminal closed and the session renewed.
-        async recoverAfterCleanup({ verifyCleanup, stopProducer, closeTerminal, signIn, readCookies, streamPath }) {
+        // lifecycle, and only after that is the terminal closed. No sign-in takes place: an SSO browser must still hold
+        // the very cookie it held before the restart.
+        async recoverAfterCleanup({ verifyCleanup, stopProducer, closeTerminal, readCookies, signIn, streamPath }) {
             if (!priorAuthenticationProved || completed) throw new Error('Router recovery authentication transition is out of order.');
+            if (signIn !== undefined) throw new Error('Router recovery has no sign-in step: the prior session must survive the restart.');
             if (!/^\/webtty\/sessions\/[A-Za-z0-9_-]+\/stream\?view=[A-Za-z0-9_-]{32,128}$/.test(streamPath)) {
                 throw new Error('Router recovery requires the exact prior terminal stream path with its view.');
             }
             if (typeof stopProducer !== 'function') throw new Error('Router recovery requires the lifecycle stop of the recovery producer.');
+            if (mode === 'sso' && typeof readCookies !== 'function') throw new Error('Router recovery requires the browser cookies to prove the SSO session was not replaced.');
             await verifyCleanup();
             await probeRetired(streamPath);
             await stopProducer();
             await closeTerminal();
-            let current = prior;
             if (mode === 'sso') {
-                const authenticated = await signIn();
-                requireSameAdministrator(authenticated, expectedId);
-                current = authenticationCookie(await readCookies());
-                const replaced = current.name === 'ploinky_sso' && current.value !== prior.value;
-                if (!replaced) throw new Error('Router recovery requires a newly issued SSO session.');
+                const current = authenticationCookie(await readCookies());
+                if (current.name !== prior.name || current.value !== prior.value) {
+                    throw new Error('Router recovery requires the SSO session cookie to be unchanged.');
+                }
             }
-            const result = await probe(streamPath, current);
+            const result = await probe(streamPath, prior);
             if (result.status !== 404 || !isDeepStrictEqual(result.payload, { ok: false, error: 'not_found' })) {
                 throw new Error('The prior terminal stream must remain absent after authenticated recovery.');
             }
             completed = true;
-            return Object.freeze({ mode, priorAuthenticationStatus: mode === 'sso' ? 401 : 200,
-                renewedSsoSession: mode === 'sso', authenticatedOldStreamStatus: 404 });
+            return Object.freeze({ mode, priorAuthenticationStatus: 200,
+                ssoCookieUnchanged: mode === 'sso' ? true : null, authenticatedOldStreamStatus: 404 });
         },
     });
 }
@@ -190,7 +183,7 @@ export function installEventSourceObserver() {
 // binding, the Playwright and CDP request sets, the native EventSource events and the lifecycle-stop record.
 export function validateRouterRecoveryObservation(raw, { baseURL, sessionId, viewId, mode }) {
     const consoleText = recoveryConsoleText(mode);
-    const expectedStatus = mode === 'sso' ? 401 : 404;
+    const expectedStatus = 404;
     if (typeof viewId !== 'string' || !VIEW_ID.test(viewId)) throw new Error('Router recovery requires the terminal view identifier.');
     const streamUrl = new URL(`/webtty/sessions/${encodeURIComponent(sessionId)}/stream?view=${encodeURIComponent(viewId)}`, baseURL).toString();
     const intentUrl = new URL(`/webtty/sessions/${encodeURIComponent(sessionId)}/close-intents`, baseURL).toString();
@@ -420,12 +413,7 @@ export async function armRouterRecoveryObservation(context, { baseURL, timeoutMs
         return [...records.values()].filter((record) => record.page === bound.page && record.session === bound.sessionId
             && (record.role === 'intent' || record.view === bound.viewId));
     };
-    const intentBodyExpected = (mode, sessionId) => {
-        const intentPath = `/webtty/sessions/${encodeURIComponent(sessionId)}/close-intents`;
-        return mode === 'sso'
-            ? { ok: false, error: 'not_authenticated', login: `/auth/login?${new URLSearchParams({ returnTo: intentPath })}` }
-            : { ok: false, error: 'not_found' };
-    };
+    const intentBodyExpected = { ok: false, error: 'not_found' };
     // Every wait of this observation ends at the existing deadline with a classified failure.
     const within = (promise, ms, stage, classification) => {
         let timer;
@@ -459,7 +447,7 @@ export async function armRouterRecoveryObservation(context, { baseURL, timeoutMs
             // The body is neither valid nor invalid until it has completely arrived.
             if (record.bodyChecked || record.bodyText === undefined) continue;
             record.bodyChecked = true;
-            try { record.bodyValid = isDeepStrictEqual(JSON.parse(record.bodyText), intentBodyExpected(mode, sessionId)); } catch { record.bodyValid = false; }
+            try { record.bodyValid = isDeepStrictEqual(JSON.parse(record.bodyText), intentBodyExpected); } catch { record.bodyValid = false; }
         }
         const nativeState = page.isClosed() ? null : await within(page.evaluate((expected) => {
             const observation = window.__routerRecoveryNative;

@@ -480,6 +480,21 @@ test('dashboard API uses same-origin credentials and preserves structured enroll
     assert.deepEqual(JSON.parse(calls[1].options.body), { token: '123456' });
 });
 
+test('dashboard API resends a write once when the Router reports a stale browser proof', async (t) => {
+    const calls = [];
+    t.mock.method(globalThis, 'fetch', async (path, options) => {
+        calls.push({ path, options });
+        if (calls.length === 1) return new Response(JSON.stringify({ error: 'browser_csrf_invalid' }), { status: 403 });
+        if (calls.length === 2) return new Response(JSON.stringify({ ok: true, saved: true }), { status: 200 });
+        return new Response(JSON.stringify({ error: 'edge_generation_changed' }), { status: 503 });
+    });
+    assert.equal((await dashboardApi('profile/save', { displayName: 'A' })).saved, true);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].options.body, calls[0].options.body);
+    await assert.rejects(dashboardApi('profile/save', { displayName: 'B' }), (error) => error.status === 503);
+    assert.equal(calls.length, 4, 'the second stale answer is surfaced after exactly one more send');
+});
+
 test('dashboard remains application-neutral even with Explorer access and saves only profile fields', async (t) => {
     const nodes = new Map();
     const document = { querySelectorAll: () => [], getElementById: (id) => {

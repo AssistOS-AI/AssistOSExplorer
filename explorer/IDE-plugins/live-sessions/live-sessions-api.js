@@ -1,5 +1,6 @@
 import { readBrowserCsrfToken } from '../../web-components/modals/terminal-target-modal/terminal-target-modal.js';
 import { isOwnedLiveSessionUrl, normalizeLiveSessionSource } from '../../utils/liveSessionSource.mjs';
+import { retryOnStaleBrowserProof } from '../../services/infrastructure/browserMutationRetry.js';
 
 const LIST_PATH = '/webtty/live-sessions';
 const SESSION_ID = /^[A-Za-z0-9_-]{32,128}$/;
@@ -89,7 +90,7 @@ export function normalizeLiveSessionsPayload(payload) {
 }
 
 async function request(path, method, options = {}) {
-    const response = await (options.fetchImpl || globalThis.fetch)(path, {
+    const response = await retryOnStaleBrowserProof(() => (options.fetchImpl || globalThis.fetch)(path, {
         method,
         credentials: 'same-origin',
         cache: 'no-store',
@@ -101,7 +102,7 @@ async function request(path, method, options = {}) {
             },
             ...(method === 'POST' ? { body: JSON.stringify(options.body || {}) } : {}),
         }),
-    });
+    }));
     if (!response.ok) {
         // HTTP status is enough to show a safe error, including older routers' HTML 404s.
         throw Object.assign(new Error('The live session request failed.'), { status: response.status });
@@ -219,11 +220,11 @@ export async function messageAgentSession(source, row, message, options = {}) {
     if (!row.isOwner || !row.capabilities.message || typeof message !== 'string' || message.length < 1 || message.length > 32768) {
         throw new Error('Message is unavailable or invalid.');
     }
-    const response = await (options.fetchImpl || globalThis.fetch)(agentSessionPath(source, row.id, 'messages'), {
+    const response = await retryOnStaleBrowserProof(() => (options.fetchImpl || globalThis.fetch)(agentSessionPath(source, row.id, 'messages'), {
         method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: options.signal,
         headers: { 'Content-Type': 'application/json', 'X-Ploinky-Browser-CSRF-Token': readBrowserCsrfToken() },
         body: JSON.stringify({ message }),
-    });
+    }));
     const payload = await response.json();
     if (response.status === 200 && exactKeys(payload, ['delivery']) && ['delivered', 'queued'].includes(payload.delivery)) return payload.delivery;
     if (response.status === 409 && exactKeys(payload, ['error'], ['detail']) && ['rejected', 'run_ended'].includes(payload.error)) return payload.error;
@@ -292,7 +293,8 @@ export async function submitLiveSessionCloseIntent(id, viewId, policy, options =
 export function sendLiveSessionCloseIntent(id, viewId, policy, options = {}) {
     if (typeof viewId !== 'string' || !VIEW_ID.test(viewId) || !CLOSE_POLICIES.includes(policy)) return undefined;
     try {
-        return Promise.resolve((options.fetchImpl || globalThis.fetch)(`/webtty/sessions/${sessionId(id)}/close-intents`, {
+        const url = `/webtty/sessions/${sessionId(id)}/close-intents`;
+        return Promise.resolve(retryOnStaleBrowserProof(() => (options.fetchImpl || globalThis.fetch)(url, {
             method: 'POST',
             credentials: 'same-origin',
             cache: 'no-store',
@@ -302,7 +304,7 @@ export function sendLiveSessionCloseIntent(id, viewId, policy, options = {}) {
                 'X-Ploinky-Browser-CSRF-Token': readBrowserCsrfToken(),
             },
             body: JSON.stringify({ view: viewId, policy }),
-        })).catch(() => {});
+        }))).catch(() => {});
     } catch (_) {
         return undefined;
     }

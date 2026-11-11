@@ -241,11 +241,15 @@ test('Router recovery stops the producer only after independent cleanup and deri
   const validate = at('await recoveryObservation.validate()', close);
   const acknowledge = at('acknowledgeRouterRecovery(recoveryDiagnostics, recoveryCheckpoint, recoveryValidation.signatures)', validate);
   const nativeClose = at('await restartRecoveryTerminal.terminalPage.close()', acknowledge);
-  const signInStep = at('signIn: () => signIn(page, smokeConfig.primaryUser', nativeClose);
+  const cookieStep = at('readCookies: () => page.context().cookies(smokeConfig.baseURL)', nativeClose);
   assert.ok(cleanup < marker && marker < directory && directory < stop && stop < stopCall && stopCall < close
-    && close < validate && validate < acknowledge && acknowledge < nativeClose && nativeClose < signInStep);
+    && close < validate && validate < acknowledge && acknowledge < nativeClose && nativeClose < cookieStep);
+  // A Router restart does not end an SSO session: the recovery reads the cookie after the terminal closes and never signs in.
+  const recoverBlock = webttySpec.slice(recover, cookieStep + 200);
+  assert.doesNotMatch(recoverBlock, /signIn/, 'the Router recovery has no renewed sign-in');
+  assert.doesNotMatch(recoverBlock, /reauthentication/);
   // No old four-event acknowledgement, copied counts, raw flush or console wait for the recovery terminal.
-  const section = webttySpec.slice(open, signInStep);
+  const section = webttySpec.slice(open, cookieStep);
   assert.doesNotMatch(section, /expectedRouterRecoveryDiagnostics|recoveryConsole|recoveryDiagnostics\.flush\(|acknowledgeExact\(\s*recoveryCheckpoint/);
   assert.match(section, /final native close of the recovery terminal/);
   // The proof is persisted sanitized and its failure carries only a stage and classification.

@@ -660,6 +660,77 @@ describe('dashboard providers page', () => {
     });
 });
 
+describe('dashboard stale browser proof', () => {
+    const SYNC = '/management/providers/p1/sync-models';
+    const stale = (status = 403, error = 'browser_csrf_invalid') => ({
+        status,
+        redirected: false,
+        url: `http://127.0.0.1${SYNC}`,
+        clone() {
+            return { json: async () => ({ error }) };
+        },
+        async json() {
+            return { error };
+        },
+    });
+
+    async function syncWith(responses) {
+        const requests = [];
+        const globals = installDashboardGlobals(async (url, options = {}) => {
+            requests.push({ url, options });
+            if (url === SYNC) return responses[requests.filter((r) => r.url === SYNC).length - 1];
+            if (url === '/management/providers') return jsonResponse({ data: [] });
+            throw new Error(`unexpected request: ${url}`);
+        });
+        try {
+            await import(`../../dashboard/js/app.mjs?test=${Date.now()}${Math.random()}`);
+            const page = globalThis.window.providersPage();
+            const alerts = [];
+            globalThis.alert = (message) => alerts.push(message);
+            // syncModels reports a failed request through alert(), so that is where the error surfaces.
+            await page.syncModels({ id: 'p1', provider_key: 'codex-api', display_name: 'Codex API' });
+            return {
+                requests,
+                error: alerts.length ? { message: alerts[0] } : null,
+                events: globals.events.map((event) => event.type),
+                href: globalThis.window.location.href,
+            };
+        } finally {
+            globals.restore();
+        }
+    }
+
+    it('retries a stale proof 403 once and proceeds without a login redirect', async () => {
+        const result = await syncWith([stale(), jsonResponse({ discovered: 0, created: 0, updated: 0, disabled: 0 })]);
+        assert.equal(result.error, null);
+        assert.equal(result.requests.filter((r) => r.url === SYNC).length, 2);
+        assert.ok(!result.events.includes('sg-auth-required'));
+        assert.equal(result.href, undefined);
+    });
+
+    it('reports a second stale proof as an error, not as a login redirect', async () => {
+        const result = await syncWith([stale(), stale(), jsonResponse({})]);
+        assert.match(result.error?.message || '', /browser session proof/);
+        assert.equal(result.requests.filter((r) => r.url === SYNC).length, 2);
+        assert.ok(!result.events.includes('sg-auth-required'));
+        assert.equal(result.href, undefined);
+    });
+
+    it('still redirects to login for a 403 that is not a stale proof', async () => {
+        const result = await syncWith([stale(403, 'administrator_required')]);
+        assert.equal(result.error?.message, 'Ploinky admin session required');
+        assert.equal(result.requests.filter((r) => r.url === SYNC).length, 1);
+        assert.ok(result.events.includes('sg-auth-required'));
+        assert.match(result.href, /^\/auth\/login\?returnTo=/);
+    });
+
+    it('still redirects to login for a 401', async () => {
+        const result = await syncWith([{ ...stale(401, 'authentication_required') }]);
+        assert.equal(result.requests.filter((r) => r.url === SYNC).length, 1);
+        assert.ok(result.events.includes('sg-auth-required'));
+    });
+});
+
 describe('dashboard models page', () => {
     function modelFixtures() {
         return [

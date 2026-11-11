@@ -1,4 +1,5 @@
 import { createDocumentDocx } from '../../../services/document/documentDocxExport.js';
+import { retryOnStaleBrowserProof } from '../../../services/infrastructure/browserMutationRetry.js';
 
 const documentModule = assistOS.loadModule("document");
 
@@ -115,12 +116,12 @@ export class ExportDocumentModal {
         try {
             console.log("No settings sent to server.");
 
-            const response = await fetch(`/documents/export/html/${documentId}`, {
+            const response = await retryOnStaleBrowserProof(() => fetch(`/documents/export/html/${documentId}`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json"
                 }
-            });
+            }));
 
             if (!response.ok) {
                 throw new Error(`Server error: ${response.statusText}`);

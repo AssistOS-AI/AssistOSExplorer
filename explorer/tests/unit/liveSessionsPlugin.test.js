@@ -725,6 +725,31 @@ test('close-policy request is an exact owner POST and its response is validated'
     await assert.rejects(setLiveSessionClosePolicy(ID, 'keep', { fetchImpl: async () => response({}, 409) }), (error) => error.status === 409);
 });
 
+test('a stale proof on a live-session write is retried once with the refreshed proof', async () => {
+    globalThis.document = { cookie: 'ploinky_browser_csrf=v1.old-proof' };
+    const seen = [];
+    const fetchImpl = async (url, request) => {
+        seen.push(request.headers['X-Ploinky-Browser-CSRF-Token']);
+        if (seen.length === 1) {
+            globalThis.document.cookie = 'ploinky_browser_csrf=v1.new-proof';
+            return new Response(JSON.stringify({ error: 'browser_csrf_invalid' }), { status: 403 });
+        }
+        return response({ ok: true, attach: TOKEN, expiresAt: Date.now() + 60000 }, 201);
+    };
+    try {
+        assert.equal(await mintLiveSessionAttach(ID, { fetchImpl }), TOKEN);
+        assert.deepEqual(seen, ['v1.old-proof', 'v1.new-proof']);
+        seen.length = 0;
+        await assert.rejects(
+            killLiveSession(ID, { fetchImpl: async (url, request) => { seen.push(request.method); return new Response(JSON.stringify({ error: 'browser_csrf_invalid' }), { status: 403 }); } }),
+            (error) => error.status === 403,
+        );
+        assert.deepEqual(seen, ['DELETE', 'DELETE'], 'a second stale answer surfaces after exactly one retry');
+    } finally {
+        delete globalThis.document;
+    }
+});
+
 test('close intent is one keepalive POST with the mutation proof and exact {view, policy}', async () => {
     globalThis.document = { cookie: 'ploinky_browser_csrf=v1.intent-proof' };
     const calls = [];
