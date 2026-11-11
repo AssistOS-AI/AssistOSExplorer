@@ -961,18 +961,20 @@ The recovery terminal's expected diagnostics are derived from independent record
 the terminal opens, the gate arms a transparent native `EventSource` observer for terminal documents, a context request
 recorder and a CDP session that records request identity, frame, loader and paired start and terminal times. After the
 Router restarts and the independent backend cleanup assertions pass, one bounded HTTP request to the exact retired
-stream with the prior credential proves that route's body (401 with the exact login body for SSO, 404 `not_found` for
-local auth); it is not evidence about the unreadable bodies of the browser's EventSource attempts. The gate then
+stream with the prior credential proves that route's body (404 `not_found` for both modes: the SSO session survives the
+restart); it is not evidence about the unreadable bodies of the browser's EventSource attempts. The gate then
 dispatches the terminal document's own `pagehide` event: the unchanged client sends one close intent (view and keep
 policy), clears its retry timer and closes its stream, and shows `Disconnected` with Kill disabled. The gate waits for
 every owned request to settle and validates a unique one-to-one join between the Playwright and CDP records: the
-original stream's `ERR_INCOMPLETE_CHUNKED_ENCODING`, at least one refused retry (401 or 404, JSON, correlated native
+original stream's `ERR_INCOMPLETE_CHUNKED_ENCODING`, at least one refused retry (404, JSON, correlated native
 CLOSED error) with at most its own `ERR_ABORTED`, at most one headerless stream cancelled by the stop, and exactly one
 close intent. Missing, duplicate, redirected, overlapping, foreign-frame or ambiguous records fail. Only then does the
-unchanged ledger acknowledge the derived set, the terminal closes natively without a second intent, and the session is
-renewed. The sanitized projection (`webtty-router-recovery-oracle.json`) keeps aliases, statuses, failures and relative
-times, never the view, session or returnTo values. Every wait ends at the existing deadline with a classified failure, including a close-intent response whose body
-never finishes. A failed proof leaves every event actionable and forbids the normal reauthentication and reopen
+unchanged ledger acknowledge the derived set, the terminal closes natively without a second intent, and the gate proves
+that no new sign-in was needed: the surviving prior credential, SSO or local, still answers `/auth/token` with the same
+administrator, and for SSO the `ploinky_sso` cookie read from the browser afterwards is exactly the cookie held before
+the restart (a changed value fails). The sanitized projection (`webtty-router-recovery-oracle.json`) keeps aliases,
+statuses, failures and relative times, never the view, session or returnTo values. Every wait ends at the existing deadline with a classified failure, including a close-intent response whose body
+never finishes. A failed proof leaves every event actionable and forbids the normal session-continuity and reopen
 assertions. Before the authorized outer teardown signs in, failure finalization ends the owned producer (its own
 `pagehide`, or closing its page), keeps a sanitized non-empty snapshot labelled as failure cleanup (never as evidence
 that the backend cleanup passed), closes the open checkpoints without acknowledgement and releases the recorders; the

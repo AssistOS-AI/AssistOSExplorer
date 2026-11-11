@@ -1928,9 +1928,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
                 throw new RouterRecoveryProofError('final-close', String(error?.name || 'Error'));
               }
               recoveryMilestones.terminalClosed = true;
-              recoveryStage = 'reauthentication';
+              recoveryStage = 'session-continuity';
             },
-            signIn: () => signIn(page, smokeConfig.primaryUser, '/auth/logged-out', { requireConfiguredPrincipal: true }),
             readCookies: () => page.context().cookies(smokeConfig.baseURL),
           });
         } catch (error) {
