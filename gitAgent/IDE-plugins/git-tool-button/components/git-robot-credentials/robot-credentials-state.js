@@ -1,7 +1,6 @@
-// View-facing state rules for saving the user's GitHub credentials to a RoboTeam robot.
+// View-facing state rules for saving the user's GitHub credentials to RoboTeam robots.
 // Pure functions: the presenter projects their results; RoboTeam remains the authority on permissions.
 
-export const NO_ROBOT = '__none__';
 export const DEFAULT_ROBOT_NAME = 'default';
 
 export const ROBOT_CREDENTIAL_CODES = Object.freeze({
@@ -13,6 +12,7 @@ export const ROBOT_CREDENTIAL_CODES = Object.freeze({
 });
 
 const UNAVAILABLE_NOTE = 'RoboTeam is not available. GitHub sign-in still works; credentials cannot be saved to a robot right now.';
+const ADMIN_ONLY_NOTE = 'Only an administrator can overwrite credentials saved by another user.';
 
 function text(value) {
     return typeof value === 'string' ? value.trim() : '';
@@ -50,7 +50,9 @@ export function normalizeRobotTargets(payload) {
                     : { configured: false }
             };
         })
-        .filter((robot) => robot.name);
+        .filter((robot) => robot.name)
+        // The default robot leads the list; the rest keep RoboTeam's order.
+        .sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
     return {
         available: true,
         robots,
@@ -60,20 +62,19 @@ export function normalizeRobotTargets(payload) {
     };
 }
 
-// Keeps a still-valid previous choice; otherwise preselects the robot named "default".
-export function pickRobotSelection(robots = [], previous = '') {
-    const names = robots.map((robot) => robot.name);
-    if (previous === NO_ROBOT) return NO_ROBOT;
-    if (previous && names.includes(previous)) return previous;
-    const preferred = robots.find((robot) => robot.name === DEFAULT_ROBOT_NAME) || robots.find((robot) => robot.isDefault);
-    return preferred ? preferred.name : NO_ROBOT;
-}
-
-export function buildRobotOptions(robots = []) {
-    return [
-        ...robots.map((robot) => ({ value: robot.name, name: robot.isDefault ? `${robot.name} (default)` : robot.name })),
-        { value: NO_ROBOT, name: "Don't save to a robot" }
-    ];
+// What the current user may do with one robot's credentials.
+export function robotAccess(robot, targets) {
+    const credentials = robot?.credentials || { configured: false };
+    const ownedByUser = Boolean(credentials.configured && credentials.savedBy?.id && credentials.savedBy.id === targets?.userId);
+    const ownedByOther = Boolean(credentials.configured && !ownedByUser);
+    const blocked = ownedByOther && targets?.canAdmin !== true;
+    return {
+        configured: Boolean(credentials.configured),
+        ownedByUser,
+        ownedByOther,
+        blocked,
+        canRemove: Boolean(credentials.configured) && (ownedByUser || targets?.canAdmin === true)
+    };
 }
 
 export function formatSavedAt(value) {
@@ -88,62 +89,57 @@ function savedByLabel(savedBy = {}) {
     return text(savedBy.username) || text(savedBy.id) || 'another user';
 }
 
-// What the selection means for the user: notices, warnings and which actions apply.
-export function describeRobotSelection({ targets, selection, connected }) {
-    const empty = {
-        robot: null,
-        notice: '',
-        warning: '',
-        adminNote: '',
-        canSave: false,
-        canRemove: false,
-        saveLabel: 'Save to robot',
-        blocked: false
-    };
-    if (!targets?.available || !selection || selection === NO_ROBOT) return empty;
-    const robot = targets.robots.find((entry) => entry.name === selection) || null;
-    if (!robot) return empty;
+// One robot card: its credential status and which actions it offers.
+export function describeRobotRow(robot, targets, { connected = false } = {}) {
+    const access = robotAccess(robot, targets);
     const credentials = robot.credentials || { configured: false };
-    const ownedByUser = Boolean(credentials.configured && credentials.savedBy?.id && credentials.savedBy.id === targets.userId);
-    const ownedByOther = Boolean(credentials.configured && !ownedByUser);
-    const blocked = ownedByOther && !targets.canAdmin;
-    const result = {
-        ...empty,
-        robot,
-        blocked,
-        canSave: Boolean(connected) && !blocked,
-        canRemove: Boolean(credentials.configured) && (ownedByUser || targets.canAdmin)
-    };
     const login = credentials.githubLogin || 'an unknown GitHub account';
     const when = formatSavedAt(credentials.savedAt);
-    if (ownedByOther) {
-        result.warning = `Robot ${robot.name} already holds the GitHub credentials of ${login}, saved by ${savedByLabel(credentials.savedBy)} on ${when}.`;
-        result.adminNote = targets.canAdmin
-            ? 'Saving will overwrite them because you are an administrator.'
-            : 'Only an administrator can overwrite credentials saved by another user.';
-        if (targets.canAdmin) result.saveLabel = 'Overwrite robot credentials';
-    } else if (ownedByUser) {
-        result.notice = `You saved the GitHub credentials of ${login} to robot ${robot.name} on ${when}. Saving again replaces them.`;
+    let status = 'No git credentials';
+    let tone = 'empty';
+    let saveLabel = 'Add credentials';
+    if (access.ownedByUser) {
+        status = `Your credentials (GitHub ${login}), saved on ${when}`;
+        tone = 'own';
+        saveLabel = 'Replace credentials';
+    } else if (access.ownedByOther) {
+        status = `GitHub ${login}, saved by ${savedByLabel(credentials.savedBy)} on ${when}`;
+        tone = 'other';
+        saveLabel = 'Overwrite credentials';
     }
-    if (credentials.configured && credentials.readable === false) {
-        result.notice = `${result.notice} The stored credentials can no longer be read; save them again.`.trim();
-    }
-    return result;
+    if (access.configured && credentials.readable === false) status += '; can no longer be read, add them again';
+    return {
+        name: robot.name,
+        label: robot.isDefault ? `${robot.name} (default)` : robot.name,
+        isDefault: robot.isDefault,
+        status,
+        tone,
+        note: access.blocked ? ADMIN_ONLY_NOTE : '',
+        canSave: Boolean(connected) && !access.blocked,
+        saveLabel,
+        canRemove: access.canRemove
+    };
 }
 
-// Decides whether a fresh GitHub login or token save should also go to the selected robot.
-export function planAutomaticRobotSave({ targets, selection }) {
-    if (!targets?.available || !selection || selection === NO_ROBOT) return { save: false, message: '' };
-    const description = describeRobotSelection({ targets, selection, connected: true });
-    if (!description.robot) return { save: false, message: '' };
-    if (description.blocked) {
+// A fresh GitHub login or token save also goes to the default robot when it is free or holds the user's own
+// credentials. Credentials another user saved are never overwritten automatically, not even by an administrator.
+export function planAutomaticRobotSave({ targets }) {
+    if (!targets?.available) return { save: false, robotNames: [], message: '' };
+    const robot = targets.robots.find((entry) => entry.name === DEFAULT_ROBOT_NAME) || targets.robots.find((entry) => entry.isDefault);
+    if (!robot) return { save: false, robotNames: [], message: '' };
+    const access = robotAccess(robot, targets);
+    if (access.ownedByOther) {
+        const login = robot.credentials.githubLogin || 'another GitHub account';
+        const action = access.blocked ? ADMIN_ONLY_NOTE : 'Use Overwrite credentials on the robot to replace them.';
         return {
             save: false,
+            robotNames: [],
+            robotName: robot.name,
             tone: 'warning',
-            message: `Not saved to robot ${description.robot.name}: ${description.adminNote}`
+            message: `Not saved to robot ${robot.name}: it holds the GitHub credentials of ${login}, saved by ${savedByLabel(robot.credentials.savedBy)}. ${action}`
         };
     }
-    return { save: true, robotName: description.robot.name, message: '' };
+    return { save: true, robotNames: [robot.name], message: '' };
 }
 
 export function describeRobotSaveResult(result, robotName) {
@@ -158,7 +154,7 @@ export function describeRobotSaveResult(result, robotName) {
     }
     const message = text(result?.message);
     if (result?.code === ROBOT_CREDENTIAL_CODES.occupied) {
-        return { tone: 'warning', text: message || `Robot ${robotName} already holds credentials saved by another user. Only an administrator can overwrite them.` };
+        return { tone: 'warning', text: message || `Robot ${robotName} already holds credentials saved by another user. ${ADMIN_ONLY_NOTE}` };
     }
     if (result?.code === ROBOT_CREDENTIAL_CODES.unavailable) {
         return { tone: 'error', text: UNAVAILABLE_NOTE };
@@ -177,4 +173,13 @@ export function describeRobotRemoveResult(result, robotName) {
     }
     if (result?.code === ROBOT_CREDENTIAL_CODES.unavailable) return { tone: 'error', text: UNAVAILABLE_NOTE };
     return { tone: 'error', text: text(result?.message) || `Could not remove credentials from robot ${robotName}.` };
+}
+
+const TONE_RANK = { success: 0, warning: 1, error: 2 };
+
+// Several per-robot outcomes become one message; the worst outcome sets the tone.
+export function combineRobotResults(entries = []) {
+    if (!entries.length) return null;
+    const tone = entries.reduce((worst, entry) => (TONE_RANK[entry.tone] > TONE_RANK[worst] ? entry.tone : worst), 'success');
+    return { tone, text: entries.map((entry) => entry.text).join('\n') };
 }

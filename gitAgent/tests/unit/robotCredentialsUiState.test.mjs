@@ -3,14 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
 import {
-    NO_ROBOT,
     normalizeRobotTargets,
-    pickRobotSelection,
-    buildRobotOptions,
-    describeRobotSelection,
+    describeRobotRow,
     planAutomaticRobotSave,
     describeRobotSaveResult,
     describeRobotRemoveResult,
+    combineRobotResults,
     formatSavedAt
 } from '../../IDE-plugins/git-tool-button/components/git-robot-credentials/robot-credentials-state.js';
 
@@ -35,75 +33,85 @@ const aliceCredentials = {
     configured: true, readable: true, githubLogin: 'alice-gh', savedBy: { id: 'alice', username: 'alice' }, savedAt: '2026-11-02T08:30:00.000Z'
 };
 
-test('the default robot is preselected and "Don\'t save to a robot" is always offered', () => {
+test('every robot is listed with the default first; sign-in saves to the default robot', () => {
     const list = targets();
-    assert.equal(pickRobotSelection(list.robots, ''), 'default');
-    assert.equal(pickRobotSelection(list.robots, 'builder'), 'builder');
-    assert.equal(pickRobotSelection(list.robots, NO_ROBOT), NO_ROBOT);
-    assert.equal(pickRobotSelection(list.robots, 'deleted-robot'), 'default');
-    assert.equal(pickRobotSelection([], ''), NO_ROBOT);
-    const options = buildRobotOptions(list.robots);
-    assert.deepEqual(options.at(-1), { value: NO_ROBOT, name: "Don't save to a robot" });
-    assert.deepEqual(options.map((option) => option.value), ['builder', 'default', NO_ROBOT]);
-    assert.equal(options[1].name, 'default (default)');
+    assert.deepEqual(list.robots.map((robot) => robot.name), ['default', 'builder']);
+    assert.equal(describeRobotRow(list.robots[0], list).label, 'default (default)');
+    assert.equal(describeRobotRow(list.robots[0], list).isDefault, true);
+    assert.equal(describeRobotRow(list.robots[1], list).status, 'No git credentials');
+    assert.deepEqual(planAutomaticRobotSave({ targets: list }), { save: true, robotNames: ['default'], message: '' });
+    assert.equal(planAutomaticRobotSave({ targets: normalizeRobotTargets({ ok: true, robots: [] }) }).save, false);
 });
 
-test('RoboTeam unavailable hides the selector behind a note', () => {
+test('RoboTeam unavailable hides the list behind a note', () => {
     const unavailable = normalizeRobotTargets({ ok: false, code: 'ROBOTEAM_UNAVAILABLE', message: 'x' });
     assert.equal(unavailable.available, false);
     assert.match(unavailable.note, /RoboTeam is not available/);
     assert.match(unavailable.note, /sign-in still works/);
     assert.equal(normalizeRobotTargets(null).available, false);
-    const description = describeRobotSelection({ targets: unavailable, selection: 'default', connected: true });
-    assert.equal(description.canSave, false);
-    assert.equal(description.canRemove, false);
-    assert.deepEqual(planAutomaticRobotSave({ targets: unavailable, selection: 'default' }), { save: false, message: '' });
+    assert.deepEqual(planAutomaticRobotSave({ targets: unavailable }), { save: false, robotNames: [], message: '' });
 });
 
-test('credentials of another user show login, saver and date; non-admins cannot overwrite', () => {
-    const description = describeRobotSelection({ targets: targets({ builder: bobCredentials }), selection: 'builder', connected: true });
-    assert.match(description.warning, /bob-gh/);
-    assert.match(description.warning, /saved by bob/);
-    assert.match(description.warning, /2026-11-01 10:00 UTC/);
-    assert.equal(description.adminNote, 'Only an administrator can overwrite credentials saved by another user.');
-    assert.equal(description.blocked, true);
-    assert.equal(description.canSave, false);
-    assert.equal(description.canRemove, false);
-    const plan = planAutomaticRobotSave({ targets: targets({ builder: bobCredentials }), selection: 'builder' });
-    assert.equal(plan.save, false);
-    assert.match(plan.message, /Not saved to robot builder/);
+test('credentials of another user show login, saver and date; non-admins get no action', () => {
+    const list = targets({ builder: bobCredentials });
+    const row = describeRobotRow(list.robots[1], list, { connected: true });
+    assert.match(row.status, /bob-gh/);
+    assert.match(row.status, /saved by bob/);
+    assert.match(row.status, /2026-11-01 10:00 UTC/);
+    assert.equal(row.note, 'Only an administrator can overwrite credentials saved by another user.');
+    assert.equal(row.canSave, false);
+    assert.equal(row.canRemove, false);
 });
 
-test('administrators see the overwrite warning and may overwrite or remove', () => {
-    const description = describeRobotSelection({ targets: targets({ canAdmin: true, builder: bobCredentials }), selection: 'builder', connected: true });
-    assert.match(description.warning, /bob-gh/);
-    assert.match(description.adminNote, /overwrite them because you are an administrator/);
-    assert.equal(description.saveLabel, 'Overwrite robot credentials');
-    assert.equal(description.canSave, true);
-    assert.equal(description.canRemove, true);
-    assert.deepEqual(planAutomaticRobotSave({ targets: targets({ canAdmin: true, builder: bobCredentials }), selection: 'builder' }), {
-        save: true, robotName: 'builder', message: ''
-    });
+test('sign-in never overwrites the default robot holding another user\'s credentials', () => {
+    for (const canAdmin of [false, true]) {
+        const list = normalizeRobotTargets({ ok: true, canAdmin, userId: 'alice', robots: [{ id: 'r1', name: 'default', credentials: bobCredentials }] });
+        const plan = planAutomaticRobotSave({ targets: list });
+        assert.equal(plan.save, false);
+        assert.equal(plan.robotName, 'default');
+        assert.match(plan.message, /Not saved to robot default: it holds the GitHub credentials of bob-gh, saved by bob/);
+        assert.match(plan.message, canAdmin ? /Use Overwrite credentials/ : /Only an administrator/);
+    }
 });
 
-test('the saver may re-save and remove their own credentials without a warning', () => {
-    const description = describeRobotSelection({ targets: targets({ builder: aliceCredentials }), selection: 'builder', connected: true });
-    assert.equal(description.warning, '');
-    assert.match(description.notice, /You saved the GitHub credentials of alice-gh/);
-    assert.equal(description.canSave, true);
-    assert.equal(description.canRemove, true);
-    assert.equal(description.saveLabel, 'Save to robot');
+test('administrators may overwrite or remove another user\'s credentials from the robot card', () => {
+    const list = targets({ canAdmin: true, builder: bobCredentials });
+    const row = describeRobotRow(list.robots[1], list, { connected: true });
+    assert.equal(row.note, '');
+    assert.equal(row.canSave, true);
+    assert.equal(row.saveLabel, 'Overwrite credentials');
+    assert.equal(row.canRemove, true);
 });
 
-test('Save to robot needs a stored GitHub credential; "Don\'t save" disables every robot action', () => {
-    assert.equal(describeRobotSelection({ targets: targets(), selection: 'default', connected: false }).canSave, false);
-    assert.equal(describeRobotSelection({ targets: targets(), selection: 'default', connected: true }).canSave, true);
-    const none = describeRobotSelection({ targets: targets(), selection: NO_ROBOT, connected: true });
-    assert.equal(none.robot, null);
-    assert.equal(none.canSave, false);
-    assert.equal(none.canRemove, false);
-    assert.deepEqual(planAutomaticRobotSave({ targets: targets(), selection: NO_ROBOT }), { save: false, message: '' });
-    assert.deepEqual(planAutomaticRobotSave({ targets: targets(), selection: 'default' }), { save: true, robotName: 'default', message: '' });
+test('the saver may replace and remove their own credentials; sign-in refreshes their default robot', () => {
+    const list = targets({ builder: aliceCredentials });
+    const row = describeRobotRow(list.robots[1], list, { connected: true });
+    assert.match(row.status, /Your credentials \(GitHub alice-gh\)/);
+    assert.equal(row.saveLabel, 'Replace credentials');
+    assert.equal(row.canSave, true);
+    assert.equal(row.canRemove, true);
+    const own = normalizeRobotTargets({ ok: true, userId: 'alice', robots: [{ id: 'r1', name: 'default', credentials: aliceCredentials }] });
+    assert.deepEqual(planAutomaticRobotSave({ targets: own }).robotNames, ['default']);
+});
+
+test('Add credentials on a robot needs a stored GitHub credential; Remove needs credentials there', () => {
+    const list = targets();
+    const offline = describeRobotRow(list.robots[0], list, { connected: false });
+    assert.equal(offline.canSave, false);
+    assert.equal(offline.canRemove, false);
+    const online = describeRobotRow(list.robots[0], list, { connected: true });
+    assert.equal(online.canSave, true);
+    assert.equal(online.saveLabel, 'Add credentials');
+});
+
+test('several robot outcomes combine into one message with the worst tone', () => {
+    const combined = combineRobotResults([
+        { tone: 'success', text: 'saved to default' },
+        { tone: 'error', text: 'failed for builder' }
+    ]);
+    assert.equal(combined.tone, 'error');
+    assert.equal(combined.text, 'saved to default\nfailed for builder');
+    assert.equal(combineRobotResults([]), null);
 });
 
 test('save and remove results become user-facing messages', () => {
@@ -124,9 +132,13 @@ test('save and remove results become user-facing messages', () => {
 test('the robot section follows the WebSkel action contract and states the required warnings', async () => {
     const html = await fs.readFile(new URL('git-robot-credentials.html', componentDir), 'utf8');
     const js = await fs.readFile(new URL('git-robot-credentials.js', componentDir), 'utf8');
-    assert.match(html, /data-local-action="saveToRobot"/);
-    assert.match(html, /data-local-action="removeFromRobot"/);
-    assert.match(html, /data-presenter="custom-select"/);
+    assert.match(html, /data-role="list"/);
+    assert.match(js, /'saveToRobot'/);
+    assert.match(js, /'removeFromRobot'/);
+    assert.match(js, /dataset\.localAction = action/);
+    assert.match(js, /git-robot-credentials-link/);
+    assert.doesNotMatch(html, /custom-select|class="secondary"|<button|checkbox/);
+    assert.doesNotMatch(js, /checkbox/);
     assert.match(html, /Anyone with access to a robot can use the git credentials saved in it\./);
     assert.match(html, /token limited to the repositories/);
     assert.match(html, /default robot are also used by <code>ploinky update<\/code>/);
@@ -137,4 +149,16 @@ test('the robot section follows the WebSkel action contract and states the requi
     assert.ok(config.dependencies.some((entry) => entry.component === 'git-robot-credentials' && entry.presenter === 'GitRobotCredentials'));
     const promptHtml = await fs.readFile(new URL('../git-credentials-prompt/git-credentials-prompt.html', componentDir), 'utf8');
     assert.match(promptHtml, /<git-robot-credentials data-presenter="git-robot-credentials"><\/git-robot-credentials>/);
+});
+
+test('every robot section rule still matches after Explorer scopes the stylesheet', async () => {
+    // Explorer prefixes each selector with the component tag; a comment before a selector breaks that prefix.
+    const { scopeCssToComponent } = await import('../../../explorer/utils/pluginUtils.core.js');
+    const css = await fs.readFile(new URL('git-robot-credentials.css', componentDir), 'utf8');
+    const scoped = scopeCssToComponent(css, 'git-robot-credentials');
+    const selectors = [...scoped.matchAll(/(?:^|})\s*([^{}@][^{}]*)\{/g)].flatMap((match) => match[1].split(',').map((part) => part.trim()));
+    assert.ok(selectors.some((selector) => selector.includes('.git-robot-credentials-list')));
+    for (const selector of selectors) {
+        assert.doesNotMatch(selector, /\/\*|git-robot-credentials\s+git-robot-credentials/, selector);
+    }
 });

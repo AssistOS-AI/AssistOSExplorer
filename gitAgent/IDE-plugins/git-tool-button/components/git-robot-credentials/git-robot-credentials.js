@@ -1,16 +1,14 @@
 import {
-    NO_ROBOT,
     normalizeRobotTargets,
-    pickRobotSelection,
-    buildRobotOptions,
-    describeRobotSelection,
+    describeRobotRow,
     planAutomaticRobotSave,
     describeRobotSaveResult,
-    describeRobotRemoveResult
+    describeRobotRemoveResult,
+    combineRobotResults
 } from './robot-credentials-state.js';
 
-// Robot access section of the Git credentials prompt. It lists RoboTeam robots, keeps the selected
-// robot, and saves or removes the user's GitHub credentials through the git panel's service.
+// Robot access section of the Git credentials prompt. It lists every RoboTeam robot with its own actions to add or
+// remove the user's GitHub credentials through the git panel's service; sign-in also saves them to the default robot.
 // The token never reaches the browser: gitAgent reads it from DPU on the server side.
 export class GitRobotCredentials {
     constructor(element, invalidate) {
@@ -21,10 +19,11 @@ export class GitRobotCredentials {
             connected: false,
             loading: false,
             loaded: false,
-            busy: '',
+            // { robot, kind } while one robot's save or removal runs; actions on every robot wait for it.
+            busy: null,
             targets: normalizeRobotTargets(null),
-            selection: '',
-            result: null
+            // Last save or removal outcome per robot name, shown on that robot.
+            results: {}
         };
         this.loadVersion = 0;
         this.invalidate();
@@ -36,25 +35,14 @@ export class GitRobotCredentials {
         this.root = this.element.querySelector('.git-robot-credentials');
         this.unavailableNode = this.element.querySelector('[data-role="unavailable"]');
         this.bodyNode = this.element.querySelector('[data-role="body"]');
-        this.selectNode = this.element.querySelector('#gitRobotCredentialsTarget');
-        this.noticeNode = this.element.querySelector('[data-role="notice"]');
-        this.warningNode = this.element.querySelector('[data-role="warning"]');
-        this.warningTextNode = this.element.querySelector('[data-role="warning-text"]');
-        this.adminNoteNode = this.element.querySelector('[data-role="admin-note"]');
-        this.saveButton = this.element.querySelector('[data-role="save"]');
-        this.removeButton = this.element.querySelector('[data-role="remove"]');
-        this.resultNode = this.element.querySelector('[data-role="result"]');
-        // The robot picker is a custom-select; its selection arrives as a change event.
-        this.handleSelectChange = (event) => this.onSelectionChange(event);
-        this.selectNode?.addEventListener('change', this.handleSelectChange);
+        this.listNode = this.element.querySelector('[data-role="list"]');
+        this.renderedListKey = '';
         const context = this.element.closest('git-credentials-prompt')?.webSkelPresenter?.getRobotCredentialsContext?.();
         if (context) this.setContext(context);
         this.project();
     }
 
     afterUnload() {
-        this.selectNode?.removeEventListener('change', this.handleSelectChange);
-        this.handleSelectChange = null;
         this.loadVersion += 1;
     }
 
@@ -68,7 +56,7 @@ export class GitRobotCredentials {
         this.state.visible = Boolean(visible);
         this.state.connected = Boolean(connected);
         if (becameVisible) {
-            this.state.result = null;
+            this.state.results = {};
             void this.loadTargets();
             return;
         }
@@ -89,105 +77,140 @@ export class GitRobotCredentials {
         }
         if (version !== this.loadVersion) return this.state.targets;
         this.state.targets = normalizeRobotTargets(payload);
-        this.state.selection = pickRobotSelection(this.state.targets.robots, this.state.selection);
         this.state.loading = false;
         this.state.loaded = true;
         this.project();
         return this.state.targets;
     }
 
-    onSelectionChange(event) {
-        const value = String(event?.value ?? this.selectNode?.value ?? '').trim();
-        this.state.selection = value || NO_ROBOT;
-        this.state.result = null;
-        this.project();
+    rowFor(robotName) {
+        const robot = this.state.targets.robots.find((entry) => entry.name === robotName);
+        return robot ? describeRobotRow(robot, this.state.targets, { connected: this.state.connected }) : null;
     }
 
-    async saveToRobot() {
-        const description = describeRobotSelection({
-            targets: this.state.targets,
-            selection: this.state.selection,
-            connected: this.state.connected
-        });
-        if (!description.canSave || this.state.busy) return null;
-        return this.runSave(description.robot.name);
+    // Link actions carry the robot name in data-robot.
+    async saveToRobot(target) {
+        const robotName = String(target?.dataset?.robot || '');
+        if (!this.rowFor(robotName)?.canSave || this.state.busy) return null;
+        const [outcome] = await this.runSave([robotName]);
+        return outcome;
     }
 
-    async removeFromRobot() {
-        const description = describeRobotSelection({
-            targets: this.state.targets,
-            selection: this.state.selection,
-            connected: this.state.connected
-        });
-        if (!description.canRemove || this.state.busy) return null;
+    async removeFromRobot(target) {
+        const robotName = String(target?.dataset?.robot || '');
+        if (!this.rowFor(robotName)?.canRemove || this.state.busy) return null;
         const panel = this.getPanelPresenter();
         if (!panel?.deleteRobotCredentials) return null;
-        const robotName = description.robot.name;
-        this.state.busy = 'removing';
+        this.state.busy = { robot: robotName, kind: 'removing' };
+        delete this.state.results[robotName];
         this.project();
         const result = await panel.deleteRobotCredentials(robotName).catch((error) => ({ ok: false, message: error?.message }));
-        this.state.busy = '';
-        this.state.result = describeRobotRemoveResult(result, robotName);
+        const outcome = describeRobotRemoveResult(result, robotName);
+        this.state.busy = null;
+        this.state.results[robotName] = outcome;
         await this.loadTargets();
-        return result;
+        return outcome;
     }
 
     // Called after a successful GitHub sign-in or manual token save.
     async saveAfterSignIn() {
         this.state.connected = true;
         if (!this.state.loaded) await this.loadTargets();
-        const plan = planAutomaticRobotSave({ targets: this.state.targets, selection: this.state.selection });
+        const plan = planAutomaticRobotSave({ targets: this.state.targets });
         if (!plan.save) {
-            if (plan.message) {
-                this.state.result = { tone: plan.tone || 'warning', text: plan.message };
+            if (plan.message && plan.robotName) {
+                this.state.results[plan.robotName] = { tone: plan.tone || 'warning', text: plan.message };
                 this.project();
             }
             return { saved: false, message: plan.message };
         }
-        const result = await this.runSave(plan.robotName);
-        return { saved: Boolean(result?.ok), message: this.state.result?.text || '' };
+        const outcomes = await this.runSave(plan.robotNames);
+        return {
+            saved: outcomes.length > 0 && outcomes.every((outcome) => outcome.tone === 'success'),
+            message: combineRobotResults(outcomes)?.text || ''
+        };
     }
 
-    async runSave(robotName) {
+    async runSave(robotNames) {
         const panel = this.getPanelPresenter();
-        if (!panel?.saveRobotCredentials) return null;
-        this.state.busy = 'saving';
-        this.state.result = null;
-        this.project();
-        const result = await panel.saveRobotCredentials(robotName).catch((error) => ({ ok: false, message: error?.message }));
-        this.state.busy = '';
-        this.state.result = describeRobotSaveResult(result, robotName);
+        if (!panel?.saveRobotCredentials) return [];
+        const outcomes = [];
+        for (const robotName of robotNames) {
+            this.state.busy = { robot: robotName, kind: 'saving' };
+            delete this.state.results[robotName];
+            this.project();
+            const result = await panel.saveRobotCredentials(robotName).catch((error) => ({ ok: false, message: error?.message }));
+            const outcome = describeRobotSaveResult(result, robotName);
+            this.state.results[robotName] = outcome;
+            outcomes.push(outcome);
+        }
+        this.state.busy = null;
         await this.loadTargets();
-        return result;
+        return outcomes;
     }
 
-    syncSelect(options) {
-        if (!this.selectNode) return;
-        const encoded = encodeURIComponent(JSON.stringify(options));
-        if (this.selectNode.getAttribute('data-options') !== encoded) {
-            this.selectNode.setAttribute('data-options', encoded);
+    buildLink(action, robotName, label, busyLabel, isBusy, disabled) {
+        const link = document.createElement('button');
+        link.type = 'button';
+        link.className = 'git-robot-credentials-link';
+        link.dataset.localAction = action;
+        link.dataset.robot = robotName;
+        link.textContent = isBusy ? busyLabel : label;
+        link.disabled = disabled;
+        link.setAttribute('aria-busy', isBusy ? 'true' : 'false');
+        return link;
+    }
+
+    buildRow(row) {
+        const busy = this.state.busy;
+        const anyBusy = Boolean(busy) || this.state.loading;
+        const item = document.createElement('li');
+        item.className = 'git-robot-credentials-item';
+        item.dataset.tone = row.tone;
+        if (row.isDefault) item.dataset.default = 'true';
+        const name = document.createElement('span');
+        name.className = 'git-robot-credentials-item-name';
+        name.textContent = row.label;
+        const status = document.createElement('span');
+        status.className = 'git-robot-credentials-item-status';
+        status.textContent = row.note ? `${row.status}. ${row.note}` : row.status;
+        item.append(name, status);
+        const actions = document.createElement('div');
+        actions.className = 'git-robot-credentials-item-actions';
+        const mine = busy?.robot === row.name;
+        if (row.canSave) {
+            actions.append(this.buildLink('saveToRobot', row.name, row.saveLabel, 'Adding…', mine && busy.kind === 'saving', anyBusy));
         }
-        this.selectNode.setAttribute('data-selected', this.state.selection || NO_ROBOT);
-        const disabled = !this.state.targets.available || this.state.loading || Boolean(this.state.busy);
-        this.selectNode.toggleAttribute('disabled', disabled);
-        const select = this.selectNode.webSkelPresenter;
-        if (!select?.setOptions) return;
-        const key = `${encoded}|${this.state.selection}`;
-        if (this.renderedSelectKey !== key) {
-            select.setOptions(options, this.state.selection || NO_ROBOT);
-            this.renderedSelectKey = key;
+        if (row.canRemove) {
+            actions.append(this.buildLink('removeFromRobot', row.name, 'Remove', 'Removing…', mine && busy.kind === 'removing', anyBusy));
         }
-        select.applyDisabledState?.();
+        if (actions.childElementCount) item.append(actions);
+        const result = this.state.results[row.name];
+        if (result?.text) {
+            const note = document.createElement('span');
+            note.className = 'git-robot-credentials-item-result';
+            note.dataset.tone = result.tone;
+            note.setAttribute('role', 'status');
+            note.textContent = result.text;
+            item.append(note);
+        }
+        return item;
+    }
+
+    syncList() {
+        if (!this.listNode) return;
+        const rows = this.state.targets.robots.map((robot) => describeRobotRow(robot, this.state.targets, { connected: this.state.connected }));
+        const key = JSON.stringify({ rows, busy: this.state.busy, loading: this.state.loading, results: this.state.results });
+        if (key === this.renderedListKey) return;
+        this.renderedListKey = key;
+        const scroll = this.listNode.scrollTop;
+        this.listNode.replaceChildren(...rows.map((row) => this.buildRow(row)));
+        this.listNode.scrollTop = scroll;
     }
 
     project() {
         if (!this.root) return;
-        const { targets, loading, busy, result } = this.state;
-        const description = describeRobotSelection({
-            targets,
-            selection: this.state.selection,
-            connected: this.state.connected
-        });
+        const { targets, loading } = this.state;
         let stateName = 'ready';
         if (loading && !this.state.loaded) stateName = 'loading';
         else if (!targets.available) stateName = 'unavailable';
@@ -199,34 +222,6 @@ export class GitRobotCredentials {
             this.unavailableNode.textContent = note;
         }
         if (this.bodyNode) this.bodyNode.hidden = stateName !== 'ready' || targets.robots.length === 0;
-        this.syncSelect(buildRobotOptions(targets.robots));
-
-        if (this.noticeNode) {
-            this.noticeNode.hidden = !description.notice;
-            this.noticeNode.textContent = description.notice;
-        }
-        if (this.warningNode) {
-            this.warningNode.hidden = !description.warning;
-            if (this.warningTextNode) this.warningTextNode.textContent = description.warning;
-            if (this.adminNoteNode) this.adminNoteNode.textContent = description.adminNote;
-        }
-        if (this.saveButton) {
-            this.saveButton.hidden = !this.state.connected || !description.robot;
-            this.saveButton.disabled = !description.canSave || Boolean(busy);
-            this.saveButton.textContent = busy === 'saving' ? 'Saving…' : description.saveLabel;
-            this.saveButton.setAttribute('aria-busy', busy === 'saving' ? 'true' : 'false');
-        }
-        if (this.removeButton) {
-            this.removeButton.hidden = !description.canRemove;
-            this.removeButton.disabled = Boolean(busy);
-            this.removeButton.textContent = busy === 'removing' ? 'Removing…' : 'Remove from robot';
-            this.removeButton.setAttribute('aria-busy', busy === 'removing' ? 'true' : 'false');
-        }
-        if (this.resultNode) {
-            this.resultNode.hidden = !result?.text;
-            this.resultNode.textContent = result?.text || '';
-            if (result?.tone) this.resultNode.dataset.tone = result.tone;
-            else delete this.resultNode.dataset.tone;
-        }
+        this.syncList();
     }
 }
