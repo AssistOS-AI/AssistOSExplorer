@@ -56,8 +56,10 @@ export const STAGING_FILES = Object.freeze(['.explorer-qa-edge-desired.json', '.
 // Ploinky creates per-agent symlinks here; real files and directories are operator content.
 export const LINK_DIRECTORIES = Object.freeze(['.ploinky/code', '.ploinky/skills']);
 // The router access policy the deploy restores (the list of the policy restoration block).
+// `sso-sessions.enc` is the Router's encrypted SSO session file; it is absent until the Router writes it, and an absent
+// entry is neither stashed nor restored.
 export const POLICY_ENTRIES = Object.freeze(['policy-state.json', 'sessions-revocations.json', 'policy-audit.log',
-    'policy-audit-archive']);
+    'policy-audit-archive', 'sso-sessions.enc']);
 export const STASH_NAME = 'router-security';
 export const MARKER_NAME = 'install-pending.json';
 

@@ -52,7 +52,7 @@ const REGENERATED = Object.freeze(['.ploinky/repo_sources.json', '.ploinky/enabl
     '.ploinky-box/update/receipt.json', '.ploinky-box/workspace.lock', '.ploinky-box.retired-x/old-state.json',
     '.ploinky/.explorer-qa-cloudflare-credentials.json', '.ploinky/.explorer-qa-edge-desired.json']);
 const POLICY = Object.freeze({ 'policy-state.json': '{"policy":"live"}\n', 'sessions-revocations.json': '{"revoked":["s1"]}\n',
-    'policy-audit.log': 'audit\n', 'policy-audit-archive/2026-10.log': 'archived\n' });
+    'policy-audit.log': 'audit\n', 'policy-audit-archive/2026-10.log': 'archived\n', 'sso-sessions.enc': 'encrypted-sso-sessions\n' });
 const POLICY_DIR = '.ploinky/data/router-security';
 
 function fixture(t, prefix = 'qa-teardown-', { cleanup = true } = {}) {
@@ -306,7 +306,8 @@ test('D1: the keep rules are the deploy preservation rules of the base workflow'
     assert.deepEqual([...privileged.RUNTIME_ENTRIES], runtimeEntries);
     assert.equal(privileged.BOX_STATE_SIBLING_PREFIX, '.ploinky-box.');
     assert.deepEqual([...privileged.GENERATED_DATA].sort(), [...graphData].sort());
-    assert.deepEqual([...privileged.POLICY_ENTRIES], ['policy-state.json', 'sessions-revocations.json', 'policy-audit.log', 'policy-audit-archive']);
+    assert.deepEqual([...privileged.POLICY_ENTRIES], ['policy-state.json', 'sessions-revocations.json', 'policy-audit.log', 'policy-audit-archive',
+        'sso-sessions.enc']);
     // When the base commit is in this clone, the literals are compared with its workflow text too.
     const shown = spawnSync('git', ['-C', REPOSITORY, 'show', '916078b2:.github/workflows/deploy-explorer-qa.yml'], { encoding: 'utf8',
         maxBuffer: 16 * 1024 * 1024 });
@@ -788,6 +789,54 @@ test('AC12 r2: the stash is a verified copy, never overwritten, restored once an
     writeStash(f);
     const cleared = await cli(f, eng, ['stash-clear', '--lock-held']);
     assert.deepEqual(cleared.output, { result: 'cleared', removed: true, discarded: [] });
+    assert.equal(stashPresent(f), false);
+});
+
+test('the encrypted SSO session file is stashed, removed with the workspace policy and restored byte-identical', t => {
+    const f = fixture(t);
+    observedLayout(f, { retired: false });
+    const sessions = crypto.randomBytes(256);
+    fs.writeFileSync(f.at(`${POLICY_DIR}/sso-sessions.enc`), sessions);
+    fs.chmodSync(f.at(`${POLICY_DIR}/sso-sessions.enc`), 0o600);
+    fs.mkdirSync(f.paths.state, { mode: 0o700 });
+    const stashed = privileged.stashPolicy({ paths: f.paths, owner: uid });
+    assert.equal(stashed.result, 'stashed');
+    assert.equal(stashed.copied.at(-1), 'sso-sessions.enc');
+    const parked = path.join(f.paths.state, teardown.STASH_NAME, 'sso-sessions.enc');
+    assert.deepEqual(fs.readFileSync(parked), sessions);
+    // The reduction deletes the live router-security directory, and the file with it.
+    const plan = privileged.planWorkspace({ paths: f.paths, owner: uid, scope: 'rebuild', mode: 'keep-data' });
+    privileged.reduceWorkspace({ paths: f.paths, owner: uid, scope: 'rebuild', planDigest: plan.digest });
+    assert.equal(exists(f.at(`${POLICY_DIR}/sso-sessions.enc`)), false);
+    // A fresh Router initializes its policy and writes no session file yet; the restore brings the old one back.
+    f.write(`${POLICY_DIR}/policy-state.json`, '{"policy":"fresh"}\n');
+    const restored = privileged.stashRestore({ paths: f.paths, owner: uid });
+    assert.equal(restored.result, 'restored');
+    assert.ok(restored.copied.includes('sso-sessions.enc'), JSON.stringify(restored));
+    assert.deepEqual(fs.readFileSync(f.at(`${POLICY_DIR}/sso-sessions.enc`)), sessions);
+    assert.equal(fs.statSync(f.at(`${POLICY_DIR}/sso-sessions.enc`)).mode & 0o777, 0o600);
+    assert.equal(stashPresent(f), false);
+});
+
+test('an absent SSO session file is a normal case: the stash and the restore succeed without it', t => {
+    const f = fixture(t);
+    observedLayout(f, { retired: false });
+    fs.rmSync(f.at(`${POLICY_DIR}/sso-sessions.enc`));
+    fs.mkdirSync(f.paths.state, { mode: 0o700 });
+    const stashed = privileged.stashPolicy({ paths: f.paths, owner: uid });
+    assert.deepEqual(stashed, { result: 'stashed', copied: privileged.POLICY_ENTRIES.filter(name => name !== 'sso-sessions.enc'),
+        discarded: [] });
+    assert.equal(exists(path.join(f.paths.state, teardown.STASH_NAME, 'sso-sessions.enc')), false);
+    const plan = privileged.planWorkspace({ paths: f.paths, owner: uid, scope: 'rebuild', mode: 'keep-data' });
+    privileged.reduceWorkspace({ paths: f.paths, owner: uid, scope: 'rebuild', planDigest: plan.digest });
+    f.write(`${POLICY_DIR}/policy-state.json`, '{"policy":"fresh"}\n');
+    const restored = privileged.stashRestore({ paths: f.paths, owner: uid });
+    assert.deepEqual(restored, { result: 'restored', copied: privileged.POLICY_ENTRIES.filter(name => name !== 'sso-sessions.enc'),
+        discarded: [], stashRemoved: true });
+    assert.equal(exists(f.at(`${POLICY_DIR}/sso-sessions.enc`)), false);
+    for (const [name, value] of Object.entries(POLICY)) {
+        if (name !== 'sso-sessions.enc') assert.equal(f.read(`${POLICY_DIR}/${name}`), value, name);
+    }
     assert.equal(stashPresent(f), false);
 });
 
