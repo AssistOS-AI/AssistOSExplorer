@@ -276,7 +276,10 @@ function isWebttyNavigation(request) {
 // A plain {dir} discovery carries a launch on every row. A discovery for a chosen robot also echoes its profile, and a
 // row whose target cannot reach the robot's home has no launch and a precise `unavailable` reason instead.
 // The returned `targets` are the launchable rows; the others are returned as `unavailableTargets`.
-async function readTargetDiscovery(response, expectedDirectory, { profiled = false } = {}) {
+// A live-agent discovery (`mode: 'live-agent'`, the chooser's default after a robot is chosen) echoes a profile with that
+// `mode` and lists only agent rows, each launchable: the Router returns no Box row and never marks a live row unavailable.
+async function readTargetDiscovery(response, expectedDirectory, { profiled = false, mode = null } = {}) {
+  const live = mode === 'live-agent';
   expect(response.status()).toBe(201);
   const payload = await response.json();
   expect(Object.keys(payload).sort()).toEqual(['discovery', 'ok']);
@@ -296,19 +299,25 @@ async function readTargetDiscovery(response, expectedDirectory, { profiled = fal
     agentTargetsAvailable: expect.any(Boolean),
   });
   if (profiled) {
-    expect(Object.keys(payload.discovery.profile).sort()).toEqual(['id', 'label', 'provider']);
+    expect(Object.keys(payload.discovery.profile).sort()).toEqual(live ? ['id', 'label', 'mode', 'provider'] : ['id', 'label', 'provider']);
     expect(payload.discovery.profile).toMatchObject({
       provider: expect.any(String), id: expect.any(String), label: expect.any(String),
+      ...(live ? { mode: 'live-agent' } : {}),
     });
   }
   expect(Number.isSafeInteger(payload.discovery.expiresAt)).toBe(true);
   expect(payload.discovery.targets.length).toBeGreaterThan(0);
-  expect(payload.discovery.targets[0].kind).toBe('box');
-  expect(payload.discovery.targets.filter((target) => target.kind === 'box')).toHaveLength(1);
+  if (live) {
+    expect(payload.discovery.agentTargetsAvailable, 'a live-agent discovery needs the agent targets').toBe(true);
+    expect(payload.discovery.targets.filter((target) => target.kind !== 'agent'), 'a live-agent discovery has no Box row').toEqual([]);
+  } else {
+    expect(payload.discovery.targets[0].kind).toBe('box');
+    expect(payload.discovery.targets.filter((target) => target.kind === 'box')).toHaveLength(1);
+  }
   const launchable = [];
   const unavailable = [];
   for (const target of payload.discovery.targets) {
-    const isUnavailable = profiled && !Object.hasOwn(target, 'launch');
+    const isUnavailable = profiled && !live && !Object.hasOwn(target, 'launch');
     expect(Object.keys(target).sort()).toEqual([
       'access',
       'cwdDisplay',
@@ -374,10 +383,12 @@ async function waitForConnectedTerminal(page) {
 }
 
 // Every row of the chooser: launchable rows keep their launch, the others show why they are disabled.
-// A robot with environments shows its environment choice and only the RoboWork terminal of its provider; every other
-// discovery row is not listed. The chooser lists the whole discovery for a robot without environments.
+// A robot with environments shows its environment choice and, for an isolated environment, only the RoboWork terminal
+// of its provider; every other discovery row is not listed. Running agents (a live-agent discovery) and a robot without
+// environments list the whole discovery, and every live-agent row is enabled.
 async function assertChooserRows(chooser, discovery) {
-  const environmentView = Boolean(discovery.profile) && await chooser.locator('#terminalTargetEnvironment').isVisible();
+  const live = discovery.profile?.mode === 'live-agent';
+  const environmentView = Boolean(discovery.profile) && !live && await chooser.locator('#terminalTargetEnvironment').isVisible();
   const listed = (rows) => (environmentView
     ? rows.filter((row) => row.kind === 'agent' && row.detail === `AchillesIDE/${discovery.profile.provider}`)
     : rows);
@@ -396,6 +407,7 @@ async function assertChooserRows(chooser, discovery) {
   for (const target of targets) {
     const targetButton = chooser.locator(`.terminal-target-button[data-launch="${target.launch}"]`);
     await expect(targetButton).toHaveCount(1);
+    if (live) await expect(targetButton, 'every running-agent row is launchable').toBeEnabled();
     await expect(targetButton).toHaveAttribute('data-launch', target.launch);
     await expect(targetButton.locator('.terminal-target-label')).toHaveText(target.label);
     await expect(targetButton.locator('.terminal-target-detail')).toHaveText(target.detail);
@@ -414,9 +426,14 @@ async function assertChooserRows(chooser, discovery) {
   }
 }
 
+const LIVE_ENVIRONMENT = 'live-agents';
+const DEFAULT_ENVIRONMENT = 'default';
+
 // The dialog starts with no robot: the {dir} discovery is listed but every row is disabled until a robot is chosen.
 // The chooser then replaces that discovery with the one for the chosen robot. This needs at least one robot in the
 // deployment (created in RoboTeam); the spec does not create one.
+// Choosing a robot selects the Running agents environment and discovers with a live-agent profile. The isolated RoboWork
+// environments (T5) are then discovered one by one and the dialog is left on the isolated `default` environment.
 async function chooseTerminalRobot(chooserState, expectedDirectory) {
   const { chooser, page } = chooserState;
   const select = chooser.locator('#terminalTargetRobot');
@@ -435,29 +452,38 @@ async function chooseTerminalRobot(chooserState, expectedDirectory) {
   await select.selectOption(robotValue);
   expect((await cancelled).status()).toBe(200);
   chooserState.plainDiscovery = chooserState.discovery;
-  chooserState.discovery = await readTargetDiscovery(await profiledResponse, expectedDirectory.replace(/^\/+/, ''), { profiled: true });
+  const liveResponse = await profiledResponse;
+  const requestedProfile = liveResponse.request().postDataJSON()?.profile;
+  expect(requestedProfile?.mode, 'choosing a robot requests a live-agent discovery').toBe('live-agent');
+  chooserState.discovery = await readTargetDiscovery(liveResponse, expectedDirectory.replace(/^\/+/, ''), { profiled: true, mode: 'live-agent' });
+  expect(chooserState.discovery.profile).toEqual({ ...requestedProfile, label: chooserState.discovery.profile.label });
+  expect(chooserState.discovery.profile.id.endsWith('.default'), 'the live-agent profile names the robot home').toBe(true);
   chooserState.profiled = true;
   await expect(chooser.locator('#terminalTargetEnvironment'), 'the environment picker must show once a robot is chosen').toBeVisible();
+  await expect(chooser.locator('#terminalTargetEnvironment')).toHaveValue(LIVE_ENVIRONMENT);
   await assertChooserRows(chooser, chooserState.discovery);
   await assertEnvironmentsReachable(chooserState, expectedDirectory);
   return chooserState.discovery;
 }
 
-// Each environment of a robot keeps its terminal reachable: choosing it discovers again for that environment's profile
-// and lists the same strict rows. The first environment is restored so later steps use the current discovery.
+// Each isolated environment of a robot keeps its terminal reachable: choosing it discovers again for that environment's
+// profile and lists the same strict rows. Running agents was read when the robot was chosen. The `default` environment
+// is selected last so later steps use its isolated discovery.
 async function assertEnvironmentsReachable(chooserState, expectedDirectory) {
   const { chooser, page } = chooserState;
   const select = chooser.locator('#terminalTargetEnvironment');
   await expect(select).toBeVisible();
   const original = await select.inputValue();
+  expect(original, 'choosing a robot selects Running agents').toBe(LIVE_ENVIRONMENT);
   const keys = await select.locator('option:not([disabled])').evaluateAll((options) => options.map((option) => option.value));
   expect(keys, 'the selected environment must be one of the enabled environments').toContain(original);
-  const others = keys.filter((key) => key !== original);
+  expect(keys, 'the isolated default environment must be enabled').toContain(DEFAULT_ENVIRONMENT);
+  const others = keys.filter((key) => key !== LIVE_ENVIRONMENT && key !== DEFAULT_ENVIRONMENT);
   // T5: a second environment must be exercised; disabled environments are reported, never dropped silently.
   const disabled = await select.locator('option[disabled]').allTextContents();
   for (const reason of disabled) test.info().annotations.push({ type: 'unavailable-environment', description: reason });
   expect(others.length, `no second environment was exercised (unavailable: ${JSON.stringify(disabled)})`).toBeGreaterThan(0);
-  for (const key of [...others, original]) {
+  for (const key of [...others, DEFAULT_ENVIRONMENT]) {
     const responsePromise = page.waitForResponse(isTargetDiscovery, { timeout: smokeConfig.timeouts.navigation });
     await select.selectOption(key);
     const discovery = await readTargetDiscovery(await responsePromise, expectedDirectory.replace(/^\/+/, ''), { profiled: true });
@@ -465,6 +491,7 @@ async function assertEnvironmentsReachable(chooserState, expectedDirectory) {
     chooserState.discovery = discovery;
     await assertChooserRows(chooser, discovery);
   }
+  await expect(select).toHaveValue(DEFAULT_ENVIRONMENT);
 }
 
 async function openTerminalChooser(page, directoryPath) {
@@ -677,7 +704,7 @@ async function exerciseRobotChooser(page, directoryPath, terminals, testInfo) {
   expect(labels.filter((label) => /cannot be pulled/.test(label)), 'an environment image cannot be pulled').toEqual([]);
   const original = await select.inputValue();
   const other = (await select.locator('option:not([disabled])').evaluateAll((options) => options.map((option) => option.value)))
-    .find((key) => key !== original);
+    .find((key) => key !== original && key !== LIVE_ENVIRONMENT);
   expect(other, 'a non-default environment must exist to be opened').toBeTruthy();
   const discovered = page.waitForResponse(isTargetDiscovery, { timeout: smokeConfig.timeouts.navigation });
   await select.selectOption(other);
