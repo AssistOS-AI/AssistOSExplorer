@@ -108,7 +108,7 @@ Table of Contents</h1>
 <div class="toc-item lvl3"><a href="#sec73"><span class="t">3.9.1 Purpose and Access</span><span class="dots"></span><span class="p">76</span></a></div>
 <div class="toc-item lvl3"><a href="#sec74"><span class="t">3.9.2 My Account</span><span class="dots"></span><span class="p">77</span></a></div>
 <div class="toc-item lvl3"><a href="#sec75"><span class="t">3.9.3 Agents</span><span class="dots"></span><span class="p">79</span></a></div>
-<div class="toc-item lvl3"><a href="#sec76"><span class="t">3.9.4 Plugins and Copilot Skills</span><span class="dots"></span><span class="p">80</span></a></div>
+<div class="toc-item lvl3"><a href="#sec76"><span class="t">3.9.4 Plugins</span><span class="dots"></span><span class="p">80</span></a></div>
 <div class="toc-item lvl3"><a href="#sec77"><span class="t">3.9.5 Administration</span><span class="dots"></span><span class="p">80</span></a></div>
 <div class="toc-item lvl3"><a href="#sec78"><span class="t">3.9.6 Keymap, Editor and Theme</span><span class="dots"></span><span class="p">83</span></a></div>
 <div class="toc-item lvl3"><a href="#sec79"><span class="t">3.9.7 Avatar</span><span class="dots"></span><span class="p">85</span></a></div>
@@ -6057,9 +6057,14 @@ options depends on the user's roles and permissions.</p>
 <p align="center">
 <i>Figure
 70. Settings — Agents.</i></p>
-<h3 id="sec76" class="western">3.9.4 Plugins and Copilot Skills</h3>
-<p>The Plugins section is used to manage the plugins available in the application. Plugins extend the application's functionality by providing additional features without being directly integrated into the main interface. For each plugin, users can view relevant technical details, such as its identifier, category, type, and the interface location where its functionality can be accessed. A toggle allows each plugin to be enabled or disabled. Any changes can be saved to apply them or cancelled to discard them.</p>
-<p>The Copilot section is used to review and manage the instruction skills available to Copilot through RoboTeam. When no conversation is selected, it displays the default setup for future conversations, including the available skills, their current availability and selection status, the active policy version, the total number of skills in the workspace inventory, and the number currently included in the effective selection. Users can enable or disable skills and save the resulting configuration as the default for future conversations. If a specific conversation is selected, the section may instead display the configuration associated with that conversation.</p>
+<h3 id="sec76" class="western">3.9.4 Plugins</h3>
+<p>Open <b>Settings</b> and select <b>Plugins</b> to see the features available in your workspace interface. The list may include familiar tools such as Git, Marketplace, WebMeet, RoboTeam and Help; some entries are shown only to accounts with administrative permissions. The message above the list shows how many plugins were loaded for the workspace. Each row names a plugin and shows a switch on the right.</p>
+<p align="center">
+<img loading="lazy" decoding="async" src="images/settings-plugins-2026-11.png" alt="Settings Plugins tab with a list of workspace plugins and enable switches" align="bottom" border="0"/>
+</p>
+<p align="center">
+<i>Figure 71. Settings — Plugins and their enable switches.</i></p>
+<p>A blue switch means the plugin is enabled. Select a switch to enable or disable that plugin; the change is saved immediately, and a message above the list confirms the result. The smaller line under each name shows technical details, including where the plugin adds a button or menu item. For example, <b>file-exp:toolbar</b> means its control appears in the Explorer toolbar. The <b>Save</b> button at the bottom saves other Settings preferences; plugin switches save as you change them.</p>
 <h3 id="sec77" class="western">3.9.5 Administration</h3>
 <p>Open <b>Settings</b> and select <b>Administration</b> to manage access to this workspace. The pages available here depend on your account permissions. <b>Users</b> and <b>Roles</b> are shown to people who can manage users; <b>Applications</b> and <b>Authentication policy</b> are shown to people who can manage account settings. If you do not see Administration, ask a workspace administrator to review your role.</p>
 <p>On the <b>Users</b> page, use the search box to find an account by name, email address or user ID, then review its entry in the results. You can see the account's email verification state, current roles and status. Update the username or display name, or choose <b>Blocked</b> to prevent the account from signing in. Select <b>Save details</b> to apply those changes. The email address is shown for reference and cannot be edited here.</p>
@@ -6069,7 +6074,7 @@ options depends on the user's roles and permissions.</p>
 </p>
 <p align="center">
 <i>Figure
-71. Settings — Administration, Users.</i></p>
+72. Settings — Administration, Users.</i></p>
 <p>The <b>Roles</b> page shows the permission sets you can assign to accounts. Search by role name, description or permission to see what is already available. Built-in roles, including <b>admin</b>, <b>user</b> and <b>selfRegistered</b>, can be viewed but are protected from editing. For a different level of access, select <b>New role</b>, enter a clear name and description, choose its permissions and select <b>Create role</b>. Assign the new role from the Users page.</p>
 <p>When you change a custom role's permissions, everyone who has that role is affected. A custom role can be deleted after it has been removed from all accounts; the page shows how many people currently have it.</p>
 <p align="center">
@@ -6077,14 +6082,14 @@ options depends on the user's roles and permissions.</p>
 </p>
 <p align="center">
 <i>Figure
-72. Settings — Administration, Roles.</i></p>
+73. Settings — Administration, Roles.</i></p>
 <p>The <b>Applications</b> page lets you manage applications that use the workspace account system to authenticate users or provide access to services. Select <b>New application</b> and give it a name. In <b>Redirect URIs</b>, enter the exact address where that application expects users to return after signing in. Its setup instructions should tell you which client authentication option, scopes (the information it may request) and grants (the ways it may obtain access) to select. Leave <b>Application enabled</b> selected when it should be available, then select <b>Save application</b>. The list below lets you edit, enable, disable or delete existing applications.</p>
 <p align="center">
 <img loading="lazy" decoding="async" src="images/manual-embedded-068.jpg" align="bottom" border="0"/>
 </p>
 <p align="center">
 <i>Figure
-73. Settings — Administration, Applications.</i></p>
+74. Settings — Administration, Applications.</i></p>
 <p>If an application uses a client secret, treat it like that application's password. Save it in the application's secure configuration as soon as it appears; this page displays it only once. Saving changes or replacing the secret ends the application's existing authorizations and sign-in tokens, so its users will need to sign in and approve access again. You can disable an application temporarily or delete it when it is no longer needed.</p>
 <p>Use the <b>Authentication policy</b> page to choose which sign-in methods are available across the workspace: password, email code, passkey, authenticator app and Google. You can allow or close self-registration and decide whether new users must verify their email during sign-up. The page also shows whether email delivery and Google sign-in are ready. These settings affect how people enter the workspace; each person manages their own password, passkeys and authenticator app under <b>My Account</b>.</p>
 <p>Additional trusted redirect origins can be entered when another approved address needs to return users after sign-in. The workspace Router addresses are displayed separately and updated automatically. Review the choices, then select <b>Save authentication policy</b>. At least one sign-in method must remain enabled.</p>
@@ -6093,7 +6098,7 @@ options depends on the user's roles and permissions.</p>
 </p>
 <p align="center">
 <i>Figure
-74. Settings — Administration, Authentication policy.</i></p>
+75. Settings — Administration, Authentication policy.</i></p>
 <h3 id="sec78" class="western">3.9.6 Keymap, Editor and Theme</h3>
 <p>Users can manage the application's keyboard shortcuts from the Keymap section, which provides the mappings assigned to the available actions. To assign a different combination, the user selects the relevant action and presses the desired keys; the new shortcut is registered automatically. An existing mapping can be removed using the clear option or the Backspace key.</p>
 <p>Once the configuration has been adjusted, the changes can be saved or discarded, and the original default mappings can be restored at any time. The available actions include file search, finding and replacing text across files, saving the active file, triggering assisted code completion, and opening the settings window. The default shortcuts may differ depending on the operating system.</p>
@@ -6102,7 +6107,7 @@ options depends on the user's roles and permissions.</p>
 </p>
 <p align="center">
 <i>Figure
-75. Settings — Keymap.</i></p>
+76. Settings — Keymap.</i></p>
 <p>The Editor section configures the
 behaviour of the code editor used for collaborative document editing.
 It includes automatic saving, which is disabled by default; when it
@@ -6116,14 +6121,14 @@ how to proceed.</p>
 </p>
 <p align="center">
 <i>Figure
-76. Settings — Editor.</i></p>
+77. Settings — Editor.</i></p>
 <p>Users can customize the application's visual appearance through the Theme section, where they can choose between a light theme and a dark theme intended for use in low-light conditions. The selected option takes effect once the changes are saved. If the user cancels the modification, the application keeps the theme that was previously configured.</p>
 <p align="center">
 <img loading="lazy" decoding="async" src="images/manual-embedded-071.jpg" align="bottom" border="0"/>
 </p>
 <p align="center">
 <i>Figure
-77. Settings — Theme.</i></p>
+78. Settings — Theme.</i></p>
 <h3 id="sec79" class="western">3.9.7 Avatar</h3>
 <p>The Avatar section configures the
 avatar associated with the account and, for administrators, the
@@ -6138,7 +6143,7 @@ avatar can be assigned to each agent.</p>
 </p>
 <p align="center">
 <i>Figure
-78. Settings — Avatar.</i></p>
+79. Settings — Avatar.</i></p>
 <h3 id="sec80" class="western">3.9.8 Error Messages</h3>
 <p><b>Table
 15. Settings and administration messages</b></p>
@@ -6373,7 +6378,7 @@ system at the time of monitoring.</p>
 </p>
 <p align="center">
 <i>Figure
-79. Workspace Monitor — Resources.</i></p>
+80. Workspace Monitor — Resources.</i></p>
 <h3 id="sec85" class="western">3.10.4 Router Logs</h3>
 <p>The Router Logs section displays the
 activity recorded by the router. Each record reports information such
@@ -6609,50 +6614,50 @@ live monitoring.</p>
 <p>The <b>Robots</b> tab lists each robot's name, identifier, status and coding agent. Search by name or ID, or filter the list by login state and agent in use. An administrator selects <b>Create robot</b>, enters a unique name in the dialog and confirms. New robots use OpenCode initially. <b>Import CSV</b> creates robots named from email addresses in a CSV file.</p>
 <p>Select <b>Open</b> on a robot card to choose <b>Browser</b>, <b>Desktop</b>, <b>Terminal</b> or <b>Copilot</b>. Browser and Desktop open a visible workstation; Terminal opens a command-line session for administrators; Copilot opens the robot's conversation. A ready workstation can be reopened from its session link and stopped independently of a task.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-robots-open-2026-11.png" alt="RoboTeam Robots tab with the Open menu showing Browser, Desktop, Terminal and Copilot"/></p>
-<p align="center"><i>Figure 80. RoboTeam — Robots tab and Open menu.</i></p>
+<p align="center"><i>Figure 81. RoboTeam — Robots tab and Open menu.</i></p>
 <p>The three-dot menu on the robot card contains <b>Logs</b>, <b>Manage skills</b>, <b>Coding agent</b> and, for administrators when the robot is idle, <b>Delete robot</b>. Logs opens the active workstation's container output. Deletion requires confirmation and is unavailable while the robot has active or queued work.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-robot-actions-2026-11.png" alt="RoboTeam robot card with the three-dot actions menu open"/></p>
-<p align="center"><i>Figure 81. RoboTeam — robot management actions.</i></p>
+<p align="center"><i>Figure 82. RoboTeam — robot management actions.</i></p>
 <h3 id="sec90a" class="western">3.11.3 Managing Skills and Skillsets</h3>
 <p>Open the robot's three-dot menu and select <b>Manage skills</b>. The dialog shows required and built-in skills, recommended repositories and a Repository URL field. An administrator can add a recommended repository or register an HTTPS skills repository. A skillset is a named group of skills supplied by a repository. Removing a repository prevents later executions from selecting its skills; review a workflow's task selections before running it again.</p>
 <p>The default robot receives the built-in copilot skillset. Copilot conversations also receive the required workflow discovery and launch skills. A workflow task uses the skills or skillsets selected for that task, and RoboFlow needs a robot whose registered skills cover those selections.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-manage-skills-current.png" alt="Manage skills dialog with built-in and recommended repositories"/></p>
-<p align="center"><i>Figure 82. RoboTeam — Manage skills dialog.</i></p>
+<p align="center"><i>Figure 83. RoboTeam — Manage skills dialog.</i></p>
 <h3 id="sec90b" class="western">3.11.4 Choosing a Coding Agent</h3>
 <p>From the robot's three-dot menu, select <b>Coding agent</b>. An administrator can choose <b>Codex</b>, <b>OpenCode</b>, <b>Pi</b> or <b>Claude Code</b>, and set a default model and reasoning effort where the selected agent offers them. Stop the robot's workstation and unfinished work before changing its agent. The new selection applies to later chats and terminals; existing conversations keep the backend they started with. Pi cannot run Browser or Desktop work.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-coding-agent-2026-11.png" alt="Coding agent dialog showing four agents and the default model picker"/></p>
-<p align="center"><i>Figure 83. RoboTeam — coding agent and default model.</i></p>
+<p align="center"><i>Figure 84. RoboTeam — coding agent and default model.</i></p>
 <h3 id="sec90c" class="western">3.11.5 Workflow Types and the Workflow Editor</h3>
 <p>The <b>Workflow types</b> tab lists saved workflows, their descriptions, task and connection counts, and any missing-robot warning. <b>Flows history</b> opens past executions. The built-in <b>Standard development</b> and <b>Code Development</b> types can be inspected; administrators create their own type with <b>Create workflow</b>. A workflow card may also offer <b>Run now</b> in its actions.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-workflow-types-2026-11.png" alt="Workflow types tab showing Code Development and Standard development"/></p>
-<p align="center"><i>Figure 84. RoboTeam — Workflow types tab.</i></p>
+<p align="center"><i>Figure 85. RoboTeam — Workflow types tab.</i></p>
 <p>For a new type, describe the work and select <b>Generate</b> to draft a graph, or select <b>Skip</b> to build it manually. Generation runs only when requested. Review the draft before saving it.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-create-workflow-current.png" alt="Describe the workflow page with Generate and Skip actions"/></p>
-<p align="center"><i>Figure 85. RoboTeam — describe or skip workflow generation.</i></p>
+<p align="center"><i>Figure 86. RoboTeam — describe or skip workflow generation.</i></p>
 <p>The current editor keeps the workflow description, task list and graph in one view. Select a task to open its details beside the graph. Administrators can add tasks, edit names and prompts, choose terminal, desktop or browser execution, set a task's reasoning effort, select skills or skillsets, and mark a task as a start node, workflow creator or human-input task. Drag nodes to arrange them and connect their ports to define the route. The legend distinguishes Start, Intermediate and End roles. Missing robot coverage appears as a warning; a workflow needs a matching robot before it can run. <b>Save</b> requires a name, description, at least one ordinary task and prompts for ordinary tasks.</p>
 <p>The built-in Code Development graph illustrates a creator task and the managed <b>Run workflows</b> coordinator. Child workflows run in their listed order; a failed or paused child holds the later children. The coordinator itself has no robot, prompt, execution mode or skill selection.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-workflow-editor-2026-11.png" alt="Current Code Development workflow editor showing its task list, role legend and graph"/></p>
-<p align="center"><i>Figure 86. RoboTeam — current workflow editor and graph.</i></p>
+<p align="center"><i>Figure 87. RoboTeam — current workflow editor and graph.</i></p>
 <p>Select a task in the list or graph to inspect and edit its settings. The task panel shows its name, execution type, reasoning effort, environment, prompt and selected skills. The checkboxes mark a start node, permit sub-flows or permit a human-input question. Figure 88 shows the Validation task; its prompt asks the robot to check the integrated result before the workflow finishes.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-task-settings-2026-11.png" alt="Code Development task settings for Validation, including execution type, prompt and selected skills"/></p>
-<p align="center"><i>Figure 87. RoboTeam — edit a workflow task.</i></p>
+<p align="center"><i>Figure 88. RoboTeam — edit a workflow task.</i></p>
 <p>Select <b>Run workflows</b> to inspect the coordinator's connections. Connect a task that permits sub-flows to this node and add an outgoing edge for the route after its child workflows complete. The coordinator does not have its own robot or prompt.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-run-workflows-settings-2026-11.png" alt="Run workflows coordinator settings and connected Code Development graph"/></p>
-<p align="center"><i>Figure 88. RoboTeam — Run workflows coordinator.</i></p>
+<p align="center"><i>Figure 89. RoboTeam — Run workflows coordinator.</i></p>
 <p><b>Note:</b> The coordinator panel in Figure 89 still says that child workflows run “in parallel.” Current RoboFlow runs newly created child workflows sequentially in the order selected by the creator task. A failed or paused child holds the later children until it is completed.</p>
 <h3 id="sec90d" class="western">3.11.6 Running, Scheduling and Monitoring Workflows</h3>
 <p>Start a workflow with <b>Run now</b> when the workflow card offers it, or ask a robot's Copilot conversation to launch a type for an objective and working folder. Each start creates a flow. <b>Flows history</b> lists the saved runs and opens their execution pages. The default objective of a saved custom workflow can be used when no new prompt is supplied; a specific prompt takes precedence.</p>
 <p>The <b>Cron jobs</b> tab schedules a saved workflow at regular intervals or at daily times. Select <b>Create job</b>, choose a workflow and results folder, enter or inherit its prompt, set the schedule, and choose whether the job starts enabled. The selected results folder keeps the job's runs together. <b>Change folder</b> opens the workspace folder picker.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-cron-jobs-2026-11.png" alt="Cron jobs tab with an empty job list and Create job button"/></p>
-<p align="center"><i>Figure 89. RoboTeam — Cron jobs tab.</i></p>
+<p align="center"><i>Figure 90. RoboTeam — Cron jobs tab.</i></p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-create-cron-job-2026-11.png" alt="Create Cron job dialog showing workflow, results folder, prompt and interval settings"/></p>
-<p align="center"><i>Figure 90. RoboTeam — create a scheduled workflow job.</i></p>
+<p align="center"><i>Figure 91. RoboTeam — create a scheduled workflow job.</i></p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-cron-folder-2026-11.png" alt="Folder picker for a Cron job results folder"/></p>
-<p align="center"><i>Figure 91. RoboTeam — select a results folder.</i></p>
+<p align="center"><i>Figure 92. RoboTeam — select a results folder.</i></p>
 <p>A saved job shows its next run and last attempt. Its actions can run it immediately, edit it, disable or enable it, or delete it. <b>Run now</b> starts the job immediately and resets its next scheduled time. Missed scheduled times are skipped after restart, and a running or paused execution prevents overlap for the same job. Disabling or deleting a job does not stop a run already created.</p>
 <p>On an execution page, the header shows status and duration. <b>Pause workflow</b> pauses active work; <b>Resume workflow</b> continues a paused flow; <b>Terminate workflow</b> ends it after confirmation. The phase list and execution graph show the route through tasks. Select a phase to read its prompt, robot, selected skills, logs, human report and, when applicable, child workflows. A running phase accepts a live prompt; a paused, completed or failed phase can be continued with a new instruction in its saved session. Terminal conversations may run independently while graphical tasks queue behind another graphical task on the same robot.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-flows-history-2026-11.png" alt="RoboTeam Flows history showing a completed Standard development test run"/></p>
-<p align="center"><i>Figure 92. RoboTeam — flows history.</i></p>
+<p align="center"><i>Figure 93. RoboTeam — flows history.</i></p>
 <h3 id="sec90f" class="western">3.11.7 Robot Conversations and Commands</h3>
 <p>Select <b>Open → Copilot</b> on a robot card, or <b>Open Copilot here</b> on an Explorer directory for the default robot. Conversations and task history are stored per working folder. Use the WebChat menu's <b>Conversation skills</b> page to select the skills for later turns. The required workflow discovery and launch skills remain available independently of that selection.</p>
 <p>The command interface includes <code>/session</code> for saved conversations, <code>/session new</code> and <code>/session resume</code> for conversation lifecycle, <code>/tasks</code> for delegated work, <code>/model</code> for the conversation's model and effort, <code>/permissions</code> for the permission policy, and <code>/list robots</code> for the workspace robot catalog. <code>/exec</code> invokes an available skill; skill selection itself is managed from Conversation skills.</p>
@@ -6661,25 +6666,25 @@ live monitoring.</p>
 <h2 id="sec90e" class="western">3.12 Observability</h2>
 <p>Open <b>Observability</b> from its own entry in the Explorer toolbar when you want to check a workflow after it has started. The panel groups runs by what needs attention now: <b>Requires human input</b>, <b>Running</b> and <b>History</b>. The number beside each tab shows how many runs are in that view. This is a quick overview; the workflow execution page remains the place to read individual task logs and inspect the full route through the workflow.</p>
 <p>Select a run from the list on the left. The details on the right show its current status, when it started in your local time, how long it has spent executing, how many task steps have finished, and the original workflow prompt. Execution time counts active work. The step count records work already done. Select <b>View workflow</b> to open the full execution page in a new browser tab.</p>
-<p><b>Requires human input</b> is the first tab. It lists paused and failed workflows. When a robot needs your decision, select the run to read its question and suggested answers, as shown in Figure 93. For a run that stopped for another reason, open the workflow to see what happened and which actions are available.</p>
+<p><b>Requires human input</b> is the first tab. It lists paused and failed workflows. When a robot needs your decision, select the run to read its question and suggested answers, as shown in Figure 94. For a run that stopped for another reason, open the workflow to see what happened and which actions are available.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/manual-embedded-074.jpg" alt="Observability Requires human input tab showing a paused workflow, its question, answer choices and View workflow button"/></p>
-<p align="center"><i>Figure 93. Observability — answer a workflow question.</i></p>
+<p align="center"><i>Figure 94. Observability — answer a workflow question.</i></p>
 <p>In Figure 94, the workflow is paused because the robot needs a choice about a data migration. Read the question and select one of the three suggestions, or select <b>Other answer</b> and write your own response. <b>Send answer</b> becomes available when the answer is complete and the robot has finished saving its current work. The answer continues the task in the same workflow. Once accepted, the run moves to <b>Running</b>. If sending fails, the panel shows an error and keeps your choice so you can try again.</p>
 <p><b>Running</b> shows workflows that are in progress or waiting to start. Select a run to see its latest status and elapsed execution time. The panel updates automatically while it is open. For task-by-task progress, open the workflow from its details.</p>
 <p><b>History</b> lists completed, failed, paused and terminated workflows, with the newest first. Select a run to review its details, then use <b>View workflow</b> to inspect task results or errors. Figure 95 shows the list with a completed workflow.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/manual-embedded-075.jpg" alt="Observability History tab listing a stopped workflow and a completed workflow"/></p>
-<p align="center"><i>Figure 94. Observability — workflow history.</i></p>
+<p align="center"><i>Figure 95. Observability — workflow history.</i></p>
 <h2 id="sec115" class="western">3.13 Live Sessions</h2>
 <p>Open <b>Live Sessions</b> from the Explorer toolbar to follow work while an agent is running. The list on the left shows Copilot turns, delegated tasks, robot tasks and workflow phases that you are allowed to view. Recently finished runs may appear there too. Administrators may also see workspace terminals. Each session card identifies the work and its folder, shows its status and owner, and offers the actions available to you.</p>
 <p>Select <b>Watch</b> on an agent session to open its output in the viewer on the right. New output appears there as the run progresses. In the example below, the list contains two workflow phases and the selected phase is open in the viewer. A session marked <b>Watch only</b> lets you follow its progress. If you own an active run and it accepts messages, its card shows that you can message it; a stop action appears when you are allowed to end it.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/live-sessions-watch-2026-11.png" alt="Live Sessions panel with two workflow phases on the left and a selected phase open in the viewer"/></p>
-<p align="center"><i>Figure 95. Live Sessions — watch a workflow phase in Explorer.</i></p>
+<p align="center"><i>Figure 96. Live Sessions — watch a workflow phase in Explorer.</i></p>
 <p>Use <b>Detach view</b> to close the viewer for an agent run while the session continues. Select <b>Pop out</b> to open the same session view in a separate browser tab. This is useful when you want to keep watching a run while working elsewhere in Explorer. The separate view shows the run's output and its latest status, as in the next image.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/live-sessions-pop-out-2026-11.png" alt="A workflow phase opened in a separate Live session browser tab with its output and completed status"/></p>
-<p align="center"><i>Figure 96. Live Sessions — session opened in a separate tab.</i></p>
+<p align="center"><i>Figure 97. Live Sessions — session opened in a separate tab.</i></p>
 <p>When <b>Transcript</b> is available on a session card, select it to open the recorded text in another tab. The transcript can be long and may include the agent's messages, commands and technical output. Scroll through it or use your browser's search to find the part you need, such as an error or the final response.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/live-sessions-transcript-2026-11.png" alt="Plain-text transcript of a Live Sessions workflow phase in a separate browser tab"/></p>
-<p align="center"><i>Figure 97. Live Sessions — session transcript.</i></p>
+<p align="center"><i>Figure 98. Live Sessions — session transcript.</i></p>
 <p>A finished RoboTeam run stays in Live Sessions for a limited time. Use <b>Observability</b> or <b>Flows history</b> to find saved workflow runs later. For an active workflow phase, the stop action is labelled <b>Pause workflow</b>; it pauses the whole workflow, which can then be resumed from its execution page.</p>
 <h2 id="sec93" class="western">3.14 Code Editor</h2>
 <h3 id="sec94" class="western">3.14.1 Purpose and Access</h3>
@@ -6718,7 +6723,7 @@ that the interface remains responsive.</p>
 </p>
 <p align="center">
 <i>Figure
-98. Code Editor — Editing a source file.</i></p>
+99. Code Editor — Editing a source file.</i></p>
 <h3 id="sec96" class="western">3.14.3 Viewing Modes</h3>
 <p>For HTML files the preview provides
 three viewing modes, selected from the controls in the preview header
@@ -6782,7 +6787,7 @@ and can be managed from the same section.</p>
 </p>
 <p align="center">
 <i>Figure
-99. Soul Gateway — Providers.</i></p>
+100. Soul Gateway — Providers.</i></p>
 <p>The <b>Models</b> section lists the models
 available in Soul Gateway. The list can be searched and filtered by
 enabled state, by whether the model is free, by billing type and by
@@ -6792,7 +6797,7 @@ tag, and a new model is added with <b>Add Model</b>.</p>
 </p>
 <p align="center">
 <i>Figure
-100. Soul Gateway — Models.</i></p>
+101. Soul Gateway — Models.</i></p>
 <p>The <b>Tiers</b> section defines the
 cascades used to serve a request. A tier has a key, a display name, an
 ordered list of child models, a maximum number of attempts and an
@@ -6806,7 +6811,7 @@ before it is deleted.</p>
 </p>
 <p align="center">
 <i>Figure
-101. Soul Gateway — Tiers.</i></p>
+102. Soul Gateway — Tiers.</i></p>
 <h3 id="sec102" class="western">3.15.3 Keys and Export</h3>
 <p>The <b>Keys</b> section lists API keys for users and agents. The
 list shows each key's label, type, masked key hint, daily budget and
@@ -6818,7 +6823,7 @@ at creation. Use <b>Edit</b> to change a key's label or policy, and
 <b>Reset</b> to start a new budget period after confirmation. The
 <b>Revoke</b> action is available for user keys only.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/soul-gateway-keys-current.jpg" alt="Soul Gateway API Keys list with agent keys and management actions"/></p>
-<p align="center"><i>Figure 102. Soul Gateway API Keys list.</i></p>
+<p align="center"><i>Figure 103. Soul Gateway API Keys list.</i></p>
 <p>The <b>Export</b> section prepares the
 configuration required to use Soul Gateway from another tool. The
 administrator selects the format (<b>OpenCode</b>, <b>Claude Code</b> or
@@ -6840,7 +6845,7 @@ columns.</p>
 </p>
 <p align="center">
 <i>Figure
-103. Soul Gateway — Logs.</i></p>
+104. Soul Gateway — Logs.</i></p>
 <p>The <b>Errors</b> section reviews the
 issues that occur during request processing. A summary of the selected
 period reports the total number of requests, the requests that failed,
@@ -6856,7 +6861,7 @@ the system reports that there are no errors.</p>
 <img alt="Soul Gateway Errors view with zero requests and no errors for the selected day" loading="lazy" decoding="async" src="images/soul-gateway-errors-current.png" align="bottom" border="0"/>
 </p>
 <p align="center">
-<i>Figure 104. Soul Gateway Errors view for a selected day.</i></p>
+<i>Figure 105. Soul Gateway Errors view for a selected day.</i></p>
 <p>The <b>Activity</b> section reports the
 activity carried out within Soul Gateway for the selected period,
 grouped by key, and can be used to monitor relevant events. When an
@@ -6868,7 +6873,7 @@ obtain additional context.</p>
 </p>
 <p align="center">
 <i>Figure
-105. Soul Gateway — Activity.</i></p>
+106. Soul Gateway — Activity.</i></p>
 <p>The <b>Usage</b> section reports the cost
 of the services and models used during the selected period, broken down
 by model, and can be reviewed together with Activity and Errors.</p>
@@ -6877,7 +6882,7 @@ by model, and can be reviewed together with Activity and Errors.</p>
 </p>
 <p align="center">
 <i>Figure
-106. Soul Gateway — Usage.</i></p>
+107. Soul Gateway — Usage.</i></p>
 <h3 id="sec104" class="western">3.15.5 Blacklist and Middlewares</h3>
 <p>The <b>Blacklist</b> section manages the
 rules that restrict what may be used in the system. Each rule has a
@@ -6940,23 +6945,23 @@ the selected middleware shows its configuration.</p>
 <h3 id="sec111" class="western">3.16.2 Models and Adding a Model</h3>
 <p>Use the <b>Models</b> tab to select a model and review its files, runner options and estimated memory use. The example below selects a model that needs more memory than this machine has available: the runner says <b>does not fit</b> and the estimate is marked in red. Select a smaller model or adjust its settings before running it.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/local-llms-models-2026-11.png" alt="Local LLMs Models tab showing the model list, selected model, runner, and a red warning that the model does not fit in available memory"/></p>
-<p align="center"><i>Figure 107. Local LLMs — Models tab and memory estimate.</i></p>
+<p align="center"><i>Figure 108. Local LLMs — Models tab and memory estimate.</i></p>
 <p>To add a model, select <b>Add model</b>, choose a source and enter the model location. For the Hugging Face GGUF example shown below, enter the repository and revision, then select <b>Look up</b> to retrieve the available file and information used for the memory estimate. Choose the GGUF file, review the proposed name and sizing details, and select <b>Add model</b>. The source is recorded at this stage; the model weights are downloaded only when you later select <b>Run</b>.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/local-llms-add-model-2026-11.png" alt="Local LLMs Add model dialog with a Hugging Face GGUF repository, file, model name and memory sizing fields"/></p>
-<p align="center"><i>Figure 108. Local LLMs — adding a model from a Hugging Face GGUF file.</i></p>
+<p align="center"><i>Figure 109. Local LLMs — adding a model from a Hugging Face GGUF file.</i></p>
 <p>After adding or selecting a model, choose a compatible <b>Runner</b> in its details, review the settings and memory estimate, then select <b>Run</b>. If the estimate or a runner warning says the machine cannot support the selected combination, choose a smaller model or another available runner before trying again. When the model starts, its name appears in the <b>Running model</b> summary at the top of the panel.</p>
 <h3 id="sec112" class="western">3.16.3 Runners</h3>
 <p>A runner is the software that loads a model and generates its answers. The <b>Runners</b> tab shows which runners are installed, which can be installed, and which are unsupported on the current hardware. In the example below, <b>llama.cpp</b> and <b>Ollama</b> are installed, while a separate CPU build of llama.cpp can be installed. Read the status on each card before choosing a runner for a model; a runner marked <b>Unsupported</b> cannot be used on this machine. An <b>Install</b> button appears only where installation is available.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/local-llms-runners-2026-11.png" alt="Local LLMs Runners tab showing installed, installable and unsupported runners"/></p>
-<p align="center"><i>Figure 109. Local LLMs — runner availability on the current machine.</i></p>
+<p align="center"><i>Figure 110. Local LLMs — runner availability on the current machine.</i></p>
 <h3 id="sec113" class="western">3.16.4 Playground</h3>
 <p>Use <b>Playground</b> to check a model after starting it from <b>Models</b>. Type a short question or instruction into <b>Prompt</b>, optionally change <b>Maximum tokens</b> to limit the length of the answer, then select <b>Send</b>. The answer appears in the <b>Response</b> panel. If the page says <b>No model is ready</b>, return to <b>Models</b>, select a model and press <b>Run</b>; sending a prompt alone does not start one.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/local-llms-playground-2026-11.png" alt="Local LLMs Playground tab with a prompt field, maximum tokens, Send button and response area"/></p>
-<p align="center"><i>Figure 110. Local LLMs — Playground before a model is ready.</i></p>
+<p align="center"><i>Figure 111. Local LLMs — Playground before a model is ready.</i></p>
 <h3 id="sec114" class="western">3.16.5 Logs</h3>
 <p>The <b>Logs</b> tab shows the latest 200 lines of output from the model runner and its controller. Open it when a model does not start or a request fails, and read the latest messages for a possible cause. Keep <b>Follow new lines</b> selected to see new messages as they arrive; clear it when you want to inspect an earlier message without the view moving. <b>No runner output yet</b> means there is nothing to show at that moment.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/local-llms-logs-2026-11.png" alt="Local LLMs Logs tab showing the Follow new lines option and an empty runner output area"/></p>
-<p align="center"><i>Figure 111. Local LLMs — runner and controller logs.</i></p>
+<p align="center"><i>Figure 112. Local LLMs — runner and controller logs.</i></p>
 
 <h1 id="sec106" class="western">4. Conclusions</h1>
 <p>AssistOS addresses a problem that
