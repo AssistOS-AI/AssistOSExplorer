@@ -60,6 +60,14 @@
       "pluginKey": "userPersistoAgent/userpersisto-settings",
       "adminOnly": false,
       "settingsUrl": "/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/"
+    },
+    {
+      "key": "userpersisto-billing-settings",
+      "label": "Stripe payments",
+      "scope": "workspace",
+      "pluginKey": "userPersistoAgent/userpersisto-billing-settings",
+      "settingsComponent": "userpersisto-billing-settings",
+      "adminOnly": true
     }
   ],
   "profiles": {

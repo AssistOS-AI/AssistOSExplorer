@@ -13,7 +13,7 @@ export const TYPES = {
     authChallenge: { challengeId: 'string', subject: 'string', purpose: 'string', codeHash: 'string', expiresAt: 'string', attempts: 'integer', correlationId: 'string' },
     systemSetting: { key: 'string', value: 'object', updatedAt: 'string', updatedBy: 'string' },
     creditAccount: { userId: 'string', balance: 'integer', reservedBalance: 'integer' },
-    creditTx: { txId: 'string', userId: 'string', sequence: 'integer', type: 'string', amount: 'integer', reason: 'string', referenceId: 'string', balanceAfter: 'integer', reservedAfter: 'integer', createdAt: 'string' },
+    creditTx: { txId: 'string', userId: 'string', sequence: 'integer', type: 'string', amount: 'integer', reason: 'string', referenceId: 'string', expiresAt: 'string', expiredLotId: 'string', restoresSpend: 'string', balanceAfter: 'integer', reservedAfter: 'integer', createdAt: 'string' },
     creditReservation: { reservationId: 'string', referenceId: 'string', userId: 'string', amount: 'integer', status: 'string', reason: 'string', createdAt: 'string', updatedAt: 'string' },
     paymentTransaction: { providerKey: 'string', provider: 'string', providerEventId: 'string', providerObjectId: 'string', userId: 'string', kind: 'string', status: 'string', amountMinor: 'integer', currency: 'string', credits: 'integer', createdAt: 'string', updatedAt: 'string' },
     checkoutIntent: { intentKey: 'string', requestHash: 'string', userId: 'string', kind: 'string', units: 'integer', credits: 'integer', form: 'object', sessionId: 'string', checkoutUrl: 'string', createdAt: 'string', updatedAt: 'string' },

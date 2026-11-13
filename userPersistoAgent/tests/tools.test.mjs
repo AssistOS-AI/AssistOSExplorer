@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 
 process.env.PERSISTENCE_FOLDER = mkdtempSync(join(tmpdir(), 'userpersisto-tools-'));
 process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
+process.env.USERPERSISTO_SETTINGS_FILE = join(process.env.PERSISTENCE_FOLDER, 'settings.enc.json');
 
 const IMPLEMENTED = [
     'userpersisto_profile_get',
@@ -34,6 +35,9 @@ const IMPLEMENTED = [
     'userpersisto_config_set',
     'userpersisto_auth_policy_get',
     'userpersisto_auth_policy_set',
+    'userpersisto_billing_credits_offer',
+    'userpersisto_billing_credit_price_get',
+    'userpersisto_billing_credit_price_set',
     'userpersisto_billing_checkout_create',
     'userpersisto_billing_stripe_webhook_process',
     'userpersisto_billing_subscription_get',
@@ -177,4 +181,59 @@ test('enrollment tools reject authentication methods that the effective policy d
             `${name} should be disabled by the effective policy`
         );
     }
+});
+
+test('ScriptaHub points only accept the service identity, replay debits and refund a verified spend once', async () => {
+    const user = await createUser({ email: 'scriptahub-points@x.com', displayName: 'Points', roles: ['user'] });
+    const agent = { agentId: process.env.USERPERSISTO_SCRIPTAHUB_AGENT_ID || 'agent:ScriptaHubAgent/scriptahubAgent' };
+    const request = { userId: user.id, requestId: '186b7230-6611-4d5a-a21e-8137c1aaf69e', attempt: 1, amount: 4, kind: 'edition' };
+    const call = (operation, fields = {}, context = agent) => runTool('userpersisto_scriptahub_points_apply', { ...request, operation, ...fields }, context);
+    await assert.rejects(()=>call('debit',{}, {actorUserId:user.id}), /ScriptaHub agent access/);
+    assert.deepEqual(await call('debit'), {insufficient:true,missing:4});
+    await assert.rejects(()=>call('refund'), /matching debit/);
+    await call('reward',{kind:'book-proposal',amount:10});
+    assert.equal((await call('reward',{kind:'book-proposal',amount:10})).balance,10);
+    assert.equal((await call('debit')).balance,6);
+    assert.equal((await call('debit')).balance,6);
+    assert.equal((await call('refund')).balance,10);
+    assert.equal((await call('refund')).balance,10);
+});
+
+
+test('only a live billing administrator can view or update point pricing without provider credentials', async () => {
+    const admin=await createUser({email:'points-pricing-admin@x.com',roles:['admin']});
+    const member=await createUser({email:'points-pricing-member@x.com',roles:['user']});
+    const offer={unitAmountMinor:500,currency:'EUR'};
+    const schema=JSON.parse(await readFile(new URL('../mcp-config.json',import.meta.url),'utf8'));
+    for (const name of ['userpersisto_billing_credit_price_get','userpersisto_billing_credit_price_set']) {
+        const tool=schema.tools.find(tool=>tool.name===name);
+        assert.deepEqual(tool.tags,['authenticated'],'delegated transport admits the verified user; the handler still checks live billing administration');
+    }
+    for (const name of ['userpersisto_billing_credit_price_get','userpersisto_billing_credit_price_set']) {
+        await assert.rejects(()=>runTool(name,offer,{actorUserId:member.id,actorRoles:['admin']}));
+        await assert.rejects(()=>runTool(name,offer,{}));
+    }
+    assert.deepEqual(await runTool('userpersisto_billing_credit_price_set',offer,{actorUserId:admin.id}),{...offer,currency:'eur'});
+    const saved=await runTool('userpersisto_billing_credit_price_get',{}, {actorUserId:admin.id});
+    assert.deepEqual(saved,{unitAmountMinor:500,currency:'eur'});
+    assert.deepEqual(Object.keys(saved).sort(),['currency','unitAmountMinor']);
+    await assert.rejects(()=>runTool('userpersisto_billing_credit_price_set',{...offer,unitAmountMinor:0},{actorUserId:admin.id}));
+    assert.deepEqual(await runTool('userpersisto_billing_credit_price_get',{}, {actorUserId:admin.id}),saved);
+});
+
+
+test('payment reconciliation requires live billing administration before contacting Stripe', async t => {
+    const member = await createUser({ email: 'reconcile-member@x.com', roles: ['user'] });
+    t.mock.method(globalThis, 'fetch', () => assert.fail('Unauthorised reconciliation must not contact Stripe'));
+    for (const context of [{}, { actorUserId: member.id, actorRoles: ['admin'] }]) {
+        await assert.rejects(() => runTool('userpersisto_billing_checkout_reconcile', { eventId: 'evt_existing' }, context));
+    }
+});
+
+
+test('checkout verification requires the active actor and ignores caller-supplied recipient claims',async t=>{
+    const member=await createUser({email:'verify-owner@x.com',roles:['user']});
+    t.mock.method(globalThis,'fetch',()=>assert.fail('Missing or unowned checkout must not contact Stripe'));
+    await assert.rejects(()=>runTool('userpersisto_billing_checkout_verify',{sessionId:'cs_test_unknown'},{}));
+    await assert.rejects(()=>runTool('userpersisto_billing_checkout_verify',{sessionId:'cs_test_unknown',userId:'another'},{actorUserId:member.id}),{code:'checkout_not_found'});
 });

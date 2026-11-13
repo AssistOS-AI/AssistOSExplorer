@@ -129,13 +129,43 @@ const HANDLERS = {
         await requireActiveActor(actor);
         return totp.setupVerify({ userId: actor, token: args.token, setupId: args.setupId });
     },
+    userpersisto_scriptahub_points_apply: async (args, context) => {
+        const agentId = process.env.USERPERSISTO_SCRIPTAHUB_AGENT_ID || 'agent:ScriptaHubAgent/scriptahubAgent';
+        if (context.agentId !== agentId) {
+            throw Object.assign(new Error('ScriptaHub agent access is required.'), { statusCode: 403 });
+        }
+        const { userId, operation, requestId, attempt, amount, kind } = args;
+        const reward = ['reward','expiry'].includes(operation);
+        if (!/^[0-9a-f-]{36}$/i.test(requestId) || !Number.isSafeInteger(attempt) || attempt < 1
+            || !Number.isSafeInteger(amount) || amount < 1 || amount > 1000000
+            || !(reward ? ['book-proposal', 'manuscript', 'edit'] : ['edition', 'fork']).includes(kind)) {
+            throw Object.assign(new Error('Invalid ScriptaHub points operation.'), { statusCode: 400 });
+        }
+        const referenceId = reward ? `scriptahub:reward:${requestId}` : `scriptahub:${kind}:${requestId}:${attempt}`;
+        const reason = {
+            'book-proposal': 'Approved book proposal', manuscript: 'Approved manuscript',
+            edit: 'Approved corrections', edition: 'New book edition', fork: 'Derived book',
+        }[kind];
+        const input = { userId, amount, reason, referenceId, actorId: agentId };
+        if (operation === 'expiry') return credits.inspectCreditExpiry(userId,referenceId);
+        if (operation === 'reward') return credits.grant({ ...input, expiresAt: args.expiresAt || '' });
+        if (operation === 'refund') return credits.refundSpend(input);
+        if (operation !== 'debit') throw Object.assign(new Error('Invalid ScriptaHub points operation.'), { statusCode: 400 });
+        try {
+            await credits.reserve(input);
+        } catch (error) {
+            if (error.code !== 'insufficient_credits') throw error;
+            return { insufficient: true, missing: amount - error.available };
+        }
+        return credits.commit(input);
+    },
     userpersisto_credits_balance: async (args, context) => {
         const actor = requireActor(context);
         await requireActiveActor(actor);
         const target = args.userId && args.userId !== actor
             ? (await requireAdmin(context), args.userId)
             : actor;
-        return credits.getBalance(target);
+        return credits.getBalance(target, { includeExpiring: args.includeExpiring === true });
     },
     userpersisto_credits_grant: async (args, context) => {
         await requireAdmin(context, 'admin.billing.manage');
@@ -181,15 +211,34 @@ const HANDLERS = {
             : actor;
         return credits.ledger({ userId: target, start: args.start || 0, pageSize: args.pageSize || 100 });
     },
+    userpersisto_billing_credits_offer: async (_args, context) => {
+        await requireActiveActor(requireActor(context));
+        return billing.getCreditOffer();
+    },
+    userpersisto_billing_credit_price_get: async (_args, context) => {
+        await requireAdmin(context, 'admin.billing.manage');
+        return billing.getCreditOfferSettings();
+    },
+    userpersisto_billing_credit_price_set: async (args, context) => {
+        const actor = await requireAdmin(context, 'admin.billing.manage');
+        return billing.setCreditOfferSettings(args, actor);
+    },
     userpersisto_billing_checkout_create: async (args, context) => {
         const actor = requireActor(context);
         await requireActiveActor(actor);
         return billing.createCheckout({
             userId: actor,
             kind: args.kind,
+            uiMode: args.uiMode || 'hosted',
+            returnUrl: args.returnUrl,
             quantity: args.quantity ?? 1,
             idempotencyKey: args.idempotencyKey || '',
         });
+    },
+    userpersisto_billing_checkout_verify: async (args, context) => {
+        const userId = requireActor(context);
+        await requireActiveActor(userId);
+        return billing.verifyCheckout({ userId, sessionId: args.sessionId });
     },
     userpersisto_billing_stripe_webhook_process: async (args) => billing.processStripeWebhook({
         rawBody: args.rawBody,
@@ -202,6 +251,10 @@ const HANDLERS = {
             ? (await requireAdmin(context), args.userId)
             : actor;
         return billing.getSubscription(target);
+    },
+    userpersisto_billing_checkout_reconcile: async (args, context) => {
+        const actorId = await requireAdmin(context, 'admin.billing.manage');
+        return billing.reconcileCheckoutEvent({ eventId: args.eventId, actorId });
     },
     userpersisto_billing_events_list: async (args, context) => {
         await requireAdmin(context, 'admin.billing.manage');

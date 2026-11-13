@@ -15,8 +15,10 @@ const ASSETS = new Set([
     'users.html', 'applications.html', 'authentication.html', 'admin.mjs', 'admin.css',
     'management.mjs', 'management.css', 'api.mjs',
     'roles.html', 'roles.mjs', 'roles.css',
+    'billing.html', 'billing.mjs', 'billing-page.mjs', 'billing.css',
 ]);
 const PAGE_CAPABILITIES = new Map([
+    ['billing.html', 'admin.agentSettings.manage'],
     ['users.html', 'admin.users.manage'],
     ['roles.html', 'admin.users.manage'],
     ['applications.html', 'admin.agentSettings.manage'],
@@ -33,6 +35,8 @@ const CLIENT_FIELDS = [
     'token_endpoint_auth_method', 'grant_types', 'response_types', 'scope', 'enabled',
 ];
 const ADMIN_OPERATIONS = new Map([
+    ['billing/get', { tool: 'userpersisto_config_get', fields: [] }],
+    ['billing/set', { tool: 'userpersisto_config_set', fields: ['STRIPE_SECRET_KEY', 'STRIPE_PUBLISHABLE_KEY', 'STRIPE_WEBHOOK_SECRET'] }],
     // Accounts come from sign-in; there is no administrator creation, password
     // or sign-in email mutation here. Other profile, role and status updates remain.
     ['users/list', { tool: 'userpersisto_user_list', fields: ['start', 'pageSize', 'search', 'excludeOnlyRole', 'includeRoleCounts'] }],

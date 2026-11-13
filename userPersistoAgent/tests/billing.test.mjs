@@ -14,6 +14,8 @@ const { ensureSeedData } = await import('../lib/bootstrap.mjs');
 const { createUser } = await import('../lib/users.mjs');
 const { saveSettings } = await import('../lib/settings.mjs');
 const billing = await import('../lib/billing.mjs');
+const returnUrl = 'http://localhost:8080/account/dashboard.html?tab=points';
+const createTestCheckout = input => billing.createCheckout({returnUrl,...input});
 const credits = await import('../lib/credits.mjs');
 const { getStore, flush, resetStoreForTests } = await import('../lib/store.mjs');
 
@@ -32,7 +34,7 @@ function signWithTimestamp(rawBody, secret, timestamp) {
     return `t=${timestamp},v1=${v1}`;
 }
 
-async function seedCreditCheckout({ sessionId, userId, credits, amountMinor = 0, currency = '' }) {
+async function seedCreditCheckout({ sessionId, userId, credits, amountMinor = 100, currency = 'usd' }) {
     const timestamp = new Date().toISOString();
     await (await getStore()).createPaymentTransaction({
         providerKey: `stripe:checkout:${sessionId}`,
@@ -53,15 +55,15 @@ async function seedCreditCheckout({ sessionId, userId, credits, amountMinor = 0,
 
 test('webhook applies credits exactly once (idempotent by stripeEventId)', async () => {
     await ensureSeedData();
-    await saveSettings({ STRIPE_WEBHOOK_SECRET: 'whsec_test', USERPERSISTO_CREDITS_PER_UNIT: '10' });
+    await saveSettings({ STRIPE_WEBHOOK_SECRET: 'whsec_test', });
     const user = await createUser({ email: 'pay@x.com', displayName: 'Pay', roles: ['user'] });
     await seedCreditCheckout({ sessionId: 'cs_001', userId: user.id, credits: 30 });
-    await saveSettings({ USERPERSISTO_CREDITS_PER_UNIT: '100' });
+    await saveSettings({ USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR: '100' });
 
     const event = {
         id: 'evt_001',
         type: 'checkout.session.completed',
-        data: { object: { id: 'cs_001', payment_status: 'paid', client_reference_id: user.id, metadata: { kind: 'credits', units: '3' } } }
+        data: { object: { id: 'cs_001', payment_status: 'paid', amount_total: 100, currency: 'usd', client_reference_id: user.id, metadata: { kind: 'credits', units: '3' } } }
     };
     const rawBody = JSON.stringify(event);
     const signatureHeader = sign(rawBody, 'whsec_test');
@@ -87,7 +89,7 @@ test('checkout identity conflicts fail before credits are applied', async () => 
         data: {
             object: {
                 id: 'cs_bound_owner',
-                payment_status: 'paid',
+                payment_status: 'paid', amount_total: 100, currency: 'usd',
                 client_reference_id: other.id,
                 metadata: { kind: 'credits', units: '1', userId: other.id },
             },
@@ -176,11 +178,11 @@ test('signature verification rejects fractional timestamps', () => {
 
 test('checkout rejects invalid financial boundaries before contacting Stripe', async () => {
     await assert.rejects(
-        () => billing.createCheckout({ userId: 'user-1', kind: 'credits', quantity: 0 }),
+        () => createTestCheckout({ userId: 'user-1', kind: 'credits', quantity: 0 }),
         (error) => error?.code === 'invalid_quantity'
     );
     await assert.rejects(
-        () => billing.createCheckout({ userId: 'user-1', kind: 'credits', quantity: 1, idempotencyKey: 'x'.repeat(256) }),
+        () => createTestCheckout({ userId: 'user-1', kind: 'credits', quantity: 1, idempotencyKey: 'x'.repeat(256) }),
         (error) => error?.code === 'invalid_idempotency_key'
     );
 });
@@ -194,7 +196,7 @@ test('checkout rejects an unknown user before contacting Stripe', async () => {
     };
     try {
         await assert.rejects(
-            () => billing.createCheckout({ userId: 'missing-user', kind: 'credits', quantity: 1 }),
+            () => createTestCheckout({ userId: 'missing-user', kind: 'credits', quantity: 1 }),
             (error) => error?.code === 'user_not_found'
         );
     } finally {
@@ -206,9 +208,7 @@ test('checkout rejects an unknown user before contacting Stripe', async () => {
 test('checkout scopes Stripe idempotency by user and persists provider transactions', async () => {
     await saveSettings({
         STRIPE_SECRET_KEY: 'sk_test',
-        STRIPE_PRICE_CREDITS: 'price_credits',
-        USERPERSISTO_BILLING_SUCCESS_URL: 'https://app.example.test/billing/success',
-        USERPERSISTO_BILLING_CANCEL_URL: 'https://app.example.test/billing/cancel',
+        USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR: '100', USERPERSISTO_CREDITS_CURRENCY: 'usd',
     });
     const first = await createUser({ email: 'checkout-a@x.com', roles: ['user'] });
     const second = await createUser({ email: 'checkout-b@x.com', roles: ['user'] });
@@ -230,8 +230,8 @@ test('checkout scopes Stripe idempotency by user and persists provider transacti
         };
     };
     try {
-        await billing.createCheckout({ userId: first.id, kind: 'credits', quantity: 1, idempotencyKey: 'same-client-key' });
-        await billing.createCheckout({ userId: second.id, kind: 'credits', quantity: 1, idempotencyKey: 'same-client-key' });
+        await createTestCheckout({ userId: first.id, kind: 'credits', quantity: 1, idempotencyKey: 'same-client-key' });
+        await createTestCheckout({ userId: second.id, kind: 'credits', quantity: 1, idempotencyKey: 'same-client-key' });
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -288,43 +288,41 @@ test('a Stripe subscription identity cannot move between users', async (t) => {
 
 test('checkout retries preserve the purchase snapshot and terminal payment state across restart', async (t) => {
     await saveSettings({
-        STRIPE_SECRET_KEY: 'sk_test', STRIPE_WEBHOOK_SECRET: 'whsec_test', STRIPE_PRICE_CREDITS: 'price_original',
-        USERPERSISTO_CREDITS_PER_UNIT: '10',
-        USERPERSISTO_BILLING_SUCCESS_URL: 'https://app.example.test/original-success',
-        USERPERSISTO_BILLING_CANCEL_URL: 'https://app.example.test/original-cancel',
+        STRIPE_SECRET_KEY: 'sk_test', STRIPE_WEBHOOK_SECRET: 'whsec_test', USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR: '100', USERPERSISTO_CREDITS_CURRENCY: 'usd',
     });
     const user = await createUser({ email: 'checkout-immutable@x.com', roles: ['user'] });
     let requests = 0;
     t.mock.method(globalThis, 'fetch', async (_url, options) => {
         requests++;
         const intent = await (await getStore()).getCheckoutIntentByIntentKey(options.headers['Idempotency-Key']);
-        assert.equal(intent.credits, 10, 'the intent exists before any provider effect');
+        assert.equal(intent.credits, 1, 'the intent exists before any provider effect');
         return { ok: true, json: async () => ({
             id: 'cs_immutable', url: 'https://checkout.stripe.com/c/pay/immutable', amount_total: 100, currency: 'usd',
         }) };
     });
     const input = { userId: user.id, kind: 'credits', quantity: 1, idempotencyKey: 'immutable-purchase' };
-    const first = await billing.createCheckout(input);
-    await saveSettings({ USERPERSISTO_CREDITS_PER_UNIT: '100', STRIPE_PRICE_CREDITS: 'price_replaced' });
-    assert.deepEqual(await billing.createCheckout(input), first);
-    await assert.rejects(() => billing.createCheckout({ ...input, quantity: 2 }), { code: 'checkout_idempotency_conflict' });
+    const first = await createTestCheckout(input);
+    await assert.rejects(() => createTestCheckout({...input,returnUrl:'http://localhost:8080/other'}), {code:'checkout_idempotency_conflict'});
+    await saveSettings({ USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR: '900', USERPERSISTO_CREDITS_CURRENCY: 'usd' });
+    assert.deepEqual(await createTestCheckout(input), first);
+    await assert.rejects(() => createTestCheckout({ ...input, quantity: 2 }), { code: 'checkout_idempotency_conflict' });
     const rawBody = JSON.stringify({ id: 'evt_immutable_paid', type: 'checkout.session.completed', data: { object: {
         id: first.sessionId, payment_status: 'paid', client_reference_id: user.id,
         amount_total: 100, currency: 'usd', metadata: { kind: 'credits', units: '1', userId: user.id },
     } } });
     await billing.processStripeWebhook({ rawBody, signatureHeader: sign(rawBody, 'whsec_test') });
     await resetStoreForTests();
-    assert.deepEqual(await billing.createCheckout(input), first);
+    assert.deepEqual(await createTestCheckout(input), first);
     const payment = await (await getStore()).getPaymentTransactionByProviderKey('stripe:checkout:cs_immutable');
-    assert.equal(payment.credits, 10);
+    assert.equal(payment.credits, 1);
     assert.equal(payment.status, 'paid');
     assert.equal(payment.providerEventId, 'evt_immutable_paid');
-    assert.equal((await credits.getBalance(user.id)).balance, 10);
+    assert.equal((await credits.getBalance(user.id)).balance, 1);
     assert.equal(requests, 1, 'exact retries never create another provider session');
 });
 
 test('uncertain checkout retries use the durable original request and stop before Stripe key expiry', async (t) => {
-    await saveSettings({ USERPERSISTO_CREDITS_PER_UNIT: '7', STRIPE_PRICE_CREDITS: 'price_uncertain' });
+    await saveSettings({ USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR: '100', USERPERSISTO_CREDITS_CURRENCY: 'usd' });
     const user = await createUser({ email: 'checkout-uncertain@x.com', roles: ['user'] });
     const input = { userId: user.id, kind: 'credits', quantity: 2, idempotencyKey: 'uncertain-purchase' };
     const requests = [];
@@ -332,22 +330,22 @@ test('uncertain checkout retries use the durable original request and stop befor
         requests.push({ key: options.headers['Idempotency-Key'], form: options.body.toString() });
         throw new Error('fixture response lost');
     });
-    await assert.rejects(() => billing.createCheckout(input), /fixture response lost/);
+    await assert.rejects(() => createTestCheckout(input), /fixture response lost/);
     await resetStoreForTests();
-    await saveSettings({ USERPERSISTO_CREDITS_PER_UNIT: '70', STRIPE_PRICE_CREDITS: 'price_changed' });
-    await assert.rejects(() => billing.createCheckout(input), /fixture response lost/);
+    await saveSettings({ USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR: '900', USERPERSISTO_CREDITS_CURRENCY: 'usd' });
+    await assert.rejects(() => createTestCheckout(input), /fixture response lost/);
     assert.deepEqual(requests[1], requests[0]);
     const store = await getStore();
     const intent = await store.getCheckoutIntentByIntentKey(requests[0].key);
-    assert.equal(intent.credits, 14);
+    assert.equal(intent.credits, 2);
     await store.updateCheckoutIntent(intent.id, { createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() });
     await flush();
-    await assert.rejects(() => billing.createCheckout(input), { code: 'checkout_reconciliation_required' });
+    await assert.rejects(() => createTestCheckout(input), { code: 'checkout_reconciliation_required' });
     assert.equal(requests.length, 2);
 });
 
 test('a paid webhook repairs a lost checkout response using its durable intent', async (t) => {
-    await saveSettings({ USERPERSISTO_CREDITS_PER_UNIT: '9' });
+    await saveSettings({ USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR: '100', USERPERSISTO_CREDITS_CURRENCY: 'usd' });
     const user = await createUser({ email: 'checkout-response-lost@x.com', roles: ['user'] });
     let metadata;
     t.mock.method(globalThis, 'fetch', async (_url, options) => {
@@ -355,7 +353,7 @@ test('a paid webhook repairs a lost checkout response using its durable intent',
             .filter(([name]) => name.startsWith('metadata[')).map(([name, value]) => [name.slice(9, -1), value]));
         throw new Error('fixture checkout accepted but response lost');
     });
-    await assert.rejects(() => billing.createCheckout({
+    await assert.rejects(() => createTestCheckout({
         userId: user.id, kind: 'credits', quantity: 3, idempotencyKey: 'lost-response',
     }), /response lost/);
     await resetStoreForTests();
@@ -363,18 +361,24 @@ test('a paid webhook repairs a lost checkout response using its durable intent',
         id: 'cs_response_lost', payment_status: 'paid', client_reference_id: user.id,
         amount_total: 300, currency: 'usd', metadata,
     } } });
+    const wrongAmount = JSON.parse(rawBody);
+    wrongAmount.id = 'evt_response_lost_wrong_amount';
+    wrongAmount.data.object.amount_total = 1;
+    const wrongBody = JSON.stringify(wrongAmount);
+    await assert.rejects(() => billing.processStripeWebhook({ rawBody: wrongBody, signatureHeader: sign(wrongBody, 'whsec_test') }), {code:'payment_amount_conflict'});
+    assert.equal((await credits.getBalance(user.id)).balance, 0);
     const result = await billing.processStripeWebhook({ rawBody, signatureHeader: sign(rawBody, 'whsec_test') });
     assert.equal(result.credited, true);
-    assert.equal((await credits.getBalance(user.id)).balance, 27);
+    assert.equal((await credits.getBalance(user.id)).balance, 3);
     assert.equal((await (await getStore()).getCheckoutIntentByIntentKey(metadata.checkoutIntentKey)).sessionId, 'cs_response_lost');
     t.mock.method(globalThis, 'fetch', async (url, options) => {
         assert.equal(options.method, 'GET');
         assert.equal(url, 'https://api.stripe.com/v1/checkout/sessions/cs_response_lost');
-        return { ok: true, json: async () => ({ id: 'cs_response_lost', url: null, status: 'complete', payment_status: 'paid' }) };
+        return { ok: true, json: async () => ({ id: 'cs_response_lost', url: null, status: 'complete', payment_status: 'paid', amount_total: 300, currency: 'usd' }) };
     });
-    const replay = await billing.createCheckout({ userId: user.id, kind: 'credits', quantity: 3, idempotencyKey: 'lost-response' });
+    const replay = await createTestCheckout({ userId: user.id, kind: 'credits', quantity: 3, idempotencyKey: 'lost-response' });
     assert.equal(replay.sessionId, 'cs_response_lost');
-    assert.equal(new URL(replay.url).pathname, '/original-success');
+    assert.equal(replay.url, returnUrl);
     assert.equal((await (await getStore()).getPaymentTransactionByProviderKey('stripe:checkout:cs_response_lost')).status, 'paid');
 });
 
@@ -424,10 +428,7 @@ test('subscription reconciliation failures remain retryable without applying sna
 for (const stalledPhase of ['request', 'response body']) {
     test(`Stripe ${stalledPhase} timeout releases queued billing and preserves the retry intent`, async (t) => {
         await saveSettings({
-            STRIPE_SECRET_KEY: 'sk_test', STRIPE_PRICE_CREDITS: 'price_before_timeout',
-            USERPERSISTO_CREDITS_PER_UNIT: '13',
-            USERPERSISTO_BILLING_SUCCESS_URL: 'https://app.example.test/timeout-success',
-            USERPERSISTO_BILLING_CANCEL_URL: 'https://app.example.test/timeout-cancel',
+            STRIPE_SECRET_KEY: 'sk_test', USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR: '100', USERPERSISTO_CREDITS_CURRENCY: 'usd',
         });
         const user = await createUser({ email: `timeout-${stalledPhase.replaceAll(' ', '-')}@x.com`, roles: ['user'] });
         const input = { userId: user.id, kind: 'credits', quantity: 2, idempotencyKey: `timeout-${stalledPhase}` };
@@ -451,24 +452,228 @@ for (const stalledPhase of ['request', 'response body']) {
                 url: 'https://checkout.stripe.com/c/pay/after-timeout', amount_total: 200, currency: 'usd',
             }) };
         });
-        const first = billing.createCheckout(input);
+        const first = createTestCheckout(input);
         const timedOut = assert.rejects(first, { code: 'stripe_timeout', statusCode: 504 });
         await stalled;
-        const queued = billing.createCheckout({ ...input, idempotencyKey: `queued-${stalledPhase}` });
+        const queued = createTestCheckout({ ...input, idempotencyKey: `queued-${stalledPhase}` });
         t.mock.timers.tick(14_999);
         assert.equal(requests[0].signal.aborted, false);
         assert.equal(requests.length, 1, 'the later purchase waits for the billing mutex');
         t.mock.timers.tick(1);
         await timedOut;
         await queued;
-        await saveSettings({ STRIPE_PRICE_CREDITS: 'price_after_timeout', USERPERSISTO_CREDITS_PER_UNIT: '130' });
-        const retry = await billing.createCheckout(input);
+        await saveSettings({ USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR: '900', USERPERSISTO_CREDITS_CURRENCY: 'usd' });
+        const retry = await createTestCheckout(input);
         assert.equal(requests.length, 3);
         assert.equal(requests[2].key, requests[0].key);
         assert.equal(requests[2].form, requests[0].form);
-        assert.equal((await (await getStore()).getPaymentTransactionByProviderKey(`stripe:checkout:${retry.sessionId}`)).credits, 26);
+        assert.equal((await (await getStore()).getPaymentTransactionByProviderKey(`stripe:checkout:${retry.sessionId}`)).credits, 2);
         t.mock.timers.tick(15_000);
         assert.equal(requests[1].signal.aborted, false, 'completed requests clear their deadlines');
         assert.equal(requests[2].signal.aborted, false);
     });
 }
+
+
+test('platform-priced points use inline Checkout pricing and settle the immutable amount and currency exactly once', async t => {
+    await saveSettings({
+        STRIPE_SECRET_KEY:'sk_test', STRIPE_WEBHOOK_SECRET:'whsec_test', STRIPE_PUBLISHABLE_KEY:'pk_test_public',
+        USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR:'500', USERPERSISTO_CREDITS_CURRENCY:'EUR',
+    });
+    assert.deepEqual(await billing.getCreditOffer(), {available:true,unitAmountMinor:500,currency:'eur'});
+    const user=await createUser({email:'inline-pricing@x.com',roles:['user']});
+    let form;
+    t.mock.method(globalThis,'fetch',async(url,options)=>{
+        assert.equal(url,'https://api.stripe.com/v1/checkout/sessions');
+        form=Object.fromEntries(options.body);
+        assert.equal(form['line_items[0][price]'],undefined);
+        assert.equal(form['line_items[0][price_data][unit_amount]'],'500');
+        assert.equal(form['line_items[0][price_data][currency]'],'eur');
+        assert.equal(form['line_items[0][price_data][product_data][name]'],'Credit');
+        assert.equal(form['line_items[0][quantity]'],'137');
+        assert.equal(form.success_url,returnUrl);assert.equal(form.cancel_url,returnUrl);
+        return {ok:true,json:async()=>({id:'cs_inline',url:'https://checkout.stripe.com/c/pay/inline',amount_total:68500,currency:'eur'})};
+    });
+    const input={userId:user.id,kind:'credits',quantity:137,idempotencyKey:'inline-purchase',unitAmountMinor:1};
+    const checkout=await createTestCheckout(input);
+    await saveSettings({USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR:'2000',USERPERSISTO_CREDITS_CURRENCY:'usd'});
+    assert.deepEqual(await createTestCheckout(input),checkout);
+    const object={id:checkout.sessionId,payment_status:'paid',amount_total:68500,currency:'eur',client_reference_id:user.id,
+        metadata:{kind:'credits',units:'137',userId:user.id,checkoutIntentKey:form['metadata[checkoutIntentKey]']}};
+    const deliver=async(id,patch={},type='checkout.session.completed')=>{
+        const rawBody=JSON.stringify({id,type,data:{object:{...object,...patch}}});
+        return billing.processStripeWebhook({rawBody,signatureHeader:sign(rawBody,'whsec_test')});
+    };
+    await assert.rejects(()=>deliver('evt_inline_wrong_amount',{amount_total:999}),{code:'payment_amount_conflict'});
+    await assert.rejects(()=>deliver('evt_inline_zero_amount',{amount_total:0}),{code:'payment_amount_conflict'});
+    await assert.rejects(()=>deliver('evt_inline_missing_amount',{amount_total:undefined}),{code:'payment_amount_conflict'});
+    await assert.rejects(()=>deliver('evt_inline_wrong_currency',{currency:'usd'}),{code:'payment_currency_conflict'});
+    assert.equal((await credits.getBalance(user.id)).balance,0);
+    await deliver('evt_inline_paid');
+    await deliver('evt_inline_paid');
+    await deliver('evt_inline_async',{},'checkout.session.async_payment_succeeded');
+    assert.equal((await credits.getBalance(user.id)).balance,137);
+    const payment=await(await getStore()).getPaymentTransactionByProviderKey('stripe:checkout:cs_inline');
+    assert.equal(payment.amountMinor,68500);assert.equal(payment.currency,'eur');
+});
+
+test('Elements offer requires the publishable key and validates whole-unit Stripe currencies', async () => {
+    await saveSettings({STRIPE_SECRET_KEY:'sk_test',STRIPE_WEBHOOK_SECRET:'whsec_test',
+        USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR:'500',USERPERSISTO_CREDITS_CURRENCY:'isk',remove:['STRIPE_PUBLISHABLE_KEY']});
+    assert.deepEqual(await billing.getCreditOffer(),{available:false});
+    await saveSettings({STRIPE_PUBLISHABLE_KEY:'invalid'});
+    assert.deepEqual(await billing.getCreditOffer(),{available:false});
+    await saveSettings({STRIPE_PUBLISHABLE_KEY:'pk_test_public'});
+    assert.deepEqual(await billing.getCreditOffer(),{available:true,unitAmountMinor:500,currency:'isk'});
+    await assert.rejects(()=>billing.setCreditOfferSettings({unitAmountMinor:501,currency:'ISK'},'admin'),/whole currency units/);
+    await assert.rejects(()=>billing.setCreditOfferSettings({unitAmountMinor:1,currency:'UGX'},'admin'),/whole currency units/);
+    await saveSettings({USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR:'100',USERPERSISTO_CREDITS_CURRENCY:'eur'});
+});
+
+test('failed delayed checkout is terminal with or without its webhook and awards no credits', async t => {
+    await saveSettings({STRIPE_SECRET_KEY:'sk_test',STRIPE_WEBHOOK_SECRET:'whsec_test'});
+    const user=await createUser({email:'failed-delayed-payment@x.com',roles:['user']});
+    const sessionId='cs_test_delayed_failure';
+    await seedCreditCheckout({sessionId,userId:user.id,credits:2});
+    const session={id:sessionId,status:'complete',payment_status:'unpaid',payment_intent:'pi_delayed_failure',
+        amount_total:100,currency:'usd',client_reference_id:user.id,metadata:{kind:'credits',userId:user.id,units:'2'}};
+    let providerReads=0, intentStatus='processing';
+    t.mock.method(globalThis,'fetch',async url=>{
+        providerReads++;
+        return {ok:true,json:async()=>url.endsWith('/payment_intents/pi_delayed_failure')
+            ? {id:session.payment_intent,status:intentStatus} : session};
+    });
+    const verify=()=>billing.verifyCheckout({userId:user.id,sessionId});
+    assert.equal((await verify()).status,'pending');
+    intentStatus='requires_payment_method';
+    assert.deepEqual(await verify(),{status:'failed',credited:false,credits:2,amountMinor:100,currency:'usd',createdAt:(await (await getStore()).getPaymentTransactionByProviderKey('stripe:checkout:'+sessionId)).createdAt});
+    const rawBody=JSON.stringify({id:'evt_delayed_failure',type:'checkout.session.async_payment_failed',data:{object:session}});
+    assert.equal((await billing.processStripeWebhook({rawBody,signatureHeader:sign(rawBody,'whsec_test')})).processed,true);
+    const reads=providerReads;
+    assert.deepEqual(await verify(),{status:'failed',credited:false,credits:2,amountMinor:100,currency:'usd',createdAt:(await (await getStore()).getPaymentTransactionByProviderKey('stripe:checkout:'+sessionId)).createdAt});
+    assert.equal(providerReads,reads);
+    assert.equal((await credits.getBalance(user.id)).balance,0);
+});
+
+test('invalid platform prices are refused before contacting Stripe and an incomplete offer is unavailable',async t=>{
+    const user=await createUser({email:'invalid-inline-price@x.com',roles:['user']});
+    t.mock.method(globalThis,'fetch',()=>assert.fail('Invalid prices must not contact Stripe'));
+    for(const value of ['0','-1','1.5','NaN','100000000']){
+        await saveSettings({USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR:value});
+        await assert.rejects(()=>createTestCheckout({userId:user.id,kind:'credits',idempotencyKey:'invalid-'+value}));
+    }
+    await saveSettings({USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR:'99999999'});
+    await assert.rejects(()=>createTestCheckout({userId:user.id,kind:'credits',quantity:2,idempotencyKey:'overflow-price'}),/exceeds/);
+    await saveSettings({USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR:'500',USERPERSISTO_CREDITS_CURRENCY:'euros'});
+    await assert.rejects(()=>createTestCheckout({userId:user.id,kind:'credits',idempotencyKey:'invalid-currency'}),/currency/);
+    await saveSettings({remove:['USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR']});
+    assert.deepEqual(await billing.getCreditOffer(),{available:false});
+    await assert.rejects(()=>saveSettings({STRIPE_PRICE_CREDITS:'price_not_used'}),/Unknown setting/);
+});
+
+
+test('Checkout requires an application return destination and rejects untrusted origins before Stripe',async t=>{
+    const user=await createUser({email:'checkout-return@x.com',roles:['user']});
+    t.mock.method(globalThis,'fetch',()=>assert.fail('Invalid return address must not contact Stripe'));
+    await assert.rejects(()=>billing.createCheckout({userId:user.id,kind:'credits'}),/return URL/);
+    await assert.rejects(()=>createTestCheckout({userId:user.id,kind:'credits',returnUrl:'javascript:alert(1)'}),/http/);
+    await assert.rejects(()=>createTestCheckout({userId:user.id,kind:'credits',returnUrl:'https://untrusted.invalid/points'}));
+});
+
+
+test('API reconciliation recovers only verified locally initiated paid credit events, once across later webhooks', async t => {
+    await saveSettings({ STRIPE_SECRET_KEY: 'sk_test', STRIPE_WEBHOOK_SECRET: 'whsec_test' });
+    const user = await createUser({ email: 'reconcile-paid@x.com', roles: ['user'] });
+    await seedCreditCheckout({ sessionId: 'cs_reconcile_paid', userId: user.id, credits: 17, amountMinor: 1700, currency: 'eur' });
+    const event = { id: 'evt_reconcilepaid', type: 'checkout.session.completed', data: { object: {
+        id: 'cs_reconcile_paid', payment_status: 'paid', amount_total: 1700, currency: 'eur', client_reference_id: user.id,
+        metadata: { userId: user.id, kind: 'credits', units: '17' },
+    } } };
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+        assert.equal(url, 'https://api.stripe.com/v1/events/evt_reconcilepaid');assert.equal(options.method, 'GET');
+        return { ok: true, json: async () => structuredClone(event) };
+    });
+    const input = { eventId: event.id, actorId: 'operator' };
+    event.data.object.payment_status = 'unpaid';
+    assert.equal((await billing.reconcileCheckoutEvent(input)).credited, false);
+    event.data.object.payment_status = 'paid';event.data.object.amount_total = 1699;
+    await assert.rejects(() => billing.reconcileCheckoutEvent(input), { code: 'payment_amount_conflict' });
+    assert.equal((await credits.getBalance(user.id)).balance, 0);
+    event.data.object.amount_total = 1700;event.data.object.currency = 'usd';
+    await assert.rejects(() => billing.reconcileCheckoutEvent(input), { code: 'payment_currency_conflict' });
+    event.data.object.currency = 'eur';event.data.object.client_reference_id = 'another-user';
+    await assert.rejects(() => billing.reconcileCheckoutEvent(input), { code: 'payment_identity_conflict' });
+    event.data.object.client_reference_id = user.id;
+    assert.equal((await billing.reconcileCheckoutEvent(input)).credited, true);
+    assert.equal((await billing.reconcileCheckoutEvent(input)).credited, false);
+    const rawBody = JSON.stringify(event);
+    await billing.processStripeWebhook({ rawBody, signatureHeader: sign(rawBody, 'whsec_test') });
+    assert.equal((await credits.getBalance(user.id)).balance, 17);
+    event.data.object.id = 'cs_not_initiated';
+    await assert.rejects(() => billing.reconcileCheckoutEvent(input), { code: 'payment_transaction_not_found' });
+});
+
+
+test('Elements checkout pins its amount, email and return page, and verifies ownership and payment before crediting', async t => {
+    await saveSettings({ STRIPE_SECRET_KEY:'sk_test', STRIPE_PUBLISHABLE_KEY:'pk_test_public', STRIPE_WEBHOOK_SECRET:'whsec_test', USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR:'100', USERPERSISTO_CREDITS_CURRENCY:'eur' });
+    const user=await createUser({email:'elements-owner@x.com',roles:['user']});
+    let form,calls=0,paid=false,intentStatus;
+    t.mock.method(globalThis,'fetch',async(url,options)=>{
+        calls++;
+        assert.equal(options.headers['Stripe-Version'],'2026-10-28.endive');
+        if(options.method==='POST') {
+            form=Object.fromEntries(options.body);
+            assert.equal(form.ui_mode,'elements');assert.equal(form.success_url,undefined);assert.equal(form.cancel_url,undefined);
+            assert.equal(form.customer_email,user.email);assert.equal(form['adaptive_pricing[enabled]'],'false');
+            assert.equal(form.return_url,returnUrl+'&checkout_session_id={CHECKOUT_SESSION_ID}');
+        } else if (url.endsWith('/payment_intents/pi_elements')) {
+            return {ok:true,json:async()=>({id:'pi_elements',status:intentStatus})};
+        } else assert.equal(url,'https://api.stripe.com/v1/checkout/sessions/cs_test_elements');
+        return {ok:true,json:async()=>({id:'cs_test_elements',status:paid?'complete':'open',payment_status:paid?'paid':'unpaid',payment_intent:intentStatus?'pi_elements':null,client_secret:'cs_test_elements_secret_x',amount_total:200,currency:'eur',client_reference_id:user.id,
+            metadata:{kind:'credits',units:'2',userId:user.id,checkoutIntentKey:form['metadata[checkoutIntentKey]']}})};
+    });
+    const input={userId:user.id,kind:'credits',quantity:2,idempotencyKey:'elements-purchase',uiMode:'elements'};
+    const checkout=await createTestCheckout(input);
+    assert.equal(checkout.url,undefined);assert.equal(checkout.clientSecret,'cs_test_elements_secret_x');assert.equal(checkout.publishableKey,'pk_test_public');
+    const before=calls;
+    await assert.rejects(()=>billing.verifyCheckout({userId:'foreign',sessionId:checkout.sessionId}),{code:'checkout_not_found'});
+    assert.equal(calls,before,'foreign checkout ids never reach Stripe');
+    assert.equal((await billing.verifyCheckout({userId:user.id,sessionId:checkout.sessionId})).status,'open');
+    intentStatus='requires_payment_method';
+    assert.equal((await billing.verifyCheckout({userId:user.id,sessionId:checkout.sessionId})).status,'open');
+    intentStatus='requires_action';
+    assert.equal((await billing.verifyCheckout({userId:user.id,sessionId:checkout.sessionId})).status,'pending');
+    assert.equal((await credits.getBalance(user.id)).balance,0);
+    paid=true;
+    assert.deepEqual(await billing.verifyCheckout({userId:user.id,sessionId:checkout.sessionId}),{status:'paid',credited:true,credits:2,amountMinor:200,currency:'eur',createdAt:(await (await getStore()).getPaymentTransactionByProviderKey('stripe:checkout:'+checkout.sessionId)).createdAt});
+    assert.deepEqual(await billing.verifyCheckout({userId:user.id,sessionId:checkout.sessionId}),{status:'paid',credited:false,credits:2,amountMinor:200,currency:'eur',createdAt:(await (await getStore()).getPaymentTransactionByProviderKey('stripe:checkout:'+checkout.sessionId)).createdAt});
+    const rawBody=JSON.stringify({id:'evt_elements_paid',type:'checkout.session.completed',data:{object:{id:checkout.sessionId,payment_status:'paid',amount_total:200,currency:'eur',client_reference_id:user.id,metadata:{kind:'credits',userId:user.id,units:'2'}}}});
+    await billing.processStripeWebhook({rawBody,signatureHeader:sign(rawBody,'whsec_test')});
+    assert.equal((await credits.getBalance(user.id)).balance,2);
+    assert.equal((await createTestCheckout(input)).status,'complete');
+    const store=await getStore();const intent=await store.getCheckoutIntentByIntentKey(form['metadata[checkoutIntentKey]']);
+    assert.equal(JSON.stringify(intent).includes('_secret_x'),false,'the client secret is not persisted');
+});
+
+test('server payment verification uses Stripe values and rejects a paid mismatch',async t=>{
+    const user=await createUser({email:'verify-mismatch@x.com',roles:['user']});
+    await seedCreditCheckout({sessionId:'cs_test_verify_mismatch',userId:user.id,credits:5,amountMinor:500,currency:'eur'});
+    const session={id:'cs_test_verify_mismatch',status:'complete',payment_status:'paid',amount_total:499,currency:'eur',client_reference_id:user.id,metadata:{kind:'credits',units:'5',userId:user.id}};
+    t.mock.method(globalThis,'fetch',async()=>({ok:true,json:async()=>session}));
+    await assert.rejects(()=>billing.verifyCheckout({userId:user.id,sessionId:session.id}),{code:'payment_amount_conflict'});
+    session.amount_total=500;session.currency='usd';
+    await assert.rejects(()=>billing.verifyCheckout({userId:user.id,sessionId:session.id}),{code:'payment_currency_conflict'});
+    assert.equal((await credits.getBalance(user.id)).balance,0);
+});
+
+
+test('webhook and browser verification race settles one purchase',async t=>{
+    const user=await createUser({email:'verify-webhook-race@x.com',roles:['user']});
+    await seedCreditCheckout({sessionId:'cs_test_race',userId:user.id,credits:7,amountMinor:700,currency:'eur'});
+    const session={id:'cs_test_race',status:'complete',payment_status:'paid',amount_total:700,currency:'eur',client_reference_id:user.id,metadata:{kind:'credits',units:'7',userId:user.id}};
+    t.mock.method(globalThis,'fetch',async()=>({ok:true,json:async()=>session}));
+    const rawBody=JSON.stringify({id:'evt_browser_webhook_race',type:'checkout.session.completed',data:{object:session}});
+    await Promise.all([billing.verifyCheckout({userId:user.id,sessionId:session.id}),billing.processStripeWebhook({rawBody,signatureHeader:sign(rawBody,'whsec_test')})]);
+    assert.equal((await credits.getBalance(user.id)).balance,7);
+    const entries=await credits.ledger({userId:user.id,start:0,pageSize:100});assert.equal(entries.entries.filter(entry=>entry.type==='purchase').length,1);
+});

@@ -19,6 +19,7 @@ before(async () => {
     folder = await mkdtemp(join(tmpdir(), 'userpersisto-dashboard-admin-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'test-dashboard-admin-settings';
+    process.env.USERPERSISTO_SETTINGS_FILE = join(folder, 'settings.enc.json');
     process.env.USERPERSISTO_OIDC_ISSUER = `${ORIGIN}/service/oidc`;
     for (const key of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS',
         'USERPERSISTO_DEFAULT_REGISTRATION_ROLE', 'USERPERSISTO_SELF_REGISTRATION_ENABLED',
@@ -98,7 +99,7 @@ test('management documents and shared assets require a signed active user and pe
 });
 
 test('admin APIs reject absent or forged authentication, inactive accounts, and caller-claimed privileges', async () => {
-    for (const endpoint of ['users/list', 'roles/list', 'roles/create', 'roles/update', 'roles/delete', 'applications/list', 'policy/get', 'google/status']) {
+    for (const endpoint of ['users/list', 'roles/list', 'roles/create', 'roles/update', 'roles/delete', 'applications/list', 'policy/get', 'google/status', 'billing/get', 'billing/set']) {
         const absent = await adminRequest(endpoint, { authenticated: false, headers: {
             origin: ORIGIN, 'x-forwarded-proto': 'https', 'x-forwarded-host': 'account.example.test', 'content-type': 'application/json',
         } });
@@ -374,4 +375,16 @@ test('role mutations enforce JSON origin, signed body integrity and replay prote
     const headers = sign({ method: 'POST', path: `${PREFIX}/api/admin/roles/list`, rawBody: '{}', userId: admin.id });
     assert.equal((await adminRequest('roles/list', { headers })).response.status, 200);
     assert.equal((await adminRequest('roles/list', { headers })).response.status, 401);
+});
+
+
+test('Stripe settings are an administrator page beside existing account navigation and save only provider keys',async()=>{
+    assert.equal((await request('/billing.html',{method:'GET',userId:member.id})).response.status,403);
+    const page=await request('/billing.html',{method:'GET'});assert.equal(page.response.status,200);
+    const result=await adminRequest('billing/set',{body:{STRIPE_SECRET_KEY:'sk_test_ui',STRIPE_PUBLISHABLE_KEY:'pk_test_public',STRIPE_WEBHOOK_SECRET:'whsec_ui',USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR:'999'}});
+    assert.equal(result.response.status,200);
+    const read=await adminRequest('billing/get');assert.equal(read.response.status,200);
+    assert.notEqual(read.data.result.STRIPE_SECRET_KEY,'sk_test_ui');
+    assert.equal(read.data.result.STRIPE_PUBLISHABLE_KEY,'pk_test_public');
+    assert.equal(read.data.result.USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR,'','the connection form cannot modify pricing');
 });

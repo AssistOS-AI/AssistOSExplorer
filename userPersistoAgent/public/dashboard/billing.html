@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Stripe payments · UserPersisto</title>
+        <script src="theme.js"></script>
+        <link rel="stylesheet" href="dashboard.css">
+        <link rel="stylesheet" href="management.css">
+        <link rel="stylesheet" href="admin.css">
+        <link rel="stylesheet" href="billing.css">
+    </head>
+    <body>
+        <div class="account-shell management-shell">
+            <header class="account-header">
+                <nav class="account-navigation" aria-label="UserPersisto pages">
+                    <a href="./">My Account</a>
+                    <a href="users.html" data-capability="admin.users.manage" hidden>Users</a>
+                    <a href="roles.html" data-capability="admin.users.manage" hidden>Roles</a>
+                    <a href="applications.html" data-capability="admin.agentSettings.manage" hidden>Applications</a>
+                    <a href="authentication.html" data-capability="admin.agentSettings.manage" hidden>Authentication policy</a>
+                    <a href="billing.html" data-capability="admin.agentSettings.manage" aria-current="page" hidden>Stripe payments</a>
+                </nav>
+            </header>
+            <main id="billing-root">
+                <div class="page-heading"><div class="page-heading-copy"><h1>Stripe payments</h1><p>Connect Stripe to receive payments.</p></div><a class="account-sign-out" href="/auth/logout">Sign out</a></div>
+    <form data-billing-form hidden>
+      <fieldset data-billing-controls disabled>
+        <label class="form-item"><span>Stripe secret key</span><input class="form-input" type="password" data-billing-key="STRIPE_SECRET_KEY" maxlength="4096" autocomplete="new-password" spellcheck="false" placeholder="sk_test_… or sk_live_…"></label>
+        <label class="form-item"><span>Stripe publishable key</span><input class="form-input" type="text" data-billing-key="STRIPE_PUBLISHABLE_KEY" maxlength="256" autocomplete="off" spellcheck="false" pattern="pk_(test|live)_[A-Za-z0-9]+" placeholder="pk_test_… or pk_live_…" required></label>
+        <label class="form-item"><span>Webhook signing secret</span><input class="form-input" type="password" data-billing-key="STRIPE_WEBHOOK_SECRET" maxlength="4096" autocomplete="new-password" spellcheck="false" placeholder="whsec_…"></label>
+        <p class="billing-help">Stored secrets are never displayed. Leave a secret field empty to keep its current value.</p>
+        <label class="form-item"><span>Webhook address</span><input class="form-input" type="url" data-webhook-url readonly></label>
+        <p class="billing-help">Add this webhook address in Stripe and select checkout.session.completed, checkout.session.async_payment_succeeded and checkout.session.async_payment_failed. For localhost, use Stripe CLI forwarding; for a publicly reachable site, Stripe can send events directly.</p>
+        <div class="billing-actions"><button type="submit" class="general-button">Save connection</button></div>
+      </fieldset>
+    </form>
+    <p data-billing-status role="status" aria-live="polite">Checking administrator access…</p>
+            </main>
+            <footer>Account settings apply to this workspace.</footer>
+        </div>
+        <script type="module" src="billing-page.mjs"></script>
+    </body>
+</html>

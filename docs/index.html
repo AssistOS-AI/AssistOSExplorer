@@ -23,6 +23,7 @@
 
 
         <p><a href="wiki.html#definition-userpersisto">UserPersisto</a> supplies identity and account administration to applications independently of <a href="wiki.html#definition-explorer">Explorer</a>. Its My Account page is application-neutral. Explorer declares its product access explicitly; other applications do not inherit that declaration. The <a href="specsLoader.html?spec=DS012-user-persisto.md">account provider contract</a> defines the configuration boundary.</p>
+        <p>UserPersisto also owns point balances, immutable credit history and Stripe payments. Administrators configure a price per credit and its currency in the platform. Customers choose a positive integer quantity and see the exact total before Checkout; confirmed payments award that quantity once. Checkout receives inline pricing without a manually maintained Stripe product catalogue. ScriptaHub embeds the Stripe Payment Element in its own dialog, while UserPersisto verifies the authenticated owner’s payment directly with Stripe and settles it through the same journal reference as signed webhooks. Explorer provides a separate administrator-only Stripe payments configuration panel for the provider keys. ScriptaHub awards contribution points and requests edition and fork debits through its signed service identity. Contribution awards can expire, with each expiration recorded in the credit history and each refund retaining its original expiration.</p>
 
         <section id="documentation-map" class="documentation-map">
 <h2>Documentation Map</h2>

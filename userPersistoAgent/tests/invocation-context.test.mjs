@@ -38,3 +38,17 @@ test('legacy and top-level identity fields are never treated as authority', asyn
         });
     }
 });
+
+test('service identity is bound to the verified matching caller and actor', async () => {
+    const principal = 'agent:ScriptaHubAgent/scriptahubAgent';
+    const grant = {
+        iss: 'ploinky-router', sub: principal,
+        actor: {kind:'agent',id:principal}, caller:{kind:'agent',id:principal},
+        tool:'userpersisto_scriptahub_points_apply',
+    };
+    const derive = async invocation => actorContext(await authInfoFromEnvelope({metadata:{invocation}}));
+    assert.equal((await derive(grant)).agentId,principal);
+    assert.equal((await derive({...grant,actor:{kind:'user',id:'user:member'}})).agentId,undefined);
+    assert.equal((await derive({...grant,caller:{kind:'agent',id:'agent:Other/service'}})).agentId,undefined);
+    assert.equal((await derive({...grant,usr:{id:'member'}})).agentId,undefined);
+});

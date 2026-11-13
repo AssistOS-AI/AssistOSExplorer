@@ -34,7 +34,12 @@ export function actorContext(authInfo = {}) {
         : (Array.isArray(authInfo?.actor?.roles)
             ? authInfo.actor.roles
             : (Array.isArray(authInfo?.roles) ? authInfo.roles : []));
+    const invocation = authInfo.invocation;
+    const caller = invocation?.caller;
+    const agentId = !authInfo.user && caller?.kind === 'agent' && invocation.actor?.kind === 'agent'
+        && caller.id === invocation.actor.id && caller.id === invocation.subject ? caller.id : '';
     return {
+        ...(agentId ? { agentId } : {}),
         actorUserId: String(userId).replace(/^user:/, ''),
         actorRoles: roles.map(String),
     };

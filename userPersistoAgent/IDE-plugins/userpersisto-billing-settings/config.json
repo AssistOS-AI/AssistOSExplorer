@@ -1,0 +1,13 @@
+{
+  "pluginCategory": "application",
+  "id": "userpersisto-billing-settings",
+  "component": "userpersisto-billing-settings",
+  "location": [],
+  "label": "Stripe payments",
+  "tooltip": "Configure the Stripe connection.",
+  "presenter": "UserpersistoBillingSettings",
+  "type": "global",
+  "autoPin": false,
+  "dependencies": [],
+  "settings": "userpersisto-billing-settings"
+}

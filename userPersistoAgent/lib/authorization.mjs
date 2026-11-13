@@ -3,6 +3,7 @@ import { getUserById, getUserRoles, hasVerifiedMailbox } from './users.mjs';
 import { getEnabledAuthMethods } from './auth/methods.mjs';
 import { GOOGLE_ISSUER } from './externalIdentities.mjs';
 import { readInstallationSetup } from './setup.mjs';
+import { getBalance } from './credits.mjs';
 
 export async function getUserCapabilities(userId) {
     const store = await getStore();
@@ -69,7 +70,7 @@ export async function getProfile(userId) {
     }
     const roles = await getUserRoles(userId);
     const capabilities = await getUserCapabilities(userId);
-    const account = await store.getCreditAccountByUserId(userId) || null;
+    const credits = await getBalance(userId);
     const subs = await store.getSubscriptionsObjectsByUserId(userId) || [];
     const active = subs.find((subscription) => subscription.status === 'active') || null;
     const methods = await store.getAuthMethodsObjectsByUserId(userId) || [];
@@ -114,7 +115,7 @@ export async function getProfile(userId) {
             verified: hasVerifiedMailbox(user),
             pending: Boolean(contactChallenge && Date.parse(contactChallenge.expiresAt) > Date.now()),
         },
-        credits: { balance: account?.balance ?? 0, reservedBalance: account?.reservedBalance ?? 0 },
+        credits,
         subscription: active
     };
 }

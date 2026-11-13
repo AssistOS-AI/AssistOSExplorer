@@ -1,4 +1,6 @@
 const MANAGEMENT_PATHS = Object.freeze({
+    userpersisto_config_get: 'billing/get',
+    userpersisto_config_set: 'billing/set',
     userpersisto_user_list: 'users/list',
     userpersisto_user_update: 'users/update',
     userpersisto_user_roles_update: 'users/roles',

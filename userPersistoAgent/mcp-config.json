@@ -263,16 +263,87 @@
             "env": { "TOOL_NAME": "userpersisto_totp_setup_verify" }
         },
         {
-            "name": "userpersisto_credits_balance",
-            "title": "Get credit balance",
-            "description": "Return the authenticated user's credit balance, or a target user's balance for admins.",
+            "name": "userpersisto_scriptahub_points_apply",
+            "title": "Apply ScriptaHub points operation",
+            "description": "Apply a ScriptaHub contribution reward, debit or compensating refund.",
             "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
             "cwd": "/code",
             "timeoutMs": 30000,
             "inputSchema": {
                 "type": "object",
-                "properties": { "userId": { "type": "string" } },
+                "properties": {
+                    "userId": { "type": "string", "minLength": 1 },
+                    "operation": {
+                        "type": "string",
+                        "enum": [
+                            "reward",
+                            "debit",
+                            "refund",
+                            "expiry"
+                        ]
+                    },
+                    "expiresAt": {
+                        "type": "string",
+                        "maxLength": 24
+                    },
+                    "requestId": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36
+                    },
+                    "attempt": { "type": "integer", "minimum": 1 },
+                    "amount": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000000
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "book-proposal",
+                            "manuscript",
+                            "edit",
+                            "edition",
+                            "fork"
+                        ]
+                    }
+                },
+                "required": [
+                    "userId",
+                    "operation",
+                    "requestId",
+                    "attempt",
+                    "amount",
+                    "kind"
+                ],
+                "additionalProperties": false
+            },
+            "tags": ["internal"],
+            "env": {
+                "TOOL_NAME": "userpersisto_scriptahub_points_apply"
+            }
+        },
+        {
+            "name": "userpersisto_credits_balance",
+            "title": "Get credit balance",
+            "description": "Return the authenticated user's credit balance, or a target user's balance for admins.",
+            "command": "sh",
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string" },
+                    "includeExpiring": {
+                        "type": "boolean"
+                    }
+                },
                 "additionalProperties": false
             },
             "env": { "TOOL_NAME": "userpersisto_credits_balance" }
@@ -425,7 +496,9 @@
             "title": "Set UserPersisto configuration",
             "description": "Admin: stores UserPersisto billing configuration, keeping empty secret values unchanged.",
             "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
             "cwd": "/code",
             "timeoutMs": 30000,
             "inputSchema": {
@@ -434,11 +507,11 @@
                     "STRIPE_SECRET_KEY": { "type": "string" },
                     "STRIPE_WEBHOOK_SECRET": { "type": "string" },
                     "STRIPE_PUBLISHABLE_KEY": { "type": "string" },
-                    "STRIPE_PRICE_CREDITS": { "type": "string" },
+                    "USERPERSISTO_CREDITS_CURRENCY": {
+                        "type": "string",
+                        "description": "Three-letter currency code, e.g. eur."
+                    },
                     "STRIPE_PRICE_SUBSCRIPTION": { "type": "string" },
-                    "USERPERSISTO_CREDITS_PER_UNIT": { "type": "string" },
-                    "USERPERSISTO_BILLING_SUCCESS_URL": { "type": "string" },
-                    "USERPERSISTO_BILLING_CANCEL_URL": { "type": "string" },
                     "remove": {
                         "type": "array",
                         "items": {
@@ -447,18 +520,22 @@
                                 "STRIPE_SECRET_KEY",
                                 "STRIPE_WEBHOOK_SECRET",
                                 "STRIPE_PUBLISHABLE_KEY",
-                                "STRIPE_PRICE_CREDITS",
-                                "STRIPE_PRICE_SUBSCRIPTION",
-                                "USERPERSISTO_CREDITS_PER_UNIT",
-                                "USERPERSISTO_BILLING_SUCCESS_URL",
-                                "USERPERSISTO_BILLING_CANCEL_URL"
+                                "USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR",
+                                "USERPERSISTO_CREDITS_CURRENCY",
+                                "STRIPE_PRICE_SUBSCRIPTION"
                             ]
                         }
+                    },
+                    "USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR": {
+                        "type": "string",
+                        "description": "Price of one credit in integer minor currency units, e.g. 500 for EUR 5.00."
                     }
                 },
                 "additionalProperties": false
             },
-            "tags": ["admin"],
+            "tags": [
+                "admin"
+            ],
             "env": { "TOOL_NAME": "userpersisto_config_set" }
         },
         {
@@ -532,24 +609,129 @@
             "env": { "TOOL_NAME": "userpersisto_signin_readiness" }
         },
         {
+            "name": "userpersisto_billing_credits_offer",
+            "title": "View credit purchase price",
+            "description": "Return whether credit purchases are available and the price of one credit.",
+            "command": "sh",
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "env": {
+                "TOOL_NAME": "userpersisto_billing_credits_offer"
+            }
+        },
+        {
+            "name": "userpersisto_billing_credit_price_get",
+            "title": "View points pricing",
+            "description": "Billing administrator: view the platform-owned price per credit and currency; no provider credentials.",
+            "command": "sh",
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "tags": [
+                "authenticated"
+            ],
+            "env": {
+                "TOOL_NAME": "userpersisto_billing_credit_price_get"
+            }
+        },
+        {
+            "name": "userpersisto_billing_credit_price_set",
+            "title": "Save points pricing",
+            "description": "Billing administrator: save the platform-owned price per credit and currency; no provider credentials.",
+            "command": "sh",
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "unitAmountMinor": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 99999999
+                    },
+                    "currency": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z]{3}$"
+                    }
+                },
+                "additionalProperties": false,
+                "required": [
+                    "unitAmountMinor",
+                    "currency"
+                ]
+            },
+            "tags": [
+                "authenticated"
+            ],
+            "env": {
+                "TOOL_NAME": "userpersisto_billing_credit_price_set"
+            }
+        },
+        {
             "name": "userpersisto_billing_checkout_create",
             "title": "Create billing checkout",
             "description": "Create a Stripe Checkout session for the authenticated user.",
             "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
             "cwd": "/code",
             "timeoutMs": 30000,
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "kind": { "type": "string", "enum": ["credits", "subscription"] },
+                    "uiMode": { "type": "string", "enum": ["hosted", "elements"] },
                     "quantity": { "type": "integer", "minimum": 1 },
-                    "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 255 }
+                    "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 255 },
+                    "returnUrl": {
+                        "type": "string",
+                        "format": "uri",
+                        "maxLength": 2048
+                    }
                 },
-                "required": ["kind"],
+                "required": [
+                    "kind",
+                    "returnUrl"
+                ],
                 "additionalProperties": false
             },
             "env": { "TOOL_NAME": "userpersisto_billing_checkout_create" }
+        },
+        {
+            "name": "userpersisto_billing_checkout_verify",
+            "title": "Verify my credit payment",
+            "description": "Verify the active user's locally initiated checkout directly with Stripe and settle paid credits exactly once. Accepts no paid flag, recipient or credit amount.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": { "sessionId": { "type": "string", "pattern": "^cs_[A-Za-z0-9_]{1,200}$" } },
+                "required": ["sessionId"],
+                "additionalProperties": false
+            },
+            "tags": ["authenticated"],
+            "env": { "TOOL_NAME": "userpersisto_billing_checkout_verify" }
         },
         {
             "name": "userpersisto_billing_subscription_get",
@@ -585,6 +767,23 @@
             },
             "tags": ["internal"],
             "env": { "TOOL_NAME": "userpersisto_billing_stripe_webhook_process" }
+        },
+        {
+            "name": "userpersisto_billing_checkout_reconcile",
+            "title": "Recover a confirmed Stripe credit payment",
+            "description": "Billing administrator: retrieve an existing Stripe event from Stripe and reconcile its locally initiated credit checkout exactly once. Does not accept a user, amount or payment status from the caller.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": { "eventId": { "type": "string", "pattern": "^evt_[A-Za-z0-9]+$" } },
+                "required": ["eventId"],
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_billing_checkout_reconcile" }
         },
         {
             "name": "userpersisto_billing_events_list",

@@ -32,7 +32,7 @@ test('management reads use profile GET and fixed admin POST routes with same-ori
 test('management tool names cannot select arbitrary routes or inherited object properties', async (t) => {
     let requests = 0;
     t.mock.method(globalThis, 'fetch', async () => { requests++; return response({ ok: true }); });
-    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty', '', '../policy/set', 'https://attacker.test', 'userpersisto_config_set', 'userpersisto_profile_update']) {
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty', '', '../policy/set', 'https://attacker.test', 'userpersisto_config_set_unsafe', 'userpersisto_profile_update']) {
         await assert.rejects(callManagementTool(name, {}), /Unknown account action/, name);
     }
     assert.equal(requests, 0);

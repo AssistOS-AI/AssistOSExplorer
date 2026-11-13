@@ -1,0 +1,7 @@
+#billing-root fieldset { display: grid; gap: 16px; min-width: 0; border: 0; padding: 0; margin-top: 20px; }
+#billing-root label { display: grid; gap: 6px; }
+#billing-root input { width: 100%; min-width: 0; box-sizing: border-box; }
+#billing-root .billing-help { margin: 0; color: var(--muted); line-height: 1.5; }
+#billing-root .billing-actions { display: flex; justify-content: flex-end; }
+#billing-root [data-billing-status] { overflow-wrap: anywhere; }
+#billing-root form[hidden] { display: none; }

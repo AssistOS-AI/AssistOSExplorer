@@ -111,25 +111,23 @@ test('different users concurrently reserve and release the same reference indepe
     for (const user of users) assert.deepEqual(await credits.getBalance(user.id), { balance: 20, reservedBalance: 0 });
 });
 
-test('legacy reservations and stranded journals recover without reopening terminal reservations', async () => {
-    const [owner, stranded] = await Promise.all(['legacy-owner', 'legacy-stranded'].map((name) => createUser({ email: `${name}@example.test`, roles: ['user'] })));
+test('reservation projections rebuild from their journal without reopening terminal reservations', async () => {
+    const [owner, stranded] = await Promise.all(['projection-owner', 'projection-missing'].map((name) => createUser({ email: `${name}@example.test`, roles: ['user'] })));
     for (const user of [owner, stranded]) {
         await credits.grant({ userId: user.id, amount: 20, referenceId: 'seed' });
-        await credits.reserve({ userId: user.id, amount: 7, referenceId: 'legacy-collision' });
+        await credits.reserve({ userId: user.id, amount: 7, referenceId: 'shared-reference' });
     }
     let store = await getStore();
     const ownerReservation = (await store.getCreditReservationsObjectsByUserId(owner.id))[0];
     await store.deleteCreditReservation(ownerReservation.id);
-    const { id, ...legacyFields } = ownerReservation;
-    await store.createCreditReservation({ ...legacyFields, reservationId: 'legacy-collision' });
     const strandedReservation = (await store.getCreditReservationsObjectsByUserId(stranded.id))[0];
     await store.deleteCreditReservation(strandedReservation.id);
     await flush();
     await resetStoreForTests();
 
-    assert.equal((await credits.reserve({ userId: stranded.id, amount: 7, referenceId: 'legacy-collision' })).idempotent, true);
-    await credits.release({ userId: stranded.id, amount: 7, referenceId: 'legacy-collision' });
-    await credits.commit({ userId: owner.id, amount: 7, referenceId: 'legacy-collision' });
+    assert.equal((await credits.reserve({ userId: stranded.id, amount: 7, referenceId: 'shared-reference' })).idempotent, true);
+    await credits.release({ userId: stranded.id, amount: 7, referenceId: 'shared-reference' });
+    await credits.commit({ userId: owner.id, amount: 7, referenceId: 'shared-reference' });
     assert.deepEqual(await credits.getBalance(stranded.id), { balance: 20, reservedBalance: 0 });
     assert.deepEqual(await credits.getBalance(owner.id), { balance: 13, reservedBalance: 0 });
 
@@ -137,9 +135,36 @@ test('legacy reservations and stranded journals recover without reopening termin
     await store.deleteCreditReservation((await store.getCreditReservationsObjectsByUserId(stranded.id))[0].id);
     await flush();
     await resetStoreForTests();
-    await credits.reserve({ userId: stranded.id, amount: 7, referenceId: 'legacy-collision' });
+    await credits.reserve({ userId: stranded.id, amount: 7, referenceId: 'shared-reference' });
     store = await getStore();
     assert.equal((await store.getCreditReservationsObjectsByUserId(stranded.id))[0].status, 'released');
-    await assert.rejects(credits.commit({ userId: stranded.id, amount: 7, referenceId: 'legacy-collision' }));
+    await assert.rejects(credits.commit({ userId: stranded.id, amount: 7, referenceId: 'shared-reference' }));
     assert.equal((await credits.ledger({ userId: stranded.id })).totalCount, 3);
+});
+
+test('expiring rewards are spent first and a late refund preserves the original expiry', async (t) => {
+    const user = await createUser({ email: 'expiring@x.com', displayName: 'Expiry', roles: ['user'] });
+    const before = new Date('2030-01-01T00:00:00.000Z');
+    const afterExpiry = new Date('2030-02-02T00:00:00.000Z');
+    t.mock.timers.enable({ apis: ['Date'], now: before });
+    const userId = user.id;
+    await credits.applyPurchase({ userId, amount: 20, referenceId: 'paid' });
+    const award = { userId, amount: 12, referenceId: 'reward', expiresAt: '2030-02-01T00:00:00.000Z' };
+    await credits.grant(award);
+    const reservation = { userId, amount: 7, referenceId: 'edition-one' };
+    await credits.reserve(reservation);
+    await credits.commit(reservation);
+    assert.deepEqual(await credits.getBalance(userId, { includeExpiring: true }), {
+        balance: 25, reservedBalance: 0, expiring: [{ amount: 5, expiresAt: award.expiresAt }],
+    });
+    t.mock.timers.setTime(afterExpiry.getTime());
+    const {getProfile} = await import('../lib/authorization.mjs');
+    assert.deepEqual((await getProfile(userId)).credits, { balance: 20, reservedBalance: 0 });
+    assert.deepEqual(await credits.getBalance(userId), { balance: 20, reservedBalance: 0 });
+    await credits.refundSpend(reservation);
+    assert.equal((await credits.refundSpend(reservation)).idempotent, true);
+    assert.deepEqual(await credits.getBalance(userId), { balance: 20, reservedBalance: 0 });
+    const { entries } = await credits.ledger({ userId });
+    assert.deepEqual(entries.filter(entry=>entry.type==='expire').map(entry=>entry.amount), [7,5]);
+    assert.equal((await credits.grant(award)).idempotent, true);
 });

@@ -1,0 +1,9 @@
+userpersisto-billing-settings .userpersisto-billing-modal { width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; }
+userpersisto-billing-settings fieldset { display: grid; gap: 16px; min-width: 0; border: 0; padding: 0; margin: 20px 0 0; }
+userpersisto-billing-settings .form-item { display: grid; gap: 6px; min-width: 0; }
+userpersisto-billing-settings input { width: 100%; min-width: 0; box-sizing: border-box; }
+userpersisto-billing-settings .billing-help { margin: 0; color: var(--text-secondary, var(--text)); font-size: inherit; line-height: 1.5; }
+userpersisto-billing-settings .billing-actions { display: flex; justify-content: flex-end; }
+userpersisto-billing-settings [data-billing-status] { overflow-wrap: anywhere; }
+userpersisto-billing-settings [data-billing-status][data-error="true"] { color: var(--error-color, #b42318); }
+userpersisto-billing-settings form[hidden] { display: none; }
