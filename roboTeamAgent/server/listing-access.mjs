@@ -81,7 +81,7 @@ export async function authorizeRobotListing(req, url, { internalToken = '', env 
     if (!verified?.ok) return deny(401, 'authenticated Ploinky user is required');
     const decision = listingDecision(verified.payload);
     if (!decision.entitled) return deny(403, 'Explorer access is required to list robots');
-    return { ok: true, canAdmin: decision.admin };
+    return { ok: true, canAdmin: decision.admin, principal: verified.payload.actor.id };
 }
 
 // Gate for every RoboTeam route that is not an internal-token call, the status

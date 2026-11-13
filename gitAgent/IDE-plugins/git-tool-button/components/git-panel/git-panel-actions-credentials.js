@@ -39,8 +39,15 @@ export function createCredentialsActions(ctx) {
         commitSelectedRepos,
         getSelectedReposForBatch,
         getExplicitActionRepoPaths,
-        getPrimaryExplicitActionRepoPath
+        getPrimaryExplicitActionRepoPath,
+        onGitCredentialsStored
     } = ctx;
+
+    // A newly stored token may also go to the selected RoboTeam robot; that never blocks Git sign-in.
+    const notifyGitCredentialsStored = () => {
+        if (typeof onGitCredentialsStored !== 'function') return;
+        Promise.resolve().then(onGitCredentialsStored).catch(() => {});
+    };
 
     const resolveIdentityRepoPath = async () => {
         const state = getState();
@@ -274,6 +281,7 @@ export function createCredentialsActions(ctx) {
         }
         const tokenResponse = await service.storeManualGitToken(token);
         const github = tokenResponse?.github || null;
+        notifyGitCredentialsStored();
 
         applyState({
             githubAuth: github
@@ -612,6 +620,7 @@ export function createCredentialsActions(ctx) {
                     clearRememberedGithubConnection();
                     applyState({ credentialsAuthAction: null }, { silent: true });
                 }
+                notifyGitCredentialsStored();
             }
             tokenSaved = true;
         } else if (draft.usingGithub && runtimeState.authValid) {

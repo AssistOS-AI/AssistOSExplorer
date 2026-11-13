@@ -1181,7 +1181,7 @@ jobs:
               const reference = item => (["podman", "docker"].includes(item?.engine) && /^[a-f0-9]{64}$/.test(item?.id || "") ? `${item.engine}:${item.id}` : undefined);
               const references = list => (Array.isArray(list) ? list.map(reference).filter(Boolean) : undefined);
               const clean = object => Object.fromEntries(Object.entries(object).filter(([, item]) => item !== undefined));
-              const policy = ["policy-state.json", "sessions-revocations.json", "policy-audit.log", "policy-audit-archive"];
+              const policy = ["policy-state.json", "sessions-revocations.json", "policy-audit.log", "policy-audit-archive", "sso-sessions.enc"];
               const backup = /^\.?(?:pruning-)?redeploy-[A-Za-z0-9]{8}(?:-[A-Za-z.-]{1,24})?$/;
               const workspace = value?.workspace && typeof value.workspace === "object" ? value.workspace : null;
               const quiesce = value?.quiesce && typeof value.quiesce === "object" ? value.quiesce : null;
@@ -1868,7 +1868,7 @@ jobs:
           QA_RESTORE_LINE="$(printf '%s' "$QA_RESTORE" | QA_EXPECT_STASH="$QA_TEARDOWN_STASH" node --input-type=module -e '
             import fs from "node:fs";
             const restore = JSON.parse(fs.readFileSync(0, "utf8"));
-            const policy = ["policy-state.json", "sessions-revocations.json", "policy-audit.log", "policy-audit-archive"];
+            const policy = ["policy-state.json", "sessions-revocations.json", "policy-audit.log", "policy-audit-archive", "sso-sessions.enc"];
             const expected = process.env.QA_EXPECT_STASH;
             if (restore?.result === "no-stash" && expected === "none" && Array.isArray(restore.copied) && restore.copied.length === 0
               && restore.stashRemoved === false) {

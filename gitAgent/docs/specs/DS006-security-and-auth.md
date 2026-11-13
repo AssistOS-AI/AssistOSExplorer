@@ -39,6 +39,8 @@ Requirement O4c: authentication persistence is a hard-cut contract. [`gitAgent`]
 
 Requirement O4d: before every local auth-state read, temporary-file write, or rename, [`gitAgent`](wiki.html#definition-gitagent) shall revalidate the full `.data/gitAgent/github-auth` chain from the canonical workspace root. Directories, state files, and temporary files must not be symbolic links. A violation rejects with `PLOINKY_AGENT_DATA_POLICY_VIOLATION` without following or replacing the invalid path or touching retired state. File opens must not follow a last-component symbolic link.
 
+Requirement O4e: saving git credentials to a RoboTeam robot shall read the caller's own GitHub token from DPU on the server and pass it only to RoboTeam `robot_git_credentials_save` through the caller's `roboTeamGitCredentials` user delegation. The browser never receives the token, the save tool accepts no token input, results carry only non-secret metadata, and messages are redacted. Ownership and administrator rules are enforced by RoboTeam; gitAgent does not duplicate them. A missing, inactive or unreachable RoboTeam degrades to `ROBOTEAM_UNAVAILABLE` and never affects GitHub sign-in or token storage. Disconnecting GitHub does not remove credentials from robots.
+
 Requirement O5: configuration and documentation shall remain aligned with `manifest.json` and `mcp-config.json`.
 
 Requirement O6: repository validation shall run through the [Git agent](wiki.html#definition-gitagent) test suite under `gitAgent/tests`.

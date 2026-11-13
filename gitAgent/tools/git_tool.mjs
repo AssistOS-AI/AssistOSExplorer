@@ -14,6 +14,11 @@ import {
   listGithubRepositories,
   listGithubRepositoryTargets
 } from '../lib/git/github-remotes.mjs';
+import {
+  listRobotCredentialTargets,
+  saveRobotCredentials,
+  deleteRobotCredentials
+} from '../lib/robot-credentials.mjs';
 import gitCommitMessage from '../lib/git-commit-message.js';
 import resolveConflict from '../lib/git-resolve-conflict.js';
 
@@ -310,6 +315,15 @@ function normalizeArgs(toolName, args) {
     case 'git_auth_poll':
     case 'git_auth_disconnect':
     case 'git_auth_store_token':
+    case 'git_robot_credentials_targets':
+      return input;
+    case 'git_robot_credentials_save':
+    case 'git_robot_credentials_delete':
+      if (!input.robotName || typeof input.robotName !== 'string') {
+        throw new Error(`${toolName} requires a "robotName" string.`);
+      }
+      input.name = typeof input.name === 'string' ? input.name : '';
+      input.email = typeof input.email === 'string' ? input.email : '';
       return input;
     case 'git_repos_overview':
       requirePath();
@@ -402,6 +416,21 @@ async function main() {
           token: String(payload.token || '')
         });
         writeJson(result);
+        return;
+      case 'git_robot_credentials_targets':
+        writeJson(await listRobotCredentialTargets({ authInfo }));
+        return;
+      case 'git_robot_credentials_save':
+        writeJson(await saveRobotCredentials({
+          authInfo,
+          workspaceRoot,
+          robotName: payload.robotName,
+          name: payload.name,
+          email: payload.email
+        }));
+        return;
+      case 'git_robot_credentials_delete':
+        writeJson(await deleteRobotCredentials({ authInfo, robotName: payload.robotName }));
         return;
       case 'git_info':
         result = await gitService.gitInfo(payload);

@@ -1,4 +1,5 @@
 import { normalizeTerminalProfileSource } from '../../../utils/liveSessionSource.mjs';
+import { retryOnStaleBrowserProof } from '../../../services/infrastructure/browserMutationRetry.js';
 
 const DISCOVERY_PATH = '/webtty/target-discoveries';
 const PROFILE_SOURCE_LOCATION = 'terminal-profiles:source';
@@ -243,14 +244,14 @@ export async function requestTerminalTargetDiscovery(directory, options = {}) {
     const fetchImpl = options.fetchImpl || globalThis.fetch;
     const profile = options.profile ? { provider: options.profile.provider, id: options.profile.id,
         ...(options.profile.mode ? { mode: options.profile.mode } : {}) } : null;
-    const response = await fetchImpl(DISCOVERY_PATH, {
+    const response = await retryOnStaleBrowserProof(() => fetchImpl(DISCOVERY_PATH, {
         method: 'POST',
         credentials: 'same-origin',
         cache: 'no-store',
         headers: mutationHeaders(),
         body: JSON.stringify({ dir: String(directory ?? ''), ...(profile ? { profile } : {}) }),
         signal: options.signal,
-    });
+    }));
     return normalizeTerminalDiscoveryPayload(await readJsonResponse(response), { profile });
 }
 
@@ -260,13 +261,13 @@ export async function cancelTerminalTargetDiscovery(discoveryId, options = {}) {
         return true;
     }
     const fetchImpl = options.fetchImpl || globalThis.fetch;
-    const response = await fetchImpl(`${DISCOVERY_PATH}/${encodeURIComponent(normalized)}`, {
+    const response = await retryOnStaleBrowserProof(() => fetchImpl(`${DISCOVERY_PATH}/${encodeURIComponent(normalized)}`, {
         method: 'DELETE',
         credentials: 'same-origin',
         cache: 'no-store',
         keepalive: options.keepalive === true,
         headers: mutationHeaders(),
-    });
+    }));
     let body = null;
     try {
         body = await response.json();
@@ -387,14 +388,14 @@ export async function prepareTerminalProfile(source, id, options = {}) {
         throw new Error('Invalid terminal profile identifier.');
     }
     const fetchImpl = options.fetchImpl || globalThis.fetch;
-    const response = await fetchImpl(`${source.base}/${encodeURIComponent(id)}/prepare`, {
+    const response = await retryOnStaleBrowserProof(() => fetchImpl(`${source.base}/${encodeURIComponent(id)}/prepare`, {
         method: 'POST',
         credentials: 'same-origin',
         cache: 'no-store',
         headers: mutationHeaders(),
         body: '{}',
         signal: options.signal,
-    });
+    }));
     const body = await readJsonResponse(response);
     if (!hasExactKeys(body, ['ok', 'id', 'label', 'root']) || body.ok !== true || body.id !== id
         || typeof body.root !== 'string' || !body.root || utf8Length(body.root) > 4096 || /[\0\r\n]/.test(body.root)) {

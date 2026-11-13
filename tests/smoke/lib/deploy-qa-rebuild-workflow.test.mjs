@@ -1010,7 +1010,7 @@ exec '${process.execPath}' "$@"
     return { result, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n') : [] };
 }
 
-const restored = (extra = {}) => ({ output: JSON.stringify({ result: 'restored', copied: ['policy-state.json', 'sessions-revocations.json', 'policy-audit.log', 'policy-audit-archive'],
+const restored = (extra = {}) => ({ output: JSON.stringify({ result: 'restored', copied: ['policy-state.json', 'sessions-revocations.json', 'policy-audit.log', 'policy-audit-archive', 'sso-sessions.enc'],
     discarded: [], stashRemoved: true, ...extra }), status: 0 });
 const noStash = (extra = {}) => ({ output: JSON.stringify({ result: 'no-stash', copied: [], discarded: [], stashRemoved: false, ...extra }), status: 0 });
 
@@ -1020,10 +1020,25 @@ test('a restored stash is logged with its entries and the Box start is reached o
         const ok = runRestore(t, { answer: restored(), stash });
         assert.equal(ok.result.status, 0, ok.result.stdout + ok.result.stderr);
         assert.deepEqual(ok.calls, ['/tmp/helpers/qa-teardown.mjs stash-restore --lock-held']);
-        assert.match(ok.result.stdout, /^\[deploy-qa\] Durable access policy, revocations and audit history restored before graph activation \(policy-state\.json, sessions-revocations\.json, policy-audit\.log, policy-audit-archive\); the stash was removed\.\nSTART_STAGE_REACHED$/m);
+        assert.match(ok.result.stdout, /^\[deploy-qa\] Durable access policy, revocations and audit history restored before graph activation \(policy-state\.json, sessions-revocations\.json, policy-audit\.log, policy-audit-archive, sso-sessions\.enc\); the stash was removed\.\nSTART_STAGE_REACHED$/m);
     }
     const leftovers = runRestore(t, { answer: restored({ discarded: ['router-security.removing-77'] }) });
     assert.equal(leftovers.result.status, 0, 'discarded leftovers are reported by the helper and do not fail the run');
+});
+
+// The encrypted SSO session file exists only once the Router has written it, so a stash without it is a complete restore.
+test('a restore without the encrypted SSO session file is complete and a name outside the list is refused', t => {
+    const four = ['policy-state.json', 'sessions-revocations.json', 'policy-audit.log', 'policy-audit-archive'];
+    const absent = runRestore(t, { answer: restored({ copied: four }), stash: 'created' });
+    assert.equal(absent.result.status, 0, absent.result.stdout + absent.result.stderr);
+    assert.match(absent.result.stdout, /restored before graph activation \(policy-state\.json, sessions-revocations\.json, policy-audit\.log, policy-audit-archive\); the stash was removed\.\nSTART_STAGE_REACHED$/m);
+    assert.doesNotMatch(absent.result.stdout, /sso-sessions/);
+    const present = runRestore(t, { answer: restored({ copied: [...four, 'sso-sessions.enc'] }), stash: 'kept' });
+    assert.equal(present.result.status, 0, present.result.stdout + present.result.stderr);
+    assert.match(present.result.stdout, /policy-audit-archive, sso-sessions\.enc\); the stash was removed\./);
+    const unknown = runRestore(t, { answer: restored({ copied: [...four, 'sso-sessions.json'] }), stash: 'created' });
+    assert.equal(unknown.result.status, 1, unknown.result.stdout + unknown.result.stderr);
+    assert.doesNotMatch(unknown.result.stdout, /START_STAGE_REACHED/);
 });
 
 test('without a stash the fresh access policy stays and the run continues', t => {

@@ -8,7 +8,7 @@ import { createDiagnosticLedger } from './diagnostic-ledger.mjs';
 
 const principal = Object.freeze({ id: 'USER.Owner', roles: ['admin'] });
 const oldCookies = Object.freeze([{ name: 'ploinky_sso', value: 'private-old-session' }]);
-const newCookies = Object.freeze([{ name: 'ploinky_sso', value: 'private-new-session' }]);
+const changedCookies = Object.freeze([{ name: 'ploinky_sso', value: 'private-new-session' }]);
 const viewId = 'V'.repeat(32);
 const streamPath = `/webtty/sessions/prior-terminal/stream?view=${viewId}`;
 
@@ -16,7 +16,7 @@ function response(status, payload) {
     return new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
 }
 
-const retiredBody = { ok: false, error: 'not_authenticated', login: `/auth/login?${new URLSearchParams({ returnTo: streamPath })}` };
+const retiredBody = { ok: false, error: 'not_found' };
 const cookieOf = (options) => options.headers.Cookie;
 
 function proof(fetchImpl, overrides = {}) {
@@ -29,32 +29,23 @@ function callbacks(events = []) {
         verifyCleanup: async () => { events.push('cleanup'); },
         stopProducer: async () => { events.push('stop'); },
         closeTerminal: async () => { events.push('close'); },
-        signIn: async () => { events.push('sign-in'); return principal; },
-        readCookies: async () => { events.push('cookies'); return newCookies; },
+        readCookies: async () => { events.push('cookies'); return oldCookies; },
     };
 }
 
-test('real isolated HTTP expiry probes retain the old credential and require cleanup before fresh SSO', async (t) => {
+test('real isolated HTTP probes prove the surviving SSO session and an unchanged cookie, with cleanup first and no sign-in', async (t) => {
     const events = [];
     const server = http.createServer((request, reply) => {
         const isOld = request.headers.cookie === 'ploinky_sso=private-old-session';
+        assert.equal(isOld, true, 'every probe carries the prior credential');
         if (request.url === '/auth/token') {
-            assert.equal(isOld, true);
-            events.push('expired');
-            reply.writeHead(401, { 'content-type': 'application/json', 'set-cookie': 'ploinky_sso=; Max-Age=0; Path=/' });
-            reply.end(JSON.stringify({ ok: false, error: 'session_expired' }));
+            events.push('token');
+            reply.writeHead(200, { 'content-type': 'application/json' });
+            reply.end(JSON.stringify({ ok: true, user: principal }));
             return;
         }
         assert.equal(request.url, streamPath);
-        if (isOld) {
-            assert.equal(request.headers.accept, 'text/event-stream');
-            events.push('retired-probe');
-            reply.writeHead(401, { 'content-type': 'application/json' });
-            reply.end(JSON.stringify(retiredBody));
-            return;
-        }
-        assert.equal(request.headers.cookie === 'ploinky_sso=private-new-session', true);
-        events.push('absent');
+        events.push(request.headers.accept === 'text/event-stream' ? 'retired-probe' : 'absent');
         reply.writeHead(404, { 'content-type': 'application/json' });
         reply.end(JSON.stringify({ ok: false, error: 'not_found' }));
     });
@@ -63,67 +54,91 @@ test('real isolated HTTP expiry probes retain the old credential and require cle
     const recovery = captureRouterRecoveryAuthentication({
         baseURL: `http://127.0.0.1:${server.address().port}`, cookies: oldCookies, principal,
     });
+    assert.equal(recovery.mode, 'sso');
     await assert.rejects(recovery.recoverAfterCleanup(callbacks(events)), /out of order/);
     await recovery.proveRestartedAuthentication();
     await recovery.proveRestartedAuthentication();
     const result = await recovery.recoverAfterCleanup(callbacks(events));
-    assert.deepEqual(events, ['expired', 'expired', 'cleanup', 'retired-probe', 'stop', 'close', 'sign-in', 'cookies', 'absent']);
-    assert.deepEqual(result, { mode: 'sso', priorAuthenticationStatus: 401, renewedSsoSession: true, authenticatedOldStreamStatus: 404 });
+    assert.deepEqual(events, ['token', 'token', 'cleanup', 'retired-probe', 'stop', 'close', 'cookies', 'absent']);
+    assert.deepEqual(result, { mode: 'sso', priorAuthenticationStatus: 200, ssoCookieUnchanged: true, authenticatedOldStreamStatus: 404 });
     assert.equal(oldCookies[0].value === 'private-old-session', true);
     assert.doesNotMatch(JSON.stringify({ recovery, result }), /private-old|private-new/);
     await assert.rejects(recovery.recoverAfterCleanup(callbacks()), /out of order/);
 });
 
-test('cleanup or terminal-close failures prevent reauthentication and old-stream probing', async () => {
+test('cleanup or terminal-close failures prevent the cookie check and the final old-stream probe', async () => {
     for (const failingStep of ['verifyCleanup', 'stopProducer', 'closeTerminal']) {
         let probes = 0;
-        const recovery = proof(async (url) => { probes += 1; return url.pathname === '/auth/token' ? response(401, { ok: false, error: 'session_expired' }) : response(401, retiredBody); });
+        const recovery = proof(async (url) => { probes += 1; return url.pathname === '/auth/token' ? response(200, { user: principal }) : response(404, retiredBody); });
         await recovery.proveRestartedAuthentication();
         const actions = callbacks();
         actions[failingStep] = async () => { throw new Error('cleanup incomplete'); };
-        actions.signIn = async () => assert.fail('must not reauthenticate');
+        actions.readCookies = async () => assert.fail('must not read cookies before the terminal is closed');
         await assert.rejects(recovery.recoverAfterCleanup(actions), /cleanup incomplete/);
         assert.equal(probes, failingStep === 'verifyCleanup' ? 1 : 2, 'a failed cleanup probes no route; a failed close has only the retired-route probe');
     }
 });
 
-test('expired SSO proof rejects success, wrong error bodies, redirects, and malformed JSON', async () => {
+test('a surviving SSO proof rejects expiry, a different or non-admin principal, redirects, and malformed JSON', async () => {
     for (const reply of [
-        response(200, { user: principal }), response(401, { ok: false, error: 'not_authenticated' }),
-        response(401, { ok: false, error: 'session_expired', extra: true }),
+        response(401, { ok: false, error: 'session_expired' }), response(401, { ok: false, error: 'not_authenticated' }),
+        response(200, { user: { id: 'USER.Other', roles: ['admin'] } }), response(200, { user: { id: principal.id, roles: ['user'] } }),
+        response(200, { ok: true }), response(503, { ok: false, error: 'authentication_unavailable' }),
         new Response('', { status: 302, headers: { location: '/auth/login' } }),
-        new Response('bad json', { status: 401, headers: { 'content-type': 'application/json' } }),
+        new Response('bad json', { status: 200, headers: { 'content-type': 'application/json' } }),
     ]) {
         const recovery = proof(async (_url, options) => {
             assert.equal(options.redirect, 'manual');
             return reply;
         });
-        await assert.rejects(recovery.proveRestartedAuthentication(), /expire|without redirects/);
+        await assert.rejects(recovery.proveRestartedAuthentication(), /must survive|same authenticated administrator|without redirects/);
         await assert.rejects(recovery.recoverAfterCleanup(callbacks()), /out of order/);
     }
 });
 
-test('renewed SSO requires unchanged administrator identity and a different private cookie', async () => {
-    for (const variant of ['different-id', 'non-admin', 'old-cookie', 'local-cookie']) {
-        const recovery = proof(async (url) => (url.pathname === '/auth/token' ? response(401, { ok: false, error: 'session_expired' }) : response(401, retiredBody)));
+test('SSO must not need to sign in again: the cookie read after the restart must equal the prior one exactly', async () => {
+    const open = () => proof(async (url) => (url.pathname === '/auth/token' ? response(200, { user: principal }) : response(404, retiredBody)));
+    for (const [variant, cookies] of [
+        ['changed value', changedCookies],
+        ['local cookie', [{ name: 'ploinky_jwt', value: 'private-old-session' }]],
+        ['two cookies', [...oldCookies, { name: 'ploinky_jwt', value: 'other-private-cookie' }]],
+        ['no cookie', []],
+    ]) {
+        const events = [];
+        const recovery = open();
         await recovery.proveRestartedAuthentication();
-        const actions = callbacks();
-        if (variant === 'different-id') actions.signIn = async () => ({ id: 'USER.Other', roles: ['admin'] });
-        if (variant === 'non-admin') actions.signIn = async () => ({ id: principal.id, roles: ['user'] });
-        if (variant === 'old-cookie') actions.readCookies = async () => oldCookies;
-        if (variant === 'local-cookie') actions.readCookies = async () => [{ name: 'ploinky_jwt', value: 'other-private-cookie' }];
-        await assert.rejects(recovery.recoverAfterCleanup(actions), /same authenticated administrator|newly issued SSO/);
+        const actions = callbacks(events);
+        actions.readCookies = async () => cookies;
+        await assert.rejects(recovery.recoverAfterCleanup(actions), /SSO session cookie to be unchanged|exactly one authenticated/, variant);
+        assert.deepEqual(events, ['cleanup', 'stop', 'close'], `${variant}: the failure comes after the terminal close`);
     }
+    const { readCookies, ...withoutCookies } = callbacks();
+    const events = [];
+    const recovery = open();
+    await recovery.proveRestartedAuthentication();
+    await assert.rejects(recovery.recoverAfterCleanup({ ...withoutCookies, verifyCleanup: async () => events.push('cleanup') }), /browser cookies/);
+    assert.deepEqual(events, [], 'nothing runs without the cookie reader');
+    const unchanged = open();
+    await unchanged.proveRestartedAuthentication();
+    const signInEvents = [];
+    await assert.rejects(unchanged.recoverAfterCleanup({ ...callbacks(signInEvents), signIn: async () => signInEvents.push('sign-in') }), /no sign-in step/);
+    assert.deepEqual(signInEvents, [], 'a caller that still passes a sign-in is refused before anything runs');
+    const actions = callbacks();
+    assert.equal((await unchanged.recoverAfterCleanup(actions)).ssoCookieUnchanged, true);
 });
 
-test('authenticated old stream must return exact not-found instead of stale auth denial or success', async () => {
-    for (const [status, body] of [[401, { ok: false, error: 'session_expired' }], [200, { ok: true }], [404, { error: 'not_found' }]]) {
-        const recovery = proof(async (url, options) => {
-            if (url.pathname === '/auth/token') return response(401, { ok: false, error: 'session_expired' });
-            return cookieOf(options) === 'ploinky_sso=private-old-session' ? response(401, retiredBody) : response(status, body);
+test('the old stream must return exact not-found after recovery instead of stale auth denial or success', async () => {
+    for (const [status, body] of [[401, { ok: false, error: 'session_expired' }], [401, retiredBody], [200, { ok: true }], [404, { error: 'not_found' }]]) {
+        let streamProbes = 0;
+        const recovery = proof(async (url) => {
+            if (url.pathname === '/auth/token') return response(200, { user: principal });
+            // The first stream probe is the retired-route body check; the one after the terminal close is the final absence check.
+            streamProbes += 1;
+            return streamProbes === 1 ? response(404, retiredBody) : response(status, body);
         });
         await recovery.proveRestartedAuthentication();
         await assert.rejects(recovery.recoverAfterCleanup(callbacks()), /prior terminal stream must remain absent/);
+        assert.equal(streamProbes, 2);
     }
 });
 
@@ -135,12 +150,11 @@ test('separately proven local JWT survives Router restart without a new sign-in'
     }, { cookies: [{ name: 'ploinky_jwt', value: 'private-local-session' }] });
     await recovery.proveRestartedAuthentication();
     const actions = callbacks(events);
-    actions.signIn = async () => assert.fail('surviving local JWT must not reauthenticate');
     actions.readCookies = async () => assert.fail('local JWT does not require replacement');
     const result = await recovery.recoverAfterCleanup(actions);
     assert.deepEqual(events, ['cleanup', 'stop', 'close']);
     assert.equal(result.priorAuthenticationStatus, 200);
-    assert.equal(result.renewedSsoSession, false);
+    assert.equal(result.ssoCookieUnchanged, null, 'the cookie comparison applies to SSO only');
 });
 
 test('unproven or ambiguous cookies fail closed and diagnostic sets retain every exact transport failure', () => {
@@ -152,15 +166,16 @@ test('unproven or ambiguous cookies fail closed and diagnostic sets retain every
         assert.equal(diagnostics.length, 4);
         assert.equal(diagnostics[0].failure, 'net::ERR_INCOMPLETE_CHUNKED_ENCODING');
         assert.equal(diagnostics[1].text, 'Failed to load resource: net::ERR_INCOMPLETE_CHUNKED_ENCODING');
-        assert.equal(diagnostics[2].status, mode === 'sso' ? 401 : 404);
-        assert.match(diagnostics[3].text, mode === 'sso' ? /401 \(Unauthorized\)/ : /404 \(Not Found\)/);
+        assert.equal(diagnostics[2].status, 404, `${mode}: the retired stream is refused as not found`);
+        assert.match(diagnostics[3].text, /404 \(Not Found\)/);
+        assert.doesNotMatch(diagnostics[3].text, /401|Unauthorized/);
         assert.equal(diagnostics.every((item) => (item.url || item.locationUrl) === `http://localhost:8080/webtty/sessions/prior-terminal/stream?view=${viewId}`), true);
     }
     assert.throws(() => expectedRouterRecoveryDiagnostics('http://localhost:8080', 'prior-terminal', 'guest', viewId), /Unproven/);
 });
 
 test('the prior stream path must carry its view and the diagnostics need one', async () => {
-    const recovery = proof(async () => response(401, { ok: false, error: 'session_expired' }));
+    const recovery = proof(async () => response(200, { user: principal }));
     await recovery.proveRestartedAuthentication();
     for (const bad of ['/webtty/sessions/prior-terminal/stream', '/webtty/sessions/prior-terminal/stream?view=short',
         `/webtty/sessions/prior-terminal/stream?view=${viewId}&x=1`, `/webtty/sessions/prior-terminal/input?view=${viewId}`]) {
@@ -170,51 +185,51 @@ test('the prior stream path must carry its view and the diagnostics need one', a
     assert.throws(() => expectedRouterRecoveryDiagnostics('http://localhost:8080', 'prior-terminal', 'sso', 'short'), /view identifier/);
 });
 
-test('the retired-stream direct probe uses the prior credential and accepts only the exact mode-specific body', async () => {
+test('the retired-stream direct probe uses the prior credential and accepts only the exact not-found body in both modes', async () => {
     for (const mode of ['sso', 'local']) {
         const seen = [];
         const recovery = proof(async (url, options) => {
             seen.push({ path: `${url.pathname}${url.search}`, accept: options.headers.Accept, cookie: cookieOf(options), redirect: options.redirect });
-            return mode === 'sso' ? response(401, retiredBody) : response(404, { ok: false, error: 'not_found' });
+            return response(404, { ok: false, error: 'not_found' });
         }, { cookies: [mode === 'sso' ? oldCookies[0] : { name: 'ploinky_jwt', value: 'private-old-session' }] });
-        assert.deepEqual(await recovery.probeRetiredStream(streamPath), { status: mode === 'sso' ? 401 : 404, bodyValid: true });
+        assert.deepEqual(await recovery.probeRetiredStream(streamPath), { status: 404, bodyValid: true });
         assert.deepEqual(seen, [{ path: streamPath, accept: 'text/event-stream', cookie: `${mode === 'sso' ? 'ploinky_sso' : 'ploinky_jwt'}=private-old-session`, redirect: 'manual' }]);
     }
+    const loginBody = { ok: false, error: 'not_authenticated', login: `/auth/login?${new URLSearchParams({ returnTo: streamPath })}` };
     const wrong = [
-        () => response(401, { ...retiredBody, extra: true }), () => response(401, { ok: false, error: 'not_authenticated' }),
-        () => response(401, { ...retiredBody, login: '/auth/login?returnTo=%2Felsewhere' }), () => response(404, { ok: false, error: 'not_found' }),
+        () => response(404, { ...retiredBody, extra: true }), () => response(404, { error: 'not_found' }), () => response(404, { ok: false, error: 'not_authenticated' }),
+        () => response(401, loginBody), () => response(401, retiredBody), () => response(401, { ok: false, error: 'session_expired' }),
         () => response(200, { ok: true }), () => new Response('', { status: 302, headers: { location: '/auth/login' } }),
-        () => new Response('not json', { status: 401, headers: { 'content-type': 'application/json' } }),
-        () => new Response(JSON.stringify(retiredBody), { status: 401, headers: { 'content-type': 'text/plain' } }),
+        () => new Response('not json', { status: 404, headers: { 'content-type': 'application/json' } }),
+        () => new Response(JSON.stringify(retiredBody), { status: 404, headers: { 'content-type': 'text/plain' } }),
     ];
-    for (const reply of wrong) {
-        const recovery = proof(async () => reply());
-        await assert.rejects(recovery.probeRetiredStream(streamPath), /exact body|without redirects/);
+    for (const cookies of [oldCookies, [{ name: 'ploinky_jwt', value: 'x' }]]) {
+        for (const reply of wrong) {
+            const recovery = proof(async () => reply(), { cookies });
+            await assert.rejects(recovery.probeRetiredStream(streamPath), /exact body|without redirects/);
+        }
     }
-    const local = proof(async () => response(404, { ok: false, error: 'not_found', extra: 1 }), { cookies: [{ name: 'ploinky_jwt', value: 'x' }] });
-    await assert.rejects(local.probeRetiredStream(streamPath), /exact body/);
 });
 
 test('the lifecycle stop callback is required and runs between the retired-stream probe and the terminal close', async () => {
     const events = [];
     const recovery = proof(async (url, options) => {
-        if (url.pathname === '/auth/token') return response(401, { ok: false, error: 'session_expired' });
-        const old = cookieOf(options) === 'ploinky_sso=private-old-session';
-        events.push(old ? 'retired-probe' : 'absent');
-        return old ? response(401, retiredBody) : response(404, { ok: false, error: 'not_found' });
+        if (url.pathname === '/auth/token') return response(200, { user: principal });
+        events.push(options.headers.Accept === 'text/event-stream' ? 'retired-probe' : 'absent');
+        return response(404, retiredBody);
     });
     await recovery.proveRestartedAuthentication();
     const { stopProducer, ...withoutStop } = callbacks(events);
     await assert.rejects(recovery.recoverAfterCleanup(withoutStop), /lifecycle stop/);
     assert.deepEqual(events, [], 'nothing runs without the stop callback');
     await recovery.recoverAfterCleanup(callbacks(events));
-    assert.deepEqual(events, ['cleanup', 'retired-probe', 'stop', 'close', 'sign-in', 'cookies', 'absent']);
+    assert.deepEqual(events, ['cleanup', 'retired-probe', 'stop', 'close', 'cookies', 'absent']);
 });
 
 // --- validation of the recorded observation (synthetic records; real browser records are in the browser test) ---
 const T0 = 1_800_000_000_000;
 const observation = ({ mode = 'sso', refusals = 1, aborts = [], held = false, tweak = (raw) => raw } = {}) => {
-    const status = mode === 'sso' ? 401 : 404;
+    const status = 404;
     const stop = { before: T0 + 10_000, after: T0 + 10_005, status: 'Disconnected', killDisabled: true };
     const playwright = []; const cdp = []; const nativeEvents = [];
     let clock = T0;
@@ -268,7 +283,10 @@ test('the validator rejects zero refusals, missing identities, duplicates, orpha
         'foreign document': [observation({ tweak: (raw) => { raw.cdp[1].document = 'OTHER'; return raw; } }), /foreign-document/],
         'wrong method': [observation({ tweak: (raw) => { raw.playwright[1].method = 'POST'; return raw; } }), /join: method/],
         'redirect': [observation({ tweak: (raw) => { raw.cdp[1].redirect = true; return raw; } }), /join: redirect/],
-        'wrong status': [observation({ tweak: (raw) => { raw.playwright[1].status = 404; raw.cdp[1].responseStatus = 404; return raw; } }), /wrong-status/],
+        'stale SSO 401 refusal': [observation({ mode: 'sso', tweak: (raw) => { raw.playwright[1].status = 401; raw.cdp[1].responseStatus = 401; return raw; } }), /wrong-status/],
+        'stale local 401 refusal': [observation({ mode: 'local', tweak: (raw) => { raw.playwright[1].status = 401; raw.cdp[1].responseStatus = 401; return raw; } }), /wrong-status/],
+        'wrong status': [observation({ tweak: (raw) => { raw.playwright[1].status = 503; raw.cdp[1].responseStatus = 503; return raw; } }), /wrong-status/],
+        'stale 401 close intent': [observation({ tweak: (raw) => { raw.playwright.at(-1).status = 401; raw.cdp.at(-1).responseStatus = 401; return raw; } }), /intent: response/],
         'wrong content type': [observation({ tweak: (raw) => { raw.playwright[1].contentType = 'text/html'; return raw; } }), /content-type/],
         'status not joined': [observation({ tweak: (raw) => { raw.cdp[1].responseStatus = null; return raw; } }), /status-mismatch/],
         'failure not joined': [observation({ tweak: (raw) => { raw.playwright[1].failure = 'net::ERR_ABORTED'; return raw; } }), /failure-mismatch/],
@@ -321,6 +339,7 @@ test('the sanitized projection and safe errors carry no view, session or returnT
     assert.match(failed, /"stage":"join","classification":"overlapping"/);
     for (const sentinel of sentinels) assert.equal(failed.includes(sentinel), false);
     // The ledger's own multiset error quotes full URLs; the safe wrapper keeps only stage and classification.
+    // A stale 401 refusal of the retired stream no longer matches the derived 404 set.
     const events = [{ kind: 'response', type: 'error', status: 401, url: `http://127.0.0.1:18080${streamPath}`, method: 'GET' }];
     const ledger = createDiagnosticLedger(events);
     const token = ledger.checkpoint('exact prior-epoch Router stream invalidation');

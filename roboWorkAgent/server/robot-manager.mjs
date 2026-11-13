@@ -8,6 +8,7 @@ import { buildPrivateLaunch, capturePrivateLaunch } from './launch.mjs';
 import { ensureTerminalStub, removeTerminalState } from './terminal-profiles.mjs';
 import { robotStatus } from './home-op.mjs';
 import { nativeEnvironment } from './native-environment.mjs';
+import { validateMetadata, validateToken } from './git-credentials.mjs';
 
 const STATUS_CONCURRENCY = 8;
 
@@ -20,8 +21,9 @@ async function realDirectory(directory) {
 const present = file => fs.lstat(file).then(() => true, error => { if (error.code !== 'ENOENT') throw error; return false; });
 
 export class RobotManager {
-    constructor({ paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch = capturePrivateLaunch, readStatus = null }) {
-        Object.assign(this, { paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch });
+    constructor({ paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch = capturePrivateLaunch, readStatus = null,
+        gitCredentials = null, log = message => console.log(message) }) {
+        Object.assign(this, { paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch, gitCredentials, log });
         // A status only reads a home, so it runs in the service with the robot's own environment instead of a helper process.
         this.readStatus = readStatus || ((id, input) => {
             const home = this.paths.home(id);
@@ -77,6 +79,8 @@ export class RobotManager {
                 runtimeEnv: codingAgentEnvironment(tools?.agents || {}, { PATH: '/usr/local/bin:/usr/bin:/bin' }, this.toolCache.root) });
             await this.write(record);
             await this.soulGateway.prepare(this.paths.soul(input.robotId));
+            // A credential socket that cannot open must not keep the robot from starting; set reopens it.
+            await this.serveGitCredentials(input.robotId).catch(error => console.error(`[git-credentials] socket for robot=${input.robotId} could not be opened: ${error.code || 'FAILED'}`));
             await ensureTerminalStub(this.paths, input.robotId, { empty: false });
             return { homeTarget: homeTarget(input.robotId) };
         });
@@ -165,6 +169,10 @@ export class RobotManager {
             // A lease that cannot be released for a robot without a label is pruned by the next proxy listing.
             if (this.gui) await this.gui.releaseProxy({ robotId: id }).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; });
             await this.soulGateway.remove(this.paths.soul(id));
+            if (this.gitCredentials) {
+                await this.gitCredentials.sockets.remove(id);
+                if (await this.gitCredentials.store.remove(id)) this.log(`git credentials removed robot=${id} reason=robot-deleted`);
+            }
             if (await present(this.paths.home(id))) {
                 await this.homeOperation(id, 'delete', {});
                 // Remove the empty mount root without traversing any new robot-written entries.
@@ -174,6 +182,78 @@ export class RobotManager {
             await removeTerminalState(this.paths, id);
             await fs.rm(this.paths.robot(id), { recursive: true, force: true });
             return { deleted: true };
+        });
+    }
+
+    needGitCredentials() {
+        if (!this.gitCredentials) throw fail('GIT_CREDENTIALS_UNAVAILABLE', 'Git credential storage is not configured', 503);
+        return this.gitCredentials;
+    }
+
+    // Opens the robot's credential socket when it has a stored credential and a run directory to hold the socket.
+    async serveGitCredentials(id) {
+        if (!this.gitCredentials || !(await this.gitCredentials.store.read(id)).configured) return false;
+        if (!await present(this.paths.soul(id))) return false;
+        await this.gitCredentials.sockets.prepare(id, this.paths.soul(id));
+        return true;
+    }
+
+    // Startup: one robot that cannot be served must not keep the others or the service from starting.
+    async restoreGitCredentials() {
+        if (!this.gitCredentials) return;
+        await this.gitCredentials.store.initialize();
+        for (const id of await this.gitCredentials.store.ids()) {
+            try { if (await present(path.join(this.paths.robot(id), 'label'))) await this.serveGitCredentials(id); }
+            catch (error) { console.error(`[git-credentials] socket for robot=${id} could not be opened: ${error.code || 'FAILED'}`); }
+        }
+    }
+
+    async gitCredentialsStatus({ robotId: id }) {
+        robotId(id);
+        if (!this.gitCredentials) return { ok: true, configured: false, readable: false, metadata: null, available: false };
+        const { configured, readable, metadata, location } = await this.gitCredentials.store.read(id);
+        return { ok: true, configured, readable, metadata: configured ? metadata : null, location, available: this.gitCredentials.store.available };
+    }
+
+    // The token is stored encrypted outside the robot tree; the home receives only name, email and the helper. The
+    // workspace default robot's token goes only into the Ploinky-owned file, so Ploinky and the robot share one copy.
+    async gitCredentialsSet(input) {
+        return this.serialized(input.robotId, async () => {
+            const id = input.robotId;
+            const { store, sockets } = this.needGitCredentials();
+            const token = validateToken(input.token);
+            if (input.workspaceDefault !== undefined && typeof input.workspaceDefault !== 'boolean') throw fail('INVALID_INPUT', 'workspaceDefault must be a boolean');
+            const metadata = validateMetadata(input);
+            const workspace = input.workspaceDefault === true && store.mirrorAvailable;
+            if (!workspace && !store.available) throw fail('GIT_CREDENTIALS_UNAVAILABLE', 'Git credential storage is not configured', 503);
+            await this.require(id);
+            for (const directory of [path.join(this.paths.robot(id), 'run'), this.paths.soul(id)]) await realDirectory(directory);
+            if (workspace) await store.writeWorkspace(id, metadata, token);
+            else {
+                if (input.workspaceDefault === true) console.error('[git-credentials] the workspace git credential file is not configured; the default robot keeps its token in RoboWork and ploinky git operations keep their anonymous access');
+                await store.write(id, metadata, token);
+            }
+            await this.homeOperation(id, 'git_config_set', { name: metadata.name, email: metadata.email });
+            await sockets.prepare(id, this.paths.soul(id));
+            this.log(`git credentials saved robot=${id} host=${metadata.host} location=${workspace ? 'workspace' : 'robot'}`);
+            return { ok: true, metadata, ...(input.workspaceDefault === true ? { mirrored: workspace } : {}) };
+        });
+    }
+
+    // The token goes first, so a later failure never leaves a usable token behind; repeating the call cleans the rest.
+    async gitCredentialsDelete({ robotId: id, workspaceDefault }) {
+        return this.serialized(id, async () => {
+            if (workspaceDefault !== undefined && typeof workspaceDefault !== 'boolean') throw fail('INVALID_INPUT', 'workspaceDefault must be a boolean');
+            const { store, sockets } = this.needGitCredentials();
+            const current = await store.read(id);
+            const workspace = workspaceDefault === true || current.location === 'workspace'
+                ? await store.removeWorkspaceToken() : false;
+            await sockets.remove(id);
+            const deleted = await store.remove(id) || workspace;
+            const known = await this.require(id).then(() => true, () => false);
+            if (known && await present(this.paths.home(id))) await this.homeOperation(id, 'git_config_delete', {});
+            this.log(`git credentials removed robot=${id}${workspace ? ' location=workspace' : ''}`);
+            return { ok: true, deleted };
         });
     }
 }

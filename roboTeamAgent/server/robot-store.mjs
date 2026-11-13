@@ -7,6 +7,11 @@ import { RoboWorkClient } from './run-client.mjs';
 import { normalizeCodingAgents } from './coding-agents.mjs';
 
 const ROBOT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
+export const DEFAULT_ROBOT_NAME = 'default';
+
+export function defaultRobotProtectedError() {
+    return Object.assign(new Error('the default robot cannot be deleted'), { code: 'ROBOT_PROTECTED', statusCode: 409 });
+}
 
 function normalizeName(value) {
     const name = String(value || '').trim();
@@ -227,9 +232,9 @@ export class RobotStore {
     async ensureDefaultRobot() {
         await this.initialize();
         return withRegistryMutation(this.robotsDir, async () => {
-            const matches = (await this._allRobots({ strict: true })).filter((robot) => robot.name === 'default');
+            const matches = (await this._allRobots({ strict: true })).filter((robot) => robot.name === DEFAULT_ROBOT_NAME);
             if (matches.length > 1) throw new Error('robot registry contains more than one robot named default');
-            return matches[0] || this._create({ name: 'default' });
+            return matches[0] || this._create({ name: DEFAULT_ROBOT_NAME });
         });
     }
 
@@ -299,6 +304,8 @@ export class RobotStore {
     // Checked again before RoboWork removes the home, so the common case is refused early. A CLI user who opens the robot
     // between this check and the removal is not prevented.
     async assertDeletable(robotId) {
+        // The default robot is permanent; every deletion path reaches this check before RoboWork removes a home.
+        if ((await this.get(robotId))?.name === DEFAULT_ROBOT_NAME) throw defaultRobotProtectedError();
         const root = this.robotPath(robotId);
         const names = await fs.readdir(root).catch((error) => { if (error.code !== 'ENOENT') throw error; return []; });
         for (const name of names) {

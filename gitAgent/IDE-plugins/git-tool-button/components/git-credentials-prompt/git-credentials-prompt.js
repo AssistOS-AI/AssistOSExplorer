@@ -755,6 +755,7 @@ export class GitCredentialsPrompt {
             this.showAgentReposInput.checked = Boolean(this.state.showAgentRepos);
         }
         this.updateValidationState();
+        this.getRobotCredentialsPresenter()?.setContext?.(this.getRobotCredentialsContext());
         if (refreshAutocommitRepos) {
             this.renderAutocommitRepos();
         }
@@ -770,6 +771,18 @@ export class GitCredentialsPrompt {
 
     getParentPresenter() {
         return this.element.closest('git-panel')?.webSkelPresenter || null;
+    }
+
+    getRobotCredentialsPresenter() {
+        return this.element?.querySelector?.('git-robot-credentials')?.webSkelPresenter || null;
+    }
+
+    // Robot access applies to whichever GitHub credential is stored: a device-flow login or a manual token.
+    getRobotCredentialsContext() {
+        return {
+            visible: this.state.visible,
+            connected: Boolean(this.state.githubConnected || this.state.tokenStored)
+        };
     }
 
     normalizeRepoList(list) {

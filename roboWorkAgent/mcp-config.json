@@ -163,6 +163,98 @@
       }
     },
     {
+      "name": "robot_git_credentials_status",
+      "description": "Internal robot runtime operation: robot_git_credentials_status.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "robot_git_credentials_status"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "name": "robot_git_credentials_set",
+      "description": "Internal robot runtime operation: robot_git_credentials_set.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "robot_git_credentials_set"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "githubLogin": {
+          "type": "string",
+          "optional": true
+        },
+        "name": {
+          "type": "string",
+          "optional": true
+        },
+        "email": {
+          "type": "string",
+          "optional": true
+        },
+        "savedBy": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "username": {
+              "type": "string",
+              "optional": true
+            }
+          }
+        },
+        "workspaceDefault": {
+          "type": "boolean",
+          "optional": true
+        }
+      }
+    },
+    {
+      "name": "robot_git_credentials_delete",
+      "description": "Internal robot runtime operation: robot_git_credentials_delete.",
+      "command": "node",
+      "args": [
+        "tools/robowork.mjs",
+        "robot_git_credentials_delete"
+      ],
+      "cwd": "/code",
+      "tags": [
+        "internal"
+      ],
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "robotId": {
+          "type": "string"
+        },
+        "workspaceDefault": {
+          "type": "boolean",
+          "optional": true
+        }
+      }
+    },
+    {
       "name": "run_start",
       "description": "Internal robot runtime operation: run_start.",
       "command": "node",

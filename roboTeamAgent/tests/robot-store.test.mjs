@@ -76,7 +76,7 @@ test('enforces workspace-wide unique names and deletes by robot id', async () =>
     });
 });
 
-test('startup reuses an ordinary default robot unchanged and ordinary deletion permits recreation', async () => {
+test('startup reuses an ordinary default robot unchanged and refuses its deletion', async () => {
     await withStore(async (store, dataDir, calls) => {
         const existing = await store.create({ name: 'default' });
         const metadataFile = path.join(dataDir, 'robots', existing.id, 'metadata.json');
@@ -86,11 +86,11 @@ test('startup reuses an ordinary default robot unchanged and ordinary deletion p
         assert.equal(await fs.readFile(metadataFile, 'utf8'), before);
         // The robot home belongs to RoboWork; reuse at startup asks it for nothing more.
         assert.deepEqual(calls.map(call => call.method), ['robot_ensure']);
-        assert.equal(await store.delete(existing.id), true);
-        assert.equal(await store.getByName('default'), null);
-        const recreated = await new RobotStore({ dataDir, roboWork: store.roboWork }).ensureDefaultRobot();
-        assert.equal(recreated.name, 'default');
-        assert.deepEqual(Object.keys(recreated).sort(),
+        await assert.rejects(store.assertDeletable(existing.id), { code: 'ROBOT_PROTECTED', statusCode: 409 });
+        await assert.rejects(store.delete(existing.id), /default robot cannot be deleted/);
+        assert.deepEqual(await store.getByName('default'), existing);
+        assert.equal(await fs.readFile(metadataFile, 'utf8'), before);
+        assert.deepEqual(Object.keys(existing).sort(),
             ['codingAgents', 'createdAt', 'id', 'name', 'schema', 'updatedAt']);
         assert.equal((await store.list()).length, 1);
     });

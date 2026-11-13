@@ -1484,3 +1484,31 @@ test('a preparing Environment closes the reserved popup and tells the user to re
     assert.equal(page.$('Open').disabled, false);
     assert.ok(!page.log.some(entry => entry[0] === 'navigate' || entry[0] === 'closeModal'));
 });
+
+test('discovery and prepare retry once on a stale proof and re-read the proof header', async (t) => {
+    const previousDocument = globalThis.document;
+    globalThis.document = { cookie: 'ploinky_browser_csrf=v1.old-proof' };
+    t.after(() => { globalThis.document = previousDocument; });
+    const seen = [];
+    const staleFirst = (success) => async (url, options) => {
+        seen.push(options.headers['X-Ploinky-Browser-CSRF-Token']);
+        if (seen.length === 1) {
+            globalThis.document.cookie = 'ploinky_browser_csrf=v1.new-proof';
+            return new Response(JSON.stringify({ ok: false, error: 'browser_csrf_invalid' }), { status: 403 });
+        }
+        return success;
+    };
+    await requestTerminalTargetDiscovery('projects/demo', {
+        fetchImpl: staleFirst({ ok: true, status: 200, async json() { return discoveryPayload(); } }),
+    });
+    assert.deepEqual(seen, ['v1.old-proof', 'v1.new-proof']);
+
+    seen.length = 0;
+    await assert.rejects(prepareTerminalProfile({ base: '/robots/profiles' }, 'robot-a', {
+        fetchImpl: async (url, options) => {
+            seen.push(options.headers['X-Ploinky-Browser-CSRF-Token']);
+            return new Response(JSON.stringify({ ok: false, error: 'browser_csrf_invalid' }), { status: 403 });
+        },
+    }), (error) => error.status === 403 && error.code === 'browser_csrf_invalid');
+    assert.equal(seen.length, 2, 'a second stale answer surfaces after exactly one retry');
+});

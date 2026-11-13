@@ -278,7 +278,7 @@ async function fetchGitHubJson(url, token) {
   return response.json();
 }
 
-async function fetchGithubUserProfile(accessToken) {
+export async function fetchGithubUserProfile(accessToken) {
   const [userPayload, emailsPayload] = await Promise.all([
     fetchGitHubJson(GITHUB_USER_URL, accessToken),
     fetchGitHubJson(GITHUB_EMAILS_URL, accessToken).catch(() => [])
@@ -473,6 +473,13 @@ export async function disconnectGithubAuth({ workspaceRoot, authInfo } = {}) {
   await deleteStoredGitToken({ workspaceRoot, authInfo });
   await saveState(workspaceRoot, nextState, authInfo);
   return buildStatusPayload(setup, nextState, { tokenStored: false });
+}
+
+// Non-secret profile of the stored GitHub connection (login, name, email); null when there is none.
+export async function getGithubConnectionUser({ workspaceRoot, authInfo } = {}) {
+  const state = await readJsonFile(workspaceRoot, getGithubAuthStateFilePath(workspaceRoot, authInfo), {});
+  const connection = sanitizeConnection(state.connection);
+  return connection ? { source: connection.source, user: connection.user } : null;
 }
 
 export async function getGithubAuthAccessToken({ workspaceRoot, authInfo } = {}) {

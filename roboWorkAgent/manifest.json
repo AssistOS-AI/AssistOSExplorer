@@ -16,6 +16,16 @@
     "httpRoutes": [{ "path": "/base-agent-additional-server/roboWorkAgent/3001/*", "access": "authenticated" }]
   },
   "volumes": { ".data/.private/roboWorkAgent": "/data" },
+  "runtime": {
+    "resources": {
+      "gitCredentials": { "containerPath": "/git-credentials" },
+      "env": {
+        "ROBOWORK_GIT_MIRROR_DIR": "{{GIT_CREDENTIALS_CONTAINER_PATH}}",
+        "ROBOWORK_GIT_MIRROR_KEY": "{{GIT_CREDENTIALS_KEY}}",
+        "ROBOWORK_CREDENTIALS_KEY": "{{generatedSecret:ROBOWORK_CREDENTIALS_KEY}}"
+      }
+    }
+  },
   "profiles": {
     "default": {
       "openPorts": ["17100:7000", "13101:3001"],

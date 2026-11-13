@@ -191,6 +191,8 @@ test('compact robot markup keeps Open and Stop outside grouped administration an
     assert.doesNotMatch(html, /robot-log-section|hide-logs|class="robot-logs"/);
     assert.match(source, /if \(creatingRobot \|\| !canCreateRobots\) return/);
     assert.match(source, /const data = new FormData\(createForm\);[\s\S]*updateCreateControls\(\);/);
-    assert.match(source, /robot-danger-actions'\)\.hidden = !canAdmin/);
+    assert.match(source, /const deletable = canAdmin && robot\.name !== 'default';/);
+    assert.match(source, /deleteButton\.hidden = !deletable;/);
+    assert.match(source, /robot-danger-actions'\)\.hidden = !deletable/);
     assert.match(source, /createFormMessage\.textContent = error\.message/);
 });
