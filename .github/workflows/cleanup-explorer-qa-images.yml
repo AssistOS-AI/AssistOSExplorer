@@ -1,0 +1,139 @@
+name: Clean up Explorer QA images
+
+# Frees disk on the Explorer QA host by removing container images that no container uses (docs/deploy-explorer-qa.md,
+# "Image cleanup"). Inside the QA Box every image belongs to QA, so every image without a container goes, named or not;
+# a later start or deploy pulls again what it needs. On the host, which other workspaces share, only dangling images
+# and unused images of the Ploinky Box are removed. Containers, volumes, workspace files and other workspaces are never
+# touched. It shares the deploy concurrency group and the host lock, so it never runs during a deploy.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-explorer-qa
+  cancel-in-progress: false
+
+env:
+  SSH_USER: 'admin'
+  SSH_HOST: '45.136.70.141'
+  SSH_ED25519_FINGERPRINT: 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'
+  WORKSPACE: 'explorerQaWorkspace'
+
+jobs:
+  cleanup:
+    name: Remove unused Explorer QA images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the workflow tests
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up the test runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Test this workflow
+        run: node --test tests/smoke/lib/cleanup-qa-images-workflow.test.mjs
+
+      - name: Prepare SSH key and the pinned host identity
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_KEY:-}" ]; then
+            echo "::error::Missing required repository secret EXPLORER_QA_SSH_KEY"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          HOST_KEY_CANDIDATE="$RUNNER_TEMP/explorer_qa_known_hosts"
+          ssh-keyscan -T 10 -t ed25519 "$SSH_HOST" > "$HOST_KEY_CANDIDATE"
+          HOST_KEY_FINGERPRINT="$({ ssh-keygen -lf "$HOST_KEY_CANDIDATE" -E sha256 || true; } | awk '{print $2}' | sort -u)"
+          if [ "$HOST_KEY_FINGERPRINT" != "$SSH_ED25519_FINGERPRINT" ]; then
+            echo "::error::Explorer QA ED25519 host fingerprint did not match the pinned identity"
+            exit 1
+          fi
+          install -m 600 "$HOST_KEY_CANDIDATE" ~/.ssh/explorer_qa_known_hosts
+
+      - name: Remove unused images
+        run: |
+          set -euo pipefail
+          SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "${SSH_USER}@${SSH_HOST}")
+          LOCK=/home/admin/.qa-deployment-operation.lock
+          WORK_DIR="/home/admin/$WORKSPACE"
+          BOX_CONTAINER=ploinky-box-explorerqaworkspace-7a31ab7775eb
+          BOX_IMAGE=docker.io/assistos/ploinky-box
+          free_disk() {
+            "${SSH[@]}" "df -Ph /home/admin" < /dev/null | awk 'NR == 2 { print $4 " free of " $2 }'
+          }
+          # One podman call on the host or inside the Box, under the host lock every QA mutation takes.
+          host_podman() {
+            "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman $*" < /dev/null
+          }
+          box_podman() {
+            "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' $BOX_CONTAINER podman $*" < /dev/null
+          }
+
+          echo "[cleanup-qa] Free disk before: $(free_disk)"
+
+          # Inside the Box: every image that no container, running or stopped, uses. Podman refuses the others itself.
+          if [ "$("${SSH[@]}" "podman container inspect --format '{{.State.Running}}' $BOX_CONTAINER" < /dev/null 2> /dev/null || true)" = true ]; then
+            echo "[cleanup-qa] Box images before:"
+            box_podman image ls --format "'{{.ID}} {{.Containers}} {{.Size}} {{.Names}}'"
+            box_podman image prune --all --force
+            echo "[cleanup-qa] Box images after:"
+            box_podman image ls --format "'{{.ID}} {{.Containers}} {{.Size}} {{.Names}}'"
+          else
+            echo "::warning::The QA Box is not running; its images were left alone."
+          fi
+
+          # On the host: dangling images, and unused images whose name history shows they were the Box image. Each removal
+          # is `image rm <id>` on a listed, validated ID; podman refuses an image a container still uses.
+          removed=0
+          listing="$(host_podman image ls --all --format "'{{.ID}} {{.Containers}} {{.Dangling}}'")"
+          while read -r id containers dangling; do
+            [ -n "$id" ] || continue
+            if [[ ! "$id" =~ ^[a-f0-9]{12,64}$ ]]; then
+              echo "::warning::Skipped an unexpected image ID in the host listing"
+              continue
+            fi
+            [ "$containers" = 0 ] || continue
+            if [ "$dangling" != true ]; then
+              names="$(host_podman image inspect --format "'{{range .NamesHistory}}{{println .}}{{end}}'" "$id")" || continue
+              is_box_image=false
+              while IFS= read -r line; do
+                case "$line" in
+                  "$BOX_IMAGE"|"$BOX_IMAGE":*|"$BOX_IMAGE"@*) is_box_image=true ;;
+                esac
+              done <<< "$names"
+              [ "$is_box_image" = true ] || continue
+            fi
+            if host_podman image rm "$id" > /dev/null; then
+              echo "[cleanup-qa] Host: removed $id"
+              removed=$((removed + 1))
+            else
+              echo "::warning::Host: podman kept $id"
+            fi
+          done <<< "$listing"
+          echo "[cleanup-qa] Host: removed $removed image(s)"
+          echo "[cleanup-qa] Host images still kept, other workspaces' included:"
+          host_podman image ls --format "'{{.ID}} {{.Containers}} {{.Size}} {{.Names}}'"
+
+          echo "[cleanup-qa] Free disk after: $(free_disk)"
+          echo "[cleanup-qa] Largest directories under /home/admin (read-only report):"
+          "${SSH[@]}" "du -xh --max-depth=2 /home/admin 2> /dev/null | sort -h | tail -n 15" < /dev/null || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ~/.ssh/deploy_key ~/.ssh/explorer_qa_known_hosts "$RUNNER_TEMP/explorer_qa_known_hosts"
