@@ -122,9 +122,10 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         'ploinky_locked add repo https://github.com/AssistOS-AI/PromotionScoutV2.git PromotionScoutV2',
         'ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent',
         'ploinky_locked enable agent bizanso/bizanso',
+        'ploinky_locked enable agent bizanso/deepProofArticle',
         'ploinky_locked enable agent PromotionScoutV2/promotionScout',
         'ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent',
-        'GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"',
+        'GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"',
         'podman pull -q "$agent"',
         'podman pull -q "$robot"',
         'podman tag "$robot" docker.io/assistos/roboteam-agent:runtime',
@@ -158,9 +159,35 @@ test('deploy: the added agents are enabled only when missing and are awaited onl
     const verify = step(deploy, 'Verify Bizanso and ScriptaHub');
     assert.match(verify, /bizanso\/8787\/how-it-works\//);
     assert.match(verify, /scriptahubAgent\/3002\/health/);
+    assert.match(verify, /for path in [^\n]* deepProofArticle\/8790\/assets\/form\.js; do\n/);
     // promotionScout declares MCP readiness and no web surface, so its proof is the awaited runtime state alone.
     assert.doesNotMatch(verify, /promotionScout/);
-    assert.match(body, /GRAPH_RUNTIMES="\$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"\n[\s\S]*ploinky_locked restart\n\s+wait_ready/);
+    assert.match(body, /GRAPH_RUNTIMES="\$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"\n[\s\S]*ploinky_locked restart\n\s+wait_ready/);
+});
+
+test('deploy: the article agent is enabled only when missing, only when the Bizanso tree has it, after bizanso/bizanso', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const enable = `if ! grep -q '^deepProofArticle ' <<< "$ENABLED_STATES"; then\n            ploinky_locked enable agent bizanso/deepProofArticle\n          fi\n`;
+    assert.equal(body.split(enable).length - 1, 1);
+    const at = body.indexOf(enable);
+    assert.ok(body.indexOf('ploinky_locked enable agent bizanso/bizanso') < at);
+    assert.ok(at < body.indexOf('GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"'));
+    // The first-start graph never names it.
+    assert.doesNotMatch(body.match(/GRAPH_RUNTIMES='([^']*)'/)[1], /deepProofArticle/);
+});
+
+test('deploy: a Bizanso tree without the article agent is refused before anything is changed', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const refusal = `if [ ! -f "$GITHUB_WORKSPACE/.qa-bizanso-source/deepProofArticle/manifest.json" ]; then\n            echo "::error::The Bizanso default branch has no deepProofArticle/manifest.json, and this deployment enables bizanso/deepProofArticle. Nothing was changed."\n            exit 1\n          fi\n`;
+    assert.equal(body.split(refusal).length - 1, 1);
+    const at = body.indexOf(refusal);
+    // Before the first Cloudflare call, host command or Ploinky command, and after the Bizanso checkout step.
+    for (const marker of ['curl -fsS', '"${SSH[@]}"', 'ploinky_locked ']) {
+        const first = body.indexOf(marker);
+        assert.notEqual(first, -1, marker);
+        assert.ok(at < first, `the refusal comes before the first ${marker}`);
+    }
+    assert.ok(deploy.indexOf('- name: Check out Bizanso') < deploy.indexOf('- name: Bootstrap the host and deploy through Ploinky commands'));
 });
 
 test('deploy: the PromotionScoutV2 key stays on the runner and reaches only its checkout', () => {

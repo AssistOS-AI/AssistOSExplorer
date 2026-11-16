@@ -493,7 +493,7 @@ jobs:
             echo "::error::Timed out waiting for the graph runtimes to stay ready."
             return 1
           }
-          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"
 
           # In-Box programs are fixed strings without a single quote, because run_in_box embeds them in one. A value
           # reaches a program only on stdin, and the program checks it again.
@@ -874,7 +874,7 @@ jobs:
             exit 1
           fi
           BOX_STATE=present
-          # Refusal 4: every runtime of the graph, and the three products, must already run. This and the route check below
+          # Refusal 4: every runtime of the graph, and the products, must already run. This and the route check below
           # are the only guards of the whole-workspace restart at the end.
           STATUS_STATES="$(printf '%s\n' "$STATUS_OUTPUT" | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"
           for agent in $GRAPH_RUNTIMES; do

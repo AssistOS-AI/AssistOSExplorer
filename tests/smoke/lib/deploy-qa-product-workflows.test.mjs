@@ -78,7 +78,7 @@ const SHARED = {
     cleanup: [`${I}# BEGIN QA image cleanup`, `${I}# END QA image cleanup`],
     graph: [`${I}GRAPH_RUNTIMES='explorer gitAgent userPersistoAgent emailAgent dpuAgent roboTeamAgent soul-gateway workspaceMonitorAgent local-llm'`,
         `Timed out waiting for the graph runtimes to stay ready."\n            return 1\n${I}}`],
-    extend: [`${I}GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"`, `${I}GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"`],
+    extend: [`${I}GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"`, `${I}GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"`],
     runinbox: [`${I}run_in_box() {`, `\n${I}}`],
     copy: [`${I}COPY_PROGRAM='set -eu`, `${I}mv "$incoming" bizanso'`],
 };
@@ -148,7 +148,11 @@ test('every shared block is byte-identical to the full deploy at the recorded ba
     for (const key of KEYS) {
         const source = workflow(key);
         for (const name of SHARED_BY[key]) {
-            const expected = name === 'cleanup'
+            // The recorded base has the extend line without the article agent, which the working trees add.
+            const baseExtend = `${I}GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"`;
+            const expected = name === 'extend'
+                ? slice(base, baseExtend, baseExtend).replace('scriptahubAgent"', 'scriptahubAgent deepProofArticle"')
+                : name === 'cleanup'
                 ? block(base, name).replace('# Unpacked size of the ScriptaHub robot image not shared with the RoboTeam runtime (11.2 GB, 9 of 29 layers new).', '# Reserve space for the prepared ScriptaHub agent image before pulling new layers.').replaceAll('ROBOT_IMAGE_NEW_GIB', 'SCRIPTA_AGENT_IMAGE_NEW_GIB')
                 : block(base, name);
             assert.ok(expected.length > 20, name);
@@ -346,7 +350,7 @@ test('every refusal comes before the first mutation, in the specified order', ()
 // Stub Box
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
-const GRAPH = ['explorer', 'gitAgent', 'userPersistoAgent', 'emailAgent', 'dpuAgent', 'roboTeamAgent', 'soul-gateway', 'workspaceMonitorAgent', 'local-llm', 'bizanso', 'promotionScout', 'scriptahubAgent'];
+const GRAPH = ['explorer', 'gitAgent', 'userPersistoAgent', 'emailAgent', 'dpuAgent', 'roboTeamAgent', 'soul-gateway', 'workspaceMonitorAgent', 'local-llm', 'bizanso', 'promotionScout', 'scriptahubAgent', 'deepProofArticle'];
 const GIB_KIB = 1048576;
 const hex = (char) => char.repeat(64);
 
@@ -980,6 +984,33 @@ test('Bizanso classifier: identical trees and image are none, a container-only c
     assert.equal(scopeOf(classify(box, { live: { 'bizanso/manifest.json': manifestWith((m) => ({ ...m, container: other })) }, sourceTree: 'b' }))[0], 'targeted');
 });
 
+const ARTICLE = 'deepProofArticle/manifest.json';
+test('Bizanso classifier: with the article agent on either side any difference is whole and no difference stays none', (t) => {
+    const box = makeBox(t);
+    const article = '{"name":"deepProofArticle"}\n';
+    const other = `docker.io/assistos/bizanso-agent@sha256:${'2'.repeat(64)}`;
+    const both = { [ARTICLE]: article };
+    // No difference: none, wherever the manifest is.
+    assert.equal(scopeOf(classify(box, { live: both, incoming: both }))[0], 'none');
+    // Differences that are targeted without the article agent are whole with it, on either side or on both.
+    const differences = {
+        'the image': { imageId: 'j' },
+        'the tree': { sourceTree: 'b', incoming: { 'bizanso/src/runtime.mjs': 'export default 2;\n' } },
+        'the container field only': { sourceTree: 'b', incoming: { 'bizanso/manifest.json': manifestWith((m) => ({ ...m, container: other })) } },
+    };
+    for (const [name, options] of Object.entries(differences)) {
+        assert.equal(scopeOf(classify(box, options))[0], 'targeted', `${name} without the article agent`);
+        for (const [side, files] of Object.entries({ live: { live: both }, incoming: { incoming: both }, both: { live: both, incoming: both } })) {
+            const result = classify(box, { ...options, live: files.live, incoming: { ...options.incoming, ...files.incoming } });
+            assert.equal(result.status, 0, `${name}, ${side}: ${logOf(result)}`);
+            assert.equal(scopeOf(result)[0], 'whole', `${name}, article on ${side}`);
+        }
+    }
+    // The article manifest itself differing, or appearing or disappearing, is whole.
+    assert.equal(scopeOf(classify(box, { live: both, incoming: { [ARTICLE]: '{"name":"x"}\n' }, sourceTree: 'b' }))[0], 'whole');
+    assert.equal(scopeOf(classify(box, { live: both, incoming: { [ARTICLE]: article, 'bizanso/mcp-config.json': '{"tools":["x"]}\n' }, sourceTree: 'b' }))[0], 'whole');
+});
+
 test('Bizanso classifier: a manifest missing on either side, or not JSON, fails', (t) => {
     const box = makeBox(t);
     for (const [name, options] of Object.entries({
@@ -992,6 +1023,20 @@ test('Bizanso classifier: a manifest missing on either side, or not JSON, fails'
         assert.notEqual(result.status, 0, name);
         assert.equal(scopeOf(result), undefined, name);
     }
+});
+
+test('Bizanso flow: the live article manifest is read from the Box, so equal trees stay none and a source change is whole', (t) => {
+    const article = { 'deepProofArticle/manifest.json': '{"name":"deepProofArticle"}\n' };
+    const same = bizansoBox(t, { source: article, live: article, liveImage: hex('b') });
+    const none = runBizansoFlow(same);
+    assert.equal(none.status, 0, logOf(none));
+    assert.match(none.stdout, /restart scope: none \(the tree and the image are identical\)\n/);
+    noMutation(same, { pull: true });
+    const changed = bizansoBox(t, { source: { ...article, 'bizanso/src/runtime.mjs': 'export default 2;\n' }, live: article });
+    const whole = runBizansoFlow(changed);
+    assert.equal(whole.status, 0, logOf(whole));
+    assert.match(whole.stdout, /restart scope: whole \(deepProofArticle is in the tree and the sources or the container image changed\)\n/);
+    assert.deepEqual(changed.calls().filter((line) => /^ploinky restart/.test(line)), ['ploinky restart']);
 });
 
 const inOrder = (text, patterns, label = '') => {

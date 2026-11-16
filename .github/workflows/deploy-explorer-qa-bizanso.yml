@@ -2,8 +2,8 @@ name: Deploy Explorer QA Bizanso
 
 # Updates only Bizanso inside the running Explorer QA Box, without the Ploinky checkout, the Box, the tunnel or any other
 # repository (docs/deploy-explorer-qa.md, "Product workflows"). The runner streams the private Bizanso default branch in as
-# the same no-git copy the full deploy makes, pulls its digest-pinned image and restarts only bizanso/bizanso. If that
-# targeted restart drops routes, the run recovers with a whole-workspace restart; a refused drain is never answered with
+# the same no-git copy the full deploy makes, pulls its digest-pinned image and restarts only bizanso/bizanso (the whole workspace
+# when the tree has deepProofArticle). If that targeted restart drops routes, the run recovers with a whole-workspace restart; a refused drain is never answered with
 # another restart. Actions are pinned by commit: checkout as in container-image-builds, setup-node as in bizanso.
 
 on:
@@ -467,7 +467,7 @@ jobs:
             echo "::error::Timed out waiting for the graph runtimes to stay ready."
             return 1
           }
-          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"
 
           # In-Box programs are fixed strings without a single quote, because run_in_box embeds them in one. A value
           # reaches a program only on stdin, and the program checks it again.
@@ -542,7 +542,7 @@ jobs:
           BIZANSO_MANIFEST_PROGRAM='set -eu
           cd bizanso
           set -- bizanso/manifest.json
-          for name in bizanso/mcp-config.json bizanso/package.json package.json package-lock.json; do
+          for name in bizanso/mcp-config.json bizanso/package.json package.json package-lock.json deepProofArticle/manifest.json; do
             if [ -e "$name" ]; then set -- "$@" "$name"; fi
           done
           tar -cf - "$@"'
@@ -793,7 +793,8 @@ jobs:
           # END QA product restart
 
           # How far the change reaches. none: tree and image identical. whole: the manifest outside its container field,
-          # mcp-config.json or a package file differs, which a restart of one agent may not pick up. targeted: the rest.
+          # mcp-config.json or a package file differs, which a restart of one agent may not pick up. targeted: the rest, unless the tree has
+          # deepProofArticle, which makes it whole.
           # A missing manifest.json on either side fails.
           # BEGIN QA Bizanso classifier
           classify_bizanso() {
@@ -822,18 +823,20 @@ jobs:
             }
           };
           const verdict = (scope, reason) => process.stdout.write('scope=' + scope + ' reason=' + reason + '\n');
+          const article = read(liveDir, 'deepProofArticle/manifest.json') !== null || read(incomingDir, 'deepProofArticle/manifest.json') !== null;
           const liveManifest = manifest(liveDir);
           const incomingManifest = manifest(incomingDir);
           if (liveManifest !== incomingManifest) {
             verdict('whole', 'bizanso/manifest.json differs outside its container field');
           } else {
-            const changed = ['bizanso/mcp-config.json', 'bizanso/package.json', 'package.json', 'package-lock.json'].filter((name) => {
+            const changed = ['bizanso/mcp-config.json', 'bizanso/package.json', 'package.json', 'package-lock.json', 'deepProofArticle/manifest.json'].filter((name) => {
               const live = read(liveDir, name);
               const incoming = read(incomingDir, name);
               return (live === null) !== (incoming === null) || (live !== null && !live.equals(incoming));
             });
             if (changed.length) verdict('whole', changed.join(', ') + ' differs');
             else if (liveTree === sourceTree && liveImage === imageId) verdict('none', 'the tree and the image are identical');
+            else if (article) verdict('whole', 'deepProofArticle is in the tree and the sources or the container image changed');
             else verdict('targeted', 'the sources or the container image changed');
           }
           NODE
@@ -851,7 +854,7 @@ jobs:
             exit 1
           fi
           BOX_STATE=present
-          # Refusal 4: every runtime of the graph, and the three products, must already run.
+          # Refusal 4: every runtime of the graph, and the products, must already run.
           STATUS_STATES="$(printf '%s\n' "$STATUS_OUTPUT" | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"
           for agent in $GRAPH_RUNTIMES; do
             if ! grep -qx "$agent running" <<< "$STATUS_STATES"; then

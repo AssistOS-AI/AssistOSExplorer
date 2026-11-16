@@ -440,6 +440,10 @@ jobs:
             true|false) ;;
             *) echo "::error::reset_explorer_checkout must be true or false"; exit 1 ;;
           esac
+          if [ ! -f "$GITHUB_WORKSPACE/.qa-bizanso-source/deepProofArticle/manifest.json" ]; then
+            echo "::error::The Bizanso default branch has no deepProofArticle/manifest.json, and this deployment enables bizanso/deepProofArticle. Nothing was changed."
+            exit 1
+          fi
 
           TUNNEL_LIST_RESPONSE=''
           TUNNEL_MUTATION_RESPONSE=''
@@ -1172,13 +1176,16 @@ jobs:
           if ! grep -q '^bizanso ' <<< "$ENABLED_STATES"; then
             ploinky_locked enable agent bizanso/bizanso
           fi
+          if ! grep -q '^deepProofArticle ' <<< "$ENABLED_STATES"; then
+            ploinky_locked enable agent bizanso/deepProofArticle
+          fi
           if ! grep -q '^promotionScout ' <<< "$ENABLED_STATES"; then
             ploinky_locked enable agent PromotionScoutV2/promotionScout
           fi
           if ! grep -q '^scriptahubAgent ' <<< "$ENABLED_STATES"; then
             ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent
           fi
-          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"
 
           # BEGIN QA ScriptaHub images
           # Both images are pinned to registry indexes resolved on the runner. The generic RoboTeam tag may
@@ -1394,7 +1401,7 @@ jobs:
       - name: Verify Bizanso and ScriptaHub
         run: |
           set -euo pipefail
-          for path in bizanso/8787/how-it-works/ scriptahubAgent/3002/health; do
+          for path in bizanso/8787/how-it-works/ scriptahubAgent/3002/health deepProofArticle/8790/assets/form.js; do
             url="${PUBLIC_URL%/}/base-agent-additional-server/$path"
             for attempt in $(seq 1 60); do
               code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$url" || true)"
