@@ -37,6 +37,8 @@ jobs:
       - name: Check out the reviewed deployment helpers
         uses: actions/checkout@v4
         with:
+          # The product-workflow test reads the recorded base commit from history.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Resolve the AssistOSExplorer main commit

@@ -515,3 +515,18 @@ test('Explorer QA teardown deletes through the reviewed helper only, and the wor
   assert.doesNotMatch(region, /container (?:stop|rm|rename)|image (?:rm|untag)/, 'the helper removes containers and images, never the shell');
   assert.equal(source.split('mkdir -p "$WORK_DIR"').length - 1, 1, 'the only workspace mkdir is the one after the teardown');
 });
+
+test('Explorer QA checks out full history before the tests that read recorded base commits', () => {
+  const source = fs.readFileSync(
+    path.join(ROOT, '.github/workflows/deploy-explorer-qa.yml'),
+    'utf8',
+  );
+  const testStep = source.indexOf('      - name: Test deployment admission and recovery\n');
+  assert.ok(testStep > 0, 'the deployment test step must exist');
+  const checkoutStep = source.lastIndexOf('      - name: Check out the reviewed deployment helpers\n', testStep);
+  assert.ok(checkoutStep >= 0, 'the helper checkout must precede the deployment test step');
+  const checkout = source.slice(checkoutStep, source.indexOf('\n      - name:', checkoutStep + 1));
+  assert.match(checkout, /uses: actions\/checkout@v4/);
+  // deploy-qa-product-workflows.test.mjs runs `git show <base>:<file>` and fails on a depth-1 checkout.
+  assert.match(checkout, /^ {10}fetch-depth: 0$/m, 'the helper checkout must fetch the full history');
+});
