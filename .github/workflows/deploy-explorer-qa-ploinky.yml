@@ -967,6 +967,27 @@ jobs:
             echo "::error::Timed out waiting for the graph runtimes to stay ready."
             return 1
           }
+          # Start never fetches a checkout that exists, so kept sources move forward here. A full `ploinky update`
+          # fails on an enabled repository with no Git checkout, so each other repository moves on its own; a
+          # dirty or diverged required source fails the run and is left untouched. Needs a running Box: without
+          # one, `update` would create a Box on 8080, which Soul Gateway owns on this host.
+          update_kept_repos() {
+            local managed repo
+            managed="$(ploinky_read list repos | sed 's/\x1b\[[0-9;]*m//g' | installed_repos)"
+            if ! grep -qx 'AchillesIDE' <<< "$managed"; then
+              echo "::error::The repository listing did not name AchillesIDE."
+              exit 1
+            fi
+            for repo in $managed; do
+              if [[ ! "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+                echo "::error::Unexpected repository name in the listing."
+                exit 1
+              fi
+              if [ "$repo" != bizanso ] && [ "$repo" != PromotionScoutV2 ]; then
+                ploinky_locked update repo "$repo"
+              fi
+            done
+          }
 
           if [ "${CLOUDFLARE_TUNNEL_CREATED:-}" = true ] && grep -qx 'QA_KEPT_PUBLICATION=true' "$BOOTSTRAP_LOG"; then
             echo "::error::The dedicated tunnel was missing and a new one was created, but the workspace keeps a publication naming the old one. Dispatch destroy-explorer-qa-ploinky.yml with delete_data ticked, or use deploy-explorer-qa.yml."
@@ -997,7 +1018,19 @@ jobs:
             # `ploinky var` needs a Box, and only `start` accepts the port; a Box created by `var` would take
             # 8080, which Soul Gateway owns on this host. So the first start runs before the values are set.
             # A fresh workspace has no publication yet; kept data republishes its kept tunnel.
-            ploinky_locked --port "$ROUTER_PORT" start explorer
+            # Kept data keeps its checkouts, which this start does not move. When this Ploinky refuses a manifest
+            # of an older kept checkout, the failed start has already created the Box: the kept checkouts then
+            # move forward and the start runs once more. With no running Box, nothing else moves.
+            if ! ploinky_locked --port "$ROUTER_PORT" start explorer; then
+              FIRST_START_STATUS="$(ploinky_read status | sed 's/\x1b\[[0-9;]*m//g')" || FIRST_START_STATUS=''
+              if ! grep -qx 'Ploinky Box: running' <<< "$FIRST_START_STATUS"; then
+                echo "::error::The first start failed and left no running Box. No repository moved."
+                exit 1
+              fi
+              echo "::warning::The first start failed; moving the kept repositories forward and starting once more."
+              update_kept_repos
+              ploinky_locked --port "$ROUTER_PORT" start explorer
+            fi
             wait_ready
           fi
 
@@ -1176,24 +1209,9 @@ jobs:
           fi
           # END QA ScriptaHub images
 
-          # Start never fetches a checkout that exists, so kept sources move forward here. A full `ploinky update`
-          # fails on an enabled repository with no Git checkout, so each other repository moves on its own; a
-          # dirty or diverged required source fails the run and is left untouched. The restart activates them
-          # and registers the MCP tools of newly enabled agents with the Router.
-          MANAGED_REPOS="$(ploinky_read list repos | sed 's/\x1b\[[0-9;]*m//g' | installed_repos)"
-          if ! grep -qx 'AchillesIDE' <<< "$MANAGED_REPOS"; then
-            echo "::error::The repository listing did not name AchillesIDE."
-            exit 1
-          fi
-          for repo in $MANAGED_REPOS; do
-            if [[ ! "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-              echo "::error::Unexpected repository name in the listing."
-              exit 1
-            fi
-            if [ "$repo" != bizanso ] && [ "$repo" != PromotionScoutV2 ]; then
-              ploinky_locked update repo "$repo"
-            fi
-          done
+          # Kept sources move forward here. The restart activates them and registers the MCP tools of newly
+          # enabled agents with the Router.
+          update_kept_repos
           # Check the exact selected source and copied objects after repository updates and before restart.
           if ! printf '%s\n%s\n' "$SCRIPTA_HEAD" "$SCRIPTA_COPIED_TREES" | run_in_box 'set -eu
           read -r head

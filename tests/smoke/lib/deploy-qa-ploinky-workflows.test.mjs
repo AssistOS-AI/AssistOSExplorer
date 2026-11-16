@@ -104,8 +104,10 @@ test('deploy: a secret reaches a command only through stdin', () => {
 test('deploy: the order sets values, updates sources, saves the publication, then starts and waits', () => {
     const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
     const order = [
+        'update_kept_repos() {',
         'BOX_STATE=present',
-        'ploinky_locked --port "$ROUTER_PORT" start explorer\n            wait_ready',
+        'if ! ploinky_locked --port "$ROUTER_PORT" start explorer; then',
+        '              update_kept_repos\n              ploinky_locked --port "$ROUTER_PORT" start explorer\n            fi\n            wait_ready',
         'ploinky_locked var "$CLOUDFLARE_API_SECRET_HANDLE" --stdin',
         'ploinky_locked var "$CLOUDFLARE_TUNNEL_SECRET_HANDLE" --stdin',
         'ploinky_locked var USERPERSISTO_OIDC_ISSUER --stdin',
@@ -125,7 +127,7 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         'podman pull -q "$agent"',
         'podman pull -q "$robot"',
         'podman tag "$robot" docker.io/assistos/roboteam-agent:runtime',
-        'ploinky_locked update repo "$repo"',
+        '\n          update_kept_repos\n',
         'test "$(g rev-parse HEAD)" = "$head"',
         'ploinky_locked restart\n          wait_ready',
         'Post-restart image verification failed',
@@ -380,6 +382,63 @@ test('deploy: every installed repository except the private copy moves on its ow
     assert.equal(result.stdout, 'AchillesIDE\nbizanso\n');
     assert.match(body, /if \[ "\$repo" != bizanso \] && \[ "\$repo" != PromotionScoutV2 \]; then\n\s+ploinky_locked update repo "\$repo"\n/);
     assert.doesNotMatch(body, /ploinky_locked update\n/);
+    // The loop lives only in update_kept_repos, which both the first-start recovery and the regular update call.
+    assert.equal(body.split('ploinky_locked update repo').length - 1, 1);
+    assert.equal(body.split(/\n\s+update_kept_repos\n/).length - 1, 2);
+});
+
+// The first start, run with stubs for every command, so only its control flow is proven: a failed start that left
+// a running Box moves the kept repositories and starts once more; anything else stops the run.
+function firstStart(t, { starts, status }) {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const begin = body.indexOf('          if [ "$GRAPH_UP" = false ]; then\n');
+    assert.notEqual(begin, -1);
+    const block = body.slice(begin, body.indexOf('\n          fi\n', begin) + '\n          fi\n'.length);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-first-start-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const log = path.join(dir, 'calls');
+    const script = `set -euo pipefail
+LOG='${log}'; STARTS=(${starts.join(' ')}); n=0; GRAPH_UP=false; ROUTER_PORT=8097
+ploinky_locked() { echo "locked $*" >> "$LOG"; if [ "$*" = '--port 8097 start explorer' ]; then s=\${STARTS[$n]}; n=$((n + 1)); return "$s"; fi; }
+ploinky_read() { echo "read $*" >> "$LOG"; printf '%s\\n' "$QA_TEST_STATUS"; }
+update_kept_repos() { echo 'update_kept_repos' >> "$LOG"; }
+wait_ready() { echo 'wait_ready' >> "$LOG"; }
+${block}
+echo done >> "$LOG"
+`;
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, QA_TEST_STATUS: status } });
+    const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : [];
+    return { status: result.status, stdout: result.stdout, calls };
+}
+
+test('deploy: a first start that succeeds moves nothing and waits', (t) => {
+    const run = firstStart(t, { starts: [0], status: 'Ploinky Box: running' });
+    assert.equal(run.status, 0);
+    assert.deepEqual(run.calls, ['locked --port 8097 start explorer', 'wait_ready', 'done']);
+});
+
+test('deploy: a failed first start with a running Box moves the kept repositories and starts once more', (t) => {
+    const run = firstStart(t, { starts: [1, 0], status: '\u001b[1mPloinky Box: running\u001b[0m\nWorkspace identity: x' });
+    assert.equal(run.status, 0);
+    assert.deepEqual(run.calls, ['locked --port 8097 start explorer', 'read status', 'update_kept_repos',
+        'locked --port 8097 start explorer', 'wait_ready', 'done']);
+    assert.match(run.stdout, /::warning::The first start failed/);
+});
+
+test('deploy: a failed first start without a running Box moves nothing and stops the run', (t) => {
+    for (const status of ['Ploinky Box: absent', 'Ploinky Box: stopped', '']) {
+        const run = firstStart(t, { starts: [1], status });
+        assert.equal(run.status, 1, status);
+        assert.deepEqual(run.calls, ['locked --port 8097 start explorer', 'read status'], status);
+        assert.match(run.stdout, /::error::The first start failed and left no running Box/);
+    }
+});
+
+test('deploy: a second failed start stops the run', (t) => {
+    const run = firstStart(t, { starts: [1, 3], status: 'Ploinky Box: running' });
+    assert.notEqual(run.status, 0);
+    assert.deepEqual(run.calls, ['locked --port 8097 start explorer', 'read status', 'update_kept_repos',
+        'locked --port 8097 start explorer']);
 });
 
 test('deploy: readiness reads only the runtime block of real status output', () => {
@@ -464,7 +523,7 @@ test('deploy: a pre prune and the disk gate run before anything moves, a post pr
         'BOX_STATE=present',
         '          prune_images pre\n          require_free_disk\n',
         'ploinky_locked destroy',
-        'ploinky_locked --port "$ROUTER_PORT" start explorer\n            wait_ready',
+        'if ! ploinky_locked --port "$ROUTER_PORT" start explorer; then',
         '# BEGIN QA workspace repositories',
         'ploinky_locked restart\n          wait_ready',
         'An unrelated host container changed during the deployment.',
