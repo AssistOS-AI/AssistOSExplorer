@@ -10,6 +10,7 @@ import { startLiveSessionsIpc } from './live-sessions/ipc-server.mjs';
 import { RuntimeLiveSource, composeTaskObservers } from './live-sessions/runtime-source.mjs';
 import { RoboWorkClient } from './run-client.mjs';
 import { removeLegacyRuntimeData } from './legacy-runtime-cleanup.mjs';
+import { acknowledgeStopsUntilListening } from './startup-stop.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
@@ -20,6 +21,9 @@ const internalToken = String(process.env.ROBOTEAM_INTERNAL_TOKEN || '');
 if (!internalToken) {
     throw new Error('ROBOTEAM_INTERNAL_TOKEN is required');
 }
+
+// Preparing the robots below can take minutes in a workspace with many of them; a restart may arrive meanwhile.
+const handStopsToShutdown = acknowledgeStopsUntilListening();
 
 const publicBasePath = PUBLIC_BASE_PATH;
 const roboWork = new RoboWorkClient({ startupRetry: true });
@@ -113,5 +117,4 @@ async function shutdown() {
     process.exit(0);
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+handStopsToShutdown(shutdown);

@@ -17,6 +17,18 @@ agent_server_script="${ROBOTEAM_AGENT_SERVER_SCRIPT:-/Agent/server/AgentServer.s
 service_main="${ROBOTEAM_SERVICE_MAIN:-/code/server/main.mjs}"
 service_check="${ROBOTEAM_SERVICE_CHECK:-/code/scripts/check-service.mjs}"
 
+# The service prepares every robot through RoboWork before it listens, about half a second per robot, so the wait
+# for it cannot be a fixed few seconds: a workspace with many robots would never start. Both children are watched
+# during the wait, so a service that dies still fails the container at once; the limit only ends a start that hangs.
+# A leading zero would be read as octal and a very long value would overflow, so both are refused here, before
+# either child starts.
+startup_wait_seconds="${ROBOTEAM_STARTUP_WAIT_SECONDS:-600}"
+case "$startup_wait_seconds" in
+    ''|*[!0-9]*|0*|???????*)
+        echo "ROBOTEAM_STARTUP_WAIT_SECONDS must be a whole number of seconds from 1 to 999999, without a leading zero" >&2
+        exit 1 ;;
+esac
+
 PORT="$ROBOTEAM_MCP_PORT" sh "$agent_server_script" &
 MCP_PID="$!"
 
@@ -71,9 +83,11 @@ child_exit_status() {
     return "$child_status"
 }
 
-attempt=0
-while [ "$attempt" -lt 100 ]; do
+service_ready=0
+startup_deadline=$(($(date +%s) + startup_wait_seconds))
+while [ "$(date +%s)" -lt "$startup_deadline" ]; do
     if node "$service_check"; then
+        service_ready=1
         break
     fi
     if ! kill -0 "$SERVICE_PID" 2>/dev/null; then
@@ -84,12 +98,11 @@ while [ "$attempt" -lt 100 ]; do
         echo "RoboTeam AgentServer exited during startup" >&2
         child_exit_status "$MCP_PID"
     fi
-    attempt=$((attempt + 1))
     sleep 0.1
 done
 
-if [ "$attempt" -ge 100 ]; then
-    echo "RoboTeam service did not become ready" >&2
+if [ "$service_ready" -ne 1 ]; then
+    echo "RoboTeam service did not become ready within ${startup_wait_seconds} seconds" >&2
     exit 1
 fi
 

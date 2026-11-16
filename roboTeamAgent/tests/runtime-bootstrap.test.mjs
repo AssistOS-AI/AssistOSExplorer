@@ -13,7 +13,7 @@ const AGENT_ROOT = join(TEST_DIR, '..');
 // RoboWork owns the nested Podman runtime, the storage initialization and the coding-agent version pins.
 const WORK_ROOT = join(AGENT_ROOT, '..', 'roboWorkAgent');
 
-function runScript(scriptPath, env) {
+function runScript(scriptPath, env, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
         const child = spawn('sh', [scriptPath], {
             env: { ...process.env, ...env },
@@ -24,7 +24,7 @@ function runScript(scriptPath, env) {
         const timeout = setTimeout(() => {
             child.kill('SIGKILL');
             reject(new Error(`script timed out: ${scriptPath}`));
-        }, 5000);
+        }, timeoutMs);
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
         child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -312,6 +312,91 @@ while :; do sleep 0.05; done
     assert.equal(await readFile(peerStoppedPath, 'utf8'), 'agent-server');
 });
 
+// The service prepares every robot before it listens, so its start takes longer the more robots a workspace has.
+test('startup keeps waiting for a live service beyond the former limit of 100 checks', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-wait-'));
+    const fixturePath = await storageInitFixture(directory);
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const attemptsPath = join(directory, 'attempts');
+    const passedPath = join(directory, 'check-passed');
+    const agentServer = await writeFixture(directory, 'agent-server.sh', `#!/bin/sh
+trap 'exit 0' TERM INT
+while :; do sleep 0.05; done
+`);
+    // Alive until its check has passed, then gone: by then the launcher has left the startup wait.
+    const service = await writeFixture(directory, 'service.mjs', `
+import { existsSync } from 'node:fs';
+setInterval(() => { if (existsSync(${JSON.stringify(passedPath)})) process.exit(0); }, 50);
+`);
+    const check = await writeFixture(directory, 'check.mjs', `
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+appendFileSync(${JSON.stringify(attemptsPath)}, 'x');
+if (readFileSync(${JSON.stringify(attemptsPath)}, 'utf8').length < 105) process.exit(1);
+writeFileSync(${JSON.stringify(passedPath)}, '');
+`);
+
+    const result = await runScript(join(AGENT_ROOT, 'scripts', 'startAgent.sh'), {
+        PATH: fixturePath,
+        ROBOTEAM_REQUIRED_SKILLS_CHECK: join(directory, 'required-skills.mjs'),
+        ROBOTEAM_AGENT_SERVER_SCRIPT: agentServer,
+        ROBOTEAM_SERVICE_MAIN: service,
+        ROBOTEAM_SERVICE_CHECK: check,
+    }, 90000);
+
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /service exited; stopping AgentServer/);
+    assert.doesNotMatch(result.stderr, /did not become ready|exited during startup/);
+    assert.ok((await readFile(attemptsPath, 'utf8')).length >= 105);
+});
+
+test('a service that never becomes ready fails the container when the configured wait ends', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-never-'));
+    const fixturePath = await storageInitFixture(directory);
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const serviceStoppedPath = join(directory, 'service-stopped');
+    const agentServer = await writeFixture(directory, 'agent-server.sh', `#!/bin/sh
+trap 'exit 0' TERM INT
+while :; do sleep 0.05; done
+`);
+    const service = await writeFixture(directory, 'service.mjs', `
+import { writeFileSync } from 'node:fs';
+process.on('SIGTERM', () => { writeFileSync(${JSON.stringify(serviceStoppedPath)}, 'service'); process.exit(0); });
+setInterval(() => {}, 1000);
+`);
+    const check = await writeFixture(directory, 'check.mjs', 'process.exit(1);\n');
+
+    const result = await runScript(join(AGENT_ROOT, 'scripts', 'startAgent.sh'), {
+        PATH: fixturePath,
+        ROBOTEAM_REQUIRED_SKILLS_CHECK: join(directory, 'required-skills.mjs'),
+        ROBOTEAM_AGENT_SERVER_SCRIPT: agentServer,
+        ROBOTEAM_SERVICE_MAIN: service,
+        ROBOTEAM_SERVICE_CHECK: check,
+        ROBOTEAM_STARTUP_WAIT_SECONDS: '2',
+    }, 30000);
+
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /RoboTeam service did not become ready within 2 seconds/);
+    assert.equal(await readFile(serviceStoppedPath, 'utf8'), 'service');
+});
+
+test('a startup wait that is not a whole number from 1 to 999999 is refused before either service starts', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-waitvalue-'));
+    const fixturePath = await storageInitFixture(directory);
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    for (const value of ['5s', '-1', '1.5', '0', '08', '0600', '1000000', '99999999999999999999', ' 5']) {
+        const result = await runScript(join(AGENT_ROOT, 'scripts', 'startAgent.sh'), {
+            PATH: fixturePath,
+            ROBOTEAM_REQUIRED_SKILLS_CHECK: join(directory, 'required-skills.mjs'),
+            ROBOTEAM_AGENT_SERVER_SCRIPT: '/nonexistent-agent-server',
+            ROBOTEAM_SERVICE_MAIN: '/nonexistent-service',
+            ROBOTEAM_STARTUP_WAIT_SECONDS: value,
+        });
+        assert.equal(result.code, 1, `${value}: ${result.stderr}`);
+        assert.equal(result.stderr, 'ROBOTEAM_STARTUP_WAIT_SECONDS must be a whole number of seconds from 1 to 999999, without a leading zero\n');
+        assert.equal(result.stdout, '');
+    }
+});
+
 test('TERM stops the service and AgentServer and acknowledges a clean drain with exit 0', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-drain-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
@@ -325,6 +410,27 @@ test('TERM stops the service and AgentServer and acknowledges a clean drain with
     for (const filePath of fixture.exited) await access(filePath);
     assert.match(result.stderr, /RoboTeam received TERM; stopping service and AgentServer/);
     assert.doesNotMatch(result.stderr, /RoboTeam drain failed/);
+});
+
+// A restart can arrive while the launcher still waits for a service that is preparing its robots.
+test('TERM during the startup wait stops both children and acknowledges with exit 0', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-drain-wait-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const fixture = await drainFixture(directory);
+    await writeFile(fixture.env.ROBOTEAM_SERVICE_CHECK, `
+import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(join(directory, 'service-checked'))}, '');
+process.exit(1);
+`);
+
+    const result = await drainLauncher(t, 'sh', [join(AGENT_ROOT, 'scripts', 'startAgent.sh')], fixture,
+        { SERVICE_DRAIN_DELAY_MS: '150', AGENT_SERVER_DRAIN_DELAY_MS: '300' });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.signal, null);
+    for (const filePath of fixture.exited) await access(filePath);
+    assert.match(result.stderr, /RoboTeam received TERM; stopping service and AgentServer/);
+    assert.doesNotMatch(result.stderr, /RoboTeam drain failed|did not become ready|exited during startup/);
 });
 
 for (const { name, env, status } of [
