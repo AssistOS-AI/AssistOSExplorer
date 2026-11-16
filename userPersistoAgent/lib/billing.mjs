@@ -6,6 +6,8 @@ import { recordAudit } from './audit.mjs';
 import { serialize } from './serial.mjs';
 import { assertRedirectUriAllowed } from './policy.mjs';
 
+const defaultCreditPrice = Object.freeze({ unitAmountMinor: 100, currency: 'eur' });
+
 function parseStripeSignature(signatureHeader) {
     const parts = {};
     for (const part of String(signatureHeader || '').split(',')) {
@@ -148,10 +150,8 @@ function creditPrice(unitAmountMinor, currency) {
 }
 
 async function configuredCreditPrice() {
-    return creditPrice(...await Promise.all([
-        getSecret('USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR'),
-        getSecret('USERPERSISTO_CREDITS_CURRENCY'),
-    ]));
+    const { unitAmountMinor, currency } = await getCreditOfferSettings();
+    return creditPrice(unitAmountMinor, currency);
 }
 
 function creditPaymentTerms(form) {
@@ -178,14 +178,13 @@ function verifyCreditPayment(object, expected) {
 const validPublishableKey = value => /^pk_(test|live)_[A-Za-z0-9]+$/.test(value);
 
 export async function getCreditOffer() {
-    const [secret, webhook, publishable, amount, currency] = await Promise.all([
+    const [secret, webhook, publishable, price] = await Promise.all([
         getSecret('STRIPE_SECRET_KEY'), getSecret('STRIPE_WEBHOOK_SECRET'), getSecret('STRIPE_PUBLISHABLE_KEY'),
-        getSecret('USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR'),
-        getSecret('USERPERSISTO_CREDITS_CURRENCY'),
+        getCreditOfferSettings(),
     ]);
-    if (!secret || !webhook || !validPublishableKey(publishable) || !amount || !currency) return { available: false };
+    if (!secret || !webhook || !validPublishableKey(publishable)) return { available: false };
     try {
-        return { available: true, ...creditPrice(amount, currency) };
+        return { available: true, ...creditPrice(price.unitAmountMinor, price.currency) };
     } catch {
         return { available: false };
     }
@@ -196,7 +195,10 @@ export async function getCreditOfferSettings() {
         getSecret('USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR'),
         getSecret('USERPERSISTO_CREDITS_CURRENCY'),
     ]);
-    return { unitAmountMinor: Number(values[0]) || null, currency: values[1] };
+    return {
+        unitAmountMinor: values[0] === '' ? defaultCreditPrice.unitAmountMinor : Number(values[0]) || null,
+        currency: values[1] || defaultCreditPrice.currency,
+    };
 }
 
 export async function setCreditOfferSettings({ unitAmountMinor, currency }, actorId) {

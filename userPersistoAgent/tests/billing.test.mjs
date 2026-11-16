@@ -12,7 +12,7 @@ process.env.USERPERSISTO_SETTINGS_FILE = join(dir, 'settings.enc.json');
 
 const { ensureSeedData } = await import('../lib/bootstrap.mjs');
 const { createUser } = await import('../lib/users.mjs');
-const { saveSettings } = await import('../lib/settings.mjs');
+const { getSecret, saveSettings } = await import('../lib/settings.mjs');
 const billing = await import('../lib/billing.mjs');
 const returnUrl = 'http://localhost:8080/account/dashboard.html?tab=points';
 const createTestCheckout = input => billing.createCheckout({returnUrl,...input});
@@ -52,6 +52,34 @@ async function seedCreditCheckout({ sessionId, userId, credits, amountMinor = 10
     });
     await flush();
 }
+
+test('fresh settings and checkout share the default EUR credit price without overwriting saved prices', async (t) => {
+    await ensureSeedData();
+    t.after(() => saveSettings({ remove: [
+        'USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR', 'USERPERSISTO_CREDITS_CURRENCY',
+        'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PUBLISHABLE_KEY',
+    ] }));
+    assert.deepEqual(await billing.getCreditOfferSettings(), { unitAmountMinor: 100, currency: 'eur' });
+    assert.deepEqual(await billing.getCreditOffer(), { available: false });
+    assert.equal(await getSecret('USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR'), '');
+    assert.equal(await getSecret('USERPERSISTO_CREDITS_CURRENCY'), '');
+    await saveSettings({ STRIPE_SECRET_KEY: 'sk_test', STRIPE_WEBHOOK_SECRET: 'whsec_test', STRIPE_PUBLISHABLE_KEY: 'pk_test_public' });
+    assert.deepEqual(await billing.getCreditOffer(), { available: true, unitAmountMinor: 100, currency: 'eur' });
+    const user = await createUser({ email: 'default-price@x.com', roles: ['user'] });
+    t.mock.method(globalThis, 'fetch', async (_url, options) => {
+        const form = Object.fromEntries(options.body);
+        assert.equal(form['line_items[0][price_data][unit_amount]'], '100');
+        assert.equal(form['line_items[0][price_data][currency]'], 'eur');
+        assert.equal(form['line_items[0][quantity]'], '2');
+        return { ok: true, json: async () => ({ id: 'cs_default_price', url: 'https://checkout.stripe.com/c/pay/default-price', amount_total: 200, currency: 'eur' }) };
+    });
+    await createTestCheckout({ userId: user.id, kind: 'credits', quantity: 2, idempotencyKey: 'default-price' });
+    await billing.setCreditOfferSettings({ unitAmountMinor: 75, currency: 'USD' }, user.id);
+    assert.deepEqual(await billing.getCreditOfferSettings(), { unitAmountMinor: 75, currency: 'usd' });
+    assert.deepEqual(await billing.getCreditOffer(), { available: true, unitAmountMinor: 75, currency: 'usd' });
+    assert.equal(await getSecret('USERPERSISTO_CREDIT_UNIT_AMOUNT_MINOR'), '75');
+    assert.equal(await getSecret('USERPERSISTO_CREDITS_CURRENCY'), 'usd');
+});
 
 test('webhook applies credits exactly once (idempotent by stripeEventId)', async () => {
     await ensureSeedData();

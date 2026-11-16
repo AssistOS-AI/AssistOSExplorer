@@ -217,6 +217,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         passkeyAbort = null;
         screen = name;
         resendState = null;
+        googleMount?.resizeObserver?.disconnect();
         googleMount = null;
         // Any transition (expiry, Cancel, Back) abandons a pending credential.
         googleCompletion?.abort();
@@ -425,9 +426,23 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
                 });
                 googleInitializedFor = session.transaction;
             }
-            mount.container.replaceChildren();
+            mount.resizeObserver?.disconnect();
             mount.statusNode.textContent = notice;
-            sdk.renderButton(mount.container, { type: 'standard', theme: 'outline', size: 'large', text: 'signin_with' });
+            let renderedWidth;
+            const render = () => {
+                if (!ownsGoogle(op, mount) || googleSession !== session || session.consumed) return;
+                const availableWidth = mount.container.clientWidth;
+                const width = availableWidth > 0 ? String(Math.min(availableWidth, 400)) : undefined;
+                if (renderedWidth === width && mount.container.hasChildNodes?.()) return;
+                renderedWidth = width;
+                mount.container.replaceChildren();
+                sdk.renderButton(mount.container, { type: 'standard', theme: 'outline', size: 'large', text: 'signin_with', width });
+            };
+            render();
+            if (typeof ResizeObserver === 'function') {
+                mount.resizeObserver = new ResizeObserver(render);
+                mount.resizeObserver.observe(mount.container);
+            }
         } catch {
             if (!ownsGoogle(op, mount)) return;
             mount.container.replaceChildren();
@@ -504,7 +519,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         const notice = noticeStatus();
         if (notice) children.push(notice);
         const googleArea = config.methods.google ? googleSection() : null;
-        if (googleArea) children.push(googleArea.node);
+        if (googleArea) children.push(googleArea.node, h('p', { className: 'auth-divider', text: 'or', 'aria-hidden': 'true' }));
         children.push(h('label', { for: 'auth-email', text: 'Email' }), emailInput, nextButton, errorNode);
         if (typeof adapter.abort === 'function') children.push(h('button', { type: 'button', className: 'auth-link', text: 'Cancel', onClick: () => { showCompleting(); adapter.abort(); } }));
         form.append(...children);
@@ -1446,6 +1461,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             revokeCompletion();
             passkeyAbort?.abort();
             passkeyAbort = null;
+            googleMount?.resizeObserver?.disconnect();
             googleMount = null;
             googleStarting = null;
             googleCompletion?.abort();
