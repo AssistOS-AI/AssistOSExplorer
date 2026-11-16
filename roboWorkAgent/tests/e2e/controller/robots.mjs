@@ -67,7 +67,7 @@ export class ProbeRobots {
     async remove(id) {
         const owner = this.owned.get(id); assert.ok(owner, 'Probe deletion requires this invocation’s creation receipt.');
         const metadata = await this.runtime.node(this.runtime.config.rt, `
-            const file='/data/robots/'+input.id+'/metadata.json'; const stat=fs.lstatSync(file);
+            const file='/robots/'+input.id+'/metadata.json'; const stat=fs.lstatSync(file);
             if(!stat.isFile()||stat.isSymbolicLink()) throw Error('Unsafe probe metadata');
             const robot=JSON.parse(fs.readFileSync(file,'utf8'));
             console.log(JSON.stringify({id:robot.id,name:robot.name,createdAt:robot.createdAt}));`, { id });
@@ -76,10 +76,10 @@ export class ProbeRobots {
         assert.ok(result.status === 200 && result.payload?.ok === true && result.payload.deleted === owner.name,
             'Normal RoboTeam probe cleanup failed.');
         await this.runtime.node(this.runtime.config.rt, `
-            try {fs.lstatSync('/data/robots/'+input.id); throw Error('Deleted probe registry remains');}
+            try {fs.lstatSync('/robots/'+input.id); throw Error('Deleted probe registry remains');}
             catch(error) {if(error.code!=='ENOENT') throw error;} console.log('true');`, { id });
         await this.runtime.node(this.runtime.config.rw, `
-            try {fs.lstatSync('/data/robots/'+input.id); throw Error('Deleted probe home remains');}
+            try {fs.lstatSync('/robots/'+input.id); throw Error('Deleted probe home remains');}
             catch(error) {if(error.code!=='ENOENT') throw error;} console.log('true');`, { id });
         this.owned.delete(id);
         return { ok: true, result: { deleted: true } };

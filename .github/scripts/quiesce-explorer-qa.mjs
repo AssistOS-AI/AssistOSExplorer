@@ -118,27 +118,33 @@ export function assertContainerMounts(binding, inspected, { manifest, realpath =
     const put = (source, target, writable) => {
         requireProof(typeof source === 'string' && path.posix.isAbsolute(source) && path.posix.normalize(source) === source
             && typeof target === 'string' && path.posix.isAbsolute(target) && path.posix.normalize(target) === target
-            && !expected.has(target), 'QA_MOUNT_CONTRACT_INVALID');
+            , 'QA_MOUNT_CONTRACT_INVALID');
+        const previous = expected.get(target);
+        requireProof(!previous || (previous.source === source && previous.writable === writable), 'QA_MOUNT_CONTRACT_INVALID');
         expected.set(target, { source, writable });
     };
     for (const bind of binds) put(bind.source, bind.target, bind.ro !== true);
     const dataRoot = `${WORKSPACE}/.data`;
     for (const [source, target] of Object.entries(manifest.volumes || {})) {
-        requireProof(source.startsWith('.data/') && !source.split('/').includes('..'), 'QA_DATA_MOUNT_INVALID');
-        put(`${WORKSPACE}/${source}`, target, true);
+        requireProof((source === '.data' || source.startsWith('.data/')) && !source.split('/').includes('..'), 'QA_DATA_MOUNT_INVALID');
+        const parts = source.split('/');
+        if (parts[1] && !['agents', 'robots', 'dpu-data'].includes(parts[1])) parts.splice(1, 0, 'agents');
+        put(`${WORKSPACE}/${parts.join('/')}`, target, true);
     }
     const persistent = manifest.runtime?.resources?.persistentStorage;
     if (persistent) {
         requireProof(NAME.test(persistent.key), 'QA_DATA_MOUNT_INVALID');
-        put(`${dataRoot}/${persistent.key}`, persistent.containerPath, true);
+        put(`${dataRoot}/agents/${persistent.key}`, persistent.containerPath, true);
     }
-    const requiredData = new Map([['/root', `${dataRoot}/${binding.agent}`], ['/shared', `${dataRoot}/shared`]]);
-    if (binding.agent === 'dpuAgent') requiredData.set('/dpu-data', `${dataRoot}/dpu-data`);
-    if (binding.agent === 'soul-gateway') requiredData.set('/data', `${dataRoot}/soul-gateway`);
+    const requiredData = new Map([['/root', `${dataRoot}/agents/${binding.agent}`], ['/shared', `${dataRoot}/agents/shared`]]);
+    if (binding.agent === 'dpuAgent') {
+        requiredData.set('/root', `${dataRoot}/dpu-data`);
+        requiredData.set('/workspace-data', dataRoot);
+    }
     if (binding.agent === 'onlyOffice') {
-        requiredData.set('/var/log/onlyoffice', `${dataRoot}/onlyOffice/log`);
-        requiredData.set('/var/www/onlyoffice/Data', `${dataRoot}/onlyOffice/data`);
-        requiredData.set('/var/lib/onlyoffice', `${dataRoot}/onlyOffice/lib`);
+        requiredData.set('/var/log/onlyoffice', `${dataRoot}/agents/onlyOffice/log`);
+        requiredData.set('/var/www/onlyoffice/Data', `${dataRoot}/agents/onlyOffice/data`);
+        requiredData.set('/var/lib/onlyoffice', `${dataRoot}/agents/onlyOffice/lib`);
     }
     for (const [target, source] of requiredData) {
         requireProof(expected.get(target)?.source === source && expected.get(target)?.writable === true, 'QA_DATA_MOUNT_INVALID');
@@ -153,11 +159,13 @@ export function assertContainerMounts(binding, inspected, { manifest, realpath =
             && !actual.has(mount.Destination), 'QA_MOUNT_CONTRACT_INVALID');
         actual.set(mount.Destination, mount);
     }
+    const homeSource = requiredData.get('/root');
+    const ownProjection = homeSource?.startsWith(`${dataRoot}/agents/`) ? homeSource : null;
     const dataProjection = actual.get(dataRoot);
-    if (dataProjection?.RW) {
+    if (dataProjection || expected.has(WORKSPACE) || actual.has(WORKSPACE)) {
         const workspaceGrant = expected.get(WORKSPACE);
         const workspaceMount = actual.get(WORKSPACE);
-        requireProof(dataProjection.Source === dataRoot && workspaceGrant?.source === WORKSPACE
+        requireProof(workspaceGrant?.source === WORKSPACE
             && workspaceGrant.writable === true && workspaceMount?.Source === WORKSPACE
             && workspaceMount.RW === true, 'QA_UNREGISTERED_WRITABLE_MOUNT');
         for (const root of [WORKSPACE, dataRoot, `${WORKSPACE}/.ploinky/repos`]) {
@@ -169,16 +177,21 @@ export function assertContainerMounts(binding, inspected, { manifest, realpath =
             [`${WORKSPACE}/.ploinky`, `${WORKSPACE}/.ploinky`],
             [`${WORKSPACE}/.ploinky/data`, `${guardBase}/data`],
             [`${WORKSPACE}/.ploinky-box`, `${guardBase}/host`],
-            [`${dataRoot}/.private`, `${guardBase}/private`],
+            [dataRoot, ownProjection ? `${guardBase}/data-views/${createHash('sha256').update(ownProjection).digest('hex').slice(0, 24)}` : `${guardBase}/workspace-data`],
         ]);
         for (const [target, source] of masks) {
             const mask = actual.get(target);
             requireProof(mask?.Source === source && mask.RW === false
                 && realpath(target) === target && realpath(source) === source, 'QA_DATA_MOUNT_INVALID');
         }
+        if (ownProjection) {
+            const own = actual.get(ownProjection);
+            requireProof(own?.Source === ownProjection && own.RW === true, 'QA_DATA_MOUNT_INVALID');
+            if (!expected.has(ownProjection)) put(ownProjection, ownProjection, true);
+        }
         const protectedRoots = [...masks.keys()].filter((target) => target !== `${WORKSPACE}/.ploinky`);
         for (const mount of actual.values()) {
-            requireProof(!mount.RW || !protectedRoots.some((target) => mount.Destination === target
+            requireProof(!mount.RW || (mount.Source === ownProjection && mount.Destination === ownProjection) || !protectedRoots.some((target) => mount.Destination === target
                 || mount.Destination.startsWith(`${target}/`)), 'QA_DATA_MOUNT_INVALID');
         }
     }
@@ -188,20 +201,19 @@ export function assertContainerMounts(binding, inspected, { manifest, realpath =
             requireProof(contract.source === mount.Source && contract.writable === mount.RW, 'QA_MOUNT_CONTRACT_CHANGED');
         } else {
             // Ploinky appends these projections and the health relay after it
-            // records registry binds. The data pin requires the complete proof above.
+            // records registry binds. Workspace data is masked by the proof above.
             const healthRelay = mount.Destination === HEALTH_PROBE_RELAY
                 && healthRelaySources(binding.name).includes(mount.Source);
             const repositoryProjection = mount.Destination === `${WORKSPACE}/.ploinky/repos`
                 && mount.Source === mount.Destination
                 && expected.get(WORKSPACE)?.source === WORKSPACE && expected.get(WORKSPACE).writable;
-            requireProof(!mount.RW || healthRelay || repositoryProjection
-                || mount === dataProjection, 'QA_UNREGISTERED_WRITABLE_MOUNT');
+            requireProof(!mount.RW || healthRelay || repositoryProjection, 'QA_UNREGISTERED_WRITABLE_MOUNT');
         }
         const dataTarget = [...requiredData.keys()].some((target) => mount.Destination === target
             || mount.Destination.startsWith(`${target}/`));
         if (dataTarget || mount.Source.startsWith(`${dataRoot}/`)) {
             requireProof((!dataTarget || requiredData.has(mount.Destination)) && contract
-                && mount.Source.startsWith(`${dataRoot}/`) && realpath(dataRoot) === dataRoot
+                && (mount.Source.startsWith(`${dataRoot}/`) || (mount.Source === dataRoot && requiredData.get(mount.Destination) === dataRoot)) && realpath(dataRoot) === dataRoot
                 && realpath(mount.Source) === mount.Source, 'QA_DATA_MOUNT_INVALID');
         }
     }

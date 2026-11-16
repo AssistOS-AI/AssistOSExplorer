@@ -22,7 +22,7 @@
 
                 <section>
                     <h2>Why Configuration Matters</h2>
-                    <p>The agent only works correctly if it can find the workspace boundary, the <a href="wiki.html#definition-dpuagent">DPU</a> storage root, and the master key used to encrypt secrets and confidential content. In <a href="wiki.html#definition-ploinky">Ploinky</a>, <code>{{generatedSecret:DPU_MASTER_KEY}}</code> is resolved before launch, so the agent receives a stable per-agent encryption key without manual secret configuration or workspace master-key access.</p>
+                    <p>The agent only works correctly if it can find the workspace boundary, the <a href="wiki.html#definition-dpuagent">DPU</a> storage root, and the master key used to encrypt secrets and confidential content. In <a href="wiki.html#definition-ploinky">Ploinky</a>, <code>{{generatedSecret:DPU_MASTER_KEY}}</code> is resolved before launch, so the agent receives a stable per-agent encryption key without manual secret configuration. The explicitly mounted private-data store also contains the workspace master key, which DPU never returns through its user tools.</p>
                 </section>
 
                 <section>
@@ -31,11 +31,12 @@
                     <pre><code>{
   "container": "docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669",
   "lite-sandbox": true,
+  "volumes": { ".data/dpu-data": "/root", ".data": "/workspace-data" },
   "runtime": {
     "resources": {
-      "persistentStorage": { "key": "dpu-data", "containerPath": "/dpu-data" },
       "env": {
-        "DPU_DATA_ROOT": "{{STORAGE_CONTAINER_PATH}}",
+        "DPU_DATA_ROOT": "/root",
+        "DPU_WORKSPACE_DATA_ROOT": "/workspace-data",
         "DPU_WORKSPACE_ROOT": "{{WORKSPACE_ROOT}}",
         "DPU_MASTER_KEY": "{{generatedSecret:DPU_MASTER_KEY}}"
       }
@@ -75,7 +76,7 @@
                             </tr>
                             <tr>
                                 <td><code>DPU_DATA_ROOT</code></td>
-                                <td>Required mounted storage root. The runtime fails closed when it is absent; <a href="wiki.html#definition-ploinky">Ploinky</a> supplies <code>/dpu-data</code> from managed <code>.data/dpu-data</code> storage.</td>
+                                <td>Required mounted storage root. The runtime fails closed when it is absent; <a href="wiki.html#definition-ploinky">Ploinky</a> supplies <code>/root</code> from managed <code>.data/dpu-data</code> storage.</td>
                             </tr>
                             <tr>
                                 <td><code>DPU_WORKSPACE_ROOT</code></td>

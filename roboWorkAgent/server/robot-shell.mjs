@@ -7,7 +7,7 @@ import { CODING_AGENT_NAMES } from './coding-agents.mjs';
 
 // The robot shell offers every coding agent; the robot's selection only
 // configures which agents ALA runs.
-function shellEnvironment({ binPath, cacheRoot = '/data/tool-cache' } = {}) {
+function shellEnvironment({ binPath, cacheRoot = '/root/tool-cache' } = {}) {
     const directory = binPath || `${cacheRoot}/shell-selections/shell/bin`;
     const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
     return `# Desktop shells use the same home as every other robot execution.

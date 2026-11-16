@@ -346,7 +346,7 @@ test('QA admission rejects unsafe env and malformed managed sources before any r
     assert.ok(at('// END QA preservation admission') < at('# BEGIN QA install marker'), 'the admission precedes the first mutation');
 });
 
-const NEW_IDENTITY = ['.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc'];
+const NEW_IDENTITY = ['.data/dpu-data/master-key', '.ploinky/data/.secrets', '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc'];
 const LEGACY_IDENTITY = ['.ploinky/master-key', '.ploinky/.secrets', '.ploinky/passwords.enc', '.ploinky/ploinky_subject_identity_ed25519_v1.enc'];
 
 test('QA admission accepts the Ploinky 7d8c04d0 identity layout under .ploinky/data and refuses the legacy layout', t => {
@@ -367,7 +367,7 @@ test('QA admission refuses durable data without a master key in either location'
     f.write('.ploinky/data/.secrets', 'encrypted store without its key');
     f.write('.ploinky/passwords.enc', 'accounts without a key');
     assert.throws(() => f.execute('preservation admission'), /requires its original master key/);
-    f.write('.ploinky/data/master-key', 'seed');
+    f.write('.data/dpu-data/master-key', 'seed');
     f.execute('preservation admission');
 });
 
@@ -404,11 +404,11 @@ test('QA admission refuses an unsafe master key or identity file in either locat
 test('QA admission refuses a master key owned by another user', t => {
     const f = fixture(t);
     f.write('.data/dpu-data/blobs/one', 'ciphertext');
-    f.write('.ploinky/data/master-key', 'seed');
+    f.write('.data/dpu-data/master-key', 'seed');
     const real = fs.lstatSync;
     const foreign = { ...fs, lstatSync: (file, ...rest) => {
         const stat = real(file, ...rest);
-        return String(file).endsWith('.ploinky/data/master-key')
+        return String(file).endsWith('.data/dpu-data/master-key')
             ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: stat.uid + 1 }) : stat;
     } };
     const source = block('preservation admission').replace("'/home/admin/explorerQaWorkspace'", JSON.stringify(f.target));
@@ -421,9 +421,9 @@ test('QA admission refuses every retired .ploinky controller secret, alone or be
         for (const withNew of [false, true]) {
             const f = fixture(t);
             f.write('.data/dpu-data/blobs/one', 'ciphertext');
-            f.write('.ploinky/data/master-key', 'seed-one');
+            f.write('.data/dpu-data/master-key', 'seed-one');
             f.write(`.ploinky/${name}`, 'retired');
-            if (!withNew) fs.rmSync(path.join(f.target, '.ploinky/data/master-key'));
+            if (!withNew) fs.rmSync(path.join(f.target, '.data/dpu-data/master-key'));
             if (!withNew && name !== 'master-key') f.write('.ploinky/master-key', 'seed-one');
             assert.throws(() => f.execute('preservation admission'), /Retired QA controller secrets at .*\.ploinky\/.*migrate each into \.ploinky\/data first/, `${name} ${withNew}`);
             assert.equal(f.read(`.ploinky/${name}`), 'retired');
@@ -431,7 +431,7 @@ test('QA admission refuses every retired .ploinky controller secret, alone or be
     }
     const kept = fixture(t);
     kept.write('.data/dpu-data/blobs/one', 'ciphertext');
-    kept.write('.ploinky/data/master-key', 'seed-one');
+    kept.write('.data/dpu-data/master-key', 'seed-one');
     kept.write('.ploinky/passwords.enc', 'accounts');
     kept.execute('preservation admission');
 });

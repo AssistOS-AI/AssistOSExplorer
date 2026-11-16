@@ -61,6 +61,7 @@ export { resolveActor };
  * per-secret ACL checks below.
  */
 const OPERATION_SCOPE_MAP = {
+  ...Object.fromEntries(['list', 'stat', 'read', 'download'].map(action => [`dpu_data_${action}`, ['dpu:data:read']])),
   dpu_secret_get: ['secret:read'],
   dpu_secret_put: ['secret:write'],
   dpu_secret_delete: ['secret:write'],

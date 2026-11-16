@@ -31,35 +31,41 @@ export class RunManager {
     }
 
     async initialize() {
-        const root = path.join(this.paths.dataDir, 'runs');
-        await fs.mkdir(root, { recursive: true, mode: 0o700 });
-        for (const id of await fs.readdir(root)) {
-            try {
-                runId(id);
-                const directory = this.paths.run(id);
-                const meta = JSON.parse(await fs.readFile(path.join(directory, 'meta.json'), 'utf8'));
-                if (meta.runId !== id) continue;
-                if (!live(meta.state) && this.now() - Date.parse(meta.endedAt || meta.startedAt) > RETENTION) {
-                    await fs.rm(directory, { recursive: true, force: true }); continue;
-                }
-                if (live(meta.state)) {
-                    if (meta.containerName) await this.stopEnvironment({ meta, containerName: meta.containerName }, 'SIGKILL');
-                    if (meta.pid && meta.pidStamp && await processStamp(meta.pid) === meta.pidStamp) {
-                        try { process.kill(-meta.pid, 'SIGKILL'); } catch { /* Already exited. */ }
+        await fs.mkdir(this.paths.robotsDir, { recursive: true, mode: 0o700 });
+        for (const robot of await fs.readdir(this.paths.robotsDir, { withFileTypes: true })) {
+            if (!robot.isDirectory() || !/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robot.name)) continue;
+            const root = path.join(this.paths.robot(robot.name), 'runs');
+            for (const entry of await fs.readdir(root, { withFileTypes: true }).catch(error => { if (error.code !== 'ENOENT') throw error; return []; })) {
+                if (!entry.isDirectory()) continue;
+                const id = entry.name;
+                try {
+                    runId(id);
+                    const directory = this.paths.run(robot.name, id);
+                    const meta = JSON.parse(await fs.readFile(path.join(directory, 'meta.json'), 'utf8'));
+                    if (meta.runId !== id || meta.robotId !== robot.name) continue;
+                    if (this.runs.has(id)) throw fail('DUPLICATE_RUN', 'Duplicate stored runId', 500);
+                    if (!live(meta.state) && this.now() - Date.parse(meta.endedAt || meta.startedAt) > RETENTION) {
+                        await fs.rm(directory, { recursive: true, force: true }); continue;
                     }
-                    meta.state = 'interrupted'; meta.exit = { code: null, signal: 'SERVICE_RESTART' }; meta.endedAt = new Date(this.now()).toISOString();
+                    if (live(meta.state)) {
+                        if (meta.containerName) await this.stopEnvironment({ meta, containerName: meta.containerName }, 'SIGKILL');
+                        if (meta.pid && meta.pidStamp && await processStamp(meta.pid) === meta.pidStamp) {
+                            try { process.kill(-meta.pid, 'SIGKILL'); } catch { /* Already exited. */ }
+                        }
+                        meta.state = 'interrupted'; meta.exit = { code: null, signal: 'SERVICE_RESTART' }; meta.endedAt = new Date(this.now()).toISOString();
+                    }
+                    const text = await fs.readFile(path.join(directory, 'log.ndjson'), 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return ''; });
+                    const records = [];
+                    for (const line of text.split('\n')) {
+                        if (!line) continue;
+                        try { records.push(JSON.parse(line)); } catch { break; }
+                    }
+                    const run = { meta, directory, records, bytes: Buffer.byteLength(text), seq: records.at(-1)?.seq || 0, queue: Promise.resolve() };
+                    this.runs.set(id, run); await this.persist(run);
+                } catch (error) {
+                    if (['ENVIRONMENT_STOP_FAILED', 'DUPLICATE_RUN'].includes(error.code)) throw error;
+                    // An incomplete start is not an attachable run.
                 }
-                const text = await fs.readFile(path.join(directory, 'log.ndjson'), 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return ''; });
-                const records = [];
-                for (const line of text.split('\n')) {
-                    if (!line) continue;
-                    try { records.push(JSON.parse(line)); } catch { break; }
-                }
-                const run = { meta, directory, records, bytes: Buffer.byteLength(text), seq: records.at(-1)?.seq || 0, queue: Promise.resolve() };
-                this.runs.set(id, run); await this.persist(run);
-            } catch (error) {
-                if (error.code === 'ENVIRONMENT_STOP_FAILED') throw error;
-                // An incomplete start is not an attachable run.
             }
         }
     }
@@ -129,10 +135,10 @@ export class RunManager {
             const granted = folder.alias === undefined && folder.at === undefined && within(workspace, source) ? { ...folder, at: source, expose: true } : folder;
             if (granted.at !== undefined && (typeof granted.at !== 'string' || !path.isAbsolute(granted.at)
                 || path.normalize(granted.at) !== granted.at || granted.alias !== undefined || granted.at.includes('\0')
-                || ['/data', '/usr', '/etc', '/proc', '/sys', '/dev', '/bin', '/sbin', '/lib', '/lib64']
+                || ['/root', '/robots', '/usr', '/etc', '/proc', '/sys', '/dev', '/bin', '/sbin', '/lib', '/lib64']
                     .some(root => within(root, granted.at) || within(granted.at, root))
                 || (within('/home', granted.at) && !within(this.paths.workspaceRoot, granted.at))
-                || [this.paths.dataDir, this.paths.privateRoot, ...hidden, path.join(cwd, '.roboteam')]
+                || [this.paths.dataDir, this.paths.robotsDir, ...hidden, path.join(cwd, '.roboteam')]
                     .some(root => within(root, granted.at) || within(granted.at, root)) || hiddenName(granted.at)
                 || granted.at === '/workspace'
                 || aliases.has(granted.at.slice('/workspace/'.length)))) throw fail('FOLDER_REFUSED', 'Invalid folder target');
@@ -144,7 +150,8 @@ export class RunManager {
         if (input.tag !== undefined && (!input.tag || typeof input.tag !== 'object' || Array.isArray(input.tag))) throw fail('INVALID_INPUT', 'Invalid run tag');
         if (Buffer.byteLength(JSON.stringify(input.tag || {})) > 65536) throw fail('INVALID_INPUT', 'Run tag too large');
         await this.robots.require(input.robotId);
-        const directory = this.paths.run(input.runId);
+        const directory = this.paths.run(input.robotId, input.runId);
+        await fs.mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
         await fs.mkdir(directory, { mode: 0o700 });
         const meta = { runId: input.runId, robotId: input.robotId, state: 'starting', tag: input.tag || {},
             cwd, ala, startedAt: new Date(this.now()).toISOString(), launchId: this.launchId };

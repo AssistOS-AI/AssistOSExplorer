@@ -10,9 +10,6 @@
   "enable": [
     "emailAgent"
   ],
-  "volumes": {
-    ".data/userPersistoAgent": "/data"
-  },
   "routerAccess": {
     "httpRoutes": [
       {
@@ -75,7 +72,7 @@
       "env": {
         "PERSISTENCE_FOLDER": {
           "required": false,
-          "default": "/data/persisto"
+          "default": "/root/persisto"
         },
         "USERPERSISTO_OIDC_ISSUER": {
           "required": false,

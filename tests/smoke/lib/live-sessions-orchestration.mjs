@@ -221,7 +221,7 @@ export function assertOwnedSettlement(snapshot, { cwd, ownerPrincipal, flowId },
 
 // Serialized into the exact deployed runtime. No store initialization, control
 // operation, provider request, prompt, reasoning, or complete log leaves it.
-export async function readLiveSessionOrchestration(options, { fsApi, codeRoot = '/code', dataRoot = '/data',
+export async function readLiveSessionOrchestration(options, { fsApi, codeRoot = '/code', dataRoot = '/root',
     emit = value => process.stdout.write(JSON.stringify(value)) } = {}) {
     const assert = (await import('node:assert/strict')).default;
     const fs = fsApi || await import('node:fs');

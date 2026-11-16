@@ -69,8 +69,8 @@ async function createFixture(t, runtimeFs = fs) {
     };
     const readArtifacts = async () => Promise.all([
         fs.readFile(path.join(workspaceRoot, 'draft.md')),
-        fs.readFile(path.join(workspaceRoot, '.data/explorer/automerge/documents', `${created.documentId}.automerge`)),
-        fs.readFile(path.join(workspaceRoot, '.data/explorer/automerge/scripta-collaboration', `${created.documentId}.automerge`)),
+        fs.readFile(path.join(workspaceRoot, '.data/agents/explorer/automerge/documents', `${created.documentId}.automerge`)),
+        fs.readFile(path.join(workspaceRoot, '.data/agents/explorer/automerge/scripta-collaboration', `${created.documentId}.automerge`)),
     ]);
     return { workspaceRoot, service, store, makeRuntime, args, variantArgs, readArtifacts };
 }
@@ -321,7 +321,7 @@ test('SCRIPTA validates foreign document identity and history even when a receip
     const requests = foreignBases.map((document) => proposal(args, {
         stateBase64: Buffer.from(saveDocument(document)).toString('base64'),
     }, 'Must not be accepted'));
-    const canonicalPath = path.join(workspaceRoot, '.data/explorer/automerge/documents', `${base.documentId}.automerge`);
+    const canonicalPath = path.join(workspaceRoot, '.data/agents/explorer/automerge/documents', `${base.documentId}.automerge`);
     const canonical = loadDocument(await fs.readFile(canonicalPath));
     // Seed real private state with matching receipts to prove that a positive
     // receipt lookup cannot bypass document/history validation.

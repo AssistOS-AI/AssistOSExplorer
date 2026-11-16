@@ -15,7 +15,7 @@ const GITHUB_USER_URL = 'https://api.github.com/user';
 const GITHUB_EMAILS_URL = 'https://api.github.com/user/emails';
 const DEFAULT_CLIENT_ID = 'Ov23liRKJjJHqo3zOOI6';
 const DEFAULT_SCOPE = 'repo workflow read:user user:email';
-const STATE_DIR = path.join('.data', 'gitAgent', 'github-auth');
+const STATE_DIR = process.env.GIT_AGENT_DATA_ROOT ? 'github-auth' : path.join('.data', 'agents', 'gitAgent', 'github-auth');
 const STATE_FILE = 'git-agent-github-auth.json';
 const STATE_FILE_PREFIX = 'git-agent-github-auth';
 
@@ -32,7 +32,7 @@ export function getGithubAuthStateFilePath(workspaceRoot, authInfo = null) {
   const fileName = suffix
     ? `${STATE_FILE_PREFIX}-${suffix.toLowerCase()}.json`
     : STATE_FILE;
-  return path.join(resolveWorkspaceRoot(workspaceRoot), STATE_DIR, fileName);
+  return path.join(process.env.GIT_AGENT_DATA_ROOT || resolveWorkspaceRoot(workspaceRoot), STATE_DIR, fileName);
 }
 
 function statePathPolicyError(message) {
@@ -43,7 +43,7 @@ function statePathPolicyError(message) {
 }
 
 async function resolveStateFile(workspaceRoot, filePath, { createParent = false } = {}) {
-  const root = resolveWorkspaceRoot(workspaceRoot);
+  const root = process.env.GIT_AGENT_DATA_ROOT || resolveWorkspaceRoot(workspaceRoot);
   if (path.dirname(filePath) !== path.join(root, STATE_DIR)) {
     throw statePathPolicyError('state files must stay inside the managed auth directory.');
   }

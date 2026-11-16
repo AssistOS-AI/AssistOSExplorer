@@ -245,7 +245,7 @@ export function createToolHandlers({
     }
   }
 
-  const pluginSettingsPath = path.join(workspaceRoot, '.data', 'explorer', 'plugin-settings.json');
+  const pluginSettingsPath = path.join(process.env.EXPLORER_DATA_ROOT || path.join(workspaceRoot, '.data', 'agents', 'explorer'), 'plugin-settings.json');
   const skillsManifestFile = 'ploinky-skills-manifest.json';
   const reposCacheRoot = path.join(workspaceRoot, '.ploinky', 'repos');
   const canonicalAgentsDir = '.agents';

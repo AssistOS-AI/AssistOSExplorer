@@ -17,7 +17,7 @@ const codeRoot = path.dirname(path.dirname(script));
 export async function loadTerminalDescriptor(env = process.env, cwd = process.cwd()) {
     if (env.PLOINKY_WEBTTY_PROFILE_PROVIDER !== 'roboWorkAgent') throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
     const profile = env.PLOINKY_WEBTTY_PROFILE_ID;
-    const paths = new RobotPaths({ dataDir: '/data', workspaceRoot: env.PLOINKY_WORKSPACE_ROOT });
+    const paths = new RobotPaths({ dataDir: '/root', workspaceRoot: env.PLOINKY_WORKSPACE_ROOT });
     return readTerminalDescriptor(paths, profile, env.HOME, cwd);
 }
 
@@ -33,13 +33,13 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
         if (!stat.isFile() || stat.nlink !== 1 || stat.size > 32768 || stat.uid !== process.getuid()) throw new Error();
         descriptor = JSON.parse(await handle.readFile('utf8'));
     } finally { await handle.close(); }
-    const stub = path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal', id);
+    const stub = path.join(paths.robot(id), 'terminal');
     const stat = await terminalDirectory(stub, { empty: true });
     if (!selectedHome) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
     // The Router may reach the stub through a container bind alias. Its canonical
     // path differs, but the service-owned empty directory must be the same inode.
     const selectedStat = await terminalDirectory(selectedHome, { empty: true });
-    if (descriptor.profile !== profile || descriptor.id !== id || descriptor.dataDir !== paths.dataDir
+    if (descriptor.profile !== profile || descriptor.id !== id || descriptor.dataDir !== paths.dataDir || descriptor.robotsDir !== paths.robotsDir
         || descriptor.workspaceRoot !== paths.workspaceRoot || descriptor.stub?.path !== stub
         || descriptor.stub.dev !== stat.dev || descriptor.stub.ino !== stat.ino
         || selectedStat.dev !== stat.dev || selectedStat.ino !== stat.ino) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
@@ -58,14 +58,14 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
     const api = await loadSandbox(descriptor.alaEntry);
     const bwrap = descriptor.bwrap;
     if (!api.canMountPrivateProc(bwrap)) throw fail('SANDBOX_UNAVAILABLE', 'A private process namespace is required');
-    const home = descriptor.innerEnvironment ? target : path.join(descriptor.dataDir, 'robots', descriptor.id, 'home');
+    const home = descriptor.innerEnvironment ? target : path.join(descriptor.robotsDir, descriptor.id, 'home');
     const cwd = descriptor.cwd || target;
     const shell = await fs.access('/bin/bash', fs.constants.X_OK).then(() => '/bin/bash', () => '/bin/sh');
     // The workspace is read-only at its canonical path with its private entries masked. In a container Podman has made the
     // masks, and ALA could not name a character device again, so the sandbox inside receives the root and `.roboteam` only.
     const shown = alaWorkspaceOptions(descriptor.workspaceView, { cwd: descriptor.cwd, environment: Boolean(descriptor.innerEnvironment) });
     const folders = [...shown.folders, { source: descriptor.cacheRoot, target: descriptor.cacheRoot },
-        { source: descriptor.innerEnvironment ? '/workspace/roboteam-soul' : path.join(descriptor.dataDir, 'robots', descriptor.id, 'run/soul'),
+        { source: descriptor.innerEnvironment ? '/workspace/roboteam-soul' : path.join(descriptor.robotsDir, descriptor.id, 'run/soul'),
             target: '/workspace/roboteam-soul' }];
     const env = nativeEnvironment({ PATH: '/usr/local/bin:/usr/bin:/bin', TERM: descriptor.term || 'xterm-256color', LANG: 'C.UTF-8' }, target);
     // The folder is opened once and bound by descriptor. The robot home has no private project data to mask.
@@ -83,6 +83,8 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
 
 export async function buildTerminalLaunch(descriptor, paths, { environment = new EnvironmentManager() } = {}) {
     if (descriptor.environment) {
+        // WebTTY uses podman exec, which inherits image defaults rather than startAgent's exports.
+        process.env.CONTAINERS_STORAGE_CONF = path.join(paths.dataDir, 'server-state', 'podman-storage.conf');
         const entry = await environment.require(descriptor.environment, { retry: true });
         const launch = await environment.buildLaunch({ environment: entry.ref, runId: 'terminal-' + randomUUID(), robotId: descriptor.id,
             home: paths.home(descriptor.id), cwd: descriptor.cwd, cwdIdentity: descriptor.cwdIdentity,

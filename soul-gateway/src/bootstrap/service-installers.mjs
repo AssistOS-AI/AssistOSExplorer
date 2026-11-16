@@ -14,6 +14,7 @@ import { adaptExtensionEntryToBackend } from '../runtime/plugins/runtime-extensi
 import { createExtensionContext } from '../runtime/providers/extension-sdk.mjs';
 import { installRuntimeRefreshServices } from '../runtime/registry/runtime-refresh.mjs';
 import { loadRuntimeSnapshot } from '../runtime/registry/snapshot-loader.mjs';
+import { migrateOAuthCredentialPaths } from '../runtime/providers/oauth/credential-path-migration.mjs';
 
 export async function installObservabilityServices(appCtx) {
     const { config, pool, log } = appCtx;
@@ -101,12 +102,15 @@ export async function installProviderAuthServices(appCtx) {
         '../runtime/providers/oauth/credential-store.mjs'
     );
 
-    const accountPool = new AccountPool({ pool, accountsDao, log });
     const oauthCredentialStore = new OAuthCredentialStore({
         baseDir: config.env.CREDENTIALS_DIR,
         encryptionKey: appCtx.services.encryptionKey,
         log,
     });
+    await migrateOAuthCredentialPaths({
+        pool, baseDir: config.env.CREDENTIALS_DIR, store: oauthCredentialStore, log,
+    });
+    const accountPool = new AccountPool({ pool, accountsDao, log });
     // OAuthManager must be constructed before CredentialManager so the
     // latter can dispatch inline refreshes through it on token expiry.
     const oauthManager = new OAuthManager({

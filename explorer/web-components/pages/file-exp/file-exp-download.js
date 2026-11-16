@@ -1,6 +1,7 @@
+import { callDpuTool } from './file-exp-dpu-provider.js';
 // Downloads stay on the authenticated Router origin and use the browser's
 // native download manager, not an in-memory Blob or a navigation of Explorer.
-import { isDpuVirtualPath } from "../../../services/dpu/dpuPaths.js";
+import { isDpuVirtualPath, isDpuDataPath } from "../../../services/dpu/dpuPaths.js";
 
 export function isDownloadablePath(entryPath) {
     const parts = String(entryPath || '').replace(/^\/+/, '').split('/');
@@ -33,6 +34,30 @@ export function attachDownloadActions(fileExp) {
         pending.set(entryPath, controller);
         try {
             if (!['file', 'directory'].includes(type)) throw new Error('Unsupported download item.');
+            if (isDpuDataPath(entryPath)) {
+                if (type !== 'file') throw new Error('Only individual data files can be downloaded.');
+                const chunks = [];
+                let offset = 0;
+                do {
+                    const result = await callDpuTool('dpu_data_download', { path: entryPath.slice('/.data/'.length), offset });
+                    if (disposed || controller.signal.aborted) return false;
+                    if (result.item.size > 64 * 1024 * 1024) throw new Error('Data downloads are limited to 64 MiB.');
+                    chunks.push(Uint8Array.from(atob(result.content), character => character.charCodeAt(0)));
+                    if (result.eof) break;
+                    if (result.nextOffset <= offset) throw new Error('File changed during download.');
+                    offset = result.nextOffset;
+                } while (true);
+                const url = URL.createObjectURL(new Blob(chunks));
+                const anchor = document.createElement('a');
+                anchor.href = url;
+                anchor.download = entryPath.split('/').pop();
+                document.body.appendChild(anchor);
+                anchor.click();
+                anchor.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 10000);
+                fileExp.showStatus('Download started.');
+                return true;
+            }
             const url = buildDownloadUrl(entryPath);
             fileExp.showStatus(type === 'directory' ? 'Preparing folder download…' : 'Preparing download…');
             const response = await fetch(url, {

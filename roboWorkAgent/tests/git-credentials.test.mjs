@@ -72,7 +72,7 @@ async function fakeCredentialServer(t, root, handler) {
 test('the store encrypts a robot credential, binds it to the robot and reports an unreadable record without its token', async t => {
     const root = await tempRoot(t);
     const env = keys();
-    const store = new GitCredentialStore({ dataDir: root, env });
+    const store = new GitCredentialStore({ robotsDir: root, env });
     const metadata = { host: 'github.com', githubLogin: 'octocat', name: 'Octo', email: 'o@example.com', savedBy: { id: 'u1', username: 'alice' }, savedAt: 'now' };
     await store.write('robot-a', metadata, TOKEN);
     const raw = await fs.readFile(store.file('robot-a'), 'utf8');
@@ -88,7 +88,7 @@ test('the store encrypts a robot credential, binds it to the robot and reports a
     // A record copied under another robot's name, a different key or a changed byte is configured but unreadable.
     await fs.writeFile(store.file('robot-b'), raw.replace('"robotId":"robot-a"', '"robotId":"robot-b"'));
     assert.equal((await store.read('robot-b')).readable, false);
-    const other = new GitCredentialStore({ dataDir: root, env: { ROBOWORK_CREDENTIALS_KEY: 'another-key' } });
+    const other = new GitCredentialStore({ robotsDir: root, env: { ROBOWORK_CREDENTIALS_KEY: 'another-key' } });
     assert.deepEqual(await other.read('robot-a'), { configured: true, readable: false, metadata, secret: null, location: 'robot' });
     const tampered = { ...record, secret: { ...record.secret, data: Buffer.from('x').toString('base64') } };
     await fs.writeFile(store.file('robot-a'), JSON.stringify(tampered));
@@ -100,7 +100,7 @@ test('the store encrypts a robot credential, binds it to the robot and reports a
     assert.equal(await store.remove('robot-a'), false);
     // Without a key, or with a template Ploinky did not expand, storage reports unavailable instead of failing the service.
     for (const value of [undefined, '', '{{generatedSecret:ROBOWORK_CREDENTIALS_KEY}}']) {
-        const missing = new GitCredentialStore({ dataDir: root, env: { ROBOWORK_CREDENTIALS_KEY: value } });
+        const missing = new GitCredentialStore({ robotsDir: root, env: { ROBOWORK_CREDENTIALS_KEY: value } });
         assert.equal(missing.available, false);
         await assert.rejects(missing.write('robot-a', metadata, TOKEN), { code: 'GIT_CREDENTIALS_UNAVAILABLE' });
     }
@@ -109,7 +109,7 @@ test('the store encrypts a robot credential, binds it to the robot and reports a
 test('the workspace git credential file has the A2 format and AAD and is written only when configured', async t => {
     const root = await tempRoot(t);
     const env = { ...keys(), ROBOWORK_GIT_MIRROR_DIR: path.join(root, 'mirror') };
-    const store = new GitCredentialStore({ dataDir: path.join(root, 'data'), env });
+    const store = new GitCredentialStore({ robotsDir: path.join(root, 'data'), env });
     assert.equal(await store.writeWorkspaceToken(TOKEN), true);
     assert.deepEqual(await store.readWorkspaceToken(), { username: 'x-access-token', token: TOKEN });
     const file = path.join(root, 'mirror', 'credentials.json');
@@ -144,7 +144,7 @@ test('the workspace git credential file has the A2 format and AAD and is written
     for (const changed of [{ ROBOWORK_GIT_MIRROR_DIR: undefined }, { ROBOWORK_GIT_MIRROR_KEY: undefined },
         { ROBOWORK_GIT_MIRROR_DIR: '{{GIT_CREDENTIALS_CONTAINER_PATH}}' }, { ROBOWORK_GIT_MIRROR_KEY: '{{GIT_CREDENTIALS_KEY}}' },
         { ROBOWORK_GIT_MIRROR_KEY: 'abcd' }, { ROBOWORK_GIT_MIRROR_DIR: 'relative/dir' }]) {
-        const disabled = new GitCredentialStore({ dataDir: path.join(root, 'data'), env: { ...env, ...changed } });
+        const disabled = new GitCredentialStore({ robotsDir: path.join(root, 'data'), env: { ...env, ...changed } });
         assert.equal(disabled.mirrorAvailable, false);
         assert.equal(await disabled.writeWorkspaceToken(TOKEN), false);
         assert.equal(await disabled.readWorkspaceToken(), null);
@@ -253,7 +253,7 @@ test('the helper prints a credential only for get on https github.com and stays 
 
 test('the robot socket serves only https github.com from a readable credential, logs without the token and is owner-only', async t => {
     const root = await tempRoot(t);
-    const store = new GitCredentialStore({ dataDir: path.join(root, 'data'), env: keys() });
+    const store = new GitCredentialStore({ robotsDir: path.join(root, 'data'), env: keys() });
     const soul = path.join(root, 'soul');
     await fs.mkdir(soul);
     const logs = [];
@@ -275,7 +275,7 @@ test('the robot socket serves only https github.com from a readable credential, 
     assert.deepEqual(logs, ['git credential served robot=robot-a host=github.com']);
     assert.equal(logs.join('\n').includes(TOKEN), false);
     // An unreadable record is not served.
-    const other = new GitCredentialStore({ dataDir: path.join(root, 'data'), env: keys() });
+    const other = new GitCredentialStore({ robotsDir: path.join(root, 'data'), env: keys() });
     const otherSockets = createGitCredentialSockets({ store: other, log: () => {} });
     const otherSoul = path.join(root, 'soul-b');
     await fs.mkdir(otherSoul);
@@ -299,8 +299,8 @@ async function managerFixture(t, { env = keys(), homeOperation: homeOp } = {}) {
     const root = await tempRoot(t);
     const workspaceRoot = path.join(root, 'workspace');
     await fs.mkdir(workspaceRoot);
-    const paths = new RobotPaths({ dataDir: path.join(root, 'data'), workspaceRoot });
-    const store = new GitCredentialStore({ dataDir: paths.dataDir, env: { ...env, ROBOWORK_GIT_MIRROR_DIR: path.join(root, 'mirror') } });
+    const paths = new RobotPaths({ robotsDir: path.join(root, 'robots'), dataDir: path.join(root, 'data'), workspaceRoot });
+    const store = new GitCredentialStore({ robotsDir: paths.robotsDir, env: { ...env, ROBOWORK_GIT_MIRROR_DIR: path.join(root, 'mirror') } });
     const logs = [];
     const sockets = createGitCredentialSockets({ store, log: message => logs.push(message) });
     t.after(() => sockets.close());
@@ -322,7 +322,7 @@ test('set keeps the default robot token only in the workspace file, configures t
     assert.equal(result.mirrored, true);
     assert.deepEqual({ ...result.metadata, savedAt: undefined }, { host: 'github.com', githubLogin: 'octocat', name: 'Octo Cat',
         email: 'octo@example.com', savedBy: { id: 'user-1', username: 'alice' }, savedAt: undefined });
-    assert.equal(path.dirname(store.file('robot-a')), path.join(paths.dataDir, 'credentials'));
+    assert.equal(path.dirname(store.file('robot-a')), path.join(paths.robotsDir, '.credentials'));
     assert.deepEqual(homeCalls, [{ id: 'robot-a', operation: 'git_config_set', input: { name: 'Octo Cat', email: 'octo@example.com' } }]);
     assert.equal(JSON.stringify(homeCalls).includes(TOKEN), false, 'the home helper never receives the token');
     assert.equal(logs.join('\n').includes(TOKEN), false);

@@ -168,7 +168,7 @@ function runtimeFixture(root = ROOT) {
         dependencies: { schema: 1, mode: 'store', family: 'container', runtimeKey: 'container-linux-x64-glibc-node22',
             imageId: 'sha256:' + 'b'.repeat(64), inputKey: 'a'.repeat(64), generationId: 'a'.repeat(64), objectId, payloadPath, nodeModulesPath }, mounts: [
             { Type: 'bind', Source: root, Destination: root, RW: true },
-            { Type: 'bind', Source: `${root}/.data/roboTeamAgent`, Destination: '/data', RW: true },
+            { Type: 'bind', Source: `${root}/.data/agents/roboTeamAgent`, Destination: '/root', RW: true },
             { Type: 'bind', Source: `${repository}/roboTeamAgent`, Destination: `${repository}/roboTeamAgent`, RW: true },
             { Type: 'bind', Source: `${repository}/roboTeamAgent`, Destination: '/code', RW: false },
             { Type: 'bind', Source: `${root}/.ploinky/container-runtime/owned-runtime/Agent-1-2`, Destination: '/Agent', RW: false },
@@ -304,7 +304,7 @@ test('canonical execution and registered helper paths preserve the robot runtime
         const receipt = Object.values(input.snapshot.receipts)[0];
         assert.ok(receipt.invokedPath.startsWith(input.fixture.workspace + '/.agents/skills/'));
         assert.ok(receipt.resolvedSource.startsWith(input.fixture.repositoryRoot + '/skills/'));
-        assert.equal(input.snapshot.robotRoot, `/data/robots/${input.fixture.robotId}`);
+        assert.equal(input.snapshot.robotRoot, `/robots/${input.fixture.robotId}`);
         assert.equal(input.snapshot.session.engine.home, `/home/${input.fixture.robotId}`);
     }
 });

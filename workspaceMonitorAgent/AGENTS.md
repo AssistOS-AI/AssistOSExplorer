@@ -30,7 +30,7 @@ workspaceMonitorAgent is the administrator-only Workspace Monitor: it collects P
 
 ## Runtime Defaults
 
-`manifest.json` uses `docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669` and starts `node /code/server/supervisor.mjs`. It declares `routerAccess.workspaceLogs`, persistent storage key `workspace-monitor` mounted at `/data`, and `WORKSPACE_MONITOR_DATA_ROOT` set from that mount. `mcp-config.json` declares the `workspace_monitor_*` tools, run through `tools/workspace_monitor_tool.sh`.
+`manifest.json` uses `docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669` and starts `node /code/server/supervisor.mjs`. It declares `routerAccess.workspaceLogs`, the automatic private home `.data/agents/workspaceMonitorAgent` at `/root`, and `WORKSPACE_MONITOR_DATA_ROOT` set from that mount. `mcp-config.json` declares the `workspace_monitor_*` tools, run through `tools/workspace_monitor_tool.sh`.
 
 ## Key Paths
 

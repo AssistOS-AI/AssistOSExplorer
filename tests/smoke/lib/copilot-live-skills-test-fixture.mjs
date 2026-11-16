@@ -12,7 +12,7 @@ export async function withLiveSkillsProjection({ fixture, workspaceRoot, session
     assert.equal(fs.realpathSync(parent), parent);
     assert.equal(fs.lstatSync(destination, { throwIfNoEntry: false }), undefined, 'Offline projection requires absent project skills.');
     await inspectSessionSkillLinks({ workspace: fixture.workspace, sessionId, execution }, { sourceMapping: execution.mounts.some(mount => mount.source === mount.target) ? 'canonical' : 'aliases' });
-    const args = alaSkillMountArguments({ snapshot: execution, cwd: fixture.workspace, includeClaude: false });
+    const args = alaSkillMountArguments({ snapshot: execution, cwd: fixture.workspace, targets: [destination] });
     // Canonical mounts keep their real path in the offline projection; an alias mount cannot be represented.
     const canonical = execution.mounts.filter(mount => mount.source === mount.target);
     assert.deepEqual(args, [...canonical.flatMap(mount => ['--folder', mount.source, 'at', mount.target, 'expose']),
@@ -37,7 +37,7 @@ export function currentLiveSkillsCase({ disabled = false, root = '/srv/fresh wor
     Object.assign(fixture, { robotId: 'owned-live-robot', robotName: `copilot-live-${fixture.runId}`,
         repositoryName: `copilot-live-source-${fixture.runId}`, repositoryRoot: `${root}/copilot-live-source-${fixture.runId}` });
     const phase = randomUUID(), sessionId = randomUUID(), turnId = randomUUID();
-    const robotRoot = `/data/robots/${fixture.robotId}`;
+    const robotRoot = `/robots/${fixture.robotId}`;
     const selected = disabled ? [fixture.control] : [fixture.control, fixture.probe];
     const entries = selected.map(skill => ({ identity: `${fixture.repositoryName}/${skill.name}`, name: skill.name,
         source: fixture.repositoryName, sourcePath: `${fixture.repositoryRoot}/skills/${skill.name}`,

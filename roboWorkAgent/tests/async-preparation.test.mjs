@@ -16,7 +16,7 @@ async function promptly(operation) { return Promise.race([operation, delay(150).
 
 async function runsFixture(t) {
     const root = await fs.realpath(await fs.mkdtemp('/tmp/rw-async-'));
-    const paths = new RobotPaths({ dataDir: path.join(root, 'data'), workspaceRoot: path.join(root, 'workspace') });
+    const paths = new RobotPaths({ robotsDir: path.join(root, 'robots'), dataDir: path.join(root, 'data'), workspaceRoot: path.join(root, 'workspace') });
     const cwd = path.join(paths.workspaceRoot, 'project'); await fs.mkdir(cwd, { recursive: true });
     const gate = deferred(); let spawns = 0;
     const manager = new RunManager({ paths, alaEntry: '/unused',
@@ -34,7 +34,7 @@ test('run_start returns durable starting before preparation, buffers ordered inp
     const f = await runsFixture(t);
     const answer = await promptly(f.manager.start(f.input));
     assert.equal(answer.state, 'starting'); assert.equal(f.spawns(), 0);
-    assert.equal(JSON.parse(await fs.readFile(path.join(f.paths.run(f.input.runId), 'meta.json'), 'utf8')).state, 'starting');
+    assert.equal(JSON.parse(await fs.readFile(path.join(f.paths.run(f.input.robotId, f.input.runId), 'meta.json'), 'utf8')).state, 'starting');
     for (const text of ['one\n', 'two\n']) await f.manager.input({ runId: f.input.runId, data: Buffer.from(text).toString('base64') });
     await f.manager.input({ runId: f.input.runId, close: true });
     await assert.rejects(f.manager.input({ runId: f.input.runId, data: Buffer.from('late').toString('base64') }), { code: 'RUN_NOT_RUNNING' });

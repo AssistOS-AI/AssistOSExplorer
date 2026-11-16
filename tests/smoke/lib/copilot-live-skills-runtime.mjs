@@ -17,7 +17,7 @@ const CONTRACT_FILES = Object.freeze([
     'server/soul-gateway-service.mjs', 'server/soul-gateway-opencode.mjs',
     'server/soul-gateway-connection.mjs', 'server/agent-model-config.mjs',
     'server/robot-skillsets.mjs', 'server/skill-policy.mjs', 'server/skill-files.mjs', 'server/copilot-skillset.mjs',
-    'server/skill-descriptor.mjs', 'server/skillsetMDParser.mjs', 'server/workspace-skill-source.mjs',
+    'server/skill-descriptor.mjs', 'server/workspace-skill-source.mjs',
     'server/required-skills.mjs', 'server/skill-repository-source.mjs', 'server/project-storage.mjs',
     'server/repository-client.mjs', 'server/coding-agents.mjs', 'server/robot-shell.mjs',
     'server/ala-command.mjs', 'server/workspace-root.mjs', 'copilot/src/lib/config/achillesSettings.mjs',
@@ -125,7 +125,7 @@ export async function readRegistryAndRuntime({ workspaceRoot, agentName = 'roboT
 
 // Executed only in the source- and mount-verified RoboWork container. The controller cannot
 // resolve its private home; carry the exact directory object and public native target instead.
-export async function readLiveSkillsHomeBinding({ robotId, robotName }, { dataRoot = '/data', fsApi,
+export async function readLiveSkillsHomeBinding({ robotId, robotName }, { dataRoot = '/root', fsApi,
     emit = value => console.log(JSON.stringify(value)) } = {}) {
     const assert = (await import('node:assert/strict')).default;
     const fs = fsApi || await import('node:fs');
@@ -166,10 +166,10 @@ export async function readLiveSkillsHomeBinding({ robotId, robotName }, { dataRo
 
 // Executed inside the exact running RoboTeam container. Never instantiate RobotStore, execute helpers,
 // update settings, or read native auth/progress. All paths below are derived and confined.
-// `/data` and `/code` are runtime locations of the RoboTeam container. The workspace root is the admitted host path.
+// `/root` and `/code` are runtime locations of the RoboTeam container. The workspace root is the admitted host path.
 export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, contractFiles, expectedRepository, workspaceRoot,
     robotId, robotName, repositoryName, repositoryRoot, expectedAla, expectedHome, sourceMapping = 'aliases' },
-    { dataRoot = '/data', codeRoot = '/code', fsApi, emit = value => console.log(JSON.stringify(value)) } = {}) {
+    { dataRoot = '/root', codeRoot = '/code', fsApi, emit = value => console.log(JSON.stringify(value)) } = {}) {
     const assert = (await import('node:assert/strict')).default;
     const fs = fsApi || await import('node:fs');
     const path = await import('node:path');
@@ -332,12 +332,13 @@ const RUNTIME_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const STAGED_DIRECTORY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const SUBJECT = 'Live skills runtime';
 
-// The RoboTeam runtime is a managed, global Podman agent. Ploinky's production mount builder
-// (cli/sandbox/docker/agentServiceManager.js) gives it these binds, and only these may overlap a path the
+// The RoboTeam and RoboWork runtimes are managed, global Podman agents. Ploinky's production mount builder
+// (cli/sandbox/docker/agentServiceManager.js) gives them these binds, and only these may overlap a path the
 // evidence reads. Everything else a runtime mounts (/shared, the probe control root, the edge topology,
-// /root, unrelated dependency trees, linked repositories) lies outside those paths and is not part of the proof.
+// unrelated dependency trees, linked repositories) lies outside those paths and is not part of the proof.
 //   - the project bind: the workspace root at its own path, writable (buildPersistentAgentRunArgs, homeLayout.binds)
-//   - the persistent storage `.data/roboTeamAgent` at /data (manifest volume)
+//   - the persistent storage `.data/agents/roboTeamAgent` at /root (manifest volume `.data/roboTeamAgent`)
+//   - RoboWork storage `.data/agents/roboWorkAgent` at /root and `.data/robots` at /robots
 //   - the writable agent source at its own path and that exact source read-only at /code
 //   - the admitted dependency node_modules read-only at /code/node_modules and at its own path
 //   - /Agent from `<root>/.ploinky/container-runtime/<key>/` (StagedAgentLibDir)
@@ -388,15 +389,18 @@ export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository, { 
         assert.equal(fsApi.realpathSync(root), root, 'Dependency workspace must be canonical.');
         assert.equal(fsApi.realpathSync(payload), payload, 'Dependency payload must be canonical.');
     }
+    const storage = agentName === 'roboWorkAgent'
+        ? [['/root', `${root}/.data/agents/roboWorkAgent`], ['/robots', `${root}/.data/robots`]]
+        : [['/root', `${root}/.data/agents/roboTeamAgent`]];
     const allowed = [
         writable(root, root),
-        writable('/data', `${root}/.data/${agentName === 'roboWorkAgent' ? '.private/' : ''}${agentName}`),
+        ...storage.map(([destination, source]) => writable(destination, source)),
         writable(sourceRoot, sourceRoot),
         requireMount(runtime.mounts, '/code', sourceRoot, { ...options, readOnly: true }),
         requireMount(runtime.mounts, '/code/node_modules', dependency.nodeModulesPath, { ...options, readOnly: true }),
         requireMount(runtime.mounts, dependency.nodeModulesPath, dependency.nodeModulesPath, { ...options, readOnly: true }),
     ];
-    const protectedPaths = ['/data', '/code', '/Agent', '/opt/ploinky-agentlib', sourceRoot, dependency.nodeModulesPath];
+    const protectedPaths = [...storage.map(([destination]) => destination), '/code', '/Agent', '/opt/ploinky-agentlib', sourceRoot, dependency.nodeModulesPath];
     const agent = staged('/Agent', `${stagingRoot}Agent-`);
     assert.equal(agent.RW, false, 'Runtime /Agent must be read-only.');
     allowed.push(agent);
@@ -432,7 +436,7 @@ export function liveSkillsProtectedSources(runtime, expectedRepository, workspac
     assert.ok(['roboTeamAgent', 'roboWorkAgent'].includes(agentName), 'Invalid evidence owner.');
     const sourceRoot = `${expectedRepository}/${agentName}`;
     const sources = [sourceRoot];
-    for (const destination of ['/data', '/code', '/Agent', '/code/node_modules']) {
+    for (const destination of [...(agentName === 'roboWorkAgent' ? ['/root', '/robots'] : ['/root']), '/code', '/Agent', '/code/node_modules']) {
         for (const mount of runtime.mounts.filter(item => item.Destination === destination)) sources.push(mount.Source);
     }
     const pin = `${root}/.ploinky`;

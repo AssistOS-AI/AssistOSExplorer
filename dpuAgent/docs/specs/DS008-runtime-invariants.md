@@ -46,7 +46,7 @@ Agent-local contract:
 - Authentication: [DPU](wiki.html#definition-dpuagent) operations must derive actor identity from verified invocation metadata and enforce ACLs locally. Manifest guest: none.
 - WebChat: `webchat.auth: "static"` borrows Explorer SSO and its `explorer.access` capability; `webchat.runtimeScope: "principal"` requires a separate router runtime per authenticated user. The CLI accepts only `__webchat_message__` tokens whose signed arguments include `runtimeScope: "principal"`, pins the process to the first verified user principal, and never derives identity from `--sso-*` flags, `SSO_*` environment values or query parameters. No browser session cookie reaches the agent.
 - HTTP route surface: No public HTTP route is declared; confidential data must not be exposed through static or anonymous routes.
-- Persistent state: Persistent [DPU](wiki.html#definition-dpuagent) data lives in the manifest runtime storage and must remain encrypted or access controlled according to local specs. Manifest volumes: none.
+- Persistent state: Persistent [DPU](wiki.html#definition-dpuagent) data lives in the manifest runtime storage and must remain encrypted or access controlled according to local specs. Manifest volumes: `.data/dpu-data` at `/root` and `.data` at `/workspace-data`. The workspace master key is visible to DPU through its own store but is excluded from all user data tools.
 - Documentation: `docs/index.html`
 - Validation: `npm test` in [dpuAgent](wiki.html#definition-dpuagent).
 

@@ -19,7 +19,7 @@ test('a credential variable of the server never reaches the helper that detects 
         await fs.rm(root, { recursive: true, force: true });
     });
     for (const name of CREDENTIALS) process.env[name] = SENTINEL;
-    const paths = new RobotPaths({ dataDir: path.join(root, 'data'), workspaceRoot: path.join(root, 'workspace') });
+    const paths = new RobotPaths({ robotsDir: path.join(root, 'robots'), dataDir: path.join(root, 'data'), workspaceRoot: path.join(root, 'workspace') });
     const alaEntry = path.join(root, 'ala', 'bin', 'ala.mjs');
     let launched;
     const operation = createHomeOperations({ paths, alaEntry, toolCache: { root: path.join(root, 'tool-cache') },

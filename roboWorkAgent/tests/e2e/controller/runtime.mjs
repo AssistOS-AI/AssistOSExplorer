@@ -118,7 +118,7 @@ export class ControllerRuntime {
 
     async snapshot(id) {
         return this.node(this.config.rw, `
-            const root='/data/robots/'+input.id+'/home';
+            const root='/robots/'+input.id+'/home';
             const rootStat=fs.lstatSync(root); if(!rootStat.isDirectory()||rootStat.isSymbolicLink()) throw Error('Unsafe victim home');
             const marker=path.join(root,'marker-B'); const st=fs.lstatSync(marker);
             if(!st.isFile()||st.isSymbolicLink()||st.size===0||st.size>4096) throw Error('Missing marker control');

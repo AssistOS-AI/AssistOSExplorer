@@ -20,7 +20,7 @@ async function createFixture(t) {
     return { workspaceRoot, outsideRoot, statePath: getGithubAuthStateFilePath(workspaceRoot, authInfo) };
 }
 
-for (const segments of [['.data'], ['.data', 'gitAgent'], ['.data', 'gitAgent', 'github-auth']]) {
+for (const segments of [['.data'], ['.data', 'agents', 'gitAgent'], ['.data', 'agents', 'gitAgent', 'github-auth']]) {
     test(`Git auth rejects a symlink at ${segments.join('/')} without creating outside state`, async (t) => {
         const { workspaceRoot, outsideRoot } = await createFixture(t);
         const link = path.join(workspaceRoot, ...segments);
@@ -76,7 +76,7 @@ test('Git auth revalidates its data root after successful use and never consults
 
     await assert.rejects(getGithubAuthStatus({ workspaceRoot, authInfo }), policyViolation);
 
-    assert.equal(await fs.readFile(path.join(movedData, 'gitAgent', 'github-auth', path.basename(statePath)), 'utf8'), originalState);
+    assert.equal(await fs.readFile(path.join(movedData, 'agents', 'gitAgent', 'github-auth', path.basename(statePath)), 'utf8'), originalState);
     assert.equal(await fs.readFile(legacyFile, 'utf8'), 'retired auth state must stay untouched');
     assert.deepEqual(await fs.readdir(legacyRoot), [path.basename(statePath)]);
 });

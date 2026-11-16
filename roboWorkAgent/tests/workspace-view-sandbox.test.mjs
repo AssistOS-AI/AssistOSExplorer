@@ -26,7 +26,7 @@ const [root, own, sibling, escape] = process.argv.slice(1);
 const attempt = operation => { try { return { ok: true, value: operation() }; } catch (error) { return { ok: false, code: error.code }; } };
 const result = {
     data: attempt(() => fs.readdirSync(root + '/.data')),
-    dataPrivate: attempt(() => fs.readdirSync(root + '/.data/.private')),
+    dataPrivate: attempt(() => fs.readdirSync(root + '/.data/robots')),
     createInData: attempt(() => fs.writeFileSync(root + '/.data/new', 'x')),
     env: attempt(() => fs.readFileSync(root + '/.env', 'utf8')),
     writeEnv: attempt(() => fs.writeFileSync(root + '/.env', 'x')),
@@ -49,7 +49,7 @@ if (escape) {
     const script = [
         'R=$1', 'umount "$R/.data" 2>/dev/null && echo UNMOUNTED', 'umount "$R/.env" 2>/dev/null && echo UNMOUNTED',
         'mkdir -p /tmp/nr /tmp/rb', 'mount --bind "$R" /tmp/nr 2>/dev/null', 'mount --rbind "$R" /tmp/rb 2>/dev/null',
-        'for base in "$R" /tmp/nr /tmp/rb; do', '  [ -e "$base/.data/.private/marker-B" ] && echo SHOWN', '  [ -s "$base/.env" ] && echo SHOWN',
+        'for base in "$R" /tmp/nr /tmp/rb; do', '  [ -e "$base/.data/robots/marker-B" ] && echo SHOWN', '  [ -s "$base/.env" ] && echo SHOWN',
         '  [ -e "$base/.ploinky/inside" ] && echo SHOWN', 'done', 'exit 0'].join('\\n');
     const outcome = cp.spawnSync('unshare', ['-Urm', '/bin/sh', '-c', script, 'sh', root], { encoding: 'utf8', timeout: 20000 });
     result.escape = { status: outcome.status, stdout: outcome.stdout, stderr: outcome.stderr, error: outcome.error?.code };
@@ -79,13 +79,13 @@ async function workerMain() {
         // A root with a space and Unicode in its name keeps every argument intact.
         const root = path.join(base, 'proiecte știri');
         const [projA, projB] = ['projA', 'projB'].map(name => path.join(root, name));
-        for (const directory of [path.join(root, '.data', '.private'), path.join(root, '.ploinky'), path.join(root, 'boxreal'),
+        for (const directory of [path.join(root, '.data', 'robots'), path.join(root, '.ploinky'), path.join(root, 'boxreal'),
             path.join(root, '.ploinky-box.old'), path.join(root, 'rwmount'), path.join(projA, '.roboteam'), path.join(projB, '.roboteam')]) {
             fs.mkdirSync(directory, { recursive: true });
         }
         // The victim's marker is real, and a mask covers it with an empty tmpfs, as Ploinky does for `.data/.private`.
-        fs.writeFileSync(path.join(root, '.data', '.private', 'marker-B'), 'B');
-        mountTmpfs(path.join(root, '.data', '.private'));
+        fs.writeFileSync(path.join(root, '.data', 'robots', 'marker-B'), 'B');
+        mountTmpfs(path.join(root, '.data', 'robots'));
         fs.writeFileSync(path.join(root, 'rwmount', 'underneath'), 'u');
         mountTmpfs(path.join(root, 'rwmount'));
         fs.writeFileSync(path.join(root, 'rwmount', 'inside'), 'w');
@@ -107,9 +107,9 @@ async function workerMain() {
         const flat = path.join(base, 'flat'), deep = path.join(base, 'deep');
         fs.mkdirSync(flat); fs.mkdirSync(deep);
         run('mount', ['--bind', root, flat]); mounts.push(flat);
-        assert.ok(fs.readdirSync(path.join(flat, '.data', '.private')).includes('marker-B'), 'The fixture cannot show its marker, so it proves nothing');
+        assert.ok(fs.readdirSync(path.join(flat, '.data', 'robots')).includes('marker-B'), 'The fixture cannot show its marker, so it proves nothing');
         run('mount', ['--rbind', root, deep]); mounts.push(deep);
-        assert.deepEqual(fs.readdirSync(path.join(deep, '.data', '.private')), []);
+        assert.deepEqual(fs.readdirSync(path.join(deep, '.data', 'robots')), []);
 
         const sandboxed = async ({ cwd, sibling, ignore, escape = false, withRoot = root, folders = [{ source: withRoot }] }) => {
             const result = await runProcess({ binary: process.execPath, cwd, args: ['-e', PROBE, root, cwd, sibling, escape ? 'escape' : ''],
@@ -122,7 +122,7 @@ async function workerMain() {
         // Bubblewrap's bind is recursive: without a mask the mount below `.data` is still the empty tmpfs, not the marker.
         const unmasked = await sandboxed({ cwd: projA, sibling: projB, ignore: [path.join(projA, '.roboteam')] });
         assert.deepEqual(unmasked.dataPrivate, { ok: true, value: [] });
-        assert.deepEqual(unmasked.data, { ok: true, value: ['.private'] });
+        assert.deepEqual(unmasked.data, { ok: true, value: ['robots'] });
         assert.deepEqual(unmasked.createInSubmount, { ok: false, code: 'EROFS' }, 'A submount of the root is read-only too');
 
         // Two robots in sibling folders, each writing its own and reading the other's.

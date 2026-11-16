@@ -5,7 +5,7 @@ import { RunManager } from '../../server/run-manager.mjs';
 import { createTerminalProfiles, ensureTerminalStub } from '../../server/terminal-profiles.mjs';
 import { createRoboWorkServer } from '../../server/http-server.mjs';
 
-const paths = new RobotPaths({ dataDir: path.join(process.env.FIXTURE_ROOT, 'data'), workspaceRoot: path.join(process.env.FIXTURE_ROOT, 'workspace') });
+const paths = new RobotPaths({ robotsDir: path.join(process.env.FIXTURE_ROOT, 'robots'), dataDir: path.join(process.env.FIXTURE_ROOT, 'data'), workspaceRoot: path.join(process.env.FIXTURE_ROOT, 'workspace') });
 const cwd = path.join(paths.workspaceRoot, 'project');
 for (const directory of [cwd, path.join(paths.workspaceRoot, '.data'), paths.home('robot-a'), paths.soul('robot-a')]) await fs.mkdir(directory, { recursive: true });
 await fs.writeFile(path.join(paths.robot('robot-a'), 'label'), '{}');

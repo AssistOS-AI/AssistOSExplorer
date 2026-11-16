@@ -21,7 +21,7 @@ async function harness(t) {
     fs.cpSync(`${process.env.SET2_ACHILLES_SOURCE}/roboTeamAgent`, codeRoot, { recursive: true,
         filter: from => !from.split(path.sep).some(part => ['node_modules', '.git'].includes(part)) });
     const alaSource = path.dirname(path.dirname(fs.realpathSync(process.env.SET2_ALA_COMMAND))), alaRoot = `${root}/AdvancedLanguageAgent`;
-    for (const file of ['package.json', 'bin/ala.mjs', 'src/transcript.mjs']) {
+    for (const file of ['package.json', 'bin/ala.mjs', 'src/transcript.mjs', 'src/errors.mjs']) {
         fs.mkdirSync(path.dirname(`${alaRoot}/${file}`), { recursive: true }); fs.copyFileSync(`${alaSource}/${file}`, `${alaRoot}/${file}`);
     }
     const expectedAla = { root: alaRoot, command: `${alaRoot}/bin/ala.mjs`, hashes: Object.fromEntries(['package.json', 'bin/ala.mjs', 'src/transcript.mjs']

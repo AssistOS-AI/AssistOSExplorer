@@ -1,6 +1,86 @@
 {
   "maxParallelTasks": 1,
   "tools": [
+{
+  "name": "dpu_data_list",
+  "title": "Workspace data list",
+  "description": "Read workspace data with user authorization; master-key is always excluded. Reads return bounded base64 chunks.",
+  "command": "tools/dpu_tool.sh",
+  "cwd": "workspace",
+  "inputSchema": {
+    "path": {
+      "type": "string",
+      "optional": true
+    }
+  },
+  "env": {
+    "TOOL_NAME": "dpu_data_list"
+  }
+},
+{
+  "name": "dpu_data_stat",
+  "title": "Workspace data stat",
+  "description": "Read workspace data with user authorization; master-key is always excluded. Reads return bounded base64 chunks.",
+  "command": "tools/dpu_tool.sh",
+  "cwd": "workspace",
+  "inputSchema": {
+    "path": {
+      "type": "string",
+      "optional": false
+    }
+  },
+  "env": {
+    "TOOL_NAME": "dpu_data_stat"
+  }
+},
+{
+  "name": "dpu_data_read",
+  "title": "Workspace data read",
+  "description": "Read workspace data with user authorization; master-key is always excluded. Reads return bounded base64 chunks.",
+  "command": "tools/dpu_tool.sh",
+  "cwd": "workspace",
+  "inputSchema": {
+    "path": {
+      "type": "string",
+      "optional": false
+    },
+    "offset": {
+      "type": "number",
+      "optional": true
+    },
+    "length": {
+      "type": "number",
+      "optional": true
+    }
+  },
+  "env": {
+    "TOOL_NAME": "dpu_data_read"
+  }
+},
+{
+  "name": "dpu_data_download",
+  "title": "Workspace data download",
+  "description": "Read workspace data with user authorization; master-key is always excluded. Reads return bounded base64 chunks.",
+  "command": "tools/dpu_tool.sh",
+  "cwd": "workspace",
+  "inputSchema": {
+    "path": {
+      "type": "string",
+      "optional": false
+    },
+    "offset": {
+      "type": "number",
+      "optional": true
+    },
+    "length": {
+      "type": "number",
+      "optional": true
+    }
+  },
+  "env": {
+    "TOOL_NAME": "dpu_data_download"
+  }
+},
     {
       "name": "dpu_resource_list", "title": "DPU Resource List", "description": "List research resources visible to the current actor.", "command": "tools/dpu_tool.sh", "cwd": "workspace", "inputSchema": { "effectiveState": { "type": "string", "optional": true }, "sourceId": { "type": "string", "optional": true } }, "env": { "TOOL_NAME": "dpu_resource_list" }
     },

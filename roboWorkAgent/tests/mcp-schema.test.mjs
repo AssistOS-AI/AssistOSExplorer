@@ -36,7 +36,7 @@ async function service(t) {
     const dataDir = path.join(root, 'data');
     const skill = path.join(workspaceRoot, 'skills');
     for (const directory of [cwd, dataDir, skill]) await fs.mkdir(directory, { recursive: true });
-    const paths = new RobotPaths({ dataDir, workspaceRoot });
+    const paths = new RobotPaths({ robotsDir: path.join(dataDir, '..', 'robots'), dataDir, workspaceRoot });
     const guiCalls = [], launches = [], payloads = [];
     const gui = { ensureReady: async input => { guiCalls.push(input); return { mcpPort: 34568 }; } };
     const runs = new RunManager({ paths, gui, alaEntry: '/unused',
@@ -80,7 +80,7 @@ test('published compiler preserves run inputs through the real tool entry and re
     assert.equal(guiCalls[0].allowReplace, false);
     assert.equal(launches[0].guiPort, 34568);
     assert.ok(launches[0].args.includes('roboteam-skill-0'));
-    const context = JSON.parse(await fs.readFile(path.join(paths.run(input.runId), 'channels', 'ploinky-runtime', 'context.json'), 'utf8'));
+    const context = JSON.parse(await fs.readFile(path.join(paths.run(input.robotId, input.runId), 'channels', 'ploinky-runtime', 'context.json'), 'utf8'));
     assert.deepEqual(context.resources, input.channels[0].context.resources);
     assert.deepEqual(context.origin, input.channels[0].context.origin);
     assert.ok(!Object.hasOwn(context, 'producer'));
@@ -92,7 +92,7 @@ test('published compiler preserves run inputs through the real tool entry and re
         await new Promise(resolve => setTimeout(resolve, 10));
     }
     assert.equal(output.records.filter(record => record.stream === 'stdout').map(record => Buffer.from(record.data, 'base64').toString()).join(''), 'decoded stdin\n');
-    const socketPath = path.join(paths.run(input.runId), 'channels', 'ploinky-runtime', 'request.sock');
+    const socketPath = path.join(paths.run(input.robotId, input.runId), 'channels', 'ploinky-runtime', 'request.sock');
     for (const body of [{ opaque: { entries: [1, false, null, { value: 'kept' }] } }, ['array', null], null, 'text']) {
         const response = new Promise((resolve, reject) => {
             const req = http.request({ socketPath, path: '/agent-call', method: 'POST', headers: { 'x-task-capability': context.token } }, res => {
@@ -145,7 +145,6 @@ test('actual skill overlays in a public workspace under home survive schema and 
     // Sources stay in the real temporary fixture; only target geometry represents the Linux host.
     const sourceGrant = paths.grant.bind(paths);
     paths.workspaceRoot = workspace;
-    paths.privateRoot = path.join(workspace, '.data', '.private');
     const sourceIdentity = paths.identity.bind(paths);
     paths.grant = (value, kind) => kind === 'cwd' && value === cwd ? Promise.resolve(cwd) : sourceGrant(value, kind);
     paths.identity = (value, kind) => kind === 'cwd' && value === cwd ? Promise.resolve('1:1') : sourceIdentity(value, kind);
@@ -168,9 +167,9 @@ test('actual skill overlays in a public workspace under home survive schema and 
     assert.deepEqual(runs.get(input.runId).meta.tag, input.tag);
     for (const folder of folders) assert.ok(launches[0].args.some((value, index) => value === 'at' && launches[0].args[index + 1] === folder.at));
     const forbidden = ['/', '/home', '/home/skutner', '/home/victim', '/home/aaa', workspace,
-        path.join(workspace, '.data'), path.join(workspace, '.data', '.private', 'victim'),
+        path.join(workspace, '.data'), path.join(workspace, '.data', 'robots', 'victim'),
         path.join(workspace, '.ploinky'), path.join(workspace, '.ploinky-box'), path.join(workspace, '.ploinky-box.old'), path.join(workspace, '.env'), path.join(cwd, '.roboteam'),
-        `${workspace}-sibling/project/.agents/skills`, '/data', '/data/robots/victim/home', '/proc/self/fd', '/sys/kernel',
+        `${workspace}-sibling/project/.agents/skills`, '/root', '/robots', '/robots/victim/home', '/proc/self/fd', '/sys/kernel',
         '/dev', '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64', '/workspace'];
     for (const [index, at] of forbidden.entries()) {
         await assert.rejects(call('run_start', { ...request, runId: `refused-${index}`, folders: [{ source, at, expose: true }] }),

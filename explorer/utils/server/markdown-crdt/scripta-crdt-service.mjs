@@ -44,6 +44,7 @@ export function createScriptaCrdtService({
   const collaborationRoot = path.join(
     workspaceRoot,
     '.data',
+    'agents',
     'explorer',
     'automerge',
     'scripta-collaboration'

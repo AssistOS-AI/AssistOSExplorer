@@ -31,7 +31,7 @@ dpuAgent owns the confidential data service used by Explorer for `/Confidential`
 
 ## Runtime Defaults
 
-Uses `docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669`, `lite-sandbox: true`, and runtime persistent storage mounted at `/dpu-data`.
+Uses `docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669`, `lite-sandbox: true`, and runtime persistent storage mounted at `/root`.
 
 ## Key Paths
 

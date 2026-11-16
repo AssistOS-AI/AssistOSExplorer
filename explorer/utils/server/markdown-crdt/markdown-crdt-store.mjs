@@ -24,7 +24,7 @@ import {
 import { createExplorerPrivateDataBoundary } from '../private-data-boundary.mjs';
 import { PROTECTED_PATH_ERROR_CODE } from '../protected-workspace-paths.mjs';
 
-const STORE_ROOT = ['.data', 'explorer', 'automerge', 'documents'];
+const STORE_ROOT = ['.data', 'agents', 'explorer', 'automerge', 'documents'];
 const DELETION_ROOT = 'pending-deletions';
 const STORE_LOCK_DIRECTORY = '.locks';
 const STORE_LOCK_TIMEOUT_MS = 10_000;
@@ -400,7 +400,7 @@ export function createMarkdownCrdtStore({
   invalidateCachesForPath,
   transactionStaleMs = TRANSACTION_STALE_MS
 }) {
-  const storeRoot = path.join(workspaceRoot, ...STORE_ROOT);
+  const storeRoot = process.env.EXPLORER_DATA_ROOT ? path.join(process.env.EXPLORER_DATA_ROOT, 'automerge', 'documents') : path.join(workspaceRoot, ...STORE_ROOT);
   const privateData = createExplorerPrivateDataBoundary({ fs, path, workspaceRoot });
   const localLocks = new Map();
   let recoveryPromise = null;

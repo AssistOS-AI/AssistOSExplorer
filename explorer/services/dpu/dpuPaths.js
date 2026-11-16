@@ -1,3 +1,9 @@
+export const DPU_DATA_PATH = '/.data';
+export function isDpuDataPath(value) {
+    const normalized = normalizeDpuPath(value);
+    return normalized === DPU_DATA_PATH || normalized.startsWith(`${DPU_DATA_PATH}/`);
+}
+
 export const DPU_ROOT_PATH = '/Confidential';
 export const DPU_MY_SPACE_PATH = '/Confidential/My Space';
 export const DPU_SHARED_PATH = '/Confidential/Shared';
@@ -23,7 +29,7 @@ export function splitDpuPath(path) {
 
 export function isDpuVirtualPath(path) {
     const normalized = normalizeDpuPath(path);
-    return normalized === DPU_ROOT_PATH || normalized.startsWith(`${DPU_ROOT_PATH}/`);
+    return isDpuDataPath(normalized) || normalized === DPU_ROOT_PATH || normalized.startsWith(`${DPU_ROOT_PATH}/`);
 }
 
 export function isDpuSecretPath(path) {

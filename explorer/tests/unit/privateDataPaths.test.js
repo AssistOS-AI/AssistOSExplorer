@@ -10,7 +10,7 @@ async function read(relativePath) {
     return fs.readFile(path.join(explorerRoot, relativePath), 'utf8');
 }
 
-test('Explorer private writers use their canonical .data/explorer locations only', async () => {
+test('Explorer private writers use their canonical .data/agents/explorer locations only', async () => {
     const runtime = await read('utils/server/tool-runtime.mjs');
     const handlers = await read('utils/server/tool-handlers.mjs');
     const definitions = await read('utils/server/tool-definitions.mjs');
@@ -19,18 +19,18 @@ test('Explorer private writers use their canonical .data/explorer locations only
     const avatarStore = await read('utils/server/avatar-settings/avatar-settings-store.mjs');
     const boundary = await read('utils/server/private-data-boundary.mjs');
 
-    assert.match(runtime, /'\.data', 'explorer', 'search-jobs'/);
+    assert.match(runtime, /process.env.EXPLORER_DATA_ROOT[\s\S]*'search-jobs'/);
     assert.doesNotMatch(runtime, /explorer-search-jobs/);
-    assert.match(handlers, /'\.data', 'explorer', 'plugin-settings\.json'/);
+    assert.match(handlers, /process.env.EXPLORER_DATA_ROOT[\s\S]*'plugin-settings\.json'/);
     assert.doesNotMatch(handlers, /explorer-plugin-settings\.json/);
-    assert.match(definitions, /\/\.data\/explorer\/plugin-settings\.json/);
-    assert.match(markdownStore, /\['\.data', 'explorer', 'automerge', 'documents'\]/);
+    assert.match(definitions, /private Explorer home/);
+    assert.match(markdownStore, /\['\.data', 'agents', 'explorer', 'automerge', 'documents'\]/);
     assert.doesNotMatch(markdownStore, /'\.ploinky', 'data'/);
-    assert.match(scriptaStore, /'\.data',[\s\S]*'explorer',[\s\S]*'scripta-collaboration'/);
+    assert.match(scriptaStore, /'\.data',[\s\S]*'agents',[\s\S]*'explorer',[\s\S]*'scripta-collaboration'/);
     assert.doesNotMatch(scriptaStore, /'\.ploinky',[\s\S]*'data',[\s\S]*'scripta-collaboration'/);
-    assert.match(avatarStore, /\.data\/explorer\/avatar-overrides\.json/);
+    assert.match(avatarStore, /\.data\/agents\/explorer\/avatar-overrides\.json/);
     assert.doesNotMatch(avatarStore, /explorer-agent-avatar-overrides\.json/);
-    assert.match(boundary, /PRIVATE_ROOT_SEGMENTS = Object\.freeze\(\['\.data', 'explorer'\]\)/);
+    assert.match(boundary, /PRIVATE_ROOT_SEGMENTS = Object\.freeze\(\['\.data', 'agents', 'explorer'\]\)/);
     for (const consumer of [handlers, markdownStore, scriptaStore, avatarStore]) {
         assert.match(consumer, /private-data-boundary\.mjs/);
     }

@@ -11,7 +11,7 @@ import { registerProject, findProjectRecord } from '../server/project-storage.mj
 async function fixture(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-project-storage-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const dataDir = path.join(root, '.data/roboTeamAgent');
+    const dataDir = path.join(root, '.data/agents/roboTeamAgent');
     const store = new RobotStore({ dataDir, roboWork: { call: async () => ({}) } });
     const robot = await store.create({ name: 'worker' });
     const project = path.join(root, 'project');
@@ -72,7 +72,7 @@ test('registration rejects a symlinked project store and paths outside the works
 test('a continued task takes its folder and skill policy from where its record sits, not from the record', async t => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'robot-resume-folder-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const options = { dataDir: path.join(root, '.data/roboTeamAgent'), workspaceRoot: root };
+    const options = { dataDir: path.join(root, '.data/agents/roboTeamAgent'), workspaceRoot: root };
     const project = path.join(root, 'project'), other = path.join(root, 'other');
     await fs.mkdir(project); await fs.mkdir(other);
     registerProject(options, project);

@@ -352,7 +352,7 @@ test.describe('Codex-authenticated Copilot native turn', () => {
           cli: client.cli, codexConfigTomlPresent: client.codexConfigTomlPresent };
         const { engine, ala } = identity;
         if (!engine || engine.type !== 'ala' || engine.backend !== 'codex') throw new CodexAuthError('IDENTITY_MISMATCH', 'backend');
-        if (engine.robotId !== robot.robotId || engine.home !== `/data/robots/${robot.robotId}/home`) throw new CodexAuthError('IDENTITY_MISMATCH', 'robot');
+        if (engine.robotId !== robot.robotId || engine.home !== `/robots/${robot.robotId}/home`) throw new CodexAuthError('IDENTITY_MISMATCH', 'robot');
         if (engine.cwd !== `${workspaceRoot}/${folder}`) throw new CodexAuthError('IDENTITY_MISMATCH', 'transcript-mismatch');
         if (ala.agent !== 'codex') throw new CodexAuthError('IDENTITY_MISMATCH', 'backend');
         if (!ala.hasThreadId || ala.lastTurnStatus !== 'completed' || !ala.finalContainsToken) throw new CodexAuthError('IDENTITY_MISMATCH', 'transcript-mismatch');

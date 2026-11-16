@@ -11,7 +11,7 @@ summary: Defines the manifest, supervisor, private metrics stream, current snaps
 
 ## Core Content
 
-The manifest must start server/supervisor.mjs, declare the workspaceLogs Router access capability, mount persistent storage at /data, and provide WORKSPACE_MONITOR_DATA_ROOT from the mounted path. The supervisor must start the collector, log-maintenance worker, and Ploinky AgentServer and restart the collector or maintenance worker with bounded backoff after an unexpected exit.
+The manifest must start server/supervisor.mjs, declare the workspaceLogs Router access capability, use the automatic private home at /root, and provide WORKSPACE_MONITOR_DATA_ROOT from the mounted path. The supervisor must start the collector, log-maintenance worker, and Ploinky AgentServer and restart the collector or maintenance worker with bounded backoff after an unexpected exit.
 
 The collector must request /api/edge/workspace-metrics?follow=1 with a private Router assertion and consume newline-delimited snapshots. Ploinky must overlay the current no-wait launch record on raw process state before publishing a runtime: `running` records process liveness, while `ready` records successful manifest readiness and route activation for the current run. For each accepted snapshot the collector must atomically replace current-snapshot.json with an allowlisted projection containing only the sampling instant, Router metrics, total metrics, and bounded runtime identity, state, and metrics fields. Current-snapshot writes and historical persistence must use independent bounded retry state. The current snapshot is stale fifteen seconds after its sampling instant.
 

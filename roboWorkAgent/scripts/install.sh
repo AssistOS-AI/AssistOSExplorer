@@ -41,7 +41,7 @@ if ! grep -Eq '^force_mask = "0700"$' /opt/roboteam-runtime/storage.conf 2>/dev/
 fi
 if ! grep -Eq '^graphroot = "/var/lib/roboteam-podman/storage"$' /opt/roboteam-runtime/storage.conf 2>/dev/null \
     || ! grep -Eq '^runroot = "/var/lib/roboteam-podman/run"$' /opt/roboteam-runtime/storage.conf 2>/dev/null \
-    || ! grep -Eq '^imagestore = "/data/podman/images"$' /opt/roboteam-runtime/storage.conf 2>/dev/null \
+    || ! grep -Eq '^imagestore = "/(data|root)/podman/images"$' /opt/roboteam-runtime/storage.conf 2>/dev/null \
     || ! grep -Eq '^transient_store = true$' /opt/roboteam-runtime/storage.conf 2>/dev/null; then
     missing="$missing storage-layout:split-transient"
 fi
@@ -59,6 +59,8 @@ fi
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 node "$script_dir/prepare-data.mjs"
+CONTAINERS_STORAGE_CONF=$(node "$script_dir/prepare-podman-storage.mjs")
+export CONTAINERS_STORAGE_CONF
 mkdir -p /etc/ploinky
 if [ -f /code/scripts/webtty-env.sh ]; then ln -sfn /code/scripts/webtty-env.sh /etc/ploinky/webtty-env.sh; fi
 ln -sfn /code/scripts/robot-shell-gate.sh /etc/ploinky/webtty-profile-shell

@@ -11,7 +11,7 @@ Soul Gateway uses embedded SQLite as the authoritative persistent configuration 
 
 ### SQLite ownership
 
-The service must open the file named by <code>SQLITE_PATH</code> and initialize it with <code>src/db/schema/sqlite-current.sql</code>. <code>SQLITE_PATH</code>, <code>DATA_DIR</code>, and <code>CREDENTIALS_DIR</code> are required configuration; a direct start without any one of them must fail closed instead of selecting a relative data directory. The Ploinky deployment supplies all three beneath the mounted <code>/data</code> directory. Schema initialization must be idempotent and must fail startup when required tables or constraints cannot be established.
+The service must open the file named by <code>SQLITE_PATH</code> and initialize it with <code>src/db/schema/sqlite-current.sql</code>. <code>SQLITE_PATH</code>, <code>DATA_DIR</code>, and <code>CREDENTIALS_DIR</code> are required configuration; a direct start without any one of them must fail closed instead of selecting a relative data directory. The Ploinky deployment supplies all three beneath the mounted <code>/root</code> directory. Schema initialization must be idempotent and must fail startup when required tables or constraints cannot be established.
 
 The schema must preserve these data families: provider and provider-account configuration; direct and cascade models, aliases, and children; API-key subjects and limits; middleware definitions and bindings; blacklist rules and model cooldowns; deleted synced models in <code>model_tombstones</code>; sessions and session state; audit and observability records; one-time initialization markers in <code>gateway_bootstrap_state</code>. Foreign keys, unique indexes, soft-delete rules, and JSON validity checks are part of the data contract.
 
@@ -54,6 +54,8 @@ Audit records may use date-partitioned SQLite tables managed through the audit D
 Sessions must retain their API-key owner, grouping identity, sequence, timestamps, and optional soul or agent association. Persistent session state must remain separate from ephemeral middleware caches so a cache reset does not delete the authoritative session record.
 
 ### Recovery boundary
+
+Before provider authentication services load accounts, startup migrates stored OAuth `credentials_path` values beginning with `/data/credentials/` to the configured `CREDENTIALS_DIR`. It preserves the relative suffix, verifies a regular file without symbolic or hard links, and decrypts it with the existing key before updating the database reference. Updates run in one SQLite transaction and do not modify encrypted files. Repeated starts leave migrated references unchanged; unrelated custom paths are preserved. Missing files retain their original reference and produce a count-only warning so restoration can be retried on a later start. Unsafe paths or unreadable encrypted files roll back all reference updates and fail startup. Read, refresh, and deletion then use the migrated database path.
 
 The SQLite database, <code>DATA_DIR/encryption.key</code>, and encrypted files under <code>CREDENTIALS_DIR</code> must be backed up and restored as one set. The database alone is insufficient to recover encrypted provider secrets. The gateway must not automatically replace a missing key and then present old encrypted credentials as valid.
 

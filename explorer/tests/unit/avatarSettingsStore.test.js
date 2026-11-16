@@ -79,7 +79,7 @@ test('lists AI agents from manifest and applies saved overrides', async () => {
     const webAssist = agents.find((agent) => agent.id === 'webAssist');
     assert.equal(webAssist.config.style, 'terminal');
     assert.equal(webAssist.enabled, false);
-    await fs.access(path.join(workspaceRoot, '.data/explorer/avatar-overrides.json'));
+    await fs.access(path.join(workspaceRoot, '.data/agents/explorer/avatar-overrides.json'));
     await assert.rejects(fs.access(path.join(workspaceRoot, '.ploinky/explorer-agent-avatar-overrides.json')));
 });
 

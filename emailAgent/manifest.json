@@ -5,9 +5,6 @@
   "readiness": {
     "protocol": "mcp"
   },
-  "volumes": {
-    ".data/emailAgent": "/data"
-  },
   "ideSettings": [
     {
       "key": "email-agent-settings",
@@ -26,7 +23,7 @@
         },
         "EMAILAGENT_SETTINGS_FILE": {
           "required": false,
-          "default": "/data/settings.enc.json"
+          "default": "/root/settings.enc.json"
         }
       }
     }

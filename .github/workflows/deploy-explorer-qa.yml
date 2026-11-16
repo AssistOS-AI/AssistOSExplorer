@@ -1280,7 +1280,7 @@ jobs:
               const retiredIdentity = ['master-key', '.secrets', 'ploinky_subject_identity_ed25519_v1.enc']
                   .map(name => path.join('.ploinky', name)).filter(relative => present(path.join(target, relative)));
               assert.equal(retiredIdentity.length, 0, `Retired QA controller secrets at ${retiredIdentity.join(', ')} are refused by the pinned Ploinky runtime; migrate each into .ploinky/data first`);
-              const masterKey = path.join(target, '.ploinky/data/master-key');
+              const masterKey = path.join(target, '.data/dpu-data/master-key');
               if (present(masterKey)) assert(present(masterKey).uid === workspace.uid, 'Unsafe QA master key owner');
               if (present(path.join(target, '.data'))) assert(present(masterKey), 'Durable QA data requires its original master key');
               const runtime = path.join(target, '.runtime');

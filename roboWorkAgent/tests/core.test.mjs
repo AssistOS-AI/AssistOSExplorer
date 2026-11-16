@@ -41,7 +41,7 @@ async function fixture(t, { logCap, program = "process.stdin.on('data',b=>proces
     const cwd = path.join(workspaceRoot, 'project');
     const dataDir = path.join(root, 'data');
     await fs.mkdir(cwd, { recursive: true }); await fs.mkdir(dataDir);
-    const paths = new RobotPaths({ dataDir, workspaceRoot });
+    const paths = new RobotPaths({ robotsDir: path.join(dataDir, '..', 'robots'), dataDir, workspaceRoot });
     let spawns = 0;
     const manager = new RunManager({ paths, logCap, alaEntry: '/unused',
         robots: { require: async id => ({ id, codingAgents: ['opencode'] }) },
@@ -55,7 +55,7 @@ async function fixture(t, { logCap, program = "process.stdin.on('data',b=>proces
 
 test('cwd and folder grants reject private storage, ancestors and symlink aliases', async t => {
     const { paths, input } = await fixture(t);
-    await fs.mkdir(path.join(paths.workspaceRoot, '.data', '.private'), { recursive: true });
+    await fs.mkdir(path.join(paths.workspaceRoot, '.data', 'robots'), { recursive: true });
     await fs.mkdir(path.join(paths.workspaceRoot, '.ploinky'), { recursive: true });
     const alias = path.join(input.cwd, 'alias'); await fs.symlink(paths.dataDir, alias);
     for (const value of [paths.dataDir, alias, paths.workspaceRoot, path.join(paths.workspaceRoot, '.data'), path.join(paths.workspaceRoot, '.ploinky')]) {
@@ -318,8 +318,8 @@ test('lightweight robot ensure completes on a cold cache without downloads and r
     assert.ok(sockets.every(directory => directory === paths.soul('aaa')));
     const shell = await fs.readFile(path.join(paths.home('aaa'), '.roboteam-env.sh'), 'utf8');
     assert.ok(shell.includes(path.join(paths.dataDir, 'tool-cache', 'shell-selections', 'shell', 'bin')));
-    assert.equal((await fs.stat(path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal', 'aaa'))).isDirectory(), true);
-    const history = path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal', 'aaa', '.bash_history');
+    assert.equal((await fs.stat(path.join(paths.robot('aaa'), 'terminal'))).isDirectory(), true);
+    const history = path.join(paths.robot('aaa'), 'terminal', '.bash_history');
     await fs.writeFile(history, 'old outer-shell history');
     await robots.ensure(input);
     assert.equal(await fs.readFile(history, 'utf8'), 'old outer-shell history');
@@ -472,12 +472,12 @@ test('only a robot with OpenCode is seeded, and deleting a robot waits for the s
 test('delete cleans a robot with a bad label, keeps the active check and reports an unknown robot only when its directory is absent', async t => {
     const { paths } = await fixture(t);
     const put = async (file, text = 'x') => { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, text); };
-    const stubs = path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal');
+    const stub = id => path.join(paths.robot(id), 'terminal');
     const state = path.join(paths.dataDir, 'server-state');
     await put(path.join(paths.robot('aaa'), 'label'), '{ not json');
     await put(path.join(paths.home('aaa'), 'credentials'));
-    await put(path.join(stubs, 'aaa', 'placeholder'));
-    await put(path.join(stubs, 'bbb', 'placeholder'));
+    await put(path.join(stub('aaa'), 'placeholder'));
+    await put(path.join(stub('bbb'), 'placeholder'));
     for (const name of ['aaa.default.json', 'aaa.env.json', 'bbb.default.json']) await put(path.join(state, 'terminal', name));
     await put(path.join(state, 'model-catalog', 'aaa', 'opencode.json'));
     await put(path.join(state, 'model-catalog', 'bbb', 'opencode.json'));
@@ -490,9 +490,9 @@ test('delete cleans a robot with a bad label, keeps the active check and reports
     robots.runs = { list: () => [] };
     assert.deepEqual(await robots.delete({ robotId: 'aaa' }), { deleted: true });
     await assert.rejects(fs.lstat(paths.robot('aaa')), { code: 'ENOENT' });
-    for (const gone of [path.join(stubs, 'aaa'), path.join(state, 'terminal', 'aaa.default.json'), path.join(state, 'terminal', 'aaa.env.json'),
+    for (const gone of [stub('aaa'), path.join(state, 'terminal', 'aaa.default.json'), path.join(state, 'terminal', 'aaa.env.json'),
         path.join(state, 'model-catalog', 'aaa')]) await assert.rejects(fs.lstat(gone), { code: 'ENOENT' });
-    for (const kept of [path.join(stubs, 'bbb'), path.join(state, 'terminal', 'bbb.default.json'), path.join(state, 'model-catalog', 'bbb')]) await fs.lstat(kept);
+    for (const kept of [stub('bbb'), path.join(state, 'terminal', 'bbb.default.json'), path.join(state, 'model-catalog', 'bbb')]) await fs.lstat(kept);
     await assert.rejects(robots.delete({ robotId: 'aaa' }), { code: 'UNKNOWN_ROBOT' });
     // A robot directory that never got a home is still removed.
     await put(path.join(paths.robot('ccc'), 'label'), 'null');
@@ -512,7 +512,7 @@ test('a run may start in the folder RoboTeam prepares inside private project dat
 test('registry creation requests lightweight setup without replacing its stored default record', async t => {
     const { paths } = await fixture(t);
     const calls = [];
-    const store = new RobotStore({ dataDir: path.join(paths.workspaceRoot, '.data', 'roboTeamAgent'),
+    const store = new RobotStore({ dataDir: path.join(paths.workspaceRoot, '.data', 'agents', 'roboTeamAgent'),
         roboWork: { call: async (tool, input) => { calls.push({ tool, input }); } } });
     // The public registry lock needs Linux /proc; this is its shared creation body.
     const first = await store._create({ name: 'default' });
@@ -577,7 +577,7 @@ test('Environment ALA arguments use mounted sources for skills, callbacks and So
         ['/workspace/own-task-failure', 'as', 'own-task-failure'], ['/workspace/roboteam-soul', 'as', 'roboteam-soul'],
     ]);
     for (const [source] of folders) assert.ok(mounts.some(([, target]) => target === source), `ALA source is not mounted: ${source}`);
-    assert.ok(!mounts.some(([, target]) => target.startsWith(paths.robot(input.robotId)) || target.startsWith(paths.run(input.runId))));
+    assert.ok(!mounts.some(([, target]) => target.startsWith(paths.robot(input.robotId)) || target.startsWith(paths.run(input.robotId, input.runId))));
     assert.equal(args[args.indexOf('--home') + 1], '/home/aaa');
     assert.ok(command.args.includes(`ALA_SESSIONS=${path.join(input.cwd, '.roboteam', '.ala')}`));
     // Inside the container ALA receives the root and the cwd's `.roboteam` only: it cannot name the /dev/null that Podman put over `.env`.
@@ -601,7 +601,7 @@ test('native ALA host receives the controller-derived transcript directory throu
     manager.spawnImpl = () => spawn(process.execPath, ['-e', "process.stdin.on('data',()=>{});"], { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     await startReady(manager, input);
     assert.equal(launch.options.env.ALA_SESSIONS, path.join(input.cwd, '.roboteam', '.ala'));
-    const wrapper = await fs.readFile(path.join(paths.run(input.runId), 'launch.sh'), 'utf8');
+    const wrapper = await fs.readFile(path.join(paths.run(input.robotId, input.runId), 'launch.sh'), 'utf8');
     assert.ok(wrapper.includes("'--ignore' '" + path.join(input.cwd, '.roboteam') + "'"));
     assert.ok(!Object.keys(launch.options.env).some(key => key.startsWith('PLOINKY_')));
 });

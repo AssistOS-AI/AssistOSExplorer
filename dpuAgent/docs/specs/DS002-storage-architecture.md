@@ -23,10 +23,10 @@ The [DPU](wiki.html#definition-dpuagent) domain has conflicting storage requirem
 
 ### Storage Layout
 
-The storage root is supplied explicitly through required `DPU_DATA_ROOT`. [Ploinky](wiki.html#definition-ploinky) mounts the managed host storage `.data/dpu-data` at `/dpu-data`:
+The storage root is supplied explicitly through required `DPU_DATA_ROOT`. [Ploinky](wiki.html#definition-ploinky) mounts the managed host storage `.data/dpu-data` at `/root`:
 
 ```text
-/dpu-data/
+/root/
   state.json
   permissions.manifest.json
   secrets.json
@@ -71,3 +71,11 @@ Workspace-root resolution is:
 4. `process.cwd()`
 
 [dpuAgent](wiki.html#definition-dpuagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.
+
+### Workspace data access
+
+The manifest explicitly mounts `.data/dpu-data` at `/root` and the entire `.data` directory at `/workspace-data`. `DPU_DATA_ROOT=/root` selects the agent's own state; `DPU_WORKSPACE_DATA_ROOT=/workspace-data` selects the read-only user tools' source. The physical master key and default Git credentials share the dedicated store. The launcher keeps the same master key during an offline migration after `ploinky destroy`, so encrypted state remains readable.
+
+Authenticated users browse the virtual `/.data` tree in Explorer through `dpu_data_list`, `dpu_data_stat`, `dpu_data_read`, and `dpu_data_download`. Administrators can inspect all directories except `dpu-data/master-key` and its migration artifacts. Other users can navigate only to `agents/explorer` and its descendants; its ancestor listings expose only that route. Agent and guest invocations are refused. Scoped invocations require `dpu:data:read`. All operations record their outcome in the DPU audit. These tools do not modify workspace data.
+
+Each operation opens paths through pinned directory descriptors, refuses symbolic links, non-regular files and hardlinked files, and limits reads to one MiB per request. Listings refuse directories exceeding 10,000 entries. Explorer previews the first 256 KiB and downloads individual files up to 64 MiB through bounded reads. Ordinary filesystem routes continue to block `.data`; they are not an alternative access path.

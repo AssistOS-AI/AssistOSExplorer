@@ -48,7 +48,7 @@ async function fixture(t) {
 test('a lock leaked by a failed release in the same live process is recovered immediately', async (t) => {
     const { root, makeStore } = await fixture(t);
     await makeStore(true).open('doc.md');
-    const locks = path.join(root, '.data', 'explorer', 'automerge', 'documents', '.locks');
+    const locks = path.join(root, '.data', 'agents', 'explorer', 'automerge', 'documents', '.locks');
     assert.equal((await fs.readdir(locks)).length, 1, 'the failed release left its lock file behind');
     const started = Date.now();
     await makeStore(false).open('doc.md');
@@ -72,7 +72,7 @@ test('a lock held by a concurrent operation in the same process still excludes o
     markEntered.second = () => { entered.second = true; };
     const first = gatedStore('first', gate).open('doc.md');
     await firstEntered;
-    const lockDirectory = path.join(root, '.data', 'explorer', 'automerge', 'documents', '.locks');
+    const lockDirectory = path.join(root, '.data', 'agents', 'explorer', 'automerge', 'documents', '.locks');
     const readToken = async () => {
         const [name] = await fs.readdir(lockDirectory);
         return JSON.parse(await fs.readFile(path.join(lockDirectory, name), 'utf8')).token;

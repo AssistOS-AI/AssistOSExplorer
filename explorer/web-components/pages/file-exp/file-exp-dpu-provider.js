@@ -6,6 +6,8 @@ import {
     ToolError
 } from "../../../services/infrastructure/explorerApi.js";
 import {
+    DPU_DATA_PATH,
+    isDpuDataPath,
     DPU_AUDIT_PATH,
     DPU_MY_SPACE_PATH,
     DPU_RESEARCH_DATA_PATH,
@@ -561,9 +563,10 @@ export async function mergeDpuRootEntry(fileExp, entries = []) {
     if (!shouldExposeDpuRoot()) {
         return Array.isArray(entries) ? entries : [];
     }
-    const filtered = (Array.isArray(entries) ? entries : []).filter((entry) => String(entry?.name || '') !== 'Confidential');
+    const filtered = (Array.isArray(entries) ? entries : []).filter((entry) => !['Confidential', '.data'].includes(String(entry?.name || '')));
     return [
         ...filtered,
+        { ...makeEntry('.data', 'directory'), path: DPU_DATA_PATH },
         {
             ...makeEntry('Confidential', 'directory'),
             path: DPU_ROOT_PATH
@@ -573,6 +576,10 @@ export async function mergeDpuRootEntry(fileExp, entries = []) {
 
 export async function resolveDpuNode(fileExp, path) {
     const normalizedPath = normalizeManagedPath(fileExp, path);
+    if (isDpuDataPath(normalizedPath)) {
+        const { item } = await callDpuTool('dpu_data_stat', { path: normalizedPath.slice(DPU_DATA_PATH.length).replace(/^\//, '') });
+        return { ...item, path: normalizedPath, kind: 'workspace-data', canWrite: false, canCreateChildren: false, canRename: false, canDelete: false };
+    }
     if (!isDpuVirtualPath(normalizedPath)) {
         return null;
     }
@@ -611,6 +618,10 @@ export async function resolveDpuNode(fileExp, path) {
 
 export async function listDpuDirectory(fileExp, path) {
     const normalizedPath = normalizeManagedPath(fileExp, path);
+    if (isDpuDataPath(normalizedPath)) {
+        const { items } = await callDpuTool('dpu_data_list', { path: normalizedPath.slice(DPU_DATA_PATH.length).replace(/^\//, '') });
+        return items.map(item => makeEntry(item.name, item.type, { ...item, path: `${DPU_DATA_PATH}/${item.path}`, dpuCanWrite: false, dpuCanDelete: false, dpuCanRename: false }));
+    }
     const roots = await getDpuRoots(fileExp);
 
     if (normalizedPath === DPU_ROOT_PATH) {
@@ -977,6 +988,13 @@ export async function openDpuFile(fileExp, filePath, { invalidate = true } = {})
         throw new Error(`Confidential resource not found: ${normalizedPath}`);
     }
 
+    if (node.kind === 'workspace-data') {
+        const result = await callDpuTool('dpu_data_read', { path: normalizedPath.slice(DPU_DATA_PATH.length + 1), length: 262144 });
+        const fileContent = new TextDecoder().decode(Uint8Array.from(atob(result.content), character => character.charCodeAt(0)));
+        fileExp.setPreviewState({ fileContent, previewContent: renderCodePreview(fileContent, node.name), selectedIsMarkdown: false, previewMode: 'dpu-data', mediaType: null, fileLoadInfo: result.eof ? null : { truncated: true }, markdownTextView: false, documentId: null, dpuSelectedObjectId: null, dpuSelectedCanWrite: false, hasUnsavedChanges: false, isEditing: false });
+        if (invalidate) fileExp.invalidate(); else fileExp.refreshPreviewUi();
+        return;
+    }
     if (node.kind === 'research-resource' || node.kind === 'research-job') {
         let files = [];
         let backends = [];

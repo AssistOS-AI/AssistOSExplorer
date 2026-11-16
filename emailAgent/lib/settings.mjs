@@ -6,7 +6,7 @@ const SECRET_KEYS = new Set(['MAILJET_API_KEY', 'MAILJET_API_SECRET']);
 const PLAIN_KEYS = new Set(['MAILJET_FROM_EMAIL', 'MAILJET_FROM_NAME', 'EMAIL_AUTH_CODE_TEMPLATE_ID']);
 
 function settingsFile() {
-    return process.env.EMAILAGENT_SETTINGS_FILE || '/data/settings.enc.json';
+    return process.env.EMAILAGENT_SETTINGS_FILE || '/root/settings.enc.json';
 }
 
 function key() {

@@ -17,7 +17,7 @@ async function workspace(t) {
     const cwd = path.join(workspaceRoot, 'project');
     await fs.mkdir(cwd, { recursive: true });
     await fs.mkdir(path.join(dataDir, 'runs'), { recursive: true });
-    return { paths: new RobotPaths({ dataDir, workspaceRoot }), cwd, dataDir };
+    return { paths: new RobotPaths({ robotsDir: path.join(dataDir, '..', 'robots'), dataDir, workspaceRoot }), cwd, dataDir };
 }
 
 test('model listing prepares only the chosen coding agent and starts the listing with its environment', async t => {
@@ -29,6 +29,7 @@ test('model listing prepares only the chosen coding agent and starts the listing
         soulGateway: { prepare: async () => {} }, homeOperation: async () => {},
         captureLaunch: async launch => { launched = launch; return { stdout: '[]' }; } });
     robots.require = async id => ({ id, codingAgents: NAMES });
+    await fs.mkdir(paths.robot('robot-abc'), { recursive: true });
     await robots.models({ robotId: 'robot-abc', agent: 'opencode' });
     assert.deepEqual(prepareCalls, [['opencode']]);
     const env = launched.options.env;

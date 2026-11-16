@@ -67,17 +67,17 @@ export async function assertPrivateDirectory(cwd, code) {
 export function homeTarget(id) { return `/home/${robotId(id)}`; }
 
 export class RobotPaths {
-    constructor({ dataDir = '/data', workspaceRoot = process.env.PLOINKY_WORKSPACE_ROOT } = {}) {
+    constructor({ dataDir = '/root', robotsDir = '/robots', workspaceRoot = process.env.PLOINKY_WORKSPACE_ROOT } = {}) {
         this.dataDir = path.resolve(dataDir);
         if (!workspaceRoot) throw fail('WORKSPACE_UNAVAILABLE', 'Workspace root is required');
         this.workspaceRoot = path.resolve(workspaceRoot);
-        this.privateRoot = path.join(this.workspaceRoot, '.data', '.private');
+        this.robotsDir = path.resolve(robotsDir);
     }
 
-    robot(id) { return path.join(this.dataDir, 'robots', robotId(id)); }
+    robot(id) { return path.join(this.robotsDir, robotId(id)); }
     home(id) { return path.join(this.robot(id), 'home'); }
     soul(id) { return path.join(this.robot(id), 'run', 'soul'); }
-    run(id) { return path.join(this.dataDir, 'runs', runId(id)); }
+    run(robot, id) { return path.join(this.robot(robot), 'runs', runId(id)); }
 
     async grant(value, kind = 'folder') {
         const code = kind === 'cwd' ? 'CWD_REFUSED' : 'FOLDER_REFUSED';
@@ -90,7 +90,7 @@ export class RobotPaths {
         const root = await fs.realpath(this.workspaceRoot).catch(() => this.workspaceRoot);
         if (resolved === root) throw fail(code, 'The workspace root is not available to a robot');
         if (kind === 'cwd' && !within(root, resolved)) throw fail(code, 'Directory is outside the workspace');
-        for (const requestedRoot of [this.dataDir, '/data', this.privateRoot]) {
+        for (const requestedRoot of [this.dataDir, this.robotsDir, '/root', '/robots']) {
             const protectedRoot = await fs.realpath(requestedRoot).catch(() => requestedRoot);
             if (within(protectedRoot, resolved) || within(resolved, protectedRoot)) throw fail(code, 'Directory contains protected storage');
         }

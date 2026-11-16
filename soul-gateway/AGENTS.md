@@ -38,7 +38,7 @@ Soul Gateway does not implement or distribute agent skills as product artifacts.
 - Public inference uses `/v1/*` and requires a valid Ploinky signed-subject API key unless the development-only `ALLOW_UNAUTHENTICATED=true` setting is explicit.
 - Management uses `/management/*` and requires a verified Ploinky administrator identity and protected-route invocation.
 - Health uses `/healthz/` and is public through the Router.
-- The managed manifest supplies `DATA_DIR=/data`, `CREDENTIALS_DIR=/data/credentials`, and `SQLITE_PATH=/data/soul-gateway.sqlite3`; direct starts require all three explicitly and have no relative persistence default.
+- The managed manifest supplies `DATA_DIR=/root`, `CREDENTIALS_DIR=/root/credentials`, and `SQLITE_PATH=/root/soul-gateway.sqlite3`; direct starts require all three explicitly and have no relative persistence default.
 - The standard compatibility tiers are `fast`, `code`, `plan`, `write`, `deep`, `ultra`, and `web-assist` (`LLM_DEFAULT_TIERS`). On first start, unless `FREE_MODELS_ENABLED=false`, they are installed once as cascades of free OpenRouter models on the free-only `openrouter-free` provider with a bundled restricted key whose daily quota is shared. No local model agent is enabled by the manifest.
 - Explorer exposes the admin-only `soul-gateway-settings` settings entry and the `soul-gateway-tool-button` toolbar button; both ensure the agent runs and open the agent-served dashboard in a maximized Explorer modal that embeds the Router-prefixed `/management/` URL in an iframe. Do not add a second management store, a duplicate dashboard, or a parallel settings implementation.
 
@@ -79,7 +79,7 @@ For provider transport changes, also run the relevant `achillesAgentLib` tests f
 
 ## Deployment
 
-Soul Gateway is no longer deployed at `https://soul.axiologic.dev` (user confirmed 2026-10-11), and there is no remote production Soul Gateway. It runs as a local Ploinky agent and is the workspace's local LLM hub. The container database is `/data/soul-gateway.sqlite3` (embedded SQLite).
+Soul Gateway is no longer deployed at `https://soul.axiologic.dev` (user confirmed 2026-10-11), and there is no remote production Soul Gateway. It runs as a local Ploinky agent and is the workspace's local LLM hub. The container database is `/root/soul-gateway.sqlite3` (embedded SQLite).
 
 This folder moved here from the `proxies` repository (history preserved). The `deploy-soul-gateway.yml`, `destroy-soul-gateway.yml`, `soul-gateway-admin.yml` and `deploy-search-gateway.yml` workflows deployed over SSH to the former host and were removed from `proxies` in the same change; its history keeps them. `deploy.sh` in this folder is the remaining manual script for that retired host. Do not run it unless the user selects a new target and confirms that host.
 

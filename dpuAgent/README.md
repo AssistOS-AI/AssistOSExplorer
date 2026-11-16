@@ -13,7 +13,7 @@ Materialized research files remain in private DPU storage. Authorized users and 
 
 ## Runtime
 
-`dpuAgent` runs as a Ploinky MCP-first agent through the bundled Ploinky `AgentServer.mjs`. Under Ploinky, `DPU_MASTER_KEY` is a per-agent generated secret provided through `{{generatedSecret:DPU_MASTER_KEY}}`, `DPU_DATA_ROOT` is required and resolves to the managed `/dpu-data` mount backed by `.data/dpu-data`, and the router is the only public entry point for DPU MCP calls. The runtime fails closed instead of deriving a storage fallback.
+`dpuAgent` runs as a Ploinky MCP-first agent through the bundled Ploinky `AgentServer.mjs`. Under Ploinky, `DPU_MASTER_KEY` is a per-agent generated secret provided through `{{generatedSecret:DPU_MASTER_KEY}}`, `DPU_DATA_ROOT` is required and resolves to the managed `/root` mount backed by `.data/dpu-data`, and the router is the only public entry point for DPU MCP calls. The runtime fails closed instead of deriving a storage fallback.
 
 Required or relevant environment variables:
 
@@ -38,3 +38,5 @@ Set `DPU_NVFLARE_PYTHON` when that environment does not use the default `python3
 
 - [DPU specification matrix](./docs/specs/matrix.md)
 - [DPU documentation](./docs/index.html)
+
+Workspace data is mounted separately at `/workspace-data`. Explorer's read-only `/.data` tree uses the `dpu_data_*` tools: administrators see all permitted files, other users see only `agents/explorer`, and nobody can read the master key through these tools. Every operation is audited.

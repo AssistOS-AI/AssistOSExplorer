@@ -31,7 +31,7 @@ function setup(t, agentName) {
     const digest = 'a'.repeat(64), startedAt = new Date().toISOString(), boxId = 'b'.repeat(64);
     const objectId = randomUUID(), payloadPath = `${root}/.ploinky/deps/store/objects/${objectId}/payload`;
     fs.mkdirSync(`${payloadPath}/node_modules`, { recursive: true });
-    const dataSource = `${root}/.data/${agentName === 'roboWorkAgent' ? '.private/' : ''}${agentName}`;
+    const dataSource = `${root}/.data/agents/${agentName}`;
     const agentSource = `${root}/.ploinky/container-runtime/owned-runtime/Agent-1-2`;
     fs.mkdirSync(dataSource, { recursive: true }); fs.mkdirSync(agentSource, { recursive: true });
     const bind = (Source, Destination, RW = true) => ({ Type: 'bind', Source, Destination, RW });
@@ -39,19 +39,24 @@ function setup(t, agentName) {
         startedAt, imageId: digest, dependencies: { schema: 1, mode: 'store', family: 'container',
             runtimeKey: 'container-linux-x64-glibc-node22', imageId: digest, inputKey: digest, generationId: digest,
             objectId, payloadPath, nodeModulesPath: `${payloadPath}/node_modules` }, mounts: [
-            bind(root, root), bind(dataSource, '/data'), bind(source, source), bind(source, '/code', false),
+            bind(root, root), bind(dataSource, '/root'), bind(source, source), bind(source, '/code', false),
             bind(agentSource, '/Agent', false), bind('/opt/ploinky-agentlib', '/opt/ploinky-agentlib', false),
             bind(`${payloadPath}/node_modules`, '/code/node_modules', false), bind(`${payloadPath}/node_modules`, `${payloadPath}/node_modules`, false),
         ] };
     const otherName = agentName === 'roboTeamAgent' ? 'roboWorkAgent' : 'roboTeamAgent';
-    const otherSource = `${repository}/${otherName}`, otherData = `${root}/.data/${otherName === 'roboWorkAgent' ? '.private/' : ''}${otherName}`;
+    const otherSource = `${repository}/${otherName}`, otherData = `${root}/.data/agents/${otherName}`;
     fs.mkdirSync(otherData, { recursive: true });
     const otherRuntime = structuredClone(runtime); otherRuntime.containerId = 'd'.repeat(64);
     for (const mount of otherRuntime.mounts) {
-        if (mount.Destination === '/data') mount.Source = otherData;
+        if (mount.Destination === '/root') {
+            mount.Source = otherData;
+            mount.Destination = '/root';
+        }
         if (mount.Source === source) mount.Source = otherSource;
         if (mount.Destination === source) mount.Destination = otherSource;
     }
+    fs.mkdirSync(`${root}/.data/robots`, { recursive: true });
+    (agentName === 'roboWorkAgent' ? runtime : otherRuntime).mounts.push(bind(`${root}/.data/robots`, '/robots'));
     const alaRoot = `${root}/AdvancedLanguageAgent`;
     for (const file of ['package.json', 'bin/ala.mjs', 'src/transcript.mjs']) {
         fs.mkdirSync(path.dirname(`${alaRoot}/${file}`), { recursive: true });

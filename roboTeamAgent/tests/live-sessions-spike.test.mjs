@@ -138,10 +138,10 @@ test('actual grant capture excludes environment values and discovers bind aliase
     const mounts = parseMountInfo('1 0 0:1 / / rw - overlay overlay rw\n'
         + '2 1 0:2 / /dev/shm rw - tmpfs shm rw\n'
         + '3 1 0:2 / /data rw - tmpfs shm rw\n'
-        + '4 1 0:2 / /workspace/.data/roboTeamAgent rw - tmpfs shm rw\n');
+        + '4 1 0:2 / /workspace/.data/agents/roboTeamAgent rw - tmpfs shm rw\n');
     assert.deepEqual(aliasesFor('/dev/shm/roboteam-live/registry.sock', grants, mounts, value => value),
         ['/dev/shm/roboteam-live/registry.sock', '/robot-data/roboteam-live/registry.sock',
-            '/workspace/.data/roboTeamAgent/roboteam-live/registry.sock']);
+            '/workspace/.data/agents/roboTeamAgent/roboteam-live/registry.sock']);
     assert.throws(() => captureGrants(['--', '/usr/bin/node']), /actual ALA/);
 });
 

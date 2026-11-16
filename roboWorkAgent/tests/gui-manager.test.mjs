@@ -10,25 +10,25 @@ import { GuiManager, buildRobotRunArgs, proxySessionHttp } from '../server/gui-m
 import { podmanWorkspaceArguments } from '../server/workspace-view.mjs';
 import { createRoboWorkServer } from '../server/http-server.mjs';
 
-const shellTools = { path: '/data/tool-cache/shell-generation', binPath: '/data/tool-cache/shell-generation/bin', agents: { codex: { path: '/data/tool-cache/codex-generation' } } };
+const shellTools = { path: '/root/tool-cache/shell-generation', binPath: '/root/tool-cache/shell-generation/bin', agents: { codex: { path: '/root/tool-cache/codex-generation' } } };
 // The workspace sits at a path of its own, not at /workspace, where ALA refuses a destination.
 const view = { root: '/srv/ws', writableSubmounts: ['/srv/ws/checkout', '/srv/ws/project/vendor'],
     masks: [{ path: '/srv/ws/.data', directory: true }, { path: '/srv/ws/.env', directory: false }] };
 const workspaceArgsFor = cwd => podmanWorkspaceArguments(view, { cwd, volumeFlag: '-v' });
-const base = { robot: { id: 'robot-a', name: 'Robot' }, mode: 'browser', dataDir: '/data', images: { browser: 'browser', desktop: 'desktop' }, toolsPath: '/data/tool-cache/browser', shellTools,
+const base = { robot: { id: 'robot-a', name: 'Robot' }, mode: 'browser', dataDir: '/root', images: { browser: 'browser', desktop: 'desktop' }, toolsPath: '/root/tool-cache/browser', shellTools,
     workspaceArgs: workspaceArgsFor('/srv/ws/project') };
 
 for (const mode of ['browser', 'desktop']) for (const cwd of ['/home/robot-a', '/srv/ws/project']) {
     test(`${mode} launch mounts home, the working folder writable, the workspace read-only with its masks and service paths at ${cwd}`, () => {
         const { args } = buildRobotRunArgs({ ...base, mode, cwd, workspaceArgs: workspaceArgsFor(cwd) });
-        for (const grant of ['/data/robots/robot-a/home:/config', '/data/robots/robot-a/home:/home/robot-a', '/data/robots/robot-a/run/soul:/workspace/roboteam-soul']) assert.ok(args.includes(grant));
+        for (const grant of ['/robots/robot-a/home:/config', '/robots/robot-a/home:/home/robot-a', '/robots/robot-a/run/soul:/workspace/roboteam-soul']) assert.ok(args.includes(grant));
         assert.ok(args.includes('HOME=/home/robot-a'));
         assert.ok(args.includes('ROBOTEAM_SHELL_HOME=/home/robot-a'));
         assert.ok(args.includes('USER=robot-a'));
         assert.equal(args[args.indexOf('--network') + 1], 'pasta:--no-map-gw');
         const mounts = args.filter((value, index) => args[index - 1] === '-v');
         assert.equal(mounts.includes('/data:/data'), false);
-        assert.equal(mounts.includes('/data/robots:/data/robots'), false);
+        assert.equal(mounts.includes('/robots:/robots'), false);
         // The workspace is read-only and recursive, every writable submount below it is read-only again, and Podman's `ro`
         // covers only the top mount.
         assert.ok(mounts.includes('/srv/ws:/srv/ws:ro,rbind'));
@@ -58,7 +58,7 @@ test('a session plan is refused without the workspace view', () => {
 });
 
 test('proxy forwarding is only its relay and browser firewall precedes startup', () => {
-    const plan = buildRobotRunArgs({ ...base, proxy: { relayPort: 4567, policyFile: '/data/proxy-pool/policy.json' } });
+    const plan = buildRobotRunArgs({ ...base, proxy: { relayPort: 4567, policyFile: '/root/proxy-pool/policy.json' } });
     assert.equal(plan.args[0], 'create');
     assert.equal(plan.firewalled, true);
     assert.equal(plan.args[plan.args.indexOf('--network') + 1], 'pasta:--no-map-gw,-T,3128:4567');
@@ -70,9 +70,9 @@ async function fixture(t, overrides = {}) {
     t.after(() => fs.rm(workspaceRoot, { recursive: true, force: true }));
     const calls = [];
     const homeCalls = [];
-    const manager = new GuiManager({ workspaceRoot, dataDir: path.join(workspaceRoot, '.data/private'),
+    const manager = new GuiManager({ workspaceRoot, robotsDir: path.join(workspaceRoot, '.data/robots'), dataDir: path.join(workspaceRoot, '.data/private'),
         getRobot: async id => ({ id, name: id }), prepareRobot: async () => {}, homeOps: async (...args) => homeCalls.push(args),
-        toolCache: { root: '/data/tool-cache', prepareMode: async () => ({ path: '/data/tool-cache/browser' }), prepareShellTools: async () => shellTools },
+        toolCache: { root: '/root/tool-cache', prepareMode: async () => ({ path: '/root/tool-cache/browser' }), prepareShellTools: async () => shellTools },
         waitForSession: async () => {},
         execFileImpl: async (command, args) => {
             calls.push([command, args]);
@@ -121,19 +121,20 @@ test('gui_ensure reports CWD_REFUSED and its reason for every refused root form'
     const root = await fs.realpath(workspaceRoot);
     const project = path.join(root, 'project');
     await fs.mkdir(path.join(project, '.roboteam', 'sessions'), { recursive: true });
-    await fs.mkdir(path.join(root, '.data', '.private'), { recursive: true });
+    await fs.mkdir(path.join(root, '.data', 'robots'), { recursive: true });
     await fs.mkdir(path.join(root, '.ploinky', 'repos', 'repo'), { recursive: true });
-    await fs.mkdir(path.join(manager.dataDir, 'robots', 'robot-b', 'home'), { recursive: true });
+    await fs.mkdir(manager.dataDir, { recursive: true });
+    await fs.mkdir(path.join(manager.paths.robotsDir, 'robot-b', 'home'), { recursive: true });
     await fs.writeFile(path.join(root, 'file'), 'fixture');
     await fs.symlink(root, path.join(project, 'root-link'));
-    await fs.symlink(path.join(manager.dataDir, 'robots', 'robot-b', 'home'), path.join(project, 'victim-link'));
+    await fs.symlink(path.join(manager.paths.robotsDir, 'robot-b', 'home'), path.join(project, 'victim-link'));
     const server = createRoboWorkServer({ robots: {}, runs: {}, environment: {}, gui: manager, internalToken: 'private' });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
     const ensure = cwd => fetch(`http://127.0.0.1:${server.address().port}/internal/gui_ensure`, { method: 'POST', headers: { 'x-robowork-internal-token': 'private' },
         body: JSON.stringify({ robotId: 'robot-a', mode: 'browser', cwd }) }).then(async response => ({ status: response.status, ...(await response.json()) }));
-    const forms = [[manager.dataDir, /protected/u], [path.join(manager.dataDir, 'robots'), /protected/u], [path.join(manager.dataDir, 'robots', 'robot-b', 'home'), /protected/u],
-        [path.join(root, '.data', '.private'), /protected/u], [root, /workspace root/u], ['/', /outside/u], [path.join(project, 'victim-link'), /protected/u],
+    const forms = [[manager.dataDir, /protected/u], [manager.paths.robotsDir, /protected/u], [path.join(manager.paths.robotsDir, 'robot-b', 'home'), /protected/u],
+        [path.join(root, '.data', 'robots'), /protected/u], [root, /workspace root/u], ['/', /outside/u], [path.join(project, 'victim-link'), /protected/u],
         [`${root}/`, /workspace root/u], [`${root}/.`, /workspace root/u], [`${project}/..`, /workspace root/u], [path.join(project, 'root-link'), /workspace root/u],
         [path.join(root, '.ploinky', 'repos', 'repo'), /protected/u], [path.join(project, '.roboteam'), /private project data/u], [path.join(project, '.roboteam', 'sessions'), /private project data/u],
         ['relative', /absolute/u], [path.join(root, 'missing'), /unavailable/u], [path.join(root, 'file'), /directory is required/iu]];

@@ -4,7 +4,7 @@ import { discoverRobotTerminal, openRobotTerminal, prepareRobotTerminal } from '
 
 const ROBOT = 'analyst-a1b2c3';
 const PROFILE = `${ROBOT}.default`;
-const ROOT = `.data/roboWorkAgent/terminal/${ROBOT}`;
+const ROOT = `.data/agents/roboWorkAgent/terminal/${ROBOT}`;
 const target = { kind: 'agent', detail: 'AchillesIDE/roboWorkAgent', access: 'rw', launch: 'x'.repeat(32) };
 function discovery(targets, profile = { provider: 'roboWorkAgent', id: PROFILE, label: 'Analyst' }) {
     return { ok: true, discovery: { id: 'd'.repeat(32), directory: ROOT, expiresAt: Date.now() + 60000, targets, ...(profile ? { profile } : {}) } };

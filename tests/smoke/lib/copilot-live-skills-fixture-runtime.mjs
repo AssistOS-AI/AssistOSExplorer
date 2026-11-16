@@ -3,7 +3,7 @@ import { readLiveSkillsCodeHashes } from './copilot-live-skills-code-hashes.mjs'
 
 // Shipped only to the verified RoboTeam runtime. Actions are finite and confined to one run's paths.
 export async function operateLiveSkillsFixture({ action, fixture, workspaceRoot, expectedRepository, contractHashes }, {
-    codeRoot = '/code', dataRoot = '/data', service: suppliedService, runGit, fsApi,
+    codeRoot = '/code', dataRoot = '/root', service: suppliedService, runGit, fsApi,
     emit = value => console.log(JSON.stringify(value)),
 } = {}) {
     const assert = (await import('node:assert/strict')).default;

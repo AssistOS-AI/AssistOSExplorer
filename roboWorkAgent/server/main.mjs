@@ -23,7 +23,7 @@ const alaEntry = resolveAlaCommand();
 const toolCache = new ToolCache();
 const soulGateway = createSoulGatewayService();
 const homeOperation = createHomeOperations({ paths, alaEntry, toolCache });
-const gitStore = new GitCredentialStore({ dataDir: paths.dataDir });
+const gitStore = new GitCredentialStore({ robotsDir: paths.robotsDir });
 if (!gitStore.available) console.error('[git-credentials] ROBOWORK_CREDENTIALS_KEY is not configured; robot git credentials are unavailable');
 const gitCredentials = { store: gitStore, sockets: createGitCredentialSockets({ store: gitStore }) };
 const robots = new RobotManager({ paths, toolCache, homeOperation, soulGateway, alaEntry, gitCredentials });
@@ -34,7 +34,7 @@ const runtimeBundle = new RuntimeBundle({ toolCache, workspaceRoot: paths.worksp
 const runs = new RunManager({ paths, robots, toolCache, environment, runtimeBundle, alaEntry });
 robots.runs = runs;
 await runs.initialize();
-const gui = new GuiManager({ dataDir: paths.dataDir, workspaceRoot: paths.workspaceRoot, publicBasePath: PUBLIC_BASE_PATH,
+const gui = new GuiManager({ dataDir: paths.dataDir, robotsDir: paths.robotsDir, workspaceRoot: paths.workspaceRoot, publicBasePath: PUBLIC_BASE_PATH,
     toolCache, homeOps: homeOperation, proxyPool: new ProxyAgentClient(), getRobot: id => robots.require(id),
     prepareRobot: async id => { await robots.require(id); await soulGateway.prepare(paths.soul(id)); },
     hasActiveRun: id => runs.list({ robotId: id }).some(run => ['starting', 'running', 'stopping'].includes(run.state)),

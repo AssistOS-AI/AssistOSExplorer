@@ -23,5 +23,12 @@
             }
         },
         "embedded": {}
+    },
+    "runtime": {
+        "resources": {
+            "env": {
+                "GIT_AGENT_DATA_ROOT": "/root"
+            }
+        }
     }
 }

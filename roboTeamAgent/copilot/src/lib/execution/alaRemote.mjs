@@ -9,7 +9,7 @@ const inside = (root, value) => value === root || value.startsWith(root + path.s
 // made. Runtime mounts always name real workspace sources.
 export async function targetPath(value, workspaceRoot, { repositoriesClient } = {}) {
     if (typeof value !== 'string' || !path.isAbsolute(value)) return value;
-    if (!['/data', '/Agent', '/code'].some(root => inside(root, value))) return value;
+    if (!['/root', '/Agent', '/code'].some(root => inside(root, value))) return value;
     const resolved = await fs.realpath(value);
     const root = await fs.realpath(workspaceRoot);
     if (inside('/code', value) && !inside(root, resolved)) {

@@ -10,7 +10,7 @@ import path from 'node:path';
 // the two in step. Repository checkouts under the workspace's `.ploinky/repos`
 // stay readable but are read-only here: Ploinky runs agents from them, so a
 // write there would run code inside the agents whose data these rules protect.
-// Explorer's own `.data/explorer` store is reached only through
+// Explorer's own `.data/agents/explorer` store is reached only through
 // `private-data-boundary.mjs`, never through these tools.
 const CONTROLLER_ROOT = '.ploinky';
 const REPOSITORIES_DIRECTORY = 'repos';

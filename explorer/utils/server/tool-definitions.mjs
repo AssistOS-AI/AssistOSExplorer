@@ -259,7 +259,7 @@ export function buildToolDefinitions(zodToJsonSchema, schemas) {
     },
     {
       name: 'get_plugin_settings',
-      description: 'Read persisted workspace plugin settings from /.data/explorer/plugin-settings.json.',
+      description: 'Read persisted workspace plugin settings from the private Explorer home.',
       inputSchema: zodToJsonSchema(GetPluginSettingsArgsSchema)
     },
     {

@@ -86,13 +86,13 @@ export function validateMetadata(input) {
         savedAt: new Date().toISOString() };
 }
 
-// Per-robot records under /data/credentials, outside the robot directories that launches bind. An ordinary robot's
+// Per-robot records under /robots/.credentials, outside the robot directories that launches bind. An ordinary robot's
 // record holds its encrypted token. The workspace default robot's token lives only in the Ploinky-owned file, which
 // Ploinky also reads for its own git operations; its record then holds the metadata and `location: 'workspace'`
 // instead of a secret, so the token exists in exactly one place. Missing keys disable the matching feature.
 export class GitCredentialStore {
-    constructor({ dataDir = '/data', env = process.env } = {}) {
-        this.directory = path.join(path.resolve(dataDir), 'credentials');
+    constructor({ robotsDir = '/robots', env = process.env } = {}) {
+        this.directory = path.join(path.resolve(robotsDir), '.credentials');
         this.key = storeKey(env.ROBOWORK_CREDENTIALS_KEY);
         const mirrorDir = configured(env.ROBOWORK_GIT_MIRROR_DIR);
         this.mirrorDir = mirrorDir && path.isAbsolute(mirrorDir) ? mirrorDir : null;

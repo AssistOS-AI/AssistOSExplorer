@@ -35,7 +35,7 @@ export const MODES = Object.freeze(['keep-data', 'delete-data']);
 
 // Keep these lists literal; the admin module has its own copy and a test compares them.
 // The encryption identity as rollback-explorer-qa.mjs `AUTH_FILES` fingerprints it.
-export const AUTH_FILES = Object.freeze(['.env', '.ploinky/data/master-key', '.ploinky/master-key',
+export const AUTH_FILES = Object.freeze(['.env', '.data/dpu-data/master-key', '.ploinky/master-key',
     '.ploinky/data/.secrets', '.ploinky/.secrets', '.ploinky/data/passwords.enc', '.ploinky/passwords.enc',
     '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc', '.ploinky/ploinky_subject_identity_ed25519_v1.enc']);
 // The pinned Ploinky runtime refuses these retired controller secrets; a deploy refuses them before `mark`.
@@ -344,7 +344,7 @@ export function planWorkspace({ paths, owner, scope, mode, measure = false, hook
         return Object.defineProperty(value, 'keepListing', { value: [], enumerable: false });
     }
 
-    for (const relative of ['.ploinky', '.ploinky/data', ...LINK_DIRECTORIES, '.data', '.runtime', '.ploinky-box']) {
+    for (const relative of ['.ploinky', '.ploinky/data', ...LINK_DIRECTORIES, '.data/dpu-data', '.data', '.runtime', '.ploinky-box']) {
         const stat = ctx.present(path.join(workspace, relative));
         requireProof(!stat || realDirectory(stat), 'QA_TEARDOWN_UNSAFE_PATH');
     }
@@ -354,7 +354,7 @@ export function planWorkspace({ paths, owner, scope, mode, measure = false, hook
         const retired = RETIRED_IDENTITY.filter(relative => ctx.present(path.join(workspace, relative)));
         requireProof(retired.length === 0, 'QA_TEARDOWN_RETIRED_IDENTITY', { detail: { retired } });
     }
-    requireProof(!ctx.present(path.join(workspace, '.data')) || ctx.present(path.join(workspace, '.ploinky/data/master-key')),
+    requireProof(!ctx.present(path.join(workspace, '.data')) || ctx.present(path.join(workspace, '.data/dpu-data/master-key')),
         'QA_TEARDOWN_KEY_MISSING');
     ctx.assertNoMount(workspace);
 

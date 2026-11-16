@@ -15,7 +15,7 @@
   "routerAccess": {
     "httpRoutes": [{ "path": "/base-agent-additional-server/roboWorkAgent/3001/*", "access": "authenticated" }]
   },
-  "volumes": { ".data/.private/roboWorkAgent": "/data" },
+  "volumes": { ".data/robots": "/robots" },
   "runtime": {
     "resources": {
       "gitCredentials": { "containerPath": "/git-credentials" },

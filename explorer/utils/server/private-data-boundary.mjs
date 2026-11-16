@@ -1,4 +1,4 @@
-const PRIVATE_ROOT_SEGMENTS = Object.freeze(['.data', 'explorer']);
+const PRIVATE_ROOT_SEGMENTS = Object.freeze(['.data', 'agents', 'explorer']);
 
 function privateDataPolicyError(message) {
   const error = new Error(message);
@@ -22,14 +22,15 @@ function isMissing(error) {
   return error?.code === 'ENOENT';
 }
 
-// `agentName` selects another `.data/<agent>` root of this same agent runtime,
-// such as the Router-staged WebMeet blobs of a renamed Explorer instance; by
-// default the boundary is `.data/explorer`.
+// `agentName` selects another `.data/agents/<agent>` root of this same agent
+// runtime, such as the Router-staged WebMeet blobs of a renamed Explorer
+// instance; by default the boundary is `.data/agents/explorer`.
 export function createExplorerPrivateDataBoundary({ fs, path, workspaceRoot, agentName = '' }) {
   const fsApi = fs?.promises || fs;
-  const lexicalWorkspaceRoot = path.resolve(String(workspaceRoot || ''));
-  const rootSegments = agentName
-    ? ['.data', ...normalizeSegments(path, [agentName])]
+  const home = process.env.EXPLORER_DATA_ROOT;
+  const lexicalWorkspaceRoot = path.resolve(String(home || workspaceRoot || ''));
+  const rootSegments = home ? [] : agentName
+    ? ['.data', 'agents', ...normalizeSegments(path, [agentName])]
     : PRIVATE_ROOT_SEGMENTS;
   const lexicalPrivateRoot = path.join(lexicalWorkspaceRoot, ...rootSegments);
 

@@ -31,9 +31,6 @@
       }
     ]
   },
-  "volumes": {
-    ".data/roboTeamAgent": "/data"
-  },
   "profiles": {
     "default": {
       "openPorts": [

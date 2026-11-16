@@ -12,7 +12,7 @@ const hex = letter => letter.repeat(64);
 
 test('catalog collection skips a conversation record a robot planted instead of waiting on it or ending the pass', async t => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-collect-')));
-    const options = { dataDir: path.join(root, '.data/roboTeamAgent'), workspaceRoot: root };
+    const options = { dataDir: path.join(root, '.data/agents/roboTeamAgent'), workspaceRoot: root };
     const robotRoot = path.join(options.dataDir, 'robots', 'worker-123456');
     const catalogs = path.join(robotRoot, 'runtime', 'skill-catalogs');
     const fifos = [];

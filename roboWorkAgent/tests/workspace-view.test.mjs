@@ -142,7 +142,7 @@ test('writable submounts: rw below the root and outside the masks only; the last
     const entries = parseMountinfo([
         line(1, '/srv/ws', 'rw'),
         line(2, '/srv/ws/AdvancedLanguageAgent', 'rw,relatime'),
-        line(3, '/srv/ws/.data', 'rw'), line(4, '/srv/ws/.data/.private', 'rw'), line(5, '/srv/ws/.env', 'rw'),
+        line(3, '/srv/ws/.data', 'rw'), line(4, '/srv/ws/.data/robots', 'rw'), line(5, '/srv/ws/.env', 'rw'),
         line(6, '/srv/ws/readonly', 'ro,relatime'),
         line(7, '/srv/ws/flipped', 'rw'), line(8, '/srv/ws/flipped', 'ro'),
         line(9, '/srv/ws/restored', 'ro'), line(10, '/srv/ws/restored', 'rw'),
@@ -156,7 +156,7 @@ test('writable submounts: rw below the root and outside the masks only; the last
 test('on Linux the mount table is read for this namespace; an unreadable or malformed one refuses the launch', async t => {
     const { root, view } = await fixture(t);
     await fs.mkdir(path.join(root, '.data'));
-    const table = [line(1, root, 'rw'), line(2, `${root}/checkout`, 'rw'), line(3, `${root}/.data/.private`, 'rw')].join('\n');
+    const table = [line(1, root, 'rw'), line(2, `${root}/checkout`, 'rw'), line(3, `${root}/.data/robots`, 'rw')].join('\n');
     const reads = [];
     const found = await view({ platform: 'linux', lstat: keepsCase, readFile: async file => { reads.push(file); return Buffer.from(table); } });
     assert.deepEqual(reads, ['/proc/self/mountinfo']);
@@ -243,7 +243,7 @@ test('Podman arguments refuse paths a volume option cannot carry, a mask over th
 });
 
 test('ALA receives the root as a plain read-only folder and the masks as ignored paths, and no Environment mask', () => {
-    const native = alaWorkspaceOptions(sample(), { cwd: '/srv/ws/project', home: '/data/robots/robot-a/home' });
+    const native = alaWorkspaceOptions(sample(), { cwd: '/srv/ws/project', home: '/robots/robot-a/home' });
     assert.deepEqual(native.folders, [{ source: '/srv/ws' }]);
     assert.deepEqual(native.ignoredPaths, ['/srv/ws/project/.roboteam', '/srv/ws/.data', '/srv/ws/.env']);
     // The workspace folder itself is never an exposed export.
@@ -253,7 +253,7 @@ test('ALA receives the root as a plain read-only folder and the masks as ignored
     // In a container the masks exist at the Podman layer only: ALA cannot name a character device as an ignored path.
     assert.deepEqual(alaWorkspaceOptions(sample(), { cwd: '/srv/ws/project', home: '/home/robot-a', environment: true }).ignoredPaths, ['/srv/ws/project/.roboteam']);
     // In the robot home there is no private project data to mask.
-    assert.deepEqual(alaWorkspaceOptions(sample(), { cwd: '/data/robots/robot-a/home', home: '/data/robots/robot-a/home' }).ignoredPaths, ['/srv/ws/.data', '/srv/ws/.env']);
+    assert.deepEqual(alaWorkspaceOptions(sample(), { cwd: '/robots/robot-a/home', home: '/robots/robot-a/home' }).ignoredPaths, ['/srv/ws/.data', '/srv/ws/.env']);
     assert.deepEqual(alaWorkspaceOptions(sample(), { home: '/home/robot-a' }).ignoredPaths, ['/srv/ws/.data', '/srv/ws/.env']);
 });
 
@@ -287,7 +287,7 @@ test('hidden names are recognized in every spelling a folding filesystem accepts
 test('a grant under another spelling of a hidden entry is refused, whichever filesystem holds it', async t => {
     const { base, root } = await fixture(t);
     await fs.mkdir(path.join(root, 'app'));
-    const paths = new RobotPaths({ dataDir: path.join(base, 'service'), workspaceRoot: root });
+    const paths = new RobotPaths({ robotsDir: path.join(base, 'robots'), dataDir: path.join(base, 'data'), workspaceRoot: root });
     const realpath = fs.realpath;
     t.mock.method(fs, 'realpath', async value => /\.DATA|\.PLOINKY|\.Ploinky-Box/u.test(value) ? value : realpath(value));
     t.mock.method(fs, 'stat', async () => ({ isDirectory: () => true }));

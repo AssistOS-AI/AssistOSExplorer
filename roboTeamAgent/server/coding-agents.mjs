@@ -17,7 +17,7 @@ export function robotCodingAgents(robot) {
     return normalizeCodingAgents(robot.codingAgents === undefined ? CODING_AGENT_NAMES : robot.codingAgents);
 }
 
-export function codingAgentEnvironment(agents, environment = process.env, cacheRoot = '/data/tool-cache') {
+export function codingAgentEnvironment(agents, environment = process.env, cacheRoot = '/root/tool-cache') {
     const env = { ...environment };
     const excluded = new Set(CODING_AGENT_NAMES.map(name => environment[`${name.toUpperCase()}_BIN`])
         .filter(Boolean).map(binary => path.dirname(binary)));

@@ -89,7 +89,7 @@ function chromiumLanguageFlag(lang) {
 
 // `workspaceArgs` is the Podman form of the workspace view (`podmanWorkspaceArguments(view, { volumeFlag: '-v' })`): the
 // workspace read-only with its masks. It is empty only where the view cannot be shown safely; a caller must still pass it.
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, workspaceArgs, proxy = null, cwdIdentity = null, cwdSource = cwd, homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
+export function buildRobotRunArgs({ robot, mode, dataDir, robotsDir = '/robots', publicBasePath, images, timezone, locale = null, cwd, toolsPath, shellTools, workspaceArgs, proxy = null, cwdIdentity = null, cwdSource = cwd, homePath = path.join(path.resolve(robotsDir), robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!Array.isArray(workspaceArgs)) throw new Error('workspaceArgs must carry the workspace view, empty where it cannot be shown');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
@@ -99,7 +99,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
     if (!ROBOT_ID.test(robot.id)) throw new Error('Invalid robot ID.');
     const homeTarget = `/home/${robot.id}`;
     cwd ||= homeTarget;
-    const soulPath = path.join(path.resolve(dataDir), 'robots', robot.id, 'run', 'soul');
+    const soulPath = path.join(path.resolve(robotsDir), robot.id, 'run', 'soul');
     const containerName = `robowork-${mode}-${robot.id}`;
     const subfolder = robotSessionUrl(publicBasePath, robot.id);
     // A proxied Browser container is only created here; its firewall is loaded before it starts.
@@ -110,7 +110,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
         subfolder,
         firewalled,
         args: [
-            ...(firewalled ? ['create'] : ['run', '-d']), '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777',
+            ...(firewalled ? ['create'] : ['run', '-d']), '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/root:rw,mode=0700', '--tmpfs', '/robots:rw,mode=0700', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777',
             // With a proxy, the container's loopback proxy port reaches the robot's relay on the outer
             // loopback, and nothing else of the outer loopback.
             '--network', `pasta:--no-map-gw${proxy ? `,-T,${CONTAINER_PROXY_PORT}:${proxy.relayPort}` : ''}`,
@@ -156,9 +156,9 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
 
 export class GuiManager {
     constructor(options = {}) {
-        this.dataDir = path.resolve(options.dataDir || '/data');
+        this.dataDir = path.resolve(options.dataDir || '/root');
         this.workspaceRoot = path.resolve(options.workspaceRoot || process.env.PLOINKY_WORKSPACE_ROOT || '/workspace');
-        this.paths = new RobotPaths({ dataDir: this.dataDir, workspaceRoot: this.workspaceRoot });
+        this.paths = new RobotPaths({ dataDir: this.dataDir, robotsDir: options.robotsDir, workspaceRoot: this.workspaceRoot });
         this.publicBasePath = normalizeBasePath(options.publicBasePath || '/base-agent-additional-server/roboWorkAgent/3001/');
         this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
         this.execFileImpl = options.execFileImpl || execFileAsync;
@@ -328,7 +328,7 @@ export class GuiManager {
                 // ends the session here, before a container exists.
                 const view = await this.paths.workspaceView(robotId);
                 const workspaceArgs = podmanWorkspaceArguments(view, { cwd, volumeFlag: '-v' });
-                const plan = buildRobotRunArgs({ robot: { ...robot, id: robotId }, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images,
+                const plan = buildRobotRunArgs({ robot: { ...robot, id: robotId }, mode, dataDir: this.dataDir, robotsDir: this.paths.robotsDir, publicBasePath: this.publicBasePath, images: this.images,
                     timezone: locale?.timezone || this.timezone, locale, cwd, cwdIdentity, cwdSource: pin?.source || cwd, toolsPath: tools.path, shellTools, workspaceArgs, proxy });
                 Object.assign(session, { containerName: plan.containerName, sessionUrl: plan.subfolder });
                 check();

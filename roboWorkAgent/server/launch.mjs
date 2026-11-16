@@ -42,7 +42,7 @@ export async function buildPrivateLaunch({ paths, id, directory, command, args, 
     for (const [index, [source]] of bindings.entries()) {
         script.push(`mkdir "$stage/${index}"`, `mount --bind ${shellQuote(source)} "$stage/${index}"`);
     }
-    script.push(`mount -t tmpfs tmpfs ${shellQuote(paths.dataDir)}`);
+    for (const root of [paths.dataDir, paths.robotsDir]) script.push(`mount -t tmpfs tmpfs ${shellQuote(root)}`);
     for (const [index, [, target]] of bindings.entries()) {
         script.push(`mkdir -p ${shellQuote(target)}`, `mount --bind "$stage/${index}" ${shellQuote(target)}`);
     }

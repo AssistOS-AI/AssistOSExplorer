@@ -44,7 +44,7 @@ export class RoboFlowService {
         this.database = options.database || new RoboFlowDatabase(options.databaseFile);
         this.workspaceRoot = options.workspaceRoot || this.runtimeManager?.workspaceRoot || path.dirname(this.database.file);
         this.scheduleFolders = new ScheduleFolders(this.workspaceRoot);
-        // Saved workflow types are JSON files in a flows folder next to the database (/data/roboflow/flows), like workspace
+        // Saved workflow types are JSON files in a flows folder next to the database (/root/roboflow/flows), like workspace
         // workflow files; built-in ones ship with the agent.
         this.presets = options.presets || readPresets();
         this.registry = new WorkflowRegistry({ directory: options.workflowsDirectory || path.join(path.dirname(this.database.file), FLOWS_FOLDER),

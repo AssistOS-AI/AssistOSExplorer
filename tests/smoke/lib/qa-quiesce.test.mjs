@@ -261,21 +261,19 @@ function mountFixture(agent = 'onlyOffice') {
         { source: '/opt/ploinky-agentlib', target: '/opt/ploinky-agentlib', ro: true },
         { source: `${WORKSPACE}/.ploinky/container-runtime/${name}/code-123-456`, target: '/code', ro: false },
         { source: `${WORKSPACE}/.ploinky/repos/QA/${agent}`, target: `${WORKSPACE}/.ploinky/repos/QA/${agent}`, ro: false },
-        { source: `${WORKSPACE}/.data/shared`, target: '/shared' },
-        { source: `${WORKSPACE}/.data/${agent}`, target: '/root' },
+        { source: `${WORKSPACE}/.data/agents/shared`, target: '/shared' },
+        { source: `${WORKSPACE}/.data/${agent === 'dpuAgent' ? 'dpu-data' : `agents/${agent}`}`, target: '/root' },
     ];
     const volumes = agent === 'onlyOffice' ? {
         '.data/onlyOffice/data': '/var/www/onlyoffice/Data', '.data/onlyOffice/log': '/var/log/onlyoffice',
         '.data/onlyOffice/lib': '/var/lib/onlyoffice',
-    } : agent === 'soul-gateway' ? { '.data/soul-gateway': '/data' } : {};
-    const manifest = { volumes, runtime: { resources: agent === 'dpuAgent'
-        ? { persistentStorage: { key: 'dpu-data', containerPath: '/dpu-data' } } : {} } };
+    } : agent === 'dpuAgent' ? { '.data/dpu-data': '/root', '.data': '/workspace-data' } : {};
+    const manifest = { volumes };
     const Mounts = binds.map((bind) => ({ Type: 'bind', Source: bind.source, Destination: bind.target, RW: bind.ro !== true }));
-    for (const [source, target] of Object.entries(volumes)) Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/${source}`, Destination: target, RW: true });
-    if (agent === 'dpuAgent') Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.data/dpu-data`, Destination: '/dpu-data', RW: true });
+    for (const [source, target] of Object.entries(volumes)) if (!Mounts.some(m => m.Destination === target)) Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/${source.replace(/^\.data\/(?!agents\/|robots\/|dpu-data(?:\/|$))/, '.data/agents/')}`, Destination: target, RW: true });
     Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.ploinky/run/health-probes/${name}`, Destination: '/run/ploinky-health-probes', RW: true });
     return { binding: { name, agent, record: { config: { binds }, profile: 'default' } }, inspected: { Mounts },
-        options: { manifest, realpath: (value) => value } };
+        options: { manifest, realpath: (value) => value, tmpdir: () => '/tmp' } };
 }
 
 for (const agent of ['onlyOffice', 'dpuAgent', 'umamiAgent', 'soul-gateway']) {
@@ -298,7 +296,7 @@ for (const scenario of ['redirected-data', 'data-symlink', 'database-overlay', '
     });
 }
 
-// Mount lists observed on the live QA Box under Ploinky 7d8c04d0. Sources the
+// QA mount fixtures use the current workspace-data guard topology. Sources the
 // observation did not record (edge topology, generated descriptor) are stand-ins:
 // the validator compares them with the registry and never inspects their values.
 function liveMountFixture(agent) {
@@ -318,16 +316,14 @@ function liveMountFixture(agent) {
         ...(global ? [{ source: code, target: code }] : []),
         { source: modules, target: '/code/node_modules', ro: true },
         { source: modules, target: modules, ro: true },
-        { source: `${WORKSPACE}/.data/shared`, target: '/shared' },
+        { source: `${WORKSPACE}/.data/agents/shared`, target: '/shared' },
         ...(global ? [{ source: WORKSPACE, target: WORKSPACE }] : []),
-        { source: `${WORKSPACE}/.data/${agent}`, target: '/root' },
+        { source: `${WORKSPACE}/.data/${agent === 'dpuAgent' ? 'dpu-data' : `agents/${agent}`}`, target: '/root' },
     ];
-    const volumes = agent === 'soul-gateway' ? { '.data/soul-gateway': '/data' } : {};
-    const manifest = { volumes, runtime: { resources: global
-        ? { persistentStorage: { key: 'dpu-data', containerPath: '/dpu-data' } } : {} } };
+    const volumes = global ? { '.data/dpu-data': '/root', '.data': '/workspace-data' } : {};
+    const manifest = { volumes };
     const Mounts = binds.map((bind) => ({ Type: 'bind', Source: bind.source, Destination: bind.target, RW: bind.ro !== true }));
-    if (global) Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.data/dpu-data`, Destination: '/dpu-data', RW: true });
-    if (agent === 'soul-gateway') Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.data/soul-gateway`, Destination: '/data', RW: true });
+    if (global) Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.data`, Destination: '/workspace-data', RW: true });
     // Run-argument mounts that Ploinky does not record as binds.
     Mounts.push(
         { Type: 'bind', Source: `/tmp/ploinky-health-probes/${name}`, Destination: '/run/ploinky-health-probes', RW: true },
@@ -337,31 +333,28 @@ function liveMountFixture(agent) {
         Mounts.push(
             { Type: 'bind', Source: ploinky, Destination: ploinky, RW: false },
             { Type: 'bind', Source: `${ploinky}/repos`, Destination: `${ploinky}/repos`, RW: true },
+            { Type: 'bind', Source: '/tmp/ploinky-runtime-guards/7a31ab7775eb642cfbb41dd3/host', Destination: `${WORKSPACE}/.ploinky-box`, RW: false },
+            { Type: 'bind', Source: '/tmp/ploinky-runtime-guards/7a31ab7775eb642cfbb41dd3/workspace-data', Destination: `${WORKSPACE}/.data`, RW: false },
         );
     }
     return { name, binding: { name, agent, record: { config: { binds }, profile: 'default' } }, inspected: { Mounts },
-        options: { manifest, realpath: (value) => value } };
+        options: { manifest, realpath: (value) => value, tmpdir: () => '/tmp' } };
 }
 
 for (const agent of ['dpuAgent', 'soul-gateway', 'umamiAgent']) {
-    test(`${agent} mount validation accepts the mount list observed under Ploinky 7d8c04d0`, () => {
+    test(`${agent} mount validation accepts the workspace-data guard topology`, () => {
         const f = liveMountFixture(agent);
         assert.ok(assertContainerMounts(f.binding, f.inspected, f.options));
     });
 }
 
-// Current controller guards add the writable data ancestor pin and all three
-// protected-root masks after the registry binds are recorded. Use stand-in
+// Current controller guards mask workspace data and the other protected roots
+// after the registry binds are recorded. Use stand-in
 // runtime identities; only the observed mount shape is part of this fixture.
 function guardedDpuMountFixture() {
     const f = liveMountFixture('dpuAgent');
     f.binding.record.projectPath = WORKSPACE;
     f.options.tmpdir = () => '/tmp';
-    f.inspected.Mounts.push(
-        { Type: 'bind', Source: `${WORKSPACE}/.data`, Destination: `${WORKSPACE}/.data`, RW: true },
-        { Type: 'bind', Source: '/tmp/ploinky-runtime-guards/7a31ab7775eb642cfbb41dd3/host', Destination: `${WORKSPACE}/.ploinky-box`, RW: false },
-        { Type: 'bind', Source: '/tmp/ploinky-runtime-guards/7a31ab7775eb642cfbb41dd3/private', Destination: `${WORKSPACE}/.data/.private`, RW: false },
-    );
     return f;
 }
 
@@ -371,7 +364,7 @@ test('the current DPU data ancestor projection passes only with its canonical wo
 });
 
 const guardedMount = (f, target) => f.inspected.Mounts.find((mount) => mount.Destination === target);
-const protectedTargets = [`${WORKSPACE}/.ploinky/data`, `${WORKSPACE}/.ploinky-box`, `${WORKSPACE}/.data/.private`];
+const protectedTargets = [`${WORKSPACE}/.ploinky/data`, `${WORKSPACE}/.ploinky-box`, `${WORKSPACE}/.data`];
 
 for (const target of [`${WORKSPACE}/.ploinky`, ...protectedTargets]) {
     for (const scenario of ['absent', 'writable', 'foreign-source', 'redirected-source', 'redirected-target']) {
@@ -410,14 +403,14 @@ for (const [scenario, edit, code] of [
         f.binding.record.config.binds.find((bind) => bind.target === WORKSPACE).source = '/foreign';
     }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
     ['foreign actual workspace', (f) => { guardedMount(f, WORKSPACE).Source = '/foreign'; }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
-    ['redirected data source', (f) => { guardedMount(f, `${WORKSPACE}/.data`).Source = '/foreign'; }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    ['redirected data source', (f) => { guardedMount(f, `${WORKSPACE}/.data`).Source = '/foreign'; }, 'QA_DATA_MOUNT_INVALID'],
     ['noncanonical data source', (f) => { guardedMount(f, `${WORKSPACE}/.data`).Source += '/.'; }, 'QA_MOUNT_CONTRACT_INVALID'],
     ['duplicate destination', (f) => { f.inspected.Mounts.push({ ...guardedMount(f, `${WORKSPACE}/.data`) }); }, 'QA_MOUNT_CONTRACT_INVALID'],
     ['non-bind mask', (f) => { guardedMount(f, protectedTargets[0]).Type = 'volume'; }, 'QA_MOUNT_CONTRACT_INVALID'],
     ['non-boolean mask mode', (f) => { guardedMount(f, protectedTargets[0]).RW = 'false'; }, 'QA_MOUNT_CONTRACT_INVALID'],
     ['extra writable data descendant', (f) => {
         f.inspected.Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.data/rogue`, Destination: `${WORKSPACE}/.data/rogue`, RW: true });
-    }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],
+    }, 'QA_DATA_MOUNT_INVALID'],
     ['unrelated writable mount', (f) => {
         f.inspected.Mounts.push({ Type: 'bind', Source: '/tmp/foreign', Destination: '/scratch', RW: true });
     }, 'QA_UNREGISTERED_WRITABLE_MOUNT'],

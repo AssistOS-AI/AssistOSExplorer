@@ -6,7 +6,7 @@ require_nonblank() {
     local name="$1"
     local value="${!name-}"
     if ! node -e 'process.exit(String(process.argv[1] ?? "").trim() ? 0 : 1)' -- "$value"; then
-        echo "ERROR: $name is required and must not be blank; the managed manifest supplies an absolute /data path" >&2
+        echo "ERROR: $name is required and must not be blank; the managed manifest supplies an absolute /root path" >&2
         exit 1
     fi
 }

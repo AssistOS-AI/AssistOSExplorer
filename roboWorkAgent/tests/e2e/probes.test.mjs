@@ -24,8 +24,8 @@ test('paths probe fails on a readable sibling path and on a leaked marker, anywh
     await assert.rejects(runIsolationProbe({ ...options, probe: 'paths' }, { io, run: search('', '/fixture/.data/x/marker-B\n') }), /\/fixture\/\.data\/x\/marker-B/u);
     await assert.rejects(runIsolationProbe({ ...options, probe: 'hostlink', project: '/fixture/app' }, { io, run: search('', '/fixture/other/marker-B\n') }));
     // A victim home readable through the workspace fails the probe as well.
-    await assert.rejects(runIsolationProbe({ ...options, probe: 'paths' }, { io: { openSync: (file, flags) => file.startsWith('/fixture/.data/.private') ? 9 : denied(), closeSync() {} }, run: search('', '') }),
-        /Protected path admitted r access: \/fixture\/\.data\/\.private/u);
+    await assert.rejects(runIsolationProbe({ ...options, probe: 'paths' }, { io: { openSync: (file, flags) => file.startsWith('/fixture/.data/robots') ? 9 : denied(), closeSync() {} }, run: search('', '') }),
+        /Protected path admitted r access: \/fixture\/\.data\/robots/u);
 });
 
 test('service probe fails on a leaked credential', async () => {
@@ -96,7 +96,7 @@ test('masks probe passes a read-only workspace with empty masks and fails each h
     }
     await fails('a quarantined Box sibling lists an entry', model => { model.dirs['/fixture'].push('.ploinky-box.old'); model.dirs['/fixture/.ploinky-box.old'] = ['state']; }, /\.ploinky-box\.old is not empty/u);
     await fails('an upper-case spelling reaches the real .env', model => { model.files['/fixture/.ENV'] = 'SECRET=1'; }, /\.ENV opens a masked entry/u);
-    await fails('an upper-case spelling reaches the real .data', model => { model.dirs['/fixture/.DATA'] = ['.private']; }, /\.DATA opens a masked entry/u);
+    await fails('an upper-case spelling reaches the real .data', model => { model.dirs['/fixture/.DATA'] = ['robots']; }, /\.DATA opens a masked entry/u);
     await fails('root .env readable with content', model => { model.files['/fixture/.env'] = 'SECRET=1'; }, /content is readable/u);
     await fails('root .env missing though expected', model => { delete model.files['/fixture/.env']; }, /ENOENT/u);
     await fails('root .env present though expected absent', () => {}, /ENOENT|did not throw|Missing expected/u, { env: 'absent' });
@@ -111,7 +111,7 @@ test('masks probe passes a read-only workspace with empty masks and fails each h
     await fails('the root lacks the sibling first segment', model => { model.dirs['/fixture'] = model.dirs['/fixture'].filter(name => name !== 'other'); }, /does not list/u);
     await fails('the root lacks the working folder first segment', model => { model.dirs['/fixture'] = model.dirs['/fixture'].filter(name => name !== 'app'); }, /does not list/u);
     await fails('the victim home is readable through the workspace', model => {
-        model.files['/fixture/.data/.private/roboWorkAgent/robots/robot-b/home/marker-B'] = 'B';
+        model.files['/fixture/.data/robots/robot-b/home/marker-B'] = 'B';
     }, /Protected path admitted/u);
     await fails('the control file is not writable', model => { model.writable = []; }, /EROFS/u);
     await fails('the working folder .roboteam lists an entry', model => { model.dirs['/fixture/app/.roboteam'] = ['conversation']; }, /\.roboteam is not empty/u);
@@ -135,7 +135,7 @@ test('masks probe judges only visible writable mounts: a mask stacked on a mount
     const passes = extra => maskProbe(model => Object.assign(model, withMounts(extra)));
     // Podman: `ro,rbind` copies the `.data` mount as rw (id 20, parent: the root mount), and `--tmpfs` stacks the mask on it, so the
     // mask's parent is the copied mount and its mount point the same. The copy and everything below it are hidden.
-    const copied = [mount(20, 10, '/fixture/.data', 'rw,relatime'), mount(22, 20, '/fixture/.data/.private', 'rw,relatime')];
+    const copied = [mount(20, 10, '/fixture/.data', 'rw,relatime'), mount(22, 20, '/fixture/.data/robots', 'rw,relatime')];
     const without = MOUNTS().filter(line => !line.startsWith('12 '));
     const withCopied = extra => ({ mountinfo: [...without, ...copied, ...extra].join('\n') + '\n' });
     await maskProbe(model => Object.assign(model, withCopied([mount(21, 20, '/fixture/.data', 'ro,nosuid,nodev,noexec,relatime')])));
@@ -145,8 +145,8 @@ test('masks probe judges only visible writable mounts: a mask stacked on a mount
     await assert.rejects(maskProbe(model => Object.assign(model, withCopied([mount(21, 20, '/fixture/.data', 'ro,relatime'), mount(23, 21, '/fixture/.data/x', 'rw')]))), /\/fixture\/\.data\/x/u);
     await assert.rejects(maskProbe(model => Object.assign(model, withCopied([mount(21, 20, '/fixture/.data', 'ro,relatime'), mount(23, 21, '/fixture/.data', 'rw')]))), /\/fixture\/\.data/u);
     // Bubblewrap and a mask mounted beside a copied mount: the later sibling above it covers it, whatever the order.
-    await passes([mount(9, 10, '/fixture/.data/.private', 'rw,relatime')]);
-    await passes([mount(9, 10, '/fixture/.data/.private', 'rw,relatime'), mount(13, 9, '/fixture/.data/.private/deep', 'rw')]);
+    await passes([mount(9, 10, '/fixture/.data/robots', 'rw,relatime')]);
+    await passes([mount(9, 10, '/fixture/.data/robots', 'rw,relatime'), mount(13, 9, '/fixture/.data/robots/deep', 'rw')]);
     // A stacked pair counts by the top one: each mount is attached to the one it covers.
     await passes([mount(13, 10, '/fixture/other', 'rw'), mount(14, 13, '/fixture/other', 'ro')]);
     await fails([mount(13, 10, '/fixture/other', 'ro'), mount(14, 13, '/fixture/other', 'rw')], /\/fixture\/other/u);
@@ -163,7 +163,7 @@ test('masks probe judges only visible writable mounts: a mask stacked on a mount
     // A malformed table is an error, never an empty list.
     await assert.rejects(maskProbe(model => { model.mountinfo = 'not a mount table\n'; }), /malformed/u);
     assert.deepEqual(writableWorkspaceMounts(withMounts([mount(13, 10, '/fixture/other', 'rw')]).mountinfo, '/fixture', '/fixture/app'), ['/fixture/other']);
-    assert.deepEqual(visibleMounts(parseMountinfo(withMounts([mount(9, 10, '/fixture/.data/.private', 'rw')]).mountinfo)).map(entry => entry.id), [10, 11, 12]);
+    assert.deepEqual(visibleMounts(parseMountinfo(withMounts([mount(9, 10, '/fixture/.data/robots', 'rw')]).mountinfo)).map(entry => entry.id), [10, 11, 12]);
     assert.deepEqual(visibleMounts(parseMountinfo(withCopied([mount(21, 20, '/fixture/.data', 'ro')]).mountinfo)).map(entry => entry.id), [10, 11, 21]);
 });
 
@@ -195,7 +195,7 @@ test('fd probe fails on an inherited descriptor', async () => {
     const line = (fd, target) => `lr-x------ 1 root root 64 Oct 1 00:00 ${fd} -> ${target}\n`;
     const inventory = line(0, '/dev/null') + line(1, 'pipe:[123]') + line(2, 'pipe:[124]');
     await runIsolationProbe({ ...options, probe: 'fds' }, { run: async () => ({ stdout: inventory }) });
-    await assert.rejects(runIsolationProbe({ ...options, probe: 'fds' }, { run: async () => ({ stdout: inventory + line(9, '/data/robots/robot-b/home/marker-B') }) }));
+    await assert.rejects(runIsolationProbe({ ...options, probe: 'fds' }, { run: async () => ({ stdout: inventory + line(9, '/robots/robot-b/home/marker-B') }) }));
     await assert.rejects(runIsolationProbe({ ...options, probe: 'fds' }, { run: async () => ({ stdout: inventory + line(9, 'socket:[555]') }) }), /Unexpected inherited descriptor/u);
 });
 

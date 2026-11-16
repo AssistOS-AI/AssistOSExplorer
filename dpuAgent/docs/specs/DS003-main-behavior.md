@@ -17,6 +17,7 @@ summary: Defines confidential objects, scoped secrets, and controlled research p
 | --- | --- |
 | Confidential workspace objects | Users browse and edit confidential files through Explorer without exposing a normal filesystem tree. |
 | Scoped secret access | Users and authorized agents retrieve credentials through ACL-aware tools without copying secret storage into Explorer. |
+| Workspace private-data inspection | Users inspect private workspace files through role-filtered tools while the master key remains inaccessible. |
 | Controlled research processing | Research users consume authorized files and confirm processing jobs while participant data remains protected. |
 
 ### Confidential workspace objects
@@ -30,3 +31,7 @@ A `dpu_secret_*` call must use verified invocation identity and the applicable s
 ### Controlled research processing
 
 The research [MCP](wiki.html#definition-mcp) tools validate the caller, file access, backend capability, and required confirmation before processing. [DPU](wiki.html#definition-dpuagent) owns job transitions, protected results, and provenance; Explorer presents the workflow and does not become an alternative authorization authority. [DS009-research-data-and-secure-processing](specsLoader.html?spec=DS009-research-data-and-secure-processing.md) defines the supported processing and evidence boundaries.
+
+### Workspace private-data inspection
+
+An authenticated user selects `/.data` in Explorer or calls a `dpu_data_*` tool. DPU applies the verified user's role before listing, inspecting or reading files. Administrators see the workspace data tree except the master key; other users see only `agents/explorer`. The same authorization applies to downloads and direct tool calls. Every outcome is audited, and Explorer offers no write operations for this tree. [DS002-storage-architecture](specsLoader.html?spec=DS002-storage-architecture.md) defines the path, link and size boundaries.

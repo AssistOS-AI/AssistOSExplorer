@@ -198,9 +198,8 @@ test('manifest requests the bounded nested Podman capability', async () => {
 test('manifest stores RoboTeam state in the workspace private data tree', async () => {
     const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
 
-    assert.deepEqual(manifest.volumes, {
-        '.data/roboTeamAgent': '/data',
-    });
+    assert.equal(Object.values(manifest.volumes || {}).includes('/data'), false);
+    assert.equal(Object.values(manifest.volumes || {}).includes('/root'), false);
 });
 
 test('manifest declares the required report repository alongside ALA', async () => {
@@ -221,7 +220,7 @@ test('manifest selects runtime-only GUI images and the persistent tool cache', a
 
     assert.equal(constants.DESKTOP_IMAGE, 'docker.io/assistos/roboteam-desktop:runtime');
     assert.equal(constants.BROWSER_IMAGE, 'docker.io/assistos/roboteam-browser:runtime');
-    assert.equal(constants.TOOL_CACHE_DIR, '/data/tool-cache');
+    assert.equal(constants.TOOL_CACHE_DIR, '/root/tool-cache');
     assert.equal(constants.TOOL_REFRESH_INTERVAL_MS, 21600000);
 });
 
@@ -248,7 +247,8 @@ test('install hook verifies the runtime and prepares the persistent tool-cache r
     assert.match(source, /podman-version:5\.8\.7/);
     assert.match(source, /force_mask = \"0700\"/);
     assert.match(source, /\/var\/lib\/roboteam-podman\/storage/);
-    assert.match(source, /\/data\/podman\/images/);
+    assert.ok(source.includes('/(data|root)/podman/images'));
+    assert.match(source, /CONTAINERS_STORAGE_CONF=\$\(node "\$script_dir\/prepare-podman-storage\.mjs"\)/);
     assert.match(source, /transient_store = true/);
     assert.match(source, /podman version 5\.8\.7/);
     assert.doesNotMatch(source, /podman-major|podman version 6/);

@@ -139,7 +139,7 @@ function validateBlobRef(blobRef, expectedAgent) {
     throw new Error('The staged blob agent must be a short agent name.');
   }
   if (agent !== expectedAgent) throw new Error('The staged blob belongs to a different agent.');
-  if (localPath !== `.data/${agent}/blobs/${id}`) throw new Error('The staged blob path does not match its id.');
+  if (localPath !== `.data/agents/${agent}/blobs/${id}`) throw new Error('The staged blob path does not match its id.');
   return { id, localPath };
 }
 
@@ -150,7 +150,7 @@ export function createWebMeetMediaStore({
   workspaceRoot,
   agentName = process.env.PLOINKY_AGENT_NAME || process.env.AGENT_NAME || 'explorer'
 }) {
-  // Staged blobs live in this agent's own `.data/<agent>/blobs`, which the
+  // Staged blobs live in this agent's own `.data/agents/<agent>/blobs`, which the
   // user-facing `validatePath` refuses; they are reached through the private
   // data boundary instead.
   const stagedBlobs = createExplorerPrivateDataBoundary({ fs, path, workspaceRoot, agentName: String(agentName || 'explorer') });

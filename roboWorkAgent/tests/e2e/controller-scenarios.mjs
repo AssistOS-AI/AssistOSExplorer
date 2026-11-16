@@ -28,7 +28,7 @@ is the current operator browser's private Playwright JSON and origin is a local
 published port of this exact Box. I2 exercises native preparation and Browser
 creation but supplies no model prompt; it requires the approved baseline Git
 object for its isolated mode-mutation negative control. I10 retains all eighteen
-grant refusals (the workspace-private .data/roboTeamAgent and .ploinky-box included, each
+grant refusals (the workspace-private .data/agents/roboTeamAgent and .ploinky-box included, each
 proved to exist from RoboWork first) and performs a finite native symlink read through
 the normal default robot WebTTY terminal (existing smoke Playwright/Chromium required).
 W1 uses a new owned robot and owned folders to prove that a sibling folder's OpenCode
@@ -103,7 +103,7 @@ export async function symlinkHelpers(runtime) {
     try {
         created = true;
         await runtime.node(runtime.config.rw, `
-            const home='/data/robots/'+input.attacker+'/home', target='/data/robots/'+input.victim+'/home';
+            const home='/robots/'+input.attacker+'/home', target='/robots/'+input.victim+'/home';
             const config=path.join(home,'.config');
             if(!fs.existsSync(config)) fs.mkdirSync(config,{mode:0o700});
             if(!fs.lstatSync(config).isDirectory()||fs.lstatSync(config).isSymbolicLink()) throw Error('Unsafe owned config');
@@ -157,8 +157,8 @@ export async function safeDelete(runtime) {
     try {
         created = true;
         await runtime.node(runtime.config.rw, `
-            const home='/data/robots/'+input.attacker+'/home';
-            const target='/data/robots/'+input.victim+'/home';
+            const home='/robots/'+input.attacker+'/home';
+            const target='/robots/'+input.victim+'/home';
             fs.symlinkSync(target,path.join(home,'victim-link'),'dir');
             const expected=fs.readFileSync(path.join(target,'marker-B'));
             if(!fs.readFileSync(path.join(home,'victim-link','marker-B')).equals(expected)) throw Error('Dead positive control');
@@ -167,7 +167,7 @@ export async function safeDelete(runtime) {
         assertDeleted(deleted);
         created = false;
         await runtime.node(runtime.config.rw, `
-            try {fs.lstatSync('/data/robots/'+input.id); throw Error('Deleted robot still exists');}
+            try {fs.lstatSync('/robots/'+input.id); throw Error('Deleted robot still exists');}
             catch(error) {if(error.code!=='ENOENT') throw error;}
             console.log('true');`, { id: attacker });
     } catch (error) { operationError = error; }
@@ -185,7 +185,7 @@ export async function safeDelete(runtime) {
 }
 
 export async function otherAgentMasks(runtime) {
-    const privatePath = `${runtime.config.workspace}/.data/.private`;
+    const privatePath = `${runtime.config.workspace}/.data/robots`;
     const inventory = [];
     for (const [name, row] of Object.entries(runtime.registry).filter(([, row]) => row.type === 'agent')) {
         const evidence = await runtime.node(row.containerId, `
@@ -198,7 +198,7 @@ export async function otherAgentMasks(runtime) {
     }
     assert.ok(inventory.length > 0);
     const victim = await runtime.snapshot(runtime.config.victim);
-    const homes = await runtime.node(runtime.config.rw, 'console.log(JSON.stringify(fs.readdirSync("/data/robots")));');
+    const homes = await runtime.node(runtime.config.rw, 'console.log(JSON.stringify(fs.readdirSync("/robots")));');
     assert.ok(homes.includes(runtime.config.victim), 'Privileged RoboWork positive control cannot list victim home.');
     const control = `${runtime.config.workspace}/controller-mask-${randomUUID()}`;
     const owner = await runtime.node(runtime.config.rw, `
@@ -252,12 +252,12 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
         await noRuns();
         await runtime.node(runtime.config.rw, `
             fs.mkdirSync(path.join(input.project,'grantable'),{mode:0o700});
-            fs.symlinkSync('/data/robots/'+input.victim+'/home',path.join(input.project,'victim-link'),'dir');
+            fs.symlinkSync('/robots/'+input.victim+'/home',path.join(input.project,'victim-link'),'dir');
             const bytes=fs.readFileSync(path.join(input.project,'victim-link','marker-B'));
             if(crypto.createHash('sha256').update(bytes).digest('hex')!==input.markerHash) throw Error('Grant symlink positive control failed'); console.log('true');
         `, { project, victim, markerHash: before.markerHash });
         // Workspace entries that exist but belong to no robot. The service must see them, or a refusal proves nothing.
-        const private_ = [`${workspace}/.data/roboTeamAgent`, `${workspace}/.ploinky-box`];
+        const private_ = [`${workspace}/.data/agents/roboTeamAgent`, `${workspace}/.ploinky-box`];
         await runtime.node(runtime.config.rw, `
             for (const target of input.targets) if (!fs.lstatSync(target).isDirectory()) throw Error('Refusal target is not a directory: '+target);
             console.log('true');
@@ -272,8 +272,8 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
         // export would cover `.roboteam`.
         assertRefused(await runtime.mcp('run_start', { ...request, folders: [{ source: `${project}/grantable` }] }), 'INVALID_INPUT');
         assertRefused(await runtime.mcp('run_start', { ...request, folders: [{ source: project }] }), 'FOLDER_REFUSED');
-        const paths = ['/data', '/data/robots', `/data/robots/${victim}/home`,
-            `${workspace}/.data/.private`, workspace, '/', `${project}/victim-link`, ...private_];
+        const paths = ['/root', '/robots', `/robots/${victim}/home`,
+            `${workspace}/.data/robots`, workspace, '/', `${project}/victim-link`, ...private_];
         for (const target of paths) {
             for (const kind of ['cwd', 'folder']) {
                 const result = await runtime.mcp('run_start', kind === 'cwd' ? { ...request, cwd: target }
@@ -337,7 +337,7 @@ export async function walkUpAndDiscovery(runtime) {
             for (const [directory, file, source] of input.plugins) {
                 for (const name of ['plugin','plugins']) { fs.mkdirSync(path.join(directory,'.opencode',name),{recursive:true}); fs.writeFileSync(path.join(directory,'.opencode',name,file),source); }
             }
-            const home='/data/robots/'+input.attacker+'/home/.config/opencode/plugins';
+            const home='/robots/'+input.attacker+'/home/.config/opencode/plugins';
             fs.mkdirSync(home,{recursive:true}); fs.writeFileSync(path.join(home,'w1-recorder.js'),input.recorder);
             console.log('true');
         `, { op: 'plant', attacker, recorder: RECORDER(workspace), plugins: [
@@ -347,7 +347,7 @@ export async function walkUpAndDiscovery(runtime) {
             const records=fs.existsSync(input.file)?fs.readFileSync(input.file,'utf8').split('\\n').filter(Boolean).map(line=>JSON.parse(line)):[];
             const present=name=>fs.existsSync(path.join(input.cwd,name));
             console.log(JSON.stringify({records,sibling:present(input.markers.sibling),parent:present(input.markers.parent),own:present(input.markers.own)}));
-        `, { op: 'observe', file: `/data/robots/${attacker}/home/w1-recorder.jsonl`, cwd, markers: W1_MARKERS });
+        `, { op: 'observe', file: `/robots/${attacker}/home/w1-recorder.jsonl`, cwd, markers: W1_MARKERS });
         // A fresh discovery: a new robot has no cached catalog, and the recorder is new to its configuration.
         const models = await runtime.mcp('robot_models', { robotId: attacker, agent: 'opencode', cwd });
         assert.ok(models.ok === true, 'Model discovery failed, so its view of the workspace was not observed.');
@@ -429,7 +429,7 @@ export async function dualHome(runtime) {
             const targets = ['/config', `/home/${victim}`];
             const mounts = targets.map(target => row.Mounts?.find(mount => mount.Destination === target));
             assert.ok(mounts.every(mount => mount?.Type === 'bind'));
-            assert.equal(mounts[0].Source, `/data/robots/${victim}/home`);
+            assert.equal(mounts[0].Source, `/robots/${victim}/home`);
             assert.equal(mounts[1].Source, mounts[0].Source);
             const output = await runtime.inner(runtime.config.rw, ['podman', 'exec', id, 'stat', '-c', '%d:%i:%F', ...targets]);
             const stats = output.trim().split('\n').map(line => {
@@ -456,9 +456,9 @@ export async function workspaceStorage(runtime) {
         await runtime.inner(runtime.config.rw, ['podman', 'volume', 'ls', '--format', 'json'])]) {
         assert.deepEqual(JSON.parse(output), [], 'Named volumes exist in the selected Box or RoboWork.');
     }
-    const root = `${runtime.config.workspace}/.data/.private/roboWorkAgent`;
+    const root = `${runtime.config.workspace}/.data/agents/roboWorkAgent`;
     const inspection = runtime.inspections.get(runtime.config.rw);
-    assert.ok(inspection.Mounts?.some(mount => mount.Type === 'bind' && mount.Source === root && mount.Destination === '/data'),
+    assert.ok(inspection.Mounts?.some(mount => mount.Type === 'bind' && mount.Source === root && mount.Destination === '/root'),
         'RoboWork data is not the selected workspace bind.');
     const output = await runtime.box(['du', '-s', root]);
     const match = /^(\d+)\s+/u.exec(output); assert.ok(match && Number(match[1]) > 0, 'Private workspace storage is missing.');

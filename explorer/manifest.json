@@ -67,5 +67,12 @@
             ],
             "preinstall": "scripts/hooks/preinstall.sh"
         }
+    },
+    "runtime": {
+        "resources": {
+            "env": {
+                "EXPLORER_DATA_ROOT": "/root"
+            }
+        }
     }
 }

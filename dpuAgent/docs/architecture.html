@@ -61,8 +61,8 @@
 
                 <section>
                     <h2>Storage Layout</h2>
-                    <p>The required <code>DPU_DATA_ROOT</code> keeps metadata files and encrypted content in separate places. <a href="wiki.html#definition-ploinky">Ploinky</a> mounts the managed <code>.data/dpu-data</code> storage at <code>/dpu-data</code>:</p>
-                    <pre><code>/dpu-data/
+                    <p>The required <code>DPU_DATA_ROOT</code> keeps metadata files and encrypted content in separate places. <a href="wiki.html#definition-ploinky">Ploinky</a> mounts the managed <code>.data/dpu-data</code> storage at <code>/root</code>:</p>
+                    <pre><code>/root/
   state.json
   permissions.manifest.json
   secrets.json
@@ -77,7 +77,8 @@
                 </section>
             </div>
         </div>
-    </main>
+    <p>Explorer exposes <code>/.data</code> through DPU tools. Administrators can inspect the data tree except the master key; other users can inspect only <code>agents/explorer</code>. Listings, file previews and individual downloads are read-only and audited. The master key and its migration artifacts are never returned.</p>
+</main>
 
     <footer id="site-footer" class="site-footer"></footer>
     <script src="partials-loader.js"></script>

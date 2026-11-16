@@ -42,7 +42,7 @@ function fixture(t) {
         cloudflare: { tunnelId: '89dd05b5-05a7-4bd4-9626-ec4343b07c67',
             tunnelTokenSecret: 'publication/explorer-qa-tunnel', apiTokenSecret: 'publication/explorer-qa-api' },
     });
-    write(path.join(scope.workspace, '.data/explorer/accounts'), 'durable operator content');
+    write(path.join(scope.workspace, '.data/agents/explorer/accounts'), 'durable operator content');
     write(path.join(scope.workspace, '.ploinky/.secrets'), 'opaque encrypted fixture');
     const boxes = [{ engine: 'podman', box: { id: BOX, name: scope.box, contract: 'immutable-contract', running: true,
         image: IMAGE, imageReference: `registry/box@sha256:${IMAGE}`, mounts: [
@@ -140,7 +140,7 @@ function fixture(t) {
     };
     const service = createUpdateService(adapters, scope);
     const unchangedData = () => {
-        assert.equal(fs.readFileSync(path.join(scope.workspace, '.data/explorer/accounts'), 'utf8'), 'durable operator content');
+        assert.equal(fs.readFileSync(path.join(scope.workspace, '.data/agents/explorer/accounts'), 'utf8'), 'durable operator content');
         assert.equal(fs.readFileSync(path.join(scope.workspace, '.ploinky/.secrets'), 'utf8'), 'opaque encrypted fixture');
     };
     return { root, scope, receipt, state, sourcePins, boxes, agents, events, calls, adapters, service, unchangedData };

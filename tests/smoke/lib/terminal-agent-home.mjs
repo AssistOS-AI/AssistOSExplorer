@@ -6,11 +6,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const [operation, id, name, marker, expectedInode] = process.argv.slice(1);
 if (!/^[a-z0-9][a-z0-9-]{2,63}$/.test(id) || !/^terminal-[a-f0-9]{12}$/.test(name) || !/^terminal-[a-f0-9]{12}$/.test(marker)) throw Error('Invalid owned fixture');
-for (const dir of ['/data', '/data/robots', '/data/robots/' + id, '/data/robots/' + id + '/home']) {
+for (const dir of ['/robots', '/robots/' + id, '/robots/' + id + '/home']) {
   const st = fs.lstatSync(dir);
   if (!st.isDirectory() || st.isSymbolicLink()) throw Error('Unsafe robot home');
 }
-const root = '/data/robots/' + id;
+const root = '/robots/' + id;
 const label = path.join(root, 'label');
 const labelStat = fs.lstatSync(label);
 if (!labelStat.isFile() || labelStat.isSymbolicLink()) throw Error('Unsafe robot label');

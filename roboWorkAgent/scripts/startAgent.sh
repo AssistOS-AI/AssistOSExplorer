@@ -10,6 +10,9 @@ if [ -L "$XDG_RUNTIME_DIR" ] || [ ! -d "$XDG_RUNTIME_DIR" ] || [ ! -O "$XDG_RUNT
 fi
 chmod 700 "$XDG_RUNTIME_DIR"
 roboteam-podman-init
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+CONTAINERS_STORAGE_CONF=$(node "${ROBOWORK_STORAGE_PREPARE_SCRIPT:-$script_dir/prepare-podman-storage.mjs}")
+export CONTAINERS_STORAGE_CONF
 
 # Fresh per launch, shared only by AgentServer callbacks and the HTTP service.
 ROBOWORK_INTERNAL_TOKEN=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')

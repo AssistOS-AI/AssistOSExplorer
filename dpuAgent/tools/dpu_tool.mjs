@@ -26,6 +26,7 @@ import {
   getAgentPolicyForPrincipal,
   setAgentPolicyAllowedRoles
 } from '../lib/dpu-store.mjs';
+import { DATA_TOOLS, executeWorkspaceDataTool } from '../lib/workspace-data.mjs';
 import { executeDpuResearchTool, isDpuResearchTool } from '../lib/dpu-research-tools.mjs';
 
 async function loadInvocationAuth() {
@@ -285,6 +286,11 @@ async function main() {
   const toolName = process.env.TOOL_NAME;
   let args = normalizeInput(envelope || {});
   const isResearchTool = isDpuResearchTool(toolName);
+
+  if (DATA_TOOLS.includes(toolName)) {
+    writeJson(await executeWorkspaceDataTool(toolName, authInfo, args));
+    return;
+  }
 
   if (isResearchTool) {
     const researchResult = await executeDpuResearchTool(toolName, authInfo, args);

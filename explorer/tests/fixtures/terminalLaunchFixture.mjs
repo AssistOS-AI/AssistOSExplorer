@@ -146,7 +146,7 @@ try {
     fs.mkdirSync(home, { recursive: true, mode: 0o700 });
     fs.mkdirSync(path.join(privateRoot, 'robots/robot-b/home'), { recursive: true, mode: 0o700 });
     fs.mkdirSync(project, { recursive: true });
-    fs.mkdirSync(path.join(workspace, '.data/roboWorkAgent'), { recursive: true });
+    fs.mkdirSync(path.join(workspace, '.data/agents/roboWorkAgent'), { recursive: true });
     fs.writeFileSync(path.join(home, 'original-marker'), nonce, { flag: 'wx', mode: 0o600 });
     fs.writeFileSync(path.join(privateRoot, 'robots/robot-b/home/sibling-marker'), nonce, { flag: 'wx', mode: 0o600 });
     fs.writeFileSync(path.join(workspace, '.data/.private/parent-marker'), nonce, { flag: 'wx', mode: 0o600 });

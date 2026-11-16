@@ -63,7 +63,7 @@ export function assertNativeObservation(observed, expected, processProof) {
     assert.equal(observed.cwd, expected.project, 'Native cwd differs.');
     assert.equal(observed.tty, true, 'Native command has no controlling TTY.');
     assert.equal(observed.profileEnv, false, 'Outer profile environment reached the command.');
-    assert.equal(observed.link, `/data/robots/${expected.victim}/home`);
+    assert.equal(observed.link, `/robots/${expected.victim}/home`);
     assert.equal(observed.readable, false, 'Native sandbox read the victim through the workspace link.');
     assert.ok(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR'].includes(observed.denial), 'Native read did not produce an exact filesystem denial.');
     assert.match(observed.pidNamespace || '', /^pid:\[[1-9][0-9]*\]$/u);
@@ -123,7 +123,7 @@ async function processProof(runtime, input) {
                 if(!nspid) throw Error('Missing namespace PID');
                 const env=fs.readFileSync(base+'/environ','utf8').split('\\0');
                 if(!env.includes('HOME=/home/'+input.attacker)||fs.realpathSync(base+'/cwd')!==input.project) throw Error('Wrong native process');
-                const home=fs.statSync(base+'/root/home/'+input.attacker),owned=fs.statSync('/data/robots/'+input.attacker+'/home');
+                const home=fs.statSync(base+'/root/home/'+input.attacker),owned=fs.statSync('/robots/'+input.attacker+'/home');
                 let pid=Number(name),receiptAncestor=false,ttySameAsReceipt=null,ttyReceiptReadError=null,ttyControllingMatches=false;
                 for(let depth=0;depth<32&&pid>1;depth++) {
                     const s=fs.readFileSync('/proc/'+pid+'/stat','utf8').split(') ').at(-1).split(' ');
@@ -193,7 +193,7 @@ async function cleanupProof(runtime, baseline, receipt, native, attacker, stubOw
         for(const row of input.native?.members||[]) {try {const fields=fs.readFileSync('/proc/'+row.pid+'/stat','utf8').split(') ').at(-1).split(' ');
             if(fields[19]===row.startToken) throw Error('Owned terminal session member remains');}
             catch(error) {if(error.code!=='ENOENT'&&error.code!=='ESRCH') throw error;}}
-        const stub=path.join(input.workspace,'.data/roboWorkAgent/terminal',input.attacker),st=fs.lstatSync(stub);
+        const stub=path.join(input.workspace,'.data/agents/roboWorkAgent/terminal',input.attacker),st=fs.lstatSync(stub);
         if(!st.isDirectory()||st.isSymbolicLink()||st.uid!==process.getuid()||fs.readdirSync(stub).length
             ||st.dev!==input.stubOwner.dev||st.ino!==input.stubOwner.ino) throw Error('Nonempty or changed terminal stub');
         console.log('true');`, { native, workspace: runtime.config.workspace, attacker, stubOwner });
@@ -240,12 +240,12 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
         const selected = await page.evaluate(async ({ profile, project, attacker }) => {
             const api=await import('/base-agent-additional-server/roboTeamAgent/3001/terminal.js');
             const prepared=await api.prepareRobotTerminal(profile);
-            if(prepared?.ok!==true||prepared.id!==profile||prepared.root!=='.data/roboWorkAgent/terminal/'+attacker) throw Error('Wrong profile preparation');
+            if(prepared?.ok!==true||prepared.id!==profile||prepared.root!=='.data/agents/roboWorkAgent/terminal/'+attacker) throw Error('Wrong profile preparation');
             return (await api.discoverRobotTerminal(project,profile)).url;
         }, { profile, project: project.slice(runtime.config.workspace.length + 1), attacker });
         assert.match(selected, /^\/webtty\/#launch=[A-Za-z0-9_-]{32}$/u);
         stubOwner = await runtime.node(runtime.config.rw, `
-            const stub=path.join(input.workspace,'.data/roboWorkAgent/terminal',input.attacker),st=fs.lstatSync(stub);
+            const stub=path.join(input.workspace,'.data/agents/roboWorkAgent/terminal',input.attacker),st=fs.lstatSync(stub);
             if(!st.isDirectory()||st.isSymbolicLink()||st.uid!==process.getuid()||fs.readdirSync(stub).length) throw Error('Unsafe prepared stub');
             console.log(JSON.stringify({dev:st.dev,ino:st.ino}));`, { workspace: runtime.config.workspace, attacker });
         // The bootstrap consumes #launch only when a document loads. Navigating
@@ -361,7 +361,7 @@ export async function nativeSymlinkControl(runtime, { attacker, project, victim 
             created, sessionRequestObserved, sessionRequestFailed, sessionResponseStatus, cleanupConfirmed,
             observed: observed ? { nonceMatches: observed.nonce === nonce, homeMatches: observed.home === `/home/${attacker}`,
                 userMatches: observed.user === attacker, cwdMatches: observed.cwd === project, tty: observed.tty === true,
-                profileEnvAbsent: observed.profileEnv === false, linkMatches: observed.link === `/data/robots/${runtime.config.victim}/home`,
+                profileEnvAbsent: observed.profileEnv === false, linkMatches: observed.link === `/robots/${runtime.config.victim}/home`,
                 readDenied: observed.readable === false && ['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR'].includes(observed.denial) } : null,
             native: native ? { homeMatches: native.homeMatches === true, ttyMatches: native.ttyMatches === true,
                 ttyPathMatches: typeof native.ttyPathMatches === 'boolean' ? native.ttyPathMatches : null,

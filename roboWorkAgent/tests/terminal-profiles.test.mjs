@@ -25,13 +25,13 @@ const PROFILE = 'robot-a.default';
 async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'rw-terminal-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const paths = new RobotPaths({ dataDir: path.join(root, 'data'), workspaceRoot: path.join(root, 'workspace') });
+    const paths = new RobotPaths({ robotsDir: path.join(root, 'robots'), dataDir: path.join(root, 'data'), workspaceRoot: path.join(root, 'workspace') });
     for (const directory of [path.join(paths.workspaceRoot, '.data'), path.join(paths.workspaceRoot, '.ploinky'),
-        path.join(paths.dataDir, 'robots', 'robot-a', 'home'), paths.soul('robot-a'), path.join(paths.dataDir, 'tool-cache')]) {
+        path.join(paths.robotsDir, 'robot-a', 'home'), paths.soul('robot-a'), path.join(paths.dataDir, 'tool-cache')]) {
         await fs.mkdir(directory, { recursive: true });
     }
     await fs.writeFile(path.join(paths.workspaceRoot, '.env'), 'test fixture only');
-    await fs.writeFile(path.join(paths.dataDir, 'robots', 'robot-a', 'label'), '{}');
+    await fs.writeFile(path.join(paths.robotsDir, 'robot-a', 'label'), '{}');
     const stub = await ensureTerminalStub(paths, 'robot-a');
     const calls = { tools: 0, runtime: 0, ala: 0, home: [], pulls: 0 };
     const robot = { id: 'robot-a', name: 'Robot A', codingAgents: ['opencode'] };
@@ -54,7 +54,7 @@ test('catalog and resolve are readonly, even before first preparation; compound 
         { key: 'default', label: 'RoboWork (default)', available: true, reason: '' },
         { key: 'YWdlbnQ', label: 'Agent', available: true, reason: '' },
     ] });
-    assert.deepEqual(await f.api.resolve(PROFILE), { allowed: true, profile: { id: PROFILE, label: 'Robot A', home: 'terminal/robot-a' } });
+    assert.deepEqual(await f.api.resolve(PROFILE), { allowed: true, profile: { id: PROFILE, label: 'Robot A', home: { root: 'robots', path: 'robot-a/terminal' } } });
     assert.equal((await f.api.resolve('robot-a.YWdlbnQ')).allowed, true);
     for (const value of ['robot-a', 'robot-a.unknown', '../bad.default', 'robot-b.default', '', null, {}, 'robot-a.default.extra']) {
         assert.deepEqual(await f.api.resolve(value), { allowed: false });
@@ -75,7 +75,7 @@ test('live resolution uses the real home without preparing images and refuses su
     };
     const body = { version: 2, action: 'resolve', id: PROFILE, mode: 'live-agent' };
     assert.deepEqual((await request(body)).body, { allowed: true, profile: { id: PROFILE, label: 'Robot A',
-        home: { root: 'private', path: 'robots/robot-a/home' } } });
+        home: { root: 'robots', path: 'robot-a/home' } } });
     assert.equal((await request(body, { ...ADMIN, internal: true })).status, 403);
     assert.equal((await request(body, { ...ADMIN, canAdmin: false })).status, 403);
     assert.equal((await request({ ...body, extra: true })).status, 400);
@@ -90,7 +90,7 @@ test('live resolution uses the real home without preparing images and refuses su
 test('prepare confines home writes, records only protected metadata and deduplicates simultaneous requests', async t => {
     const f = await fixture(t);
     const answers = await Promise.all([f.api.prepare(PROFILE), f.api.prepare(PROFILE)]);
-    assert.deepEqual(answers[0], { ok: true, id: PROFILE, label: 'Robot A', root: '.data/roboWorkAgent/terminal/robot-a' });
+    assert.deepEqual(answers[0], { ok: true, id: PROFILE, label: 'Robot A', root: '.data/robots/robot-a/terminal' });
     assert.deepEqual(answers[0], answers[1]);
     assert.equal(f.calls.tools, 1); assert.equal(f.calls.runtime, 0); assert.equal(f.calls.ala, 1);
     assert.equal(f.calls.home.length, 1); assert.deepEqual(f.calls.home[0].slice(0, 2), ['robot-a', 'shell']);
@@ -469,7 +469,7 @@ test('chosen terminal preparation returns retry immediately and default preparat
 
 test('the real shell sandbox arguments bind robot-a home and never another robot home or the robots directory', async t => {
     const f = await fixture(t);
-    const other = path.join(f.paths.dataDir, 'robots', 'robot-b', 'home');
+    const other = path.join(f.paths.robotsDir, 'robot-b', 'home');
     await fs.mkdir(other, { recursive: true });
     await f.api.prepare(PROFILE);
     const { descriptor } = await readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub);
@@ -480,7 +480,24 @@ test('the real shell sandbox arguments bind robot-a home and never another robot
     const launch = await buildShellSandbox(descriptor, { loadSandbox: async () => ({ ...sandbox, canMountPrivateProc: () => true }) });
     assert.ok(launch.args.includes(f.paths.home('robot-a')), 'the robot own home is bound');
     const sources = launch.args.flatMap((value, index) => ['--bind', '--ro-bind'].includes(value) ? [launch.args[index + 1]] : []);
-    assert.deepEqual(sources.filter(source => source.startsWith(f.paths.dataDir)).sort(),
+    assert.deepEqual(sources.filter(source => source.startsWith(f.paths.dataDir) || source.startsWith(f.paths.robotsDir)).sort(),
         [f.paths.home('robot-a'), f.paths.home('robot-a'), f.paths.soul('robot-a'), path.join(f.paths.dataDir, 'tool-cache')].sort());
     assert.ok(!launch.args.some(value => value.includes('robot-b')), 'no argument names another robot');
+});
+
+
+test('selected Environment terminal overrides the image storage config before Podman discovery and launch', async t => {
+    const f = await fixture(t);
+    const previous = process.env.CONTAINERS_STORAGE_CONF;
+    t.after(() => { if (previous === undefined) delete process.env.CONTAINERS_STORAGE_CONF; else process.env.CONTAINERS_STORAGE_CONF = previous; });
+    process.env.CONTAINERS_STORAGE_CONF = '/opt/roboteam-runtime/storage.conf';
+    const expected = path.join(f.paths.dataDir, 'server-state', 'podman-storage.conf');
+    let required = false;
+    const environment = {
+        require: async ref => { assert.equal(process.env.CONTAINERS_STORAGE_CONF, expected); required = true; return { ref }; },
+        buildLaunch: async () => { assert.equal(required, true); assert.equal(process.env.CONTAINERS_STORAGE_CONF, expected); return { command: 'podman', args: [], options: {} }; },
+    };
+    const launch = await buildTerminalLaunch({ id: 'robot-a', environment: 'repo/agent', cacheRoot: f.paths.dataDir,
+        alaEntry: '/opt/ala/bin/ala.mjs', bwrap: '/usr/bin/bwrap' }, f.paths, { environment });
+    assert.equal(launch.command, 'podman');
 });

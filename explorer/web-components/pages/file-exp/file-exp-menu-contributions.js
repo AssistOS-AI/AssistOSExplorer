@@ -1,3 +1,4 @@
+import { isDpuDataPath } from '../../../services/dpu/dpuPaths.js';
 import { getApplicationPluginsForSlot } from "./file-exp-application-plugins.js";
 import { DPU_SECRETS_PATH, isDpuManagedPath } from "./file-exp-dpu-provider.js";
 import { resolveExplorerPathToFilesystemPath } from "../../../services/infrastructure/explorerApi.js";
@@ -206,7 +207,7 @@ export function getBuiltInContextMenuItems(fileExp, target) {
         }
     ];
 
-    if (!isManaged && ['file', 'directory'].includes(type) && isDownloadablePath(entryPath)) {
+    if ((isDpuDataPath(entryPath) && type === 'file') || (!isManaged && ['file', 'directory'].includes(type) && isDownloadablePath(entryPath))) {
         items.push({
             id: 'host:download',
             source: 'host',

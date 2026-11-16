@@ -118,7 +118,8 @@ test('context menus expose Download for ordinary files and folders but not prote
             assert.equal(download.label, 'Download');
             assert.equal(download.entryType, type);
         }
-        for (const target of [{ path: '/Confidential/file', type: 'file', virtualProvider: 'dpu' }, { path: '/.data/file', type: 'file' }, { path: '/docs/file.secrets', type: 'file' }]) {
+        assert.ok(getBuiltInContextMenuItems(host, { path: '/.data/agents/explorer/note.txt', type: 'file', virtualProvider: 'dpu' }).some(item => item.action === 'downloadEntry'));
+        for (const target of [{ path: '/Confidential/file', type: 'file', virtualProvider: 'dpu' }, { path: '/docs/file.secrets', type: 'file' }]) {
             assert.ok(!getBuiltInContextMenuItems(host, target).some(item => item.action === 'downloadEntry'));
         }
     } finally {

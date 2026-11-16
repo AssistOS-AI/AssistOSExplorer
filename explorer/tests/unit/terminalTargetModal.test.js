@@ -785,10 +785,10 @@ test('profile list and prepare use the declared base, the mutation proof, and ex
     const prepared = await prepareTerminalProfile(source, 'robot-a', {
         fetchImpl: async (url, options) => {
             prepareCalls.push({ url, options });
-            return { ok: true, status: 200, json: async () => ({ ok: true, id: 'robot-a', label: 'Robot A', root: '.data/roboTeamAgent/robots/robot-a' }) };
+            return { ok: true, status: 200, json: async () => ({ ok: true, id: 'robot-a', label: 'Robot A', root: '.data/agents/roboTeamAgent/robots/robot-a' }) };
         },
     });
-    assert.equal(prepared.root, '.data/roboTeamAgent/robots/robot-a');
+    assert.equal(prepared.root, '.data/agents/roboTeamAgent/robots/robot-a');
     assert.equal(prepareCalls[0].url, `${PROFILE_BASE}/robot-a/prepare`);
     assert.equal(prepareCalls[0].options.method, 'POST');
     assert.equal(prepareCalls[0].options.credentials, 'same-origin');
@@ -851,7 +851,7 @@ function pageHarness(t, { sources = [PROFILE_SOURCE], robots = ROBOTS, respond =
         return {
             ok: true,
             status: 200,
-            json: async () => ({ ok: true, id: prepared[1], label: 'Robot', root: `.data/roboTeamAgent/robots/${prepared[1]}` }),
+            json: async () => ({ ok: true, id: prepared[1], label: 'Robot', root: `.data/agents/roboTeamAgent/robots/${prepared[1]}` }),
         };
     };
     const popups = [];

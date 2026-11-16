@@ -25,7 +25,7 @@ const PROTECTED_FILES = Object.freeze([
     'github.secrets',
     '.data/userPersistoAgent/users.json',
     '.data/bizansoAgent/customers.json',
-    '.data/explorer/plugin-settings.json',
+    '.data/agents/explorer/plugin-settings.json',
     '.data/userPersistoAgent/notes.md',
     '.ploinky/.secrets',
     '.ploinky/routing.json',
@@ -37,7 +37,7 @@ const PROTECTED_FILES = Object.freeze([
 const PROTECTED_DIRECTORIES = Object.freeze([
     '.data',
     '.data/userPersistoAgent',
-    '.data/explorer',
+    '.data/agents/explorer',
     '.ploinky',
     '.ploinky/data',
     'project/nested/.data',
@@ -52,7 +52,7 @@ async function workspace(t) {
         await fs.writeFile(path.join(root, relative), content);
     };
     for (const relative of PROTECTED_FILES) {
-        await write(relative, relative === '.data/explorer/plugin-settings.json'
+        await write(relative, relative === '.data/agents/explorer/plugin-settings.json'
             ? JSON.stringify({ plugins: {}, marker: SECRET })
             : `${SECRET} ${relative}\n`);
     }
@@ -101,7 +101,7 @@ function protectedState(files) {
         || relative.endsWith('.secrets') || relative.split(path.sep).some(part => ['.data', '.ploinky', '.env'].includes(part)))
         .filter(([relative]) => !relative.startsWith(`.ploinky${path.sep}repos`))
         // Explorer's own search-job store changes with every text search.
-        .filter(([relative]) => !relative.startsWith(path.join('.data', 'explorer', 'search-jobs')))
+        .filter(([relative]) => !relative.startsWith(path.join('.data', 'agents', 'explorer', 'search-jobs')))
         .sort();
 }
 
@@ -405,27 +405,27 @@ test('Explorer private data stays usable through its internal boundary but is no
     const updated = json(await runtime.callTool('set_plugin_enabled', { key: 'help', enabled: false }));
     assert.equal(updated.ok, true);
     assert.deepEqual(json(await runtime.callTool('get_plugin_settings')).plugins.help, { enabled: false });
-    assert.equal(JSON.parse(await fs.readFile(path.join(root, '.data/explorer/plugin-settings.json'), 'utf8')).plugins.help.enabled, false);
-    await assertDenied(runtime, 'read_text_file', { path: '.data/explorer/plugin-settings.json' }, undefined, 'read plugin settings');
-    await assertDenied(runtime, 'list_directory', { path: '.data/explorer' }, undefined, 'list explorer data');
+    assert.equal(JSON.parse(await fs.readFile(path.join(root, '.data/agents/explorer/plugin-settings.json'), 'utf8')).plugins.help.enabled, false);
+    await assertDenied(runtime, 'read_text_file', { path: '.data/agents/explorer/plugin-settings.json' }, undefined, 'read plugin settings');
+    await assertDenied(runtime, 'list_directory', { path: '.data/agents/explorer' }, undefined, 'list explorer data');
 
     const { jobId } = json(await runtime.callTool('search_text', { path: 'docs', query: 'ordinary' }));
-    await fs.access(path.join(root, '.data/explorer/search-jobs', `${jobId}.json`));
+    await fs.access(path.join(root, '.data/agents/explorer/search-jobs', `${jobId}.json`));
     assert.equal(json(await runtime.callTool('search_text_status', { jobId })).results.length, 1);
-    await assertDenied(runtime, 'read_text_file', { path: `.data/explorer/search-jobs/${jobId}.json` }, undefined, 'read search job');
+    await assertDenied(runtime, 'read_text_file', { path: `.data/agents/explorer/search-jobs/${jobId}.json` }, undefined, 'read search job');
 
-    // A Router-staged WebMeet blob in Explorer's own `.data/explorer/blobs`
+    // A Router-staged WebMeet blob in Explorer's own `.data/agents/explorer/blobs`
     // still commits into the room asset tree.
     const blobId = 'c'.repeat(48);
-    const blobDirectory = path.join(root, '.data', 'explorer', 'blobs');
+    const blobDirectory = path.join(root, '.data', 'agents', 'explorer', 'blobs');
     await fs.mkdir(blobDirectory, { recursive: true });
     await fs.writeFile(path.join(blobDirectory, blobId), 'plain attachment\n');
     await fs.writeFile(path.join(blobDirectory, `${blobId}.json`), JSON.stringify({
-        id: blobId, agent: 'explorer', localPath: `.data/explorer/blobs/${blobId}`, filename: 'note.txt', size: 17,
+        id: blobId, agent: 'explorer', localPath: `.data/agents/explorer/blobs/${blobId}`, filename: 'note.txt', size: 17,
     }));
     const committed = json(await runtime.callTool('webmeet_media_commit', {
         roomId: 'room_1', roomFolderPath: '/WebMeet/room-1',
-        blobRef: { id: blobId, agent: 'explorer', localPath: `.data/explorer/blobs/${blobId}` },
+        blobRef: { id: blobId, agent: 'explorer', localPath: `.data/agents/explorer/blobs/${blobId}` },
     }, WEBMEET));
     assert.equal(committed.ok, true);
     assert.equal(await fs.readFile(path.join(root, committed.asset.workspaceUrl), 'utf8'), 'plain attachment\n');

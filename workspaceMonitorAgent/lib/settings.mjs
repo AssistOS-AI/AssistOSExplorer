@@ -10,7 +10,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
 });
 
 export function dataRoot(env = process.env) {
-    return path.resolve(String(env.WORKSPACE_MONITOR_DATA_ROOT || '/data'));
+    return path.resolve(String(env.WORKSPACE_MONITOR_DATA_ROOT || '/root'));
 }
 
 export function settingsPath(env = process.env) {

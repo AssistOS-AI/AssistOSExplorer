@@ -29,11 +29,11 @@ export async function terminalDirectory(directory, { create = false, empty = fal
 
 export async function ensureTerminalStub(paths, id, { empty = true } = {}) {
     robotId(id);
-    let directory = path.join(paths.workspaceRoot, '.data');
+    let directory = paths.robotsDir;
     await terminalDirectory(directory);
-    for (const segment of ['roboWorkAgent', 'terminal', id]) {
+    for (const segment of [id, 'terminal']) {
         directory = path.join(directory, segment);
-        await terminalDirectory(directory, { create: true, empty: empty && segment === id });
+        await terminalDirectory(directory, { create: true, empty: empty && segment === 'terminal' });
     }
     return directory;
 }
@@ -41,15 +41,14 @@ export async function ensureTerminalStub(paths, id, { empty = true } = {}) {
 // Removes the stub folder and the prepared descriptors of a deleted robot.
 export async function removeTerminalState(paths, id) {
     robotId(id);
-    await fs.rm(path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal', id), { recursive: true, force: true });
+    await fs.rm(path.join(paths.robot(id), 'terminal'), { recursive: true, force: true });
     const stateRoot = path.join(paths.dataDir, 'server-state', 'terminal');
     for (const name of await fs.readdir(stateRoot).catch(() => [])) if (name.startsWith(id + '.')) await fs.rm(path.join(stateRoot, name), { force: true });
 }
 
 export function createTerminalProfiles({ paths, robots, toolCache, homeOperation, environment, runtimeBundle }) {
-    const stubRoot = path.join(paths.workspaceRoot, '.data', 'roboWorkAgent', 'terminal');
     const stateRoot = path.join(paths.dataDir, 'server-state', 'terminal');
-    const stub = id => path.join(stubRoot, id);
+    const stub = id => path.join(paths.robot(id), 'terminal');
     const recordPath = profile => path.join(stateRoot, profile + '.json');
     const prepareOperations = new Map();
 
@@ -64,8 +63,10 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
 
     async function catalog() {
         const profiles = [];
-        for (const id of await fs.readdir(path.join(paths.dataDir, 'robots'))) {
-            const record = await robots.require(id);
+        for (const id of await fs.readdir(paths.robotsDir)) {
+            if (id.startsWith('.')) continue;
+            const record = await robots.require(id).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; return null; });
+            if (!record) continue;
             profiles.push({ id: record.id, label: record.name });
         }
         profiles.sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
@@ -78,7 +79,7 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         try {
             const { id, robot } = await selection(profile);
             await terminalDirectory(stub(id), { empty: true });
-            return { allowed: true, profile: { id: profile, label: robot.name, home: `terminal/${id}` } };
+            return { allowed: true, profile: { id: profile, label: robot.name, home: { root: 'robots', path: `${id}/terminal` } } };
         } catch { return { allowed: false }; }
     }
 
@@ -89,7 +90,7 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
             const robot = await robots.require(id);
             await directoryIdentity(paths.home(id));
             return { allowed: true, profile: { id: profile, label: robot.name,
-                home: { root: 'private', path: `robots/${id}/home` } } };
+                home: { root: 'robots', path: `${id}/home` } } };
         } catch { return { allowed: false }; }
     }
 
@@ -107,14 +108,14 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
             for (const directory of [path.dirname(stateRoot), stateRoot]) await terminalDirectory(directory, { create: true });
             const stat = await terminalDirectory(stub(selected.id), { empty: true });
             const descriptor = { profile, id: selected.id, environment: selected.environment,
-                workspaceRoot: paths.workspaceRoot, dataDir: paths.dataDir, binPath: tools.binPath,
+                workspaceRoot: paths.workspaceRoot, dataDir: paths.dataDir, robotsDir: paths.robotsDir, binPath: tools.binPath,
                 cacheRoot: toolCache.root, alaEntry: bundle.ala.entry || path.join(bundle.ala.path, 'bin', 'ala.mjs'), bwrap: bundle.bwrap.bin,
                 stub: { path: stub(selected.id), dev: stat.dev, ino: stat.ino } };
             const temporary = path.join(stateRoot, '.' + randomUUID());
             await fs.writeFile(temporary, JSON.stringify(descriptor), { mode: 0o600, flag: 'wx' });
             await fs.rename(temporary, recordPath(profile));
             return { ok: true, id: profile, label: selected.robot.name,
-                root: `.data/roboWorkAgent/terminal/${selected.id}` };
+                root: `.data/robots/${selected.id}/terminal` };
         })();
         prepareOperations.set(profile, operation);
         try { return await operation; } finally { prepareOperations.delete(profile); }

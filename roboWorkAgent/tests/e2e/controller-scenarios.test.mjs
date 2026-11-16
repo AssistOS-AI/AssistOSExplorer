@@ -124,7 +124,7 @@ function guiFixture({ wrongId = false, wrongSource = false, changedHome = false,
             State: { Running: true }, Config: { Labels: { 'io.assistos.robowork.robot-id': robot,
                 'io.assistos.robowork.mode': active.mode, 'io.assistos.robowork.gui': '1' } },
             Mounts: ['/config', `/home/${robot}`].map(Destination => ({ Type: 'bind', Destination,
-                Source: wrongSource ? '/data/robots/foreign/home' : `/data/robots/${robot}/home` })),
+                Source: wrongSource ? '/robots/foreign/home' : `/robots/${robot}/home` })),
         }]);
         assert.equal(args[1], 'exec');
         const inode = changedHome && active.mode === 'desktop' ? 3 : 2;
@@ -154,7 +154,7 @@ function controllerApiFixture(runtime, listings = () => [{ name: 'positive-contr
             assert.equal(options.body.params.name, 'list_directory_detailed');
             assert.equal(options.headers['mcp-session-id'], 'unit-session');
             const directory = options.body.params.arguments.path;
-            if (directory.endsWith('/.private')) return { status: 200, payload: refusal || {
+            if (directory.endsWith('/robots')) return { status: 200, payload: refusal || {
                 result: { isError: true, content: [{ type: 'text', text: `MCP error -32603: Access denied: protected path "${directory}"` }] },
             } };
             return { status: 200, payload: { result: { content: [{ type: 'text',
@@ -165,7 +165,7 @@ function controllerApiFixture(runtime, listings = () => [{ name: 'positive-contr
 }
 
 test('I8 accepts only exact protected-path MCP refusal and rejects generic errors, wrong paths and successful empty replies', async () => {
-    const directory = '/task/.data/.private'; const message = `Access denied: protected path "${directory}"`;
+    const directory = '/task/.data/robots'; const message = `Access denied: protected path "${directory}"`;
     const errorResult = text => ({ result: { isError: true, content: [{ type: 'text', text }] } });
     assert.equal(assertProtectedPathRefusal(errorResult(message), directory).code, 'EXPLORER_PROTECTED_PATH');
     assertProtectedPathRefusal({ error: { code: -32603, message } }, directory);
@@ -237,7 +237,7 @@ test('I10 retains all eighteen refusals, proves the private workspace targets ex
         assert.deepEqual(new Set(error.evidence.observations.map(row => row.code)), new Set(['CWD_REFUSED', 'FOLDER_REFUSED']));
         // Both new targets are refused as a cwd and as a folder.
         const hashes = new Set(error.evidence.observations.map(row => row.pathHash));
-        for (const target of ['/task/fixture/.data/roboTeamAgent', '/task/fixture/.ploinky-box']) assert.ok(hashes.has(sha256(target)), target);
+        for (const target of ['/task/fixture/.data/agents/roboTeamAgent', '/task/fixture/.ploinky-box']) assert.ok(hashes.has(sha256(target)), target);
         assert.equal(error.sentinel, undefined); return true;
     });
     await assert.rejects(grantRefusals(isolationFixture({ admitted: true })), /unexpectedly admitted a native run/u);
@@ -295,8 +295,8 @@ test('W1 fails for each hole it can see and still removes what it created', asyn
     await fails({ parentLoaded: true }, /parent folder plugin was loaded/u);
     await fails({ ownLoaded: false }, /working folder canary did not run/u);
     await fails({ recorderRan: false }, /home plugin never ran during model discovery/u);
-    await fails({ discoveryEntries: ['.private'] }, /Discovery saw workspace \.data entries/u);
-    await fails({ turnEntries: ['.private'] }, /robot saw workspace \.data entries/u);
+    await fails({ discoveryEntries: ['robots'] }, /Discovery saw workspace \.data entries/u);
+    await fails({ turnEntries: ['robots'] }, /robot saw workspace \.data entries/u);
     await fails({ discoveryFails: true }, /Model discovery failed/u);
     await fails({ turnExit: 5 }, /probe turn failed/u);
     // A recorder that ran only in discovery proves nothing about the turn.
@@ -313,8 +313,8 @@ test('I11 uses a newly provisioned deletion target and rejects changed victim by
 });
 
 test('H3 requires empty named-volume inventories and the exact workspace private-data bind', async () => {
-    const c = config(); const root = `${c.workspace}/.data/.private/roboWorkAgent`;
-    const inspection = { Mounts: [{ Type: 'bind', Source: root, Destination: '/data' }] };
+    const c = config(); const root = `${c.workspace}/.data/agents/roboWorkAgent`;
+    const inspection = { Mounts: [{ Type: 'bind', Source: root, Destination: '/root' }] };
     const runtime = { config: c, inspections: new Map([[c.rw, inspection]]),
         box: async args => args[0] === 'du' ? `42\t${root}` : '[]', inner: async () => '[]' };
     assert.deepEqual(await workspaceStorage(runtime), { namedVolumes: 0, workspaceBind: true, privateDataKiB: 42 });

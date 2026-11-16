@@ -44,7 +44,7 @@ export const PRIVILEGED_TIMEOUT_MS = 2_700_000;
 export const MINIMUM_FREE_BYTES = 16 * 1024 ** 3;
 export const DEFAULT_PULL_BYTES = 2 * 1024 ** 3;
 // Keep this list literal; the privileged module has its own copy and a test compares them.
-export const AUTH_FILES = Object.freeze(['.env', '.ploinky/data/master-key', '.ploinky/master-key',
+export const AUTH_FILES = Object.freeze(['.env', '.data/dpu-data/master-key', '.ploinky/master-key',
     '.ploinky/data/.secrets', '.ploinky/.secrets', '.ploinky/data/passwords.enc', '.ploinky/passwords.enc',
     '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc', '.ploinky/ploinky_subject_identity_ed25519_v1.enc']);
 export const MARKER_NAME = 'install-pending.json';

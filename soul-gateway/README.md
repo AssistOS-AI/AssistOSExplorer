@@ -22,14 +22,14 @@ ploinky enable agent AchillesIDE/soul-gateway as soul-gateway
 ploinky start soul-gateway
 ```
 
-The manifest runs `bash /code/install.sh` during installation and `bash /code/startup.sh` as the agent process. The default listener is `0.0.0.0:7000` inside the agent container, and persistent state is mounted at `/data` with SQLite at `/data/soul-gateway.sqlite3`.
+The manifest runs `bash /code/install.sh` during installation and `bash /code/startup.sh` as the agent process. The default listener is `0.0.0.0:7000` inside the agent container, and persistent state is mounted at `/root` with SQLite at `/root/soul-gateway.sqlite3`.
 
-For a local development process with all runtime dependencies available, set the required Ploinky authentication variables and explicitly place all private persistence beneath the workspace `.data/soul-gateway` directory before running:
+For a local development process with all runtime dependencies available, set the required Ploinky authentication variables and explicitly place all private persistence beneath the workspace `.data/agents/soul-gateway` directory before running:
 
 ```bash
-DATA_DIR=/absolute/workspace/.data/soul-gateway \
-CREDENTIALS_DIR=/absolute/workspace/.data/soul-gateway/credentials \
-SQLITE_PATH=/absolute/workspace/.data/soul-gateway/soul-gateway.sqlite3 \
+DATA_DIR=/absolute/workspace/.data/agents/soul-gateway \
+CREDENTIALS_DIR=/absolute/workspace/.data/agents/soul-gateway/credentials \
+SQLITE_PATH=/absolute/workspace/.data/agents/soul-gateway/soul-gateway.sqlite3 \
   npm start
 ```
 
@@ -43,9 +43,9 @@ The common runtime settings are:
 | --- | --- | --- |
 | `PORT` | `7000` in the agent manifest | Internal HTTP port. |
 | `HOST` | `0.0.0.0` in `startup.sh` | Internal bind address. |
-| `SQLITE_PATH` | `/data/soul-gateway.sqlite3` in the agent manifest; required explicitly for direct starts | Persistent embedded database. |
-| `DATA_DIR` | `/data` in the agent manifest; required explicitly for direct starts | Persistent files, including the generated encryption key. |
-| `CREDENTIALS_DIR` | `/data/credentials` in the agent manifest; required explicitly for direct starts | Encrypted provider OAuth credential files. |
+| `SQLITE_PATH` | `/root/soul-gateway.sqlite3` in the agent manifest; required explicitly for direct starts | Persistent embedded database. |
+| `DATA_DIR` | `/root` in the agent manifest; required explicitly for direct starts | Persistent files, including the generated encryption key. |
+| `CREDENTIALS_DIR` | `/root/credentials` in the agent manifest; required explicitly for direct starts | Encrypted provider OAuth credential files. |
 | `FREE_MODELS_ENABLED` | `true` | Installs the free OpenRouter provider and baseline free models once, on the first start, and creates each compatibility tier named in `LLM_DEFAULT_TIERS` once. `false` skips the install; setting it back to `true` later installs the defaults on the next start. The install runs on any database without its marker, so set `false` before upgrading an existing gateway that should not receive the free defaults. |
 | `OPENROUTER_API_KEY` | empty | When set at the time of the one-time install, this OpenRouter key is stored instead of the bundled free-tier key. It has no effect after the install; replace the key from the management dashboard instead. |
 | `SOUL_GATEWAY_GEMINI_OAUTH_CLIENT_SECRET` | empty | Optional client secret for the Google Gemini OAuth device flow. The bundled installed-app client authenticates with its client ID alone; set this only when the deployment uses its own confidential Google OAuth client. No secret is kept in source. |

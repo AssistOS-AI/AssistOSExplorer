@@ -24,12 +24,12 @@ export function argumentsFrom(argv) {
 export function victimPaths({ robot, victim, workspace, servicePid }) {
     assert.match(robot || '', ID); assert.match(victim || '', ID); assert.notEqual(robot, victim);
     assert.ok(workspace && path.posix.isAbsolute(workspace) && path.posix.normalize(workspace) === workspace && workspace !== '/');
-    const homes = [`/home/${victim}`, `/data/robots/${victim}/home`,
-        `${workspace}/.data/.private/roboWorkAgent/robots/${victim}/home`];
+    const homes = [`/home/${victim}`, `/robots/${victim}/home`,
+        `${workspace}/.data/robots/${victim}/home`];
     if (servicePid !== undefined) {
         assert.match(String(servicePid), /^[1-9][0-9]*$/u);
-        homes.push(`/proc/${servicePid}/root/data/robots/${victim}/home`,
-            `/proc/${servicePid}/root${workspace}/.data/.private/roboWorkAgent/robots/${victim}/home`);
+        homes.push(`/proc/${servicePid}/root/robots/${victim}/home`,
+            `/proc/${servicePid}/root${workspace}/.data/robots/${victim}/home`);
     }
     return homes.map(home => `${home}/marker-B`);
 }
@@ -130,7 +130,7 @@ const SHOWTHROUGH = ['R=$1; V=$2', 'command -v mount >/dev/null && command -v um
     'umount "$R/.ploinky-box" 2>/dev/null && echo UNMOUNTED',
     'mount --bind "$R" /tmp/robowork-flat 2>/dev/null', 'mount --rbind "$R" /tmp/robowork-deep 2>/dev/null',
     'for base in "$R" /tmp/robowork-flat /tmp/robowork-deep; do',
-    '  [ -e "$base/.data/.private/roboWorkAgent/robots/$V/home/marker-B" ] && echo SHOWN',
+    '  [ -e "$base/.data/robots/$V/home/marker-B" ] && echo SHOWN',
     '  for name in .data .ploinky .ploinky-box; do [ -n "$(ls -A "$base/$name" 2>/dev/null)" ] && echo SHOWN; done',
     '  [ -s "$base/.env" ] && echo SHOWN', 'done', 'exit 0'].join('\n');
 
@@ -164,7 +164,7 @@ export async function runIsolationProbe(options, { io = fs, run = execute, env =
         for (const pid of pids) {
             await checked(`pid ${pid} shares only sandbox namespace`, () => assert.equal(io.readlinkSync(`/proc/${pid}/ns/pid`), self));
             await checked(`pid ${pid} has no credential environment`, () => assert.doesNotMatch(io.readFileSync(`/proc/${pid}/environ`, 'utf8'), /(?:^|\0)PLOINKY_/u));
-            await checked(`pid ${pid} root has no sibling home`, () => assertDeniedPaths([`/proc/${pid}/root/data/robots/${victim}/home/marker-B`], io));
+            await checked(`pid ${pid} root has no sibling home`, () => assertDeniedPaths([`/proc/${pid}/root/robots/${victim}/home/marker-B`], io));
         }
         await checked('pid 1 is not a service', () => assert.doesNotMatch(io.readFileSync('/proc/1/cmdline', 'utf8'), /AgentServer|server\/main\.mjs|robot-cli|robot-task/u));
     } else if (probe === 'fds') {
@@ -172,7 +172,7 @@ export async function runIsolationProbe(options, { io = fs, run = execute, env =
         const links = result.stdout.split('\n').filter(line => / -> /u.test(line));
         await checked('descriptor inventory bounded and free of service data', () => {
             assert.ok(links.length >= 3 && links.length <= 5);
-            assert.doesNotMatch(result.stdout, / -> (?:.*\/root)?\/data(?:\/|$)/mu);
+            assert.doesNotMatch(result.stdout, / -> (?:.*\/root)?\/(?:root|robots)(?:\/|$)/mu);
             for (const line of links) {
                 const match = /\s([0-9]+) -> (.+)$/u.exec(line);
                 assert.ok(match && (Number(match[1]) <= 2 || /^\/proc\/[0-9]+\/fd$/u.test(match[2])), 'Unexpected inherited descriptor.');
@@ -266,7 +266,7 @@ export async function runIsolationProbe(options, { io = fs, run = execute, env =
         }
         await checked('own GUI MCP port answers', async () => { await run('curl', ['--noproxy', '*', '-sS', '-m', '3', '-o', '/dev/null', options.own], { timeout: 5000, maxBuffer: 65536 }); });
     } else if (probe === 'channels') {
-        await checked('data exposes only read-only tool cache', () => assert.ok(io.readdirSync('/data').every(name => name === 'tool-cache')));
+        await checked('data exposes only read-only tool cache', () => assert.ok(io.readdirSync('/root').every(name => name === 'tool-cache')));
         assert.ok(options.foreign, 'Channel probe requires another run’s known channel path.');
         await checked('foreign channel inaccessible', () => assertDeniedPaths([`${options.foreign}/context.json`], io));
         assert.ok(options.cache, 'Channel probe requires an existing cache file.');

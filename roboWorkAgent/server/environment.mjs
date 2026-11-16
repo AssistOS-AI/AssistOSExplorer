@@ -45,8 +45,8 @@ function within(root, value) {
 
 function privateData(manifest) {
     return Object.entries(manifest.volumes || {}).some(([source, target]) =>
-        /(?:^|\/)\.data\/\.private(?:\/|$)/u.test(source)
-        || /(?:^|\/)\.data\/\.private(?:\/|$)/u.test(String(target)));
+        /(?:^|\/)\.data(?:\/|$)/u.test(source)
+        || /(?:^|\/)\.data(?:\/|$)/u.test(String(target)));
 }
 
 // Only the selected manifest's image is reused. Live agent containers never participate.

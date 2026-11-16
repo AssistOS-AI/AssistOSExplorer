@@ -26,7 +26,7 @@ emailAgent sends transactional email through Mailjet (auth codes for UserPersist
 
 ## Runtime Defaults
 
-Uses `docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669` with MCP readiness. `manifest.json` declares no `agent`, `cli`, or `start` command, so Ploinky runs its default AgentServer (`sh /Agent/server/AgentServer.sh`) serving the `mcp-config.json` tools. Tools run `sh tools/email_tool.sh` from `/code`. Persistent data is mounted from `.data/emailAgent` to `/data`. The default profile generates `EMAILAGENT_SETTINGS_KEY` and optionally reads `EMAILAGENT_SETTINGS_FILE` (default `/data/settings.enc.json`).
+Uses `docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669` with MCP readiness. `manifest.json` declares no `agent`, `cli`, or `start` command, so Ploinky runs its default AgentServer (`sh /Agent/server/AgentServer.sh`) serving the `mcp-config.json` tools. Tools run `sh tools/email_tool.sh` from `/code`. Persistent data is mounted from `.data/agents/emailAgent` to `/root`. The default profile generates `EMAILAGENT_SETTINGS_KEY` and optionally reads `EMAILAGENT_SETTINGS_FILE` (default `/root/settings.enc.json`).
 
 ## Key Paths
 

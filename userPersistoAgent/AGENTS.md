@@ -24,7 +24,7 @@ userPersistoAgent is the authority for users, roles, capabilities, auth strategi
 
 ## Runtime Defaults
 
-Uses `docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669`. The manifest sets `agent` to `exec sh /code/scripts/start.sh`, which creates `PERSISTENCE_FOLDER` (default `/data/persisto`) and runs `node main.mjs`. Readiness protocol is `mcp`. The `.data/userPersistoAgent` host folder is mounted at `/data`. The manifest enables `emailAgent`. The HTTP service port defaults to `7000` (`USERPERSISTO_SERVICE_PORT`).
+Uses `docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669`. The manifest sets `agent` to `exec sh /code/scripts/start.sh`, which creates `PERSISTENCE_FOLDER` (default `/root/persisto`) and runs `node main.mjs`. Readiness protocol is `mcp`. The `.data/agents/userPersistoAgent` host folder is mounted at `/root`. The manifest enables `emailAgent`. The HTTP service port defaults to `7000` (`USERPERSISTO_SERVICE_PORT`).
 
 ## Key Paths
 

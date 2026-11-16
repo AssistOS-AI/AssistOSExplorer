@@ -389,7 +389,7 @@ export async function createExplorerToolRuntime({
       DEFAULT_DIRECTORY_TREE_MAX_NODES: defaultDirectoryTreeMaxNodes,
       getAllowedDirectories: () => allowedDirectories,
       commandMode: true,
-      searchTextJobStorePath: path.join(workspaceRoot, '.data', 'explorer', 'search-jobs'),
+      searchTextJobStorePath: path.join(process.env.EXPLORER_DATA_ROOT || path.join(workspaceRoot, '.data', 'agents', 'explorer'), 'search-jobs'),
       getInvocationContext: () => activeInvocationContext,
       registerCleanup: (cleanup) => cleanups.push(cleanup)
     });

@@ -623,7 +623,7 @@ const PRIVATE_PLAN = plan({
     images: { remove: [{ id: 'e'.repeat(64), tags: [SENTINEL_FILE] }], retained: [] },
     workspace: {
         keep: { top: [SENTINEL_FILE, 'WebMeet'] },
-        identity: [{ relative: '.ploinky/data/master-key', sha256: SENTINEL_HASH }],
+        identity: [{ relative: '.data/dpu-data/master-key', sha256: SENTINEL_HASH }],
         pendingDeletions: [...GENERATED_DELETIONS, SENTINEL_PENDING],
     },
     legacyBackups: {
@@ -646,7 +646,7 @@ const PRIVATE_RECEIPT = receipt({
         result: 'reduced',
         deleted: [SENTINEL_FILE],
         keep: { top: [SENTINEL_FILE, 'WebMeet'], digest: KEEP_DIGEST },
-        identity: [{ relative: '.ploinky/data/master-key', sha256: SENTINEL_HASH, uid: 1000 }],
+        identity: [{ relative: '.data/dpu-data/master-key', sha256: SENTINEL_HASH, uid: 1000 }],
         digest: `sha256:${'9'.repeat(64)}`,
     },
     finishedDeletions: [...GENERATED_DELETIONS, SENTINEL_PENDING],

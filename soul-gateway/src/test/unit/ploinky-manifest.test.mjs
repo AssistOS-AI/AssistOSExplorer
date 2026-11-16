@@ -91,12 +91,10 @@ test('Ploinky manifest supplies the complete managed persistence contract', () =
     const manifest = readManifest();
     const env = manifest.profiles?.default?.env || {};
 
-    assert.deepEqual(manifest.volumes, {
-        '.data/soul-gateway': '/data',
-    });
-    assert.equal(env.DATA_DIR?.default, '/data');
-    assert.equal(env.CREDENTIALS_DIR?.default, '/data/credentials');
-    assert.equal(env.SQLITE_PATH?.default, '/data/soul-gateway.sqlite3');
+    assert.equal(manifest.volumes, undefined);
+    assert.equal(env.DATA_DIR?.default, '/root');
+    assert.equal(env.CREDENTIALS_DIR?.default, '/root/credentials');
+    assert.equal(env.SQLITE_PATH?.default, '/root/soul-gateway.sqlite3');
 });
 
 test('Soul Gateway ships an admin-only settings entry and toolbar button', () => {

@@ -260,7 +260,7 @@ function str(raw, fallback) {
 function requiredStr(raw, name) {
     if (raw === undefined || String(raw).trim() === '') {
         throw new Error(
-            `${name} is required; Ploinky-managed starts supply /data paths, ` +
+            `${name} is required; Ploinky-managed starts supply /root paths, ` +
                 'and direct starts must explicitly select workspace .data storage'
         );
     }

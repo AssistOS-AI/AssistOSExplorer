@@ -35,7 +35,7 @@ export class RobotManager {
 
     async initialize() {
         await fs.mkdir(this.paths.dataDir, { recursive: true, mode: 0o700 });
-        await realDirectory(path.join(this.paths.dataDir, 'robots'));
+        await realDirectory(this.paths.robotsDir);
     }
 
     serialized(id, work) {
@@ -105,7 +105,7 @@ export class RobotManager {
 
     async status({ robotIds, includeLogins = false } = {}) {
         if (robotIds !== undefined && (!Array.isArray(robotIds) || robotIds.length > 10000)) throw fail('INVALID_INPUT', 'Invalid robotIds');
-        const ids = robotIds || await fs.readdir(path.join(this.paths.dataDir, 'robots'));
+        const ids = robotIds || (await fs.readdir(this.paths.robotsDir)).filter(id => !id.startsWith('.'));
         const results = new Array(ids.length);
         let next = 0;
         const worker = async () => {
@@ -141,7 +141,8 @@ export class RobotManager {
         await this.soulGateway.prepare(this.paths.soul(id));
         // A catalog query runs the coding agent in the same view as a run. One that cannot be shown safely is refused here.
         const workspace = await this.paths.workspaceView(id);
-        const directory = path.join(this.paths.dataDir, 'runs', 'models-' + randomUUID());
+        const directory = path.join(this.paths.robot(id), 'run', 'models-' + randomUUID());
+        await realDirectory(path.dirname(directory));
         await fs.mkdir(directory, { mode: 0o700 });
         let cacheDirectory = this.paths.dataDir;
         for (const segment of ['server-state', 'model-catalog', id]) { cacheDirectory = path.join(cacheDirectory, segment); await realDirectory(cacheDirectory); }
@@ -180,7 +181,10 @@ export class RobotManager {
             }
             await fs.rm(path.join(this.paths.dataDir, 'server-state', 'model-catalog', id), { recursive: true, force: true });
             await removeTerminalState(this.paths, id);
-            await fs.rm(this.paths.robot(id), { recursive: true, force: true });
+            for (const name of await fs.readdir(this.paths.robot(id))) {
+                if (name !== 'runs') await fs.rm(path.join(this.paths.robot(id), name), { recursive: true, force: true });
+            }
+            if (!(await fs.readdir(this.paths.robot(id))).length) await fs.rmdir(this.paths.robot(id));
             return { deleted: true };
         });
     }

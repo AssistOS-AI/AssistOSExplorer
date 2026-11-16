@@ -47,8 +47,8 @@ test('GitHub auth state paths use only the canonical user-scoped .data root', ()
     user: { id: 'local:other', username: 'other' }
   });
 
-  assert.equal(path.dirname(adminStatePath), path.join(workspaceRoot, '.data', 'gitAgent', 'github-auth'));
-  assert.equal(path.dirname(otherStatePath), path.join(workspaceRoot, '.data', 'gitAgent', 'github-auth'));
+  assert.equal(path.dirname(adminStatePath), path.join(workspaceRoot, '.data', 'agents', 'gitAgent', 'github-auth'));
+  assert.equal(path.dirname(otherStatePath), path.join(workspaceRoot, '.data', 'agents', 'gitAgent', 'github-auth'));
   assert.notEqual(adminStatePath, otherStatePath);
   assert.equal(adminStatePath.includes(`${path.sep}.ploinky${path.sep}state${path.sep}`), false);
 });
@@ -87,8 +87,8 @@ test('manual GitHub token state is isolated by routed workspace user', async (t)
   };
   const adminStatePath = getGithubAuthStateFilePath(workspaceRoot, adminAuth);
   const nicoletaStatePath = getGithubAuthStateFilePath(workspaceRoot, nicoletaAuth);
-  assert.equal(path.dirname(adminStatePath), path.join(workspaceRoot, '.data', 'gitAgent', 'github-auth'));
-  assert.equal(path.dirname(nicoletaStatePath), path.join(workspaceRoot, '.data', 'gitAgent', 'github-auth'));
+  assert.equal(path.dirname(adminStatePath), path.join(workspaceRoot, '.data', 'agents', 'gitAgent', 'github-auth'));
+  assert.equal(path.dirname(nicoletaStatePath), path.join(workspaceRoot, '.data', 'agents', 'gitAgent', 'github-auth'));
 
   try {
     await withEnv({

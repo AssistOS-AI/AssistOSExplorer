@@ -483,7 +483,7 @@ test('SCRIPTA mutations use the Explorer Automerge authority and persist the win
         );
         const canonicalState = loadDocument(await fs.readFile(path.join(
             workspaceRoot,
-            '.data/explorer/automerge/documents',
+            '.data/agents/explorer/automerge/documents',
             `${created.documentId}.automerge`
         )));
         assert.equal('scriptaHistory' in canonicalState, false);
@@ -658,7 +658,7 @@ test('SCRIPTA mutations use the Explorer Automerge authority and persist the win
         assert.equal((await fs.stat(path.join(workspaceRoot, 'WebMeet/room-1234/draft.md'))).isFile(), true);
         const collaborationPath = path.join(
             workspaceRoot,
-            '.data/explorer/automerge/scripta-collaboration',
+            '.data/agents/explorer/automerge/scripta-collaboration',
             `${created.documentId}.automerge`
         );
         assert.equal((await fs.stat(collaborationPath)).isFile(), true);
@@ -728,11 +728,11 @@ test('SCRIPTA creation removes every artifact when the collaboration replica can
         );
         const canonicalFiles = await fs.readdir(path.join(
             workspaceRoot,
-            '.data/explorer/automerge/documents'
+            '.data/agents/explorer/automerge/documents'
         )).catch(() => []);
         const collaborationFiles = await fs.readdir(path.join(
             workspaceRoot,
-            '.data/explorer/automerge/scripta-collaboration'
+            '.data/agents/explorer/automerge/scripta-collaboration'
         )).catch(() => []);
         assert.equal(canonicalFiles.filter((name) => name.endsWith('.automerge')).length, 0);
         assert.equal(collaborationFiles.filter((name) => name.endsWith('.automerge')).length, 0);
@@ -832,7 +832,7 @@ test('Markdown CRDT recovers a recent lock left by a restarted process instance'
         invalidateCachesForPath() {},
     });
     const documentPath = path.join(workspaceRoot, 'restart.md');
-    const lockRoot = path.join(workspaceRoot, '.data/explorer/automerge/documents/.locks');
+    const lockRoot = path.join(workspaceRoot, '.data/agents/explorer/automerge/documents/.locks');
     const scope = `path:${documentPath}`;
     const lockPath = path.join(lockRoot, `${crypto.createHash('sha256').update(scope).digest('hex')}.lock`);
 

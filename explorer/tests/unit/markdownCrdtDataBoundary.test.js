@@ -32,9 +32,9 @@ async function createFixture(t, wrapFs = (value) => value) {
     const documentPath = path.join(workspaceRoot, 'document.md');
     await fs.writeFile(documentPath, '# Document\n\nKeep this content.\n');
     const opened = await store.open(documentPath);
-    const storeRoot = path.join(workspaceRoot, '.data', 'explorer', 'automerge', 'documents');
+    const storeRoot = path.join(workspaceRoot, '.data', 'agents', 'explorer', 'automerge', 'documents');
     const statePath = path.join(storeRoot, `${opened.documentId}.automerge`);
-    const relatedPath = path.join(workspaceRoot, '.data', 'explorer', 'automerge', 'scripta-collaboration', `${opened.documentId}.automerge`);
+    const relatedPath = path.join(workspaceRoot, '.data', 'agents', 'explorer', 'automerge', 'scripta-collaboration', `${opened.documentId}.automerge`);
     await fs.mkdir(path.dirname(relatedPath), { recursive: true });
     await fs.writeFile(relatedPath, 'collaboration state');
     const originals = await Promise.all([documentPath, statePath, relatedPath].map((file) => fs.readFile(file)));

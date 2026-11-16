@@ -77,14 +77,14 @@ function readerSetup(f, { root = f.directory, image = 'sha256:' + digest } = {})
     const payloadPath = `${root}/.ploinky/deps/store/objects/${objectId}/payload`;
     const nodeModulesPath = `${payloadPath}/node_modules`;
     fs.mkdirSync(nodeModulesPath, { recursive: true });
-    fs.mkdirSync(`${root}/.data/roboTeamAgent`, { recursive: true });
+    fs.mkdirSync(`${root}/.data/agents/roboTeamAgent`, { recursive: true });
     fs.mkdirSync(`${root}/.ploinky/container-runtime/owned-runtime/Agent-1-2`, { recursive: true });
     const runtime = { key: 'owned-runtime', containerId: 'c'.repeat(64), instanceId: randomUUID(), enableGeneration: randomUUID(),
         startedAt, imageId: 'sha256:' + 'd'.repeat(64),
         dependencies: { schema: 1, mode: 'store', family: 'container', runtimeKey: 'container-linux-x64-glibc-node22',
             imageId: 'sha256:' + 'd'.repeat(64), inputKey: digest, generationId: digest, objectId, payloadPath, nodeModulesPath }, mounts: [
             { Type: 'bind', Source: root, Destination: root, RW: true },
-            { Type: 'bind', Source: `${root}/.data/roboTeamAgent`, Destination: '/data', RW: true },
+            { Type: 'bind', Source: `${root}/.data/agents/roboTeamAgent`, Destination: '/root', RW: true },
             { Type: 'bind', Source: `${f.repository}/roboTeamAgent`, Destination: `${f.repository}/roboTeamAgent`, RW: true },
             { Type: 'bind', Source: codeSource, Destination: '/code', RW: false },
             // Production always emits exactly one read-only staged /Agent and one read-only AgentLib grant.
@@ -97,9 +97,14 @@ function readerSetup(f, { root = f.directory, image = 'sha256:' + digest } = {})
         outerEnv: [`PLOINKY_WORKSPACE_ROOT=${root}`], outerWorkingDir: root };
     const workRuntime = structuredClone(runtime);
     workRuntime.containerId = 'e'.repeat(64);
-    fs.mkdirSync(`${root}/.data/.private/roboWorkAgent`, { recursive: true });
+    fs.mkdirSync(`${root}/.data/agents/roboWorkAgent`, { recursive: true });
+    fs.mkdirSync(`${root}/.data/robots`, { recursive: true });
+    workRuntime.mounts.push(bindMount(`${root}/.data/robots`, '/robots'));
     for (const mount of workRuntime.mounts) {
-        if (mount.Destination === '/data') mount.Source = `${root}/.data/.private/roboWorkAgent`;
+        if (mount.Destination === '/root') {
+            mount.Source = `${root}/.data/agents/roboWorkAgent`;
+            mount.Destination = '/root';
+        }
         if (mount.Source === f.source) mount.Source = f.workSource;
         if (mount.Destination === f.source) mount.Destination = f.workSource;
     }
@@ -161,14 +166,13 @@ test('complete fresh07 production topology constructs and finishes twice without
     runtime.mounts = [
         bindMount(`${root}/DocumentationSkills`, `${root}/DocumentationSkills`),
         bindMount(root, root),
-        bindMount(`${root}/.data/roboTeamAgent`, '/root'),
+        bindMount(`${root}/.data/agents/roboTeamAgent`, '/root'),
         bindMount('/opt/ploinky-agentlib', '/opt/ploinky-agentlib', false),
         bindMount(`${root}/.ploinky/run/edge-topology`, '/run/ploinky-edge-topology', false),
         bindMount(f.source, f.source),
         bindMount(deps, '/code/node_modules', false),
         bindMount(`${root}/.ploinky/run/router-descriptors/012f5b11-d3f5-40c3-90da-54ab65b4727f.json`, '/run/ploinky/router-descriptor.json', false),
         bindMount(agent, '/Agent', false),
-        bindMount(`${root}/.data/roboTeamAgent`, '/data'),
         bindMount(`${root}/.data/shared`, '/shared'),
         bindMount(`${root}/.ploinky`, `${root}/.ploinky`, false),
         bindMount(f.source, '/code', false),
@@ -233,7 +237,8 @@ test('dependency payload and Agent staging aliases fail canonical validation', t
 test('serialized collector validates a real canonical object, projects only admission fields and never writes the store', async t => {
     const f = fixture(t), setup = readerSetup(f), deps = setup.runtime.dependencies;
     const previousAgentLib = process.env.PLOINKY_AGENTLIB_DIR;
-    process.env.PLOINKY_AGENTLIB_DIR = fs.realpathSync(fileURLToPath(new URL('../../../../ploinky/node_modules/achillesAgentLib', import.meta.url)));
+    assert.ok(previousAgentLib, 'Load the Ploinky tests/helpers/agentlibTestContract.mjs preload before this test.');
+    process.env.PLOINKY_AGENTLIB_DIR = fs.realpathSync(previousAgentLib);
     t.after(() => {
         if (previousAgentLib === undefined) delete process.env.PLOINKY_AGENTLIB_DIR;
         else process.env.PLOINKY_AGENTLIB_DIR = previousAgentLib;
@@ -383,7 +388,6 @@ test('runtime mounts accept the exact production tuples, including a space and U
         // Binds that exist in production but lie outside every path the evidence reads.
         bindMount(`${c.root}/.ploinky/shared`, '/shared'),
         bindMount(`${c.root}/.ploinky/probe/owned-runtime`, '/run/ploinky-health-probes'),
-        bindMount(`${c.root}/.ploinky/home/roboTeamAgent`, '/root'),
         bindMount('/tmp/ploinky-runtime-guards/0123456789abcdef01234567/data', `${c.root}/.ploinky/data`, false),
         bindMount(`${c.root}/.ploinky/data/edge-topology`, '/run/ploinky-edge-topology', false),
         bindMount('/opt/ploinky-agentlib', `${c.root}/achillesAgentLib`, false),
@@ -412,8 +416,8 @@ for (const [name, mutate, message] of [
     ['a root bind sourced from a prefix-lookalike directory', (v, c) => { v.mounts[0].Source = `${c.root}-evil`; }, /exact verified source mount at/],
     ['a read-only root bind', (v, c) => { v.mounts[0].RW = false; }, /writable/],
     ['a non-bind root mount', (v, c) => { v.mounts[0].Type = 'volume'; }, /exact verified source mount at/],
-    ['a foreign /data source', (v, c) => { v.mounts[1].Source = `${c.root}/.data/other`; }, /\/data/],
-    ['a /data source outside the root', (v, c) => { v.mounts[1].Source = '/srv/other/.data/roboTeamAgent'; }, /\/data/],
+    ['a foreign /data source', (v, c) => { v.mounts[1].Source = `${c.root}/.data/other`; }, /\/root/],
+    ['a /data source outside the root', (v, c) => { v.mounts[1].Source = '/srv/other/.data/agents/roboTeamAgent'; }, /\/root/],
     ['a foreign staged source', (v, c) => { v.mounts[2].Source = `${c.root}/other/roboTeamAgent`; }, /roboTeamAgent/],
     ['a staged /code', (v, c) => { v.mounts[3].Source = `${c.root}/.ploinky/container-runtime/another/code-123`; }, /source mount at \/code/],
     ['a /code outside the root', (v, c) => { v.mounts[3].Source = `${c.root}-evil/roboTeamAgent`; }, /source mount at \/code/],
@@ -421,7 +425,7 @@ for (const [name, mutate, message] of [
     ['a /code with a traversal path', (v, c) => { v.mounts[3].Source += '/../../x'; }, /source mount at \/code/],
     ['a duplicate /code', (v, c) => { v.mounts.push(structuredClone(v.mounts[3])); }, /source mount at \/code/],
     ['a writable /code', v => { v.mounts[3].RW = true; }, /read-only/],
-    ['a duplicate /data', (v, c) => { v.mounts.push(structuredClone(v.mounts[1])); }, /exact verified source mount at \/data/],
+    ['a duplicate /data', (v, c) => { v.mounts.push(structuredClone(v.mounts[1])); }, /exact verified source mount at \/root/],
     ['a traversal runtime key', (v, c) => { v.key = '../owned-runtime'; }, /single path segment/],
     ['an empty runtime key', (v, c) => { v.key = ''; }, /single path segment/],
     ['a missing /Agent', (v, c) => { v.mounts.splice(4, 1); }, /one exact \/Agent/],
@@ -435,7 +439,7 @@ for (const [name, mutate, message] of [
     ['a relative AgentLib source', (v, c) => { v.mounts[5].Source = 'opt/ploinky-agentlib'; }, /exact verified read-only source mount at \/opt\/ploinky-agentlib/],
     ['a nested shadow below the staged source', (v, c) => { v.mounts.push(bindMount(`${c.root}/foreign`, `${c.source}/server`)); }, /shadowing/],
     ['a nested shadow of one contract file', (v, c) => { v.mounts.push(bindMount(`${c.root}/foreign`, `${c.source}/server/robot-store.mjs`)); }, /shadowing/],
-    ['a nested shadow below /data', (v, c) => { v.mounts.push(bindMount(`${c.root}/foreign`, '/data/robots')); }, /shadowing/],
+    ['a nested shadow below /data', (v, c) => { v.mounts.push(bindMount(`${c.root}/foreign`, '/root/robots')); }, /shadowing/],
     ['a nested shadow below /code', (v, c) => { v.mounts.push(bindMount(`${c.root}/foreign`, '/code/server')); }, /shadowing/],
     ['a nested shadow below /Agent', (v, c) => { v.mounts.push(bindMount(`${c.root}/foreign`, '/Agent/index.mjs')); }, /shadowing/],
     ['a nested shadow below the AgentLib grant', (v, c) => { v.mounts.push(bindMount(`${c.root}/foreign`, '/opt/ploinky-agentlib/lib.mjs')); }, /shadowing/],
@@ -478,7 +482,7 @@ test('runtime mounts require canonical sources: symlinked staging, data, source 
     const data = c.runtime.mounts[1].Source;
     fs.renameSync(data, `${data}-real`);
     fs.symlinkSync(`${data}-real`, data);
-    assert.throws(() => c.validate(), /\/data/);
+    assert.throws(() => c.validate(), /\/root/);
     fs.unlinkSync(data);
     fs.renameSync(`${data}-real`, data);
     const alias = `${c.root}-alias`;
@@ -539,7 +543,7 @@ test('the reader proves the exact outer root from the inspected Box, not from th
 // The inner validator realpaths Box-side sources on the host, which only proves anything when the Box sees the
 // same directory there. An outer mount over any accepted source therefore fails reader setup.
 for (const [name, destination] of [
-    ['the persistent data source', f => `${f.directory}/.data/roboTeamAgent`],
+    ['the persistent data source', f => `${f.directory}/.data/agents/roboTeamAgent`],
     ['an ancestor of the persistent data source', f => `${f.directory}/.data`],
     ['the direct /code source', f => `${f.repository}/roboTeamAgent`],
     ['the admitted dependency source', f => `${f.directory}/.ploinky/deps/store/objects/64a1dedd-e8bd-4f7b-8db4-1c08042a1dff/payload/node_modules`],
@@ -690,7 +694,7 @@ function snapshotCase(t, prefix = 'fresh workspace ü ', { liveTurn = false, thi
     const selectedAlaCommand = fs.realpathSync(process.env.SET2_ALA_COMMAND);
     const selectedAlaRoot = path.dirname(path.dirname(selectedAlaCommand));
     const alaRoot = path.join(f.directory, 'AdvancedLanguageAgent');
-    for (const file of ['package.json', 'bin/ala.mjs', 'src/transcript.mjs']) {
+    for (const file of ['package.json', 'bin/ala.mjs', 'src/transcript.mjs', 'src/errors.mjs']) {
         fs.mkdirSync(path.dirname(path.join(alaRoot, file)), { recursive: true });
         fs.copyFileSync(path.join(selectedAlaRoot, file), path.join(alaRoot, file));
     }

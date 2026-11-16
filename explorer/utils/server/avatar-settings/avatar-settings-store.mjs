@@ -1,7 +1,7 @@
 import { importAxiFaceAssetLoader } from './axi-face-runtime.mjs';
 import { createExplorerPrivateDataBoundary } from '../private-data-boundary.mjs';
 
-const STORE_FILE = '.data/explorer/avatar-overrides.json';
+const STORE_FILE = '.data/agents/explorer/avatar-overrides.json';
 const STORE_FILE_SEGMENTS = Object.freeze(['avatar-overrides.json']);
 const MANIFEST_CANDIDATES = Object.freeze([
   'explorer/manifest.json',

@@ -11,7 +11,7 @@ const PLAIN_KEYS = new Set([
 ]);
 
 function settingsFile() {
-    return process.env.USERPERSISTO_SETTINGS_FILE || '/data/settings.enc.json';
+    return process.env.USERPERSISTO_SETTINGS_FILE || '/root/settings.enc.json';
 }
 
 function key() {

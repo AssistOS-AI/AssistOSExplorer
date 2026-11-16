@@ -13,7 +13,7 @@
   <div class="page"><main>
     <p class="breadcrumbs"><a href="index.html">Home</a> / Deployment and Operations</p>
     <h1>Deployment and Operations</h1>
-    <p>Soul Gateway has one production deployment model: a Ploinky-managed agent behind the Ploinky Router. The manifest selects the Node 24 agent image, mounts persistent data at <code>/data</code>, starts <code>startup.sh</code>, and publishes inference, management, and health paths with different access rules.</p>
+    <p>Soul Gateway has one production deployment model: a Ploinky-managed agent behind the Ploinky Router. The manifest selects the Node 24 agent image, mounts persistent data at <code>/root</code>, starts <code>startup.sh</code>, and publishes inference, management, and health paths with different access rules.</p>
 
     <h2>Startup contract</h2>
     <p>The manifest pins the shared Ploinky Node image by digest. Node 24 on Debian Trixie supplies the built-in SQLite API and a maintained Git/libcurl stack; native amd64 and arm64 Git/npm checks gate image adoption.</p>
@@ -32,9 +32,10 @@
         <tr><td>Observability</td><td>Log retention, partition maintenance, live-stream heartbeat, export batch size, and response-capture limits.</td></tr>
       </tbody>
     </table>
-    <p><code>src/config/env.mjs</code> is the executable source for parsed defaults. The Ploinky manifest supplies <code>DATA_DIR=/data</code>, <code>CREDENTIALS_DIR=/data/credentials</code>, and <code>SQLITE_PATH=/data/soul-gateway.sqlite3</code> for the managed agent deployment. A direct process start must explicitly set all three paths beneath the selected workspace <code>.data/soul-gateway</code> root and fails closed when any is absent; there is no relative data-directory default.</p>
+    <p><code>src/config/env.mjs</code> is the executable source for parsed defaults. The Ploinky manifest supplies <code>DATA_DIR=/root</code>, <code>CREDENTIALS_DIR=/root/credentials</code>, and <code>SQLITE_PATH=/root/soul-gateway.sqlite3</code> for the managed agent deployment. A direct process start must explicitly set all three paths beneath the selected workspace <code>.data/agents/soul-gateway</code> root and fails closed when any is absent; there is no relative data-directory default.</p>
 
     <h2>Persistence and credential recovery</h2>
+    <p>At startup, before provider authentication services load accounts, legacy OAuth references under <code>/data/credentials/</code> are migrated to the configured <code>CREDENTIALS_DIR</code>. The gateway verifies and decrypts each relocated file, then updates its database reference in one transaction without rewriting ciphertext. Repeated starts are safe. Missing files keep their old reference and produce a count-only warning; restoring the file allows migration on the next start. Unsafe paths or corrupt encrypted files roll back the reference updates and fail startup. Custom paths outside the legacy prefix are unchanged.</p>
     <p>The SQLite file and encryption key must persist together. Provider API secrets are encrypted with the application key, and managed OAuth credential files use the same protected runtime boundary. Losing the encryption key makes existing encrypted secret material unusable even if the database remains available.</p>
     <p>Schema initialization applies the idempotent schema in <code>src/db/schema/sqlite-current.sql</code>. The one-time free model defaults described below and the one-time auto tag-tier bootstrap each record completion in <code>gateway_bootstrap_state</code>, so they run once per database file. Existing configuration is loaded into an immutable runtime snapshot so the request hot path does not query configuration tables at every stage.</p>
 

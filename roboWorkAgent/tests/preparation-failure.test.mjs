@@ -109,7 +109,7 @@ test('a missing or failing Podman initializer stops startup before the service o
     const initializer = path.join(bin, 'roboteam-podman-init');
     const start = () => spawn('/bin/sh', [fileURLToPath(new URL('../scripts/startAgent.sh', import.meta.url))], {
         env: { PATH: `${bin}:/usr/bin:/bin`, XDG_RUNTIME_DIR: runtime, ROBOWORK_SERVICE_MAIN: path.join(root, 'service.mjs'),
-            ROBOWORK_AGENT_SERVER_SCRIPT: path.join(root, 'agent-server.sh'), ROBOWORK_SERVICE_CHECK: path.join(root, 'check.mjs') }, stdio: ['ignore', 'pipe', 'pipe'],
+            ROBOWORK_AGENT_SERVER_SCRIPT: path.join(root, 'agent-server.sh'), ROBOWORK_SERVICE_CHECK: path.join(root, 'check.mjs'), ROBOWORK_STORAGE_PREPARE_SCRIPT: path.join(root, 'check.mjs') }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     const finished = child => new Promise(resolve => { child.stdout.resume(); child.stderr.resume(); child.on('exit', code => resolve(code)); });
     const absent = name => assert.rejects(fs.access(marker(name)), { code: 'ENOENT' });

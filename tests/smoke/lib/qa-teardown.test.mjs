@@ -27,7 +27,7 @@ const exists = file => { try { fs.lstatSync(file); return true; } catch { return
 // The retargeted durable list of deploy-qa-preservation.test.mjs:50-58, plus the observed QA layout.
 const PRESERVATION_DURABLE = Object.freeze(['.data/dpu-data/blobs/one', '.data/umamiAgent/postgres/PG_VERSION',
     '.data/umamiAgent/postgres/pg_wal/one', '.data/soul-gateway/data.sqlite-wal',
-    '.data/roboTeamAgent/robots/default/copilot/sessions/one.json',
+    '.data/agents/roboTeamAgent/robots/default/copilot/sessions/one.json',
     '.data/userPersistoAgent/persisto/.userpersisto.snapshot.json',
     'project/notes.txt', 'project/.agents/skills/local/SKILL.md', '.agents/skills/root/SKILL.md',
     '.ploinky/master-key', '.ploinky/.secrets', '.ploinky/passwords.enc',
@@ -36,7 +36,7 @@ const PRESERVATION_DURABLE = Object.freeze(['.data/dpu-data/blobs/one', '.data/u
     '.ploinky/ploinky_history', '.ploinky/operator-notes.md',
     '.ploinky/data/custom-store/authored.txt']);
 const OBSERVED_DURABLE = Object.freeze(['testN2/chapter-1.md', 'WebMeet/rooms/room.json', 'test1.backlog', '.env',
-    '.ploinky/data/master-key', '.ploinky/data/.secrets', '.ploinky/data/passwords.enc',
+    '.data/dpu-data/master-key', '.ploinky/data/.secrets', '.ploinky/data/passwords.enc',
     '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc', '.ploinky/edge-desired.json']);
 const RETIRED = Object.freeze(['.ploinky/master-key', '.ploinky/.secrets', '.ploinky/ploinky_subject_identity_ed25519_v1.enc']);
 // The three regenerated repository maps (deploy-qa-preservation.test.mjs:59) and the runtime state.
@@ -285,7 +285,7 @@ test('the admin module copies QA_SCOPE and the quiesce timeout of rollback-explo
 
 test('both teardown modules hold the same literal identity list as rollback-explorer-qa.mjs AUTH_FILES at the base', () => {
     // rollback-explorer-qa.mjs:35-38 at 916078b2.
-    const base = ['.env', '.ploinky/data/master-key', '.ploinky/master-key', '.ploinky/data/.secrets', '.ploinky/.secrets',
+    const base = ['.env', '.data/dpu-data/master-key', '.ploinky/master-key', '.ploinky/data/.secrets', '.ploinky/.secrets',
         '.ploinky/data/passwords.enc', '.ploinky/passwords.enc', '.ploinky/data/ploinky_subject_identity_ed25519_v1.enc',
         '.ploinky/ploinky_subject_identity_ed25519_v1.enc'];
     assert.deepEqual([...teardown.AUTH_FILES], base);
@@ -619,7 +619,7 @@ function refusalFixture(t, setup) {
     const f = fixture(t);
     fs.mkdirSync(f.paths.workspace);
     f.write('.data/userPersistoAgent/db');
-    f.write('.ploinky/data/master-key');
+    f.write('.data/dpu-data/master-key');
     f.write('.ploinky/agents.json');
     f.write('.runtime/ploinky/source');
     f.write('AdvancedLanguageAgent/source');
@@ -660,7 +660,7 @@ test('AC11 r2: every refusal exits with its code and changes nothing', async t =
     const cases = [
         ['QA_TEARDOWN_RETIRED_IDENTITY', 'rebuild', f => f.write('.ploinky/master-key')],
         ['QA_TEARDOWN_RETIRED_IDENTITY', 'fresh', f => f.write('.ploinky/.secrets')],
-        ['QA_TEARDOWN_KEY_MISSING', 'destroy', f => fs.unlinkSync(f.at('.ploinky/data/master-key'))],
+        ['QA_TEARDOWN_KEY_MISSING', 'destroy', f => fs.unlinkSync(f.at('.data/dpu-data/master-key'))],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => { fs.rmSync(f.at('.ploinky'), { recursive: true }); fs.symlinkSync(elsewhere(f), f.at('.ploinky')); }],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => { fs.rmSync(f.at('.data'), { recursive: true }); fs.symlinkSync(elsewhere(f), f.at('.data')); }],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => { fs.rmSync(f.at('.runtime'), { recursive: true }); fs.writeFileSync(f.at('.runtime'), 'file'); }],
@@ -668,11 +668,11 @@ test('AC11 r2: every refusal exits with its code and changes nothing', async t =
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.symlinkSync(elsewhere(f), f.at('.ploinky-box'))],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.writeFileSync(f.at('.ploinky-box'), 'file')],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.writeFileSync(f.at('.ploinky/code'), 'file')],
-        ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.linkSync(f.at('.ploinky/data/master-key'), path.join(f.base, 'hard-link'))],
+        ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.linkSync(f.at('.data/dpu-data/master-key'), path.join(f.base, 'hard-link'))],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => fs.symlinkSync(f.at('testN2/doc.md'), f.at('.env'))],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => {
-            fs.renameSync(f.at('.ploinky/data'), path.join(f.base, 'data'));
-            fs.symlinkSync(path.join(f.base, 'data'), f.at('.ploinky/data'));
+            fs.renameSync(f.at('.data/dpu-data'), path.join(f.base, 'data'));
+            fs.symlinkSync(path.join(f.base, 'data'), f.at('.data/dpu-data'));
         }],
         ['QA_TEARDOWN_UNSAFE_PATH', 'destroy', f => {
             fs.renameSync(f.paths.workspace, path.join(f.base, 'real-workspace'));
@@ -1759,7 +1759,7 @@ test('probe: boundary names, an empty workspace and minimal layouts are kept or 
         assert.equal(f.read(name), `original:${name}`);
         assert.equal(f.read(`.ploinky/${name}`), `original:.ploinky/${name}`);
     }
-    for (const setup of [() => {}, g => g.write('.ploinky/data/master-key'), g => fs.mkdirSync(g.at('.ploinky'))]) {
+    for (const setup of [() => {}, g => g.write('.data/dpu-data/master-key'), g => fs.mkdirSync(g.at('.ploinky'))]) {
         const g = fixture(t);
         fs.mkdirSync(g.paths.workspace);
         setup(g);
