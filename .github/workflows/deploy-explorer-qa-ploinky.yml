@@ -12,6 +12,11 @@ on:
         required: false
         default: false
         type: boolean
+      reset_explorer_checkout:
+        description: 'Hard-reset the kept AchillesIDE checkout to main in the first start (discards its local changes). Only when no Box exists, for a kept checkout that the current Ploinky refuses.'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-explorer-qa
@@ -419,6 +424,7 @@ jobs:
       - name: Bootstrap the host and deploy through Ploinky commands
         env:
           RECREATE_BOX: ${{ inputs.recreate_box }}
+          RESET_EXPLORER_CHECKOUT: ${{ inputs.reset_explorer_checkout }}
           QA_USERPERSISTO_GOOGLE_CLIENT_ID: ${{ vars.EXPLORER_QA_USERPERSISTO_GOOGLE_CLIENT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
@@ -429,6 +435,10 @@ jobs:
           case "$RECREATE_BOX" in
             true|false) ;;
             *) echo "::error::recreate_box must be true or false"; exit 1 ;;
+          esac
+          case "$RESET_EXPLORER_CHECKOUT" in
+            true|false) ;;
+            *) echo "::error::reset_explorer_checkout must be true or false"; exit 1 ;;
           esac
 
           TUNNEL_LIST_RESPONSE=''
@@ -969,8 +979,7 @@ jobs:
           }
           # Start never fetches a checkout that exists, so kept sources move forward here. A full `ploinky update`
           # fails on an enabled repository with no Git checkout, so each other repository moves on its own; a
-          # dirty or diverged required source fails the run and is left untouched. Needs a running Box: without
-          # one, `update` would create a Box on 8080, which Soul Gateway owns on this host.
+          # dirty or diverged required source fails the run and is left untouched.
           update_kept_repos() {
             local managed repo
             managed="$(ploinky_read list repos | sed 's/\x1b\[[0-9;]*m//g' | installed_repos)"
@@ -1000,7 +1009,12 @@ jobs:
           fi
           BOX_STATE=present
           if [[ "$STATUS_OUTPUT" == *'Ploinky Box: absent'* ]]; then BOX_STATE=absent; fi
-          echo "[deploy-qa] Box before this run: $BOX_STATE; recreate requested: $RECREATE_BOX."
+          echo "[deploy-qa] Box before this run: $BOX_STATE; recreate requested: $RECREATE_BOX; Explorer checkout reset requested: $RESET_EXPLORER_CHECKOUT."
+          # A reset runs only in the first start of a workspace with no Box, before anything has moved.
+          if [ "$RESET_EXPLORER_CHECKOUT" = true ] && [ "$BOX_STATE" = present ]; then
+            echo "::error::reset_explorer_checkout needs a workspace with no Box. Nothing was changed."
+            exit 1
+          fi
           # Nothing has moved yet: free what earlier rollouts left behind, then refuse to start on a full disk.
           prune_images pre
           require_free_disk
@@ -1018,17 +1032,12 @@ jobs:
             # `ploinky var` needs a Box, and only `start` accepts the port; a Box created by `var` would take
             # 8080, which Soul Gateway owns on this host. So the first start runs before the values are set.
             # A fresh workspace has no publication yet; kept data republishes its kept tunnel.
-            # Kept data keeps its checkouts, which this start does not move. When this Ploinky refuses a manifest
-            # of an older kept checkout, the failed start has already created the Box: the kept checkouts then
-            # move forward and the start runs once more. With no running Box, nothing else moves.
-            if ! ploinky_locked --port "$ROUTER_PORT" start explorer; then
-              FIRST_START_STATUS="$(ploinky_read status | sed 's/\x1b\[[0-9;]*m//g')" || FIRST_START_STATUS=''
-              if ! grep -qx 'Ploinky Box: running' <<< "$FIRST_START_STATUS"; then
-                echo "::error::The first start failed and left no running Box. No repository moved."
-                exit 1
-              fi
-              echo "::warning::The first start failed; moving the kept repositories forward and starting once more."
-              update_kept_repos
+            # Start does not move a kept checkout, and a failed start removes the Box it created, so nothing can
+            # update a kept checkout that the current Ploinky refuses. reset_explorer_checkout asks this start to
+            # hard-reset only AchillesIDE to main before it reads any manifest.
+            if [ "$RESET_EXPLORER_CHECKOUT" = true ]; then
+              ploinky_locked --port "$ROUTER_PORT" start explorer --repo-branch AchillesIDE=main --reset-repos
+            else
               ploinky_locked --port "$ROUTER_PORT" start explorer
             fi
             wait_ready
@@ -1504,6 +1513,7 @@ jobs:
         if: always()
         env:
           RECREATE_BOX: ${{ inputs.recreate_box }}
+          RESET_EXPLORER_CHECKOUT: ${{ inputs.reset_explorer_checkout }}
         run: |
           {
             echo "## Explorer QA Box Deploy (Ploinky commands)"
@@ -1511,6 +1521,7 @@ jobs:
             echo "- Host: \`${SSH_USER}@${SSH_HOST}\`, workspace \`~/${WORKSPACE}\`"
             echo "- Router publication: \`127.0.0.1:${ROUTER_PORT}:8080/tcp\`"
             echo "- Box recreated on request: \`${RECREATE_BOX}\`"
+            echo "- Explorer checkout reset on request: \`${RESET_EXPLORER_CHECKOUT}\`"
             echo "- Sources: each managed repository's default branch at deploy time; no Ploinky command reports the deployed commits"
             printf -- '- Cloudflare tunnel: `%s` `%s`\n' "$CLOUDFLARE_TUNNEL_NAME" "${CLOUDFLARE_TUNNEL_ID:-not-created}"
             printf -- '- Cloudflare DNS record: `%s`\n' "${EXPLORER_QA_DNS_RECORD_ID:-not-created}"
