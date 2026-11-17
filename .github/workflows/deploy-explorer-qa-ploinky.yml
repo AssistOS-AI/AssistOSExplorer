@@ -440,10 +440,104 @@ jobs:
             true|false) ;;
             *) echo "::error::reset_explorer_checkout must be true or false"; exit 1 ;;
           esac
-          if [ ! -f "$GITHUB_WORKSPACE/.qa-bizanso-source/deepProofArticle/manifest.json" ]; then
-            echo "::error::The Bizanso default branch has no deepProofArticle/manifest.json, and this deployment enables bizanso/deepProofArticle. Nothing was changed."
-            exit 1
-          fi
+          # Everything below this check changes the host, so it comes first: it only reads, and it refuses before anything is changed.
+          SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "${SSH_USER}@${SSH_HOST}")
+          LOCK=/home/admin/.qa-deployment-operation.lock
+          WORK_DIR="/home/admin/$WORKSPACE"
+          PLOINKY_BIN=/home/admin/.qa-deployment-tools/ploinky/bin/ploinky
+
+          # In-Box programs are fixed strings without a single quote, because run_in_box embeds them in one. A value
+          # reaches a program only on stdin, and the program checks it again.
+          run_in_box() {
+            "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec -i --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' ploinky-box-explorerqaworkspace-7a31ab7775eb sh -c '$1' sh"
+          }
+          # BEGIN QA registry check
+          # Every Bizanso agent the QA registry lists as enabled must still have its folder in the checked-out Bizanso tree, so that
+          # a tree without an enabled agent's folder is refused before anything changes. The registry is read inside the Box by a
+          # fixed program, and it is a read: nothing has changed when this refuses. Records with an alias are skipped, as the
+          # production deploy skips them. A QA host without a running Box has no registry and passes.
+          QA_REGISTRY_PROGRAM='set -eu
+          if [ ! -e .ploinky/agents.json ]; then exit 3; fi
+          cat .ploinky/agents.json'
+          qa_registry_check() {
+            local box=ploinky-box-explorerqaworkspace-7a31ab7775eb running='' file="$RUNNER_TEMP/qa-registry-agents.json" status=0 missing=''
+            running="$("${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman ps --quiet --no-trunc --filter 'name=^$box\$'" < /dev/null)" || status=$?
+            if [ "$status" -eq 75 ]; then
+              echo "::error::Another Explorer QA operation holds the host lock. Nothing was changed."
+              return 1
+            fi
+            if [ "$status" -ne 0 ]; then
+              echo "::error::Cannot read the QA registry: the check for a running Box exited $status. Nothing was changed."
+              return 1
+            fi
+            if [ -z "$running" ]; then
+              echo "[qa] No QA Box is running, so there is no registry to check."
+              return 0
+            fi
+            run_in_box "$QA_REGISTRY_PROGRAM" < /dev/null > "$file" || status=$?
+            case "$status" in
+              0) ;;
+              3)
+                echo "[qa] The running Box has no registry yet, so there is nothing to check."
+                return 0
+                ;;
+              75)
+                echo "::error::Another Explorer QA operation holds the host lock. Nothing was changed."
+                return 1
+                ;;
+              *)
+                echo "::error::Cannot read the QA registry (exit $status). Nothing was changed."
+                return 1
+                ;;
+            esac
+            status=0
+            missing="$(node --input-type=module - "$file" "$GITHUB_WORKSPACE/.qa-bizanso-source" <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+
+          const [file, tree] = process.argv.slice(2);
+          let agents;
+          try {
+            agents = JSON.parse(fs.readFileSync(file, 'utf8'));
+          } catch {
+            process.exit(3);
+          }
+          if (!agents || typeof agents !== 'object' || Array.isArray(agents)) process.exit(3);
+          const names = new Set();
+          for (const record of Object.values(agents)) {
+            if (!record || record.type !== 'agent' || record.repoName !== 'bizanso' || record.alias) continue;
+            const name = record.agentName;
+            if (typeof name !== 'string' || !/^[A-Za-z0-9._-]+$/.test(name) || name === '.' || name === '..') process.exit(3);
+            names.add(name);
+          }
+          const missing = [...names].sort().filter((name) => {
+            try {
+              return !fs.statSync(path.join(tree, name, 'manifest.json')).isFile();
+            } catch {
+              return true;
+            }
+          });
+          process.stdout.write(missing.map((name) => `${name}\n`).join(''));
+          process.exit(missing.length ? 4 : 0);
+          NODE
+            )" || status=$?
+            case "$status" in
+              0) ;;
+              4)
+                echo "::error::The QA registry lists the enabled Bizanso agent(s) ${missing//$'\n'/ }, but the checked-out Bizanso tree has no <agent>/manifest.json for them. Nothing was changed. Disable the agent on QA first, or restore its folder in the Bizanso tree."
+                return 1
+                ;;
+              *)
+                echo "::error::Cannot read the QA registry: it is empty, malformed or not a JSON object (exit $status). Nothing was changed."
+                return 1
+                ;;
+            esac
+            echo "[qa] The QA registry lists no Bizanso agent whose folder the checked-out tree lacks."
+          }
+          qa_registry_check || exit 1
+          # END QA registry check
 
           TUNNEL_LIST_RESPONSE=''
           TUNNEL_MUTATION_RESPONSE=''
@@ -659,12 +753,6 @@ jobs:
           TUNNEL_DNS_RESPONSE=''
           echo "[deploy-qa] Dedicated Explorer QA tunnel id=$CLOUDFLARE_TUNNEL_ID created=$CLOUDFLARE_TUNNEL_CREATED."
 
-          SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
-            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
-            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "${SSH_USER}@${SSH_HOST}")
-          LOCK=/home/admin/.qa-deployment-operation.lock
-          WORK_DIR="/home/admin/$WORKSPACE"
-          PLOINKY_BIN=/home/admin/.qa-deployment-tools/ploinky/bin/ploinky
 
           echo '[deploy-qa] Bootstrapping the pinned Node, the Ploinky checkout and the workspace directory...'
           BOOTSTRAP_LOG="$RUNNER_TEMP/explorer-qa-bootstrap.log"
@@ -1212,16 +1300,13 @@ jobs:
           if ! grep -q '^bizanso ' <<< "$ENABLED_STATES"; then
             ploinky_locked enable agent bizanso/bizanso
           fi
-          if ! grep -q '^deepProofArticle ' <<< "$ENABLED_STATES"; then
-            ploinky_locked enable agent bizanso/deepProofArticle
-          fi
           if ! grep -q '^promotionScout ' <<< "$ENABLED_STATES"; then
             ploinky_locked enable agent PromotionScoutV2/promotionScout
           fi
           if ! grep -q '^scriptahubAgent ' <<< "$ENABLED_STATES"; then
             ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent
           fi
-          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
 
           # BEGIN QA ScriptaHub images
           # Both images are pinned to registry indexes resolved on the runner. The generic RoboTeam tag may
@@ -1437,7 +1522,7 @@ jobs:
       - name: Verify Bizanso and ScriptaHub
         run: |
           set -euo pipefail
-          for path in bizanso/8787/how-it-works/ scriptahubAgent/3002/health deepProofArticle/8790/assets/form.js; do
+          for path in bizanso/8787/how-it-works/ scriptahubAgent/3002/health; do
             url="${PUBLIC_URL%/}/base-agent-additional-server/$path"
             for attempt in $(seq 1 60); do
               code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$url" || true)"

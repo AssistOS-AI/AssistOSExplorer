@@ -78,7 +78,7 @@ const SHARED = {
     cleanup: [`${I}# BEGIN QA image cleanup`, `${I}# END QA image cleanup`],
     graph: [`${I}GRAPH_RUNTIMES='explorer gitAgent userPersistoAgent emailAgent dpuAgent roboTeamAgent soul-gateway workspaceMonitorAgent local-llm'`,
         `Timed out waiting for the graph runtimes to stay ready."\n            return 1\n${I}}`],
-    extend: [`${I}GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"`, `${I}GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"`],
+    extend: [`${I}GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"`, `${I}GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"`],
     runinbox: [`${I}run_in_box() {`, `\n${I}}`],
     copy: [`${I}COPY_PROGRAM='set -eu`, `${I}mv "$incoming" bizanso'`],
 };
@@ -163,11 +163,7 @@ test('every shared block is byte-identical to the full deploy at the recorded ba
     for (const key of KEYS) {
         const source = workflow(key);
         for (const name of SHARED_BY[key]) {
-            // The recorded base has the extend line without the article agent, which the working trees add.
-            const baseExtend = `${I}GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"`;
-            const expected = name === 'extend'
-                ? slice(base, baseExtend, baseExtend).replace('scriptahubAgent"', 'scriptahubAgent deepProofArticle"')
-                : name === 'cleanup'
+            const expected = name === 'cleanup'
                 ? withCurrentPruneScope(block(base, name).replace('# Unpacked size of the ScriptaHub robot image not shared with the RoboTeam runtime (11.2 GB, 9 of 29 layers new).', '# Reserve space for the prepared ScriptaHub agent image before pulling new layers.').replaceAll('ROBOT_IMAGE_NEW_GIB', 'SCRIPTA_AGENT_IMAGE_NEW_GIB'))
                 : block(base, name);
             assert.ok(expected.length > 20, name);
@@ -194,7 +190,7 @@ function inBoxPrograms(source) {
 
 test('no in-Box program contains a single quote, and each is valid shell', () => {
     const expected = {
-        bizanso: ['DRAIN_ROUTING_PROGRAM', 'DRAIN_AGENTS_PROGRAM', 'DRAIN_RUNNING_PROGRAM', 'PROBE_PROGRAM', 'BIZANSO_READ_PROGRAM', 'BIZANSO_MANIFEST_PROGRAM', 'BIZANSO_PULL_PROGRAM', 'COPY_PROGRAM'],
+        bizanso: ['QA_REGISTRY_PROGRAM', 'DRAIN_ROUTING_PROGRAM', 'DRAIN_AGENTS_PROGRAM', 'DRAIN_RUNNING_PROGRAM', 'PROBE_PROGRAM', 'BIZANSO_READ_PROGRAM', 'BIZANSO_MANIFEST_PROGRAM', 'BIZANSO_PULL_PROGRAM', 'COPY_PROGRAM'],
         scriptahub: ['DRAIN_ROUTING_PROGRAM', 'DRAIN_AGENTS_PROGRAM', 'DRAIN_RUNNING_PROGRAM', 'PROBE_PROGRAM', 'SCRIPTAHUB_READ_PROGRAM', 'SCRIPTAHUB_DIGEST_PROGRAM', 'SCRIPTAHUB_PULL_PROGRAM', 'SCRIPTAHUB_MERGE_PROGRAM', 'SCRIPTAHUB_TAG_PROGRAM'],
     };
     for (const key of KEYS) {
@@ -300,6 +296,7 @@ const MARKERS = {
         refusals: [
             'STATUS_OUTPUT="$(ploinky_read status)"',
             'echo "::error::Runtime $agent is not running',
+            '\nqa_registry_check || exit 1\n',
             'run_in_box "$BIZANSO_READ_PROGRAM" < /dev/null)"',
             'echo "::error::The product check found no single running bizanso container.',
             'if [ "$(any_route_draining)" != no ]; then',
@@ -365,7 +362,7 @@ test('every refusal comes before the first mutation, in the specified order', ()
 // Stub Box
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
-const GRAPH = ['explorer', 'gitAgent', 'userPersistoAgent', 'emailAgent', 'dpuAgent', 'roboTeamAgent', 'soul-gateway', 'workspaceMonitorAgent', 'local-llm', 'bizanso', 'promotionScout', 'scriptahubAgent', 'deepProofArticle'];
+const GRAPH = ['explorer', 'gitAgent', 'userPersistoAgent', 'emailAgent', 'dpuAgent', 'roboTeamAgent', 'soul-gateway', 'workspaceMonitorAgent', 'local-llm', 'bizanso', 'promotionScout', 'scriptahubAgent'];
 const GIB_KIB = 1048576;
 const hex = (char) => char.repeat(64);
 
@@ -478,6 +475,8 @@ case "$1" in
     if [ "$1" = -a ]; then cat "$STUB/ps-a" 2> /dev/null; exit 0; fi
     prefix=""; cid=""
     for arg in "$@"; do case "$arg" in name=^*) prefix="\${arg#name=^}" ;; id=*) cid="\${arg#id=}" ;; esac; done
+    # The registry check asks whether the Box runs: one line when it does, nothing when it does not.
+    case "$prefix" in ploinky-box-*) echo "podman ps box" >> "$STUB/calls.log"; [ -f "$STUB/box-down" ] || echo "$prefix" | tr -d '$'; exit 0 ;; esac
     if [ -n "$cid" ]; then echo "podman ps id=$cid" >> "$STUB/calls.log"; cat "$STUB/running.$cid" 2> /dev/null; exit 0; fi
     echo "podman ps $prefix" >> "$STUB/calls.log"
     cat "$STUB/ps.$prefix" 2> /dev/null; exit 0 ;;
@@ -1170,6 +1169,117 @@ test('Bizanso flow: every refusal stops the run before any pull, copy, variable 
     const recovered = runBizansoFlow(flaky);
     assert.equal(recovered.status, 0, logOf(recovered));
     assert.match(recovered.stdout, /\[deploy-qa-product\] routes explorer=503 bizanso=200 scriptahub=200\n/);
+});
+
+// The registry check reads .ploinky/agents.json inside the Box before anything is pulled, copied or restarted.
+const REGISTRY_BLOCK = [`${I}# BEGIN QA registry check`, `${I}# END QA registry check`];
+const MISSING_FOLDER = 'secondAgent';
+const registryRecord = (agent, extra = {}) => ({ type: 'agent', agentName: agent, repoName: 'bizanso', containerId: hex('e'), ...extra });
+const REGISTRY_MESSAGE = /::error::The QA registry lists the enabled Bizanso agent\(s\) secondAgent, but the checked-out Bizanso tree has no <agent>\/manifest\.json for them\. Nothing was changed\./;
+const noPullCopyRestart = (box) => {
+    noMutation(box);
+    assert.equal(fs.existsSync(path.join(box.stub, 'unexpected.log')), false);
+    assert.deepEqual(box.calls().filter((line) => /^podman pull/.test(line)), []);
+};
+
+test('the registry check is one block, identical in the full deploy and the Bizanso workflow, and is in neither base nor the scriptahub workflow', () => {
+    const bizanso = slice(workflow('bizanso'), ...REGISTRY_BLOCK);
+    assert.equal(slice(ploinkyNow, ...REGISTRY_BLOCK), bizanso);
+    assert.equal(workflow('bizanso').split(REGISTRY_BLOCK[0]).length - 1, 1);
+    assert.equal(ploinkyNow.split(REGISTRY_BLOCK[0]).length - 1, 1);
+    assert.equal(showBase(`.github/workflows/${PLOINKY}`).includes('QA registry check'), false);
+    assert.equal(workflow('scriptahub').includes('qa_registry_check'), false);
+    // It reads the registry inside the Box with the fixed program, keys on aliases the way the production deploy does and names no agent.
+    assert.match(bizanso, /QA_REGISTRY_PROGRAM='set -eu\n {10}if \[ ! -e \.ploinky\/agents\.json \]; then exit 3; fi\n {10}cat \.ploinky\/agents\.json'\n/);
+    assert.match(bizanso, /record\.type !== 'agent' \|\| record\.repoName !== 'bizanso' \|\| record\.alias/);
+    assert.doesNotMatch(bizanso, /deepProofArticle/);
+    assert.doesNotMatch(bizanso, /\$\{\{/);
+});
+
+test('Bizanso flow: a registry record whose folder the incoming tree lacks refuses before any pull, copy, variable or restart; the folder present passes', (t) => {
+    const records = { ploinky_bizanso_bizanso_a: registryRecord('bizanso'), ploinky_bizanso_second_b: registryRecord(MISSING_FOLDER) };
+    const missing = bizansoBox(t, { source: { 'bizanso/src/runtime.mjs': 'export default 2;\n' } });
+    writeJson(missing, 'agents.json', records);
+    const refused = runBizansoFlow(missing);
+    assert.equal(refused.status, 1, logOf(refused));
+    assert.match(refused.stdout, REGISTRY_MESSAGE);
+    assert.doesNotMatch(refused.stdout, /\[deploy-qa-bizanso\] source /);
+    noPullCopyRestart(missing);
+    assert.deepEqual(missing.calls().filter((line) => /^podman ps box|^ploinky/.test(line)), ['ploinky status', 'podman ps box']);
+    assert.equal(fs.readFileSync(path.join(missing.ws, 'bizanso/bizanso/src/runtime.mjs'), 'utf8'), 'export default 1;\n');
+
+    const present = bizansoBox(t, { source: { 'bizanso/src/runtime.mjs': 'export default 2;\n', [`${MISSING_FOLDER}/manifest.json`]: '{}\n' } });
+    writeJson(present, 'agents.json', records);
+    const passed = runBizansoFlow(present);
+    assert.equal(passed.status, 0, logOf(passed));
+    assert.match(passed.stdout, /\[qa\] The QA registry lists no Bizanso agent whose folder the checked-out tree lacks\./);
+    assert.deepEqual(present.calls().filter((line) => /^ploinky restart/.test(line)), ['ploinky restart bizanso/bizanso']);
+});
+
+test('Bizanso flow: no record, an alias-only record, other repositories and a missing or empty-object registry do not refuse', (t) => {
+    const cases = {
+        'an empty object': '{}',
+        'an alias-only record': { x: registryRecord(MISSING_FOLDER, { alias: 'second' }) },
+        'a record of another repository': { x: registryRecord(MISSING_FOLDER, { repoName: 'PromotionScoutV2' }) },
+        'a non-agent record': { x: registryRecord(MISSING_FOLDER, { type: 'service' }) },
+        'no registry file': null,
+    };
+    for (const [name, registry] of Object.entries(cases)) {
+        const box = bizansoBox(t, { source: { 'bizanso/src/runtime.mjs': 'export default 2;\n' } });
+        if (registry === null) fs.rmSync(path.join(box.ws, '.ploinky/agents.json'));
+        else if (typeof registry === 'string') fs.writeFileSync(path.join(box.ws, '.ploinky/agents.json'), registry);
+        else writeJson(box, 'agents.json', registry);
+        const result = runBizansoFlow(box);
+        assert.equal(result.status, 0, `${name}: ${logOf(result)}`);
+        assert.doesNotMatch(result.stdout, /Nothing was changed\.\n.*registry/s, name);
+        assert.match(result.stdout, /restart result: targeted\n/, name);
+    }
+    const noRegistry = bizansoBox(t);
+    fs.rmSync(path.join(noRegistry.ws, '.ploinky/agents.json'));
+    assert.match(runBizansoFlow(noRegistry).stdout, /\[qa\] The running Box has no registry yet, so there is nothing to check\./);
+});
+
+test('Bizanso flow: a Box that is not running passes the check without reading the registry', (t) => {
+    const box = bizansoBox(t, { source: { 'bizanso/src/runtime.mjs': 'export default 2;\n' } });
+    writeJson(box, 'agents.json', { x: registryRecord(MISSING_FOLDER) });
+    box.write('box-down', '1');
+    const result = runBizansoFlow(box);
+    // Later refusals may still stop the run; the registry check must not be one of them.
+    assert.match(result.stdout, /\[qa\] No QA Box is running, so there is no registry to check\./);
+    assert.doesNotMatch(logOf(result), /The QA registry lists|Cannot read the QA registry/);
+});
+
+test('Bizanso flow: an unreadable, empty or malformed registry refuses with its own message and changes nothing', (t) => {
+    const cases = {
+        'empty file': (box) => fs.writeFileSync(path.join(box.ws, '.ploinky/agents.json'), ''),
+        'not JSON': (box) => fs.writeFileSync(path.join(box.ws, '.ploinky/agents.json'), 'not json'),
+        'a JSON array': (box) => fs.writeFileSync(path.join(box.ws, '.ploinky/agents.json'), '[]'),
+        'a JSON null': (box) => fs.writeFileSync(path.join(box.ws, '.ploinky/agents.json'), 'null'),
+        'a path-like agent name': (box) => writeJson(box, 'agents.json', { x: registryRecord('../etc') }),
+        'an agent name that is not a string': (box) => writeJson(box, 'agents.json', { x: registryRecord(7) }),
+        'a registry that is a directory': (box) => { fs.rmSync(path.join(box.ws, '.ploinky/agents.json')); fs.mkdirSync(path.join(box.ws, '.ploinky/agents.json')); },
+    };
+    for (const [name, setup] of Object.entries(cases)) {
+        const box = bizansoBox(t, { source: { 'bizanso/src/runtime.mjs': 'export default 2;\n' } });
+        setup(box);
+        const result = runBizansoFlow(box);
+        assert.equal(result.status, 1, `${name}: ${logOf(result)}`);
+        assert.match(result.stdout, /::error::Cannot read the QA registry.*Nothing was changed\./, name);
+        assert.doesNotMatch(result.stdout, /The QA registry lists/, name);
+        noPullCopyRestart(box);
+    }
+});
+
+test('Bizanso flow: a held host lock refuses the registry check as it refuses the product check, with nothing changed', (t) => {
+    for (const pattern of ['podman ps --quiet', 'cat .ploinky/agents.json']) {
+        const box = bizansoBox(t, { source: { 'bizanso/src/runtime.mjs': 'export default 2;\n' } });
+        box.write('flock-busy', pattern);
+        const result = runBizansoFlow(box);
+        assert.equal(result.status, 1, `${pattern}: ${logOf(result)}`);
+        assert.match(result.stdout, /::error::Another Explorer QA operation holds the host lock\. Nothing was changed\./, pattern);
+        assert.doesNotMatch(result.stdout, /\[deploy-qa-bizanso\] source /, pattern);
+        noPullCopyRestart(box);
+    }
 });
 
 test('Bizanso flow: a failed pull changes nothing, and a lock held on the restart ends the run with 75 and no fallback', (t) => {

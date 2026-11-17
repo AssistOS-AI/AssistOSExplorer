@@ -15,6 +15,8 @@ const legacyDestroy = read('destroy-explorer-qa.yml');
 
 const WORKSPACE_REPOSITORIES_BLOCK = /# BEGIN QA workspace repositories[\s\S]*# END QA workspace repositories/;
 const IMAGE_PRUNE_BLOCK = /# BEGIN QA image cleanup[\s\S]*# END QA image cleanup/;
+// The function that runs a fixed program inside the Box. The registry check defines it before the shared block does.
+const RUN_IN_BOX_FUNCTION = /run_in_box\(\) \{\n[^\n]*container exec[^\n]*\n\s*\}\n/g;
 
 function runBlocks(source) {
     const blocks = [];
@@ -78,8 +80,9 @@ for (const [name, source] of [['deploy', deploy], ['destroy', destroy]]) {
             /\.ploinky\/(?:repos|running|data)/, /rm -rf/,
         ]) {
             // Placing the repositories at the workspace root is an exception for every pattern, and listing images
-            // inside the Box one for `container exec` only. Both have their own tests.
-            const exempt = forbidden.source.startsWith('container') ? [WORKSPACE_REPOSITORIES_BLOCK, IMAGE_PRUNE_BLOCK] : [WORKSPACE_REPOSITORIES_BLOCK];
+            // inside the Box one for `container exec` only, and so is the one function that runs a fixed program there.
+            // Both have their own tests.
+            const exempt = forbidden.source.startsWith('container') ? [WORKSPACE_REPOSITORIES_BLOCK, IMAGE_PRUNE_BLOCK, RUN_IN_BOX_FUNCTION] : [WORKSPACE_REPOSITORIES_BLOCK];
             assert.doesNotMatch(exempt.reduce((text, block) => text.replace(block, ''), source), forbidden);
         }
     });
@@ -122,10 +125,9 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         'ploinky_locked add repo https://github.com/AssistOS-AI/PromotionScoutV2.git PromotionScoutV2',
         'ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent',
         'ploinky_locked enable agent bizanso/bizanso',
-        'ploinky_locked enable agent bizanso/deepProofArticle',
         'ploinky_locked enable agent PromotionScoutV2/promotionScout',
         'ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent',
-        'GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"',
+        'GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"',
         'podman pull -q "$agent"',
         'podman pull -q "$robot"',
         'podman tag "$robot" docker.io/assistos/roboteam-agent:runtime',
@@ -159,35 +161,166 @@ test('deploy: the added agents are enabled only when missing and are awaited onl
     const verify = step(deploy, 'Verify Bizanso and ScriptaHub');
     assert.match(verify, /bizanso\/8787\/how-it-works\//);
     assert.match(verify, /scriptahubAgent\/3002\/health/);
-    assert.match(verify, /for path in [^\n]* deepProofArticle\/8790\/assets\/form\.js; do\n/);
+    assert.match(verify, /for path in bizanso\/8787\/how-it-works\/ scriptahubAgent\/3002\/health; do\n/);
+    assert.doesNotMatch(verify, /deepProofArticle|form\.js/);
     // promotionScout declares MCP readiness and no web surface, so its proof is the awaited runtime state alone.
     assert.doesNotMatch(verify, /promotionScout/);
-    assert.match(body, /GRAPH_RUNTIMES="\$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"\n[\s\S]*ploinky_locked restart\n\s+wait_ready/);
+    assert.match(body, /GRAPH_RUNTIMES="\$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"\n[\s\S]*ploinky_locked restart\n\s+wait_ready/);
 });
 
-test('deploy: the article agent is enabled only when missing, only when the Bizanso tree has it, after bizanso/bizanso', () => {
+test('deploy: the retiring second agent is not enabled, awaited, required or probed by any QA deploy workflow', () => {
     const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
-    const enable = `if ! grep -q '^deepProofArticle ' <<< "$ENABLED_STATES"; then\n            ploinky_locked enable agent bizanso/deepProofArticle\n          fi\n`;
-    assert.equal(body.split(enable).length - 1, 1);
-    const at = body.indexOf(enable);
-    assert.ok(body.indexOf('ploinky_locked enable agent bizanso/bizanso') < at);
-    assert.ok(at < body.indexOf('GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"'));
-    // The first-start graph never names it.
+    assert.doesNotMatch(deploy, /deepProofArticle/);
+    assert.doesNotMatch(body, /enable agent bizanso\/(?!bizanso\b)/);
+    for (const name of ['deploy-explorer-qa-ploinky.yml', 'deploy-explorer-qa-bizanso.yml', 'deploy-explorer-qa-scriptahub.yml']) {
+        const lines = read(name).split('\n').filter((line) => line.includes('GRAPH_RUNTIMES='));
+        assert.ok(lines.length >= 2, name);
+        for (const line of lines) assert.doesNotMatch(line, /deepProofArticle/, `${name}: ${line}`);
+    }
+    // The first-start graph never names the added agents.
     assert.doesNotMatch(body.match(/GRAPH_RUNTIMES='([^']*)'/)[1], /deepProofArticle/);
 });
 
-test('deploy: a Bizanso tree without the article agent is refused before anything is changed', () => {
+const REGISTRY_BEGIN = '# BEGIN QA registry check';
+const REGISTRY_END = '# END QA registry check';
+
+test('deploy: the QA registry check reads inside the Box and comes before the first Cloudflare call, host change and Ploinky command', () => {
     const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
-    const refusal = `if [ ! -f "$GITHUB_WORKSPACE/.qa-bizanso-source/deepProofArticle/manifest.json" ]; then\n            echo "::error::The Bizanso default branch has no deepProofArticle/manifest.json, and this deployment enables bizanso/deepProofArticle. Nothing was changed."\n            exit 1\n          fi\n`;
-    assert.equal(body.split(refusal).length - 1, 1);
-    const at = body.indexOf(refusal);
-    // Before the first Cloudflare call, host command or Ploinky command, and after the Bizanso checkout step.
-    for (const marker of ['curl -fsS', '"${SSH[@]}"', 'ploinky_locked ']) {
+    assert.equal(body.split(REGISTRY_BEGIN).length - 1, 1);
+    const at = body.indexOf('qa_registry_check || exit 1\n');
+    assert.notEqual(at, -1);
+    assert.ok(body.indexOf(REGISTRY_BEGIN) < at && at < body.indexOf(REGISTRY_END));
+    // Only the read of the running Box and the registry come first. A refusal changes nothing.
+    for (const marker of ['curl -fsS', 'Bootstrapping the pinned Node', 'ploinky_locked ', 'ploinky_read ', 'mktemp /tmp/', 'bash -s']) {
         const first = body.indexOf(marker);
         assert.notEqual(first, -1, marker);
-        assert.ok(at < first, `the refusal comes before the first ${marker}`);
+        assert.ok(at < first, `the registry check comes before the first ${marker}`);
     }
+    // The only host commands before it are the two reads of the check itself.
+    const before = body.slice(0, at).split('\n').filter((line) => line.includes('"${SSH[@]}"') && !line.trimStart().startsWith('#'));
+    assert.deepEqual(before.map((line) => line.trim().split(/\s+/).slice(0, 3).join(' ')), ['"${SSH[@]}" "exec flock', 'running="$("${SSH[@]}" "exec flock']);
     assert.ok(deploy.indexOf('- name: Check out Bizanso') < deploy.indexOf('- name: Bootstrap the host and deploy through Ploinky commands'));
+    // run_in_box is the same function as the one of the shared workspace block, defined here before its first use.
+    const early = body.indexOf('run_in_box() {');
+    assert.ok(early < at);
+    assert.equal(body.slice(early, body.indexOf('\n}', early) + 2), body.slice(body.lastIndexOf('run_in_box() {'), body.indexOf('\n}', body.lastIndexOf('run_in_box() {')) + 2));
+    assert.doesNotMatch(body.slice(body.indexOf(REGISTRY_BEGIN), body.indexOf(REGISTRY_END)), /deepProofArticle/);
+});
+
+// Runs the check block itself under `set -euo pipefail` with stub ssh, flock and podman. A Box that runs answers the
+// name filter and runs the program in its workspace; `registry` is the text of .ploinky/agents.json, or null for none.
+function runRegistryCheck(t, { registry, boxRunning = true, tree = [], busy = '' }) {
+    const body = runBlocks(step(deploy, 'Bootstrap the host and deploy through Ploinky commands'))[0];
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-registry-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const bin = path.join(dir, 'bin');
+    const ws = path.join(dir, 'ws');
+    const checkout = path.join(dir, 'github/.qa-bizanso-source');
+    fs.mkdirSync(bin);
+    fs.mkdirSync(path.join(ws, '.ploinky'), { recursive: true });
+    fs.mkdirSync(checkout, { recursive: true });
+    fs.mkdirSync(path.join(dir, 'runner'));
+    for (const agent of tree) {
+        fs.mkdirSync(path.join(checkout, agent), { recursive: true });
+        fs.writeFileSync(path.join(checkout, agent, 'manifest.json'), '{}\n');
+    }
+    if (registry !== null) {
+        if (registry === 'directory') fs.mkdirSync(path.join(ws, '.ploinky/agents.json'));
+        else fs.writeFileSync(path.join(ws, '.ploinky/agents.json'), typeof registry === 'string' ? registry : JSON.stringify(registry));
+    }
+    const calls = path.join(dir, 'calls');
+    const stub = (name, text) => fs.writeFileSync(path.join(bin, name), `#!/bin/bash\n${text}\n`, { mode: 0o755 });
+    stub('fakessh', 'eval "${@: -1}"');
+    stub('flock', `echo "flock $*" >> "$CALLS"
+if [ -n "\${BUSY:-}" ]; then case "$*" in *"$BUSY"*) exit 75 ;; esac; fi
+shift 5
+exec "$@"`);
+    stub('podman', `echo "podman $1 $2" >> "$CALLS"
+if [ "$1" = ps ]; then [ "\${BOX_RUNNING}" != yes ] || echo ploinky-box-explorerqaworkspace-7a31ab7775eb; exit 0; fi
+if [ "$1 $2" = "container exec" ]; then
+  shift 2; wd=""
+  while [ $# -gt 0 ]; do case "$1" in -i) shift ;; --user|--env) shift 2 ;; --workdir) wd="$2"; shift 2 ;; *) break ;; esac; done
+  shift
+  cd "$wd" && exec sh -c "$3" sh
+fi
+exit 1`);
+    const runIn = body.indexOf('run_in_box() {');
+    const runFn = body.slice(runIn, body.indexOf('\n}', runIn) + 2);
+    const block = body.slice(body.indexOf(REGISTRY_BEGIN), body.indexOf(REGISTRY_END) + REGISTRY_END.length);
+    const script = `set -euo pipefail
+SSH=(fakessh); LOCK=/lock; WORK_DIR='${ws}'
+${runFn}
+${block}
+echo completed`;
+    const result = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CALLS: calls, BUSY: busy, BOX_RUNNING: boxRunning ? 'yes' : 'no', RUNNER_TEMP: path.join(dir, 'runner'), GITHUB_WORKSPACE: path.join(dir, 'github') },
+    });
+    return { ...result, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean) : [] };
+}
+const record = (agent, extra = {}) => ({ type: 'agent', agentName: agent, repoName: 'bizanso', containerId: 'c'.repeat(64), ...extra });
+
+test('deploy: a registry record of an enabled bizanso agent whose folder the checkout lacks is refused, the folder present passes', (t) => {
+    const registry = { ploinky_bizanso_bizanso_a: record('bizanso'), ploinky_bizanso_second_b: record('secondAgent') };
+    const refused = runRegistryCheck(t, { registry, tree: ['bizanso'] });
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stdout, /::error::The QA registry lists the enabled Bizanso agent\(s\) secondAgent, but the checked-out Bizanso tree has no <agent>\/manifest\.json for them\. Nothing was changed\./);
+    assert.doesNotMatch(refused.stdout, /completed/);
+    // Only reads: the Box probe and the registry read.
+    assert.deepEqual(refused.calls.filter((line) => line.startsWith('podman')), ['podman ps --quiet', 'podman container exec']);
+    const two = runRegistryCheck(t, { registry: { a: record('zeta'), b: record('alpha') }, tree: [] });
+    assert.match(two.stdout, /agent\(s\) alpha zeta, but/);
+    const passed = runRegistryCheck(t, { registry, tree: ['bizanso', 'secondAgent'] });
+    assert.equal(passed.status, 0, passed.stdout + passed.stderr);
+    assert.match(passed.stdout, /The QA registry lists no Bizanso agent whose folder the checked-out tree lacks\.\ncompleted\n/);
+});
+
+test('deploy: no record, alias-only records, other repositories and an empty registry or none pass the registry check', (t) => {
+    for (const [name, registry] of Object.entries({
+        'an empty object': {},
+        'an alias-only record': { x: record('secondAgent', { alias: 'second' }) },
+        'another repository': { x: record('secondAgent', { repoName: 'PromotionScoutV2' }) },
+        'not an agent': { x: record('secondAgent', { type: 'service' }) },
+        'a null record': { x: null },
+        'no registry file': null,
+    })) {
+        const result = runRegistryCheck(t, { registry, tree: [] });
+        assert.equal(result.status, 0, `${name}: ${result.stdout}${result.stderr}`);
+        assert.match(result.stdout, /completed\n$/, name);
+    }
+});
+
+test('deploy: a Box that is not running passes the registry check and its registry is not read', (t) => {
+    const result = runRegistryCheck(t, { registry: { x: record('secondAgent') }, boxRunning: false, tree: [] });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /\[qa\] No QA Box is running, so there is no registry to check\.\ncompleted\n$/);
+    assert.deepEqual(result.calls.filter((line) => line.startsWith('podman')), ['podman ps --quiet']);
+});
+
+test('deploy: an empty, malformed or unreadable registry refuses with its own message', (t) => {
+    for (const [name, registry] of Object.entries({
+        'an empty file': '',
+        'not JSON': 'not json',
+        'an array': '[]',
+        'null': 'null',
+        'a path-like agent name': { x: record('../x') },
+        'an agent name that is not a string': { x: record(7) },
+        'a directory': 'directory',
+    })) {
+        const result = runRegistryCheck(t, { registry, tree: [] });
+        assert.equal(result.status, 1, `${name}: ${result.stdout}${result.stderr}`);
+        assert.match(result.stdout, /::error::Cannot read the QA registry.* Nothing was changed\./, name);
+        assert.doesNotMatch(result.stdout, /The QA registry lists|completed/, name);
+    }
+});
+
+test('deploy: a held host lock refuses the registry check, as the other refusals do, with nothing changed', (t) => {
+    for (const busy of ['podman ps --quiet', 'cat .ploinky/agents.json']) {
+        const result = runRegistryCheck(t, { registry: {}, busy });
+        assert.equal(result.status, 1, `${busy}: ${result.stdout}${result.stderr}`);
+        assert.match(result.stdout, /::error::Another Explorer QA operation holds the host lock\. Nothing was changed\./, busy);
+        assert.doesNotMatch(result.stdout, /completed/, busy);
+    }
 });
 
 test('deploy: the PromotionScoutV2 key stays on the runner and reaches only its checkout', () => {

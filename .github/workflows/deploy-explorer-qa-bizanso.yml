@@ -3,7 +3,7 @@ name: Deploy Explorer QA Bizanso
 # Updates only Bizanso inside the running Explorer QA Box, without the Ploinky checkout, the Box, the tunnel or any other
 # repository (docs/deploy-explorer-qa.md, "Product workflows"). The runner streams the private Bizanso default branch in as
 # the same no-git copy the full deploy makes, pulls its digest-pinned image and restarts only bizanso/bizanso (the whole workspace
-# when the tree has deepProofArticle). If that targeted restart drops routes, the run recovers with a whole-workspace restart; a refused drain is never answered with
+# while the tree still holds the folder of the retiring second agent, until a later commit drops that rule). If that targeted restart drops routes, the run recovers with a whole-workspace restart; a refused drain is never answered with
 # another restart. Actions are pinned by commit: checkout as in container-image-builds, setup-node as in bizanso.
 
 on:
@@ -503,7 +503,7 @@ jobs:
             echo "::error::Timed out waiting for the graph runtimes to stay ready."
             return 1
           }
-          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
 
           # In-Box programs are fixed strings without a single quote, because run_in_box embeds them in one. A value
           # reaches a program only on stdin, and the program checks it again.
@@ -898,6 +898,91 @@ jobs:
               exit 1
             fi
           done
+          # BEGIN QA registry check
+          # Every Bizanso agent the QA registry lists as enabled must still have its folder in the checked-out Bizanso tree, so that
+          # a tree without an enabled agent's folder is refused before anything changes. The registry is read inside the Box by a
+          # fixed program, and it is a read: nothing has changed when this refuses. Records with an alias are skipped, as the
+          # production deploy skips them. A QA host without a running Box has no registry and passes.
+          QA_REGISTRY_PROGRAM='set -eu
+          if [ ! -e .ploinky/agents.json ]; then exit 3; fi
+          cat .ploinky/agents.json'
+          qa_registry_check() {
+            local box=ploinky-box-explorerqaworkspace-7a31ab7775eb running='' file="$RUNNER_TEMP/qa-registry-agents.json" status=0 missing=''
+            running="$("${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman ps --quiet --no-trunc --filter 'name=^$box\$'" < /dev/null)" || status=$?
+            if [ "$status" -eq 75 ]; then
+              echo "::error::Another Explorer QA operation holds the host lock. Nothing was changed."
+              return 1
+            fi
+            if [ "$status" -ne 0 ]; then
+              echo "::error::Cannot read the QA registry: the check for a running Box exited $status. Nothing was changed."
+              return 1
+            fi
+            if [ -z "$running" ]; then
+              echo "[qa] No QA Box is running, so there is no registry to check."
+              return 0
+            fi
+            run_in_box "$QA_REGISTRY_PROGRAM" < /dev/null > "$file" || status=$?
+            case "$status" in
+              0) ;;
+              3)
+                echo "[qa] The running Box has no registry yet, so there is nothing to check."
+                return 0
+                ;;
+              75)
+                echo "::error::Another Explorer QA operation holds the host lock. Nothing was changed."
+                return 1
+                ;;
+              *)
+                echo "::error::Cannot read the QA registry (exit $status). Nothing was changed."
+                return 1
+                ;;
+            esac
+            status=0
+            missing="$(node --input-type=module - "$file" "$GITHUB_WORKSPACE/.qa-bizanso-source" <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+
+          const [file, tree] = process.argv.slice(2);
+          let agents;
+          try {
+            agents = JSON.parse(fs.readFileSync(file, 'utf8'));
+          } catch {
+            process.exit(3);
+          }
+          if (!agents || typeof agents !== 'object' || Array.isArray(agents)) process.exit(3);
+          const names = new Set();
+          for (const record of Object.values(agents)) {
+            if (!record || record.type !== 'agent' || record.repoName !== 'bizanso' || record.alias) continue;
+            const name = record.agentName;
+            if (typeof name !== 'string' || !/^[A-Za-z0-9._-]+$/.test(name) || name === '.' || name === '..') process.exit(3);
+            names.add(name);
+          }
+          const missing = [...names].sort().filter((name) => {
+            try {
+              return !fs.statSync(path.join(tree, name, 'manifest.json')).isFile();
+            } catch {
+              return true;
+            }
+          });
+          process.stdout.write(missing.map((name) => `${name}\n`).join(''));
+          process.exit(missing.length ? 4 : 0);
+          NODE
+            )" || status=$?
+            case "$status" in
+              0) ;;
+              4)
+                echo "::error::The QA registry lists the enabled Bizanso agent(s) ${missing//$'\n'/ }, but the checked-out Bizanso tree has no <agent>/manifest.json for them. Nothing was changed. Disable the agent on QA first, or restore its folder in the Bizanso tree."
+                return 1
+                ;;
+              *)
+                echo "::error::Cannot read the QA registry: it is empty, malformed or not a JSON object (exit $status). Nothing was changed."
+                return 1
+                ;;
+            esac
+            echo "[qa] The QA registry lists no Bizanso agent whose folder the checked-out tree lacks."
+          }
+          qa_registry_check || exit 1
+          # END QA registry check
           # Refusal 5: the product check. Read-only.
           if ! LIVE_OUTPUT="$(run_in_box "$BIZANSO_READ_PROGRAM" < /dev/null)"; then
             echo "::error::The product check failed: bizanso must be a real directory at the workspace root, without Git metadata and not also under .ploinky/repos (or the host lock is held). Nothing was changed. deploy-explorer-qa-ploinky.yml installs it."

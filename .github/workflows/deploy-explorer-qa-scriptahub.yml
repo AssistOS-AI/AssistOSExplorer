@@ -529,7 +529,7 @@ jobs:
             echo "::error::Timed out waiting for the graph runtimes to stay ready."
             return 1
           }
-          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent deepProofArticle"
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
 
           # In-Box programs are fixed strings without a single quote, because run_in_box embeds them in one. A value
           # reaches a program only on stdin, and the program checks it again.
