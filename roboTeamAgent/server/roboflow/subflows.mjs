@@ -27,7 +27,9 @@ export class Subflows {
             if (!graph || hasCreators(graph) || graph.tasks.some(isCoordinator)) throw invalid('Child workflow must exist and contain no tasks that allow sub-flows');
             assertRunnable(graph);
             if (graph.kind === 'default' ? !EXECUTION_TYPES.includes(item.executionType) : item.executionType !== undefined) throw invalid('executionType is required only for default child workflows');
-            await this.service.assertRestrictedRobot(graph, item.executionType, flow.restrictToRobot);
+            // Independent batches record an unavailable child at dispatch instead of failing the creator.
+            // Dispatch still enforces the exact inherited robot restriction.
+            if (!flow.graph.tasks.find(task => task.id === instance.taskId)?.continueOnChildFailure) await this.service.assertRestrictedRobot(graph, item.executionType, flow.restrictToRobot);
             plans.push({ graph, objective: textField(item.prompt, 'child prompt', 32768, true),
                 ...(graph.kind === 'default' ? { executionType: item.executionType } : {}) });
         }
@@ -38,11 +40,13 @@ export class Subflows {
         const { store } = this.service;
         coordinator.creatorInstanceId = creator.id;
         coordinator.afterEdgeId = plan.afterEdgeId;
+        coordinator.continueOnChildFailure = flow.graph.tasks.find(task => task.id === creator.taskId)?.continueOnChildFailure === true;
         let previousChildFlowId = null;
         coordinator.childFlowIds = plan.plans.map(({ graph, ...input }) => {
             const child = store.createRecord(graph, { ...input, folder: flow.folder, createdBy: flow.createdBy, ownerPrincipal: flow.ownerPrincipal || null, ...(flow.restrictToRobot ? { restrictToRobot: flow.restrictToRobot } : {}),
                 parentFlowId: flow.id, parentInstanceId: coordinator.id, creatorInstanceId: creator.id });
             child.previousChildFlowId = previousChildFlowId;
+            child.previousChildFailureAllowed = coordinator.continueOnChildFailure;
             child.status = 'pending'; child.activeSince = null;
             store.saveSync(child);
             previousChildFlowId = child.id;
@@ -61,11 +65,12 @@ export class Subflows {
     async reconcile(id) {
         const { store } = this.service;
         let flow = await store.get(id);
-        if (!flow || flow.pauseRequested) return;
+        if (!flow || flow.status === 'terminated' || flow.pauseRequested) return;
         for (const visit of flow.instances.filter(item => item.childFlowIds?.length && item.creatorInstanceId && item.state !== 'completed')) {
             let children = await Promise.all(visit.childFlowIds.map(child => store.get(child)));
             if (children.some(child => !child)) throw new Error('Child workflow record is unavailable');
-            const next = children.find(child => child.status !== 'completed');
+            const accepted = child => child.status === 'completed' || visit.continueOnChildFailure === true && ['failed','terminated'].includes(child.status);
+            const next = children.find(child => !accepted(child));
             if (next?.status === 'pending') {
                 await this.service._serialize(next.id, async () => {
                     const child = await store.get(next.id);
@@ -79,7 +84,7 @@ export class Subflows {
                 });
                 children = await Promise.all(visit.childFlowIds.map(child => store.get(child)));
             }
-            if (children.every(child => child.status === 'completed')) {
+            if (children.every(accepted)) {
                 const outcomes = children.map(child => ({ flowId: child.id, workflowTypeId: child.workflowTypeId,
                     status: child.status, error: child.error }));
                 await store.writeOutput(id, visit.id, JSON.stringify(outcomes), 'result');

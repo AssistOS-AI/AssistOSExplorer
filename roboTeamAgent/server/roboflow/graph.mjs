@@ -44,6 +44,7 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         if (task.allowsHumanInput !== undefined && typeof task.allowsHumanInput !== 'boolean') throw invalid('allowsHumanInput must be boolean');
         if (task.effort !== undefined && (typeof task.effort !== 'string' || !/^[A-Za-z0-9_-]{1,40}$/.test(task.effort))) throw invalid('task effort must be a native effort name');
         if (task.creator !== undefined && typeof task.creator !== 'boolean') throw invalid('creator must be boolean');
+        if (task.continueOnChildFailure !== undefined && (typeof task.continueOnChildFailure !== 'boolean' || !task.creator)) throw invalid('continueOnChildFailure requires a creator and a boolean value');
         if (isCoordinator(task)) {
             if (task.allowsHumanInput || builtin || task.id !== RUN_WORKFLOWS_ID || task.creator || task.robotId || task.robotName || task.executionType || task.effort || task.prompt || task.skillsets?.length) throw invalid('Run workflows is a managed node without a robot, prompt or skills');
             return { id: RUN_WORKFLOWS_ID, name: 'Run workflows', kind: 'run-workflows', skillsets: [] };
@@ -60,7 +61,7 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         }
         return { id: task.id, name: textField(task.name, 'task name', 120),
             ...(task.effort ? { effort: task.effort } : {}),
-            ...(task.creator ? { creator: true } : {}), ...(task.allowsHumanInput ? { allowsHumanInput: true } : {}), prompt: textField(task.prompt, 'task prompt', 16000), skillsets: [...new Set(task.skillsets)],
+            ...(task.creator ? { creator: true, ...(task.continueOnChildFailure ? {continueOnChildFailure:true} : {}) } : {}), ...(task.allowsHumanInput ? { allowsHumanInput: true } : {}), prompt: textField(task.prompt, 'task prompt', 16000), skillsets: [...new Set(task.skillsets)],
             ...(builtin ? { supportedExecutionTypes: [...EXECUTION_TYPES] } : { executionType: task.executionType }),
             ...(task.environment ? { environment: String(task.environment) } : {}) };
     });

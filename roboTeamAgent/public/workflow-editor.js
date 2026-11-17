@@ -651,6 +651,7 @@ export function createWorkflowEditor({ api, onClose = leaveEditor }) {
                 return;
             }
             task.creator = creator.input.checked;
+            if (!task.creator) delete task.continueOnChildFailure;
             syncCoordinator();
             if (task.creator && !graph.edges.some(edge => edge.sourceTaskId === task.id && edge.targetTaskId === 'run-workflows')) {
                 graph.edges.push({ id: `edge-${crypto.randomUUID()}`, sourceTaskId: task.id, targetTaskId: 'run-workflows', sourcePort: 'right', targetPort: 'left' });

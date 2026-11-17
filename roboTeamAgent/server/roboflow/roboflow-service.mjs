@@ -291,11 +291,15 @@ export class RoboFlowService {
             let previousSubflowFinalResponse;
             if (flow.previousChildFlowId) {
                 const preceding = await this.store.get(flow.previousChildFlowId);
-                if (preceding?.status !== 'completed') throw invalid('The preceding sub-workflow must complete first');
-                const last = preceding.instances.at(-1);
-                if (!last) throw invalid('The preceding sub-workflow has no final task');
-                previousSubflowFinalResponse = workflowResponseContext(
-                    await this.store.readOutput(preceding.id, last.id, 'result'), preceding.graph, last.taskId).response;
+                if (preceding?.status !== 'completed') {
+                    if (!flow.previousChildFailureAllowed || !['failed','terminated'].includes(preceding?.status)) throw invalid('The preceding sub-workflow must complete first');
+                    previousSubflowFinalResponse = JSON.stringify({flowId:preceding.id,status:preceding.status,error:preceding.error});
+                } else {
+                    const last = preceding.instances.at(-1);
+                    if (!last) throw invalid('The preceding sub-workflow has no final task');
+                    previousSubflowFinalResponse = workflowResponseContext(
+                        await this.store.readOutput(preceding.id, last.id, 'result'), preceding.graph, last.taskId).response;
+                }
             }
             const task = buildWorkflowTaskPrompt({ objective: flow.objective, currentTaskId: node.id, graph: flow.graph,
                 previousFinalResponses: previous, continuationPrompt, previousSubflowFinalResponse });

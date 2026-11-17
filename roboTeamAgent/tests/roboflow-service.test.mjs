@@ -1038,3 +1038,58 @@ test('a constrained flow keeps its robot in a later phase, a redispatched paused
     assert.equal(failed.status, 'failed'); assert.match(failed.error, /can only use that robot/u);
     assert.equal(failed.instances[0].childFlowIds, undefined);
 });
+
+test('an opted-in batch continues after a failed child without reporting that child successful', async t => {
+    const f=await fixture(t);
+    await f.service.createWorkflow({id:'isolated-child',name:'One item',description:'Process one isolated item',entryTaskId:'work',tasks:[task('work')],edges:[]});
+    await f.service.createWorkflow({id:'isolated-parent',name:'Batch',description:'Continue independent items',entryTaskId:'creator',tasks:[task('creator',{creator:true,continueOnChildFailure:true}),task('end')],edges:[{id:'delegate',sourceTaskId:'creator',targetTaskId:'run-workflows'},{id:'after',sourceTaskId:'run-workflows',targetTaskId:'end'}]});
+    const parent=await f.service.startFlow({workflowTypeId:'isolated-parent',objective:'Process independent items',folder:f.root});
+    await f.finish(0,'# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n# workflow\nisolated-child\n# prompt\nItem one\n# workflow\nisolated-child\n# prompt\nItem two');
+    const [one,two]=(await f.service.getFlow(parent.id)).instances[0].childFlowIds;
+    await f.finish(1,'First item could not be generated','failed');
+    assert.equal((await f.service.getFlow(one)).status,'failed');
+    assert.equal((await f.service.getFlow(two)).status,'running');
+    assert.equal(f.started.length,3,'the second child must run despite the failed predecessor');
+    await f.finish(2,'Second item completed');
+    assert.equal(f.started.length,4,'the parent reconciliation phase must run');
+    const current=await f.service.getFlow(parent.id);
+    assert.equal(current.instances.at(-1).taskId,'end');
+    assert.equal(current.instances.find(visit=>visit.taskId==='run-workflows').state,'completed');
+    assert.equal((await f.service.getFlow(one)).status,'failed','child failure remains visible');
+    await f.finish(3,'Batch includes one failed and one successful item');
+    assert.equal((await f.service.getFlow(parent.id)).status,'completed');
+});
+
+test('child failure continuation is opt-in and cannot be enabled on ordinary tasks', () => {
+    assert.throws(()=>normalizeWorkflow({...graph(),tasks:[task('a',{continueOnChildFailure:true})],edges:[]}),/requires a creator/);
+    assert.throws(()=>normalizeWorkflow({...graph(),tasks:[task('a',{creator:true,continueOnChildFailure:'true'})],edges:[]}),/requires a creator/);
+    const normalized=normalizeWorkflow({...graph(),tasks:[task('a',{creator:true,continueOnChildFailure:true})],edges:[]});
+    assert.equal(normalized.tasks[0].continueOnChildFailure,true);
+    assert.equal(normalizeWorkflow({...graph(),tasks:[task('a',{creator:true})],edges:[]}).tasks[0].continueOnChildFailure,undefined);
+});
+
+test('an isolated batch also advances when a child cannot acquire a matching robot', async t => {
+    const f=await fixture(t);
+    await f.service.createWorkflow({id:'cannot-run',name:'Unavailable item',description:'Requires a missing skill',entryTaskId:'work',tasks:[task('work',{skillsets:['missing/skill']})],edges:[]});
+    await f.service.createWorkflow({id:'can-run',name:'Available item',description:'Can process another item',entryTaskId:'work',tasks:[task('work')],edges:[]});
+    await f.service.createWorkflow({id:'independent-items',name:'Independent batch',description:'Unavailable items do not block available ones',entryTaskId:'creator',tasks:[task('creator',{creator:true,continueOnChildFailure:true}),task('end')],edges:[{id:'delegate',sourceTaskId:'creator',targetTaskId:'run-workflows'},{id:'after',sourceTaskId:'run-workflows',targetTaskId:'end'}]});
+    const parent=await f.service.startFlow({workflowTypeId:'independent-items',objective:'Process independent requests',folder:f.root,restrictToRobot:'default-id'});
+    await f.finish(0,'# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n# workflow\ncannot-run\n# prompt\nUnavailable item\n# workflow\ncan-run\n# prompt\nAvailable item');
+    const [unavailable,available]=(await f.service.getFlow(parent.id)).instances[0].childFlowIds;
+    assert.equal((await f.service.getFlow(unavailable)).status,'failed');
+    assert.match((await f.service.getFlow(unavailable)).error,/matching skillsets/);
+    assert.equal((await f.service.getFlow(available)).status,'running');
+    assert.equal(f.started.length,2,'the unavailable child starts no robot but the next item starts normally');
+    assert.equal(f.started[1].robot.id,'default-id','continuation must not broaden the inherited robot restriction');
+});
+
+test('terminating an independent batch still stops its children and never advances', async t => {
+    const f=await fixture(t);
+    await f.service.createWorkflow({id:'one-book',name:'One book',description:'One book',entryTaskId:'work',tasks:[task('work')],edges:[]});
+    await f.service.createWorkflow({id:'books',name:'Books',description:'Independent books',entryTaskId:'creator',tasks:[task('creator',{creator:true,continueOnChildFailure:true}),task('end')],edges:[{id:'delegate',sourceTaskId:'creator',targetTaskId:'run-workflows'},{id:'after',sourceTaskId:'run-workflows',targetTaskId:'end'}]});
+    const parent=await f.service.startFlow({workflowTypeId:'books',objective:'Books'});
+    await f.finish(0,'# nextEdgeId\ndelegate\n# afterWorkflowsEdgeId\nafter\n# workflow\none-book\n# prompt\nOne book');
+    await f.service.terminateFlow(parent.id);await f.finish(1,'Late failure','failed');
+    assert.equal((await f.service.getFlow(parent.id)).status,'terminated');
+    assert.equal(f.started.length,2);assert.ok(!(await f.service.getFlow(parent.id)).instances.some(visit=>visit.taskId==='end'));
+});
