@@ -1,8 +1,8 @@
 name: Clean up Explorer QA images
 
 # Frees disk on the Explorer QA host by removing container images that no container uses (docs/deploy-explorer-qa.md,
-# "Image cleanup"). Inside the QA Box every image belongs to QA, so every image without a container goes, named or not;
-# a later start or deploy pulls again what it needs. On the host, which other workspaces share, only dangling images
+# "Image cleanup"). Inside the QA Box every image belongs to QA, so every image without a container goes, named or not,
+# except Ploinky's Router authority helper and the local :runtime tags; a later start or deploy pulls again what it needs. On the host, which other workspaces share, only dangling images
 # and unused images of the Ploinky Box are removed. Containers, volumes, workspace files and other workspaces are never
 # touched. It shares the deploy concurrency group and the host lock, so it never runs during a deploy.
 
@@ -86,11 +86,55 @@ jobs:
 
           echo "[cleanup-qa] Free disk before: $(free_disk)"
 
-          # Inside the Box: every image that no container, running or stopped, uses. Podman refuses the others itself.
+          # Inside the Box: every image that no container, running or stopped, uses, except the ones nothing can pull
+          # back when Ploinky needs them: Ploinky's Router authority helper (docker.io/library/node@sha256:..., which has
+          # no container between probes but must be present for an agent to be adopted) and the local :runtime tags the
+          # product deploys create. A named image goes one name at a time, because podman refuses to remove an image
+          # with several names by ID without --force, and --force would also remove its containers; removing the last
+          # name removes the image. A dangling image goes by its validated ID.
           if [ "$("${SSH[@]}" "podman container inspect --format '{{.State.Running}}' $BOX_CONTAINER" < /dev/null 2> /dev/null || true)" = true ]; then
             echo "[cleanup-qa] Box images before:"
             box_podman image ls --format "'{{.ID}} {{.Containers}} {{.Size}} {{.Names}}'"
-            box_podman image prune --all --force
+            box_removed=0
+            seen=' '
+            listing="$(box_podman image ls --format "'{{.ID}} {{.Containers}} {{.Names}}'")"
+            while read -r id containers refs; do
+              [ -n "$id" ] || continue
+              if [[ ! "$id" =~ ^[a-f0-9]{12,64}$ ]]; then
+                echo "::warning::Skipped an unexpected image ID in the Box listing"
+                continue
+              fi
+              case "$seen" in *" $id "*) continue ;; esac
+              seen="$seen$id "
+              [ "$containers" = 0 ] || continue
+              refs="${refs#[}"
+              refs="${refs%]}"
+              keep=false
+              read -r -a ref_list <<< "${refs:-}"
+              for ref in ${refs:+"${ref_list[@]}"}; do
+                case "$ref" in
+                  docker.io/library/node:*|docker.io/library/node@*|*:runtime) keep=true ;;
+                esac
+                [[ "$ref" =~ ^[a-z0-9./_:@-]+$ ]] || keep=true
+              done
+              if [ "$keep" = true ]; then
+                echo "[cleanup-qa] Box: kept $id [$refs]"
+                continue
+              fi
+              targets="$id"
+              [ -z "$refs" ] || targets="$refs"
+              gone=true
+              for target in $targets; do
+                box_podman image rm "$target" > /dev/null || gone=false
+              done
+              if [ "$gone" = true ]; then
+                echo "[cleanup-qa] Box: removed $id${refs:+ [$refs]}"
+                box_removed=$((box_removed + 1))
+              else
+                echo "::warning::Box: podman kept $id"
+              fi
+            done <<< "$listing"
+            echo "[cleanup-qa] Box: removed $box_removed image(s)"
             echo "[cleanup-qa] Box images after:"
             box_podman image ls --format "'{{.ID}} {{.Containers}} {{.Size}} {{.Names}}'"
           else
