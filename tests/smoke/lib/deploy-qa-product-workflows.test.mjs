@@ -143,6 +143,21 @@ for (const key of KEYS) {
     });
 }
 
+// The Box prune since the recorded base also removes unused digest-only images (the image a pull by digest replaces);
+// the rest of the cleanup block stays pinned to the base. The prune itself is tested in deploy-qa-ploinky-workflows.
+const PRUNE_SCOPE_START = `${I}# Removes each validated unused candidate image`;
+const BASE_PRUNE_SCOPE_START = `${I}# Lists unused dangling images, removes each validated one`;
+const PRUNE_SCOPE_END = `${I}prune_images() {`;
+function withCurrentPruneScope(baseCleanup) {
+    const now = block(ploinkyNow, 'cleanup');
+    const current = now.slice(now.indexOf(PRUNE_SCOPE_START), now.indexOf(PRUNE_SCOPE_END));
+    assert.match(current, /PRUNE_DIGEST_REPOS='docker\.io\/assistos\/scriptahub-agent /);
+    const from = baseCleanup.indexOf(BASE_PRUNE_SCOPE_START);
+    const to = baseCleanup.indexOf(PRUNE_SCOPE_END);
+    assert.ok(from > 0 && to > from, 'the base prune_scope');
+    return baseCleanup.slice(0, from) + current + baseCleanup.slice(to);
+}
+
 test('every shared block is byte-identical to the full deploy at the recorded base and in the working tree', () => {
     const base = showBase(`.github/workflows/${PLOINKY}`);
     for (const key of KEYS) {
@@ -153,7 +168,7 @@ test('every shared block is byte-identical to the full deploy at the recorded ba
             const expected = name === 'extend'
                 ? slice(base, baseExtend, baseExtend).replace('scriptahubAgent"', 'scriptahubAgent deepProofArticle"')
                 : name === 'cleanup'
-                ? block(base, name).replace('# Unpacked size of the ScriptaHub robot image not shared with the RoboTeam runtime (11.2 GB, 9 of 29 layers new).', '# Reserve space for the prepared ScriptaHub agent image before pulling new layers.').replaceAll('ROBOT_IMAGE_NEW_GIB', 'SCRIPTA_AGENT_IMAGE_NEW_GIB')
+                ? withCurrentPruneScope(block(base, name).replace('# Unpacked size of the ScriptaHub robot image not shared with the RoboTeam runtime (11.2 GB, 9 of 29 layers new).', '# Reserve space for the prepared ScriptaHub agent image before pulling new layers.').replaceAll('ROBOT_IMAGE_NEW_GIB', 'SCRIPTA_AGENT_IMAGE_NEW_GIB'))
                 : block(base, name);
             assert.ok(expected.length > 20, name);
             assert.equal(source.split(expected).length - 1, 1, `${key}: ${name} appears exactly once, identical to ${BASE}`);

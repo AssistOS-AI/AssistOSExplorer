@@ -847,21 +847,34 @@ jobs:
               "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' $BOX_CONTAINER podman $*" < /dev/null
             fi
           }
-          # Lists unused dangling images, removes each validated one, and reports the unused named ones. A host
-          # image is removed only when its name history shows it was the Box image; the host holds other images.
+          # Removes each validated unused candidate image and reports the unused named images it keeps. On the host,
+          # which other workspaces share, a candidate is a dangling image whose name history shows it was the Box image.
+          # Inside the Box a candidate is an unused image that is dangling, or whose names are all digest references to a
+          # product repository these workflows pull by digest (PRUNE_DIGEST_REPOS): such a pull never leaves the image it
+          # replaces dangling, and each rollout would otherwise keep the superseded agent image (about 10 GB for
+          # ScriptaHub). An image with a tag, such as scriptahub-agent:runtime, is never a candidate, because a later start
+          # resolves that tag; nor is any other digest-pinned image, such as Ploinky's Router authority helper
+          # (library/node@sha256:...), which has no container between probes but must stay present.
+          PRUNE_DIGEST_REPOS='docker.io/assistos/scriptahub-agent docker.io/assistos/roboteam-agent docker.io/assistos/bizanso-agent'
           prune_scope() {
-            local scope="$1" phase="$2" listing id containers dangling rest names line is_box_image removed=0
-            if ! listing="$(prune_podman "$scope" image ls --filter dangling=true --format "'{{.ID}} {{.Containers}}'")"; then
+            local scope="$1" phase="$2" listing filter id containers dangling refs names line is_box_image ref repo product keep removed=0
+            local -a ref_list
+            filter='--filter dangling=true'
+            [ "$scope" = host ] || filter=''
+            if ! listing="$(prune_podman "$scope" image ls $filter --format "'{{.ID}} {{.Containers}} {{.Dangling}} {{.Names}}'")"; then
               echo "::warning::prune $scope failed ($phase): the image listing failed"
               return 0
             fi
-            while read -r id containers; do
+            while read -r id containers dangling refs; do
               [ -n "$id" ] || continue
+              refs="${refs#[}"
+              refs="${refs%]}"
               if [[ ! "$id" =~ ^[a-f0-9]{12,64}$ ]]; then
                 echo "::warning::prune $scope: skipped an unexpected image ID in the listing"
                 continue
               fi
               if [ "$containers" != 0 ]; then
+                [ "$scope" = box ] && [ "$dangling" != true ] && continue
                 echo "[deploy-qa] prune $scope: kept $id in use by $containers container(s)"
                 continue
               fi
@@ -880,15 +893,38 @@ jobs:
                   echo "[deploy-qa] prune host: kept unrelated dangling image $id"
                   continue
                 fi
+              elif [ "$dangling" != true ]; then
+                [ "$dangling" = false ] || continue
+                keep=true
+                if [ -n "$refs" ]; then
+                  keep=false
+                  read -r -a ref_list <<< "$refs"
+                  for ref in "${ref_list[@]}"; do
+                    if [[ ! "$ref" =~ ^([a-z0-9./_-]+)@sha256:[a-f0-9]{64}$ ]]; then
+                      keep=true
+                      continue
+                    fi
+                    product=false
+                    for repo in $PRUNE_DIGEST_REPOS; do
+                      [ "${BASH_REMATCH[1]}" = "$repo" ] && product=true
+                    done
+                    [ "$product" = true ] || keep=true
+                  done
+                fi
+                [ "$keep" = false ] || continue
               fi
               if prune_podman "$scope" image rm "$id" > /dev/null; then
-                echo "[deploy-qa] prune $scope: removed $id"
+                echo "[deploy-qa] prune $scope: removed $id${refs:+ $refs}"
                 removed=$((removed + 1))
               else
                 echo "::warning::prune $scope: podman kept $id"
               fi
             done <<< "$listing"
-            echo "[deploy-qa] prune $scope: removed $removed dangling image(s)"
+            if [ "$scope" = host ]; then
+              echo "[deploy-qa] prune host: removed $removed dangling image(s)"
+            else
+              echo "[deploy-qa] prune box: removed $removed unused dangling or digest-only image(s)"
+            fi
             if listing="$(prune_podman "$scope" image ls --format "'{{.ID}} {{.Containers}} {{.Dangling}} {{.Size}} {{.Names}}'")"; then
               while read -r id containers dangling rest; do
                 if [ "$containers" = 0 ] && [ "$dangling" = false ]; then

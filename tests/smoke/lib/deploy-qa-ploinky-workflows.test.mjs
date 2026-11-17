@@ -539,7 +539,11 @@ test('deploy: the image prune removes only listed, validated IDs with `podman im
     assert.ok(prune, 'the image prune block');
     assert.match(prune, /image rm "\$id"/);
     assert.equal((prune.match(/image rm/g) || []).length, 1);
-    assert.match(prune, /image ls --filter dangling=true --format "'\{\{\.ID\}\} \{\{\.Containers\}\}'"/);
+    // The host lists only dangling images; the Box lists every image and keeps tagged ones (see the Box prune test).
+    assert.match(prune, /filter='--filter dangling=true'\n\s+\[ "\$scope" = host \] \|\| filter=''\n/);
+    assert.match(prune, /image ls \$filter --format "'\{\{\.ID\}\} \{\{\.Containers\}\} \{\{\.Dangling\}\} \{\{\.Names\}\}'"/);
+    assert.match(prune, /PRUNE_DIGEST_REPOS='docker\.io\/assistos\/scriptahub-agent docker\.io\/assistos\/roboteam-agent docker\.io\/assistos\/bizanso-agent'\n/);
+    assert.match(prune, /if \[\[ ! "\$ref" =~ \^\(\[a-z0-9\.\/_-\]\+\)@sha256:\[a-f0-9\]\{64\}\$ \]\]; then/);
     assert.match(prune, /\^\[a-f0-9\]\{12,64\}\$/);
     assert.match(prune, /\[ "\$containers" != 0 \]/);
     // No broad removal anywhere in the workflow, and no forced or all-image form of the removal.
@@ -626,7 +630,7 @@ if [ "$1" = container ]; then
 fi
 printf '%s: %s\\n' "$scope" "$*" >> "$PODMAN_LOG"
 if [ "$1 $2" = "image ls" ]; then
-  if [[ "$*" == *dangling=true* ]]; then
+  if [[ "$*" != *Size* ]]; then
     var="LIST_$scope"; exit_var="LIST_EXIT_$scope"
     [ -z "\${!exit_var:-}" ] || exit "\${!exit_var}"
     printf '%b' "\${!var:-}"
@@ -690,7 +694,7 @@ test('deploy: the host prune removes only Box-image leftovers with exactly `imag
             NAMES_eeeeeeeeeeee: 'docker.io/assistos/ploinky-box@sha256:abc\\n',
             NAMES_ffffffffffff: 'docker.io/assistos/ploinky-box-other:latest\\n',
             RM_FAIL: 'aaaaaaaaaaaa',
-            LIST_box: '111111111111 0\\n222222222222 0\\n',
+            LIST_box: '111111111111 0 true\\n222222222222 0 true []\\n',
         },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -715,6 +719,61 @@ test('deploy: the host prune removes only Box-image leftovers with exactly `imag
     // Only the host scope reads name history; the Box scope removes every unused dangling image.
     assert.ok(result.calls.every((line) => !/^box: image inspect/.test(line)));
     assert.ok(result.calls.some((line) => /^host: image inspect --format \{\{range \.NamesHistory\}\}\{\{println \.\}\}\{\{end\}\} aaaaaaaaaaaa$/.test(line)), result.calls.join('\n'));
+});
+
+test('deploy: the Box prune also removes unused digest-only product images and never a tagged or other pinned one', (t) => {
+    const digest = (n) => `docker.io/assistos/scriptahub-agent@sha256:${n.repeat(64)}`;
+    const result = runCleanup(t, {
+        call: 'prune_images post',
+        env: {
+            LIST_host: '',
+            LIST_box: [
+                // The superseded agent image: unused, only a digest name.
+                `111111111111 0 false [${digest('1')}]`,
+                // Unused, two product digest names: a candidate, but podman refuses an image with several names by ID
+                // without force, so it is reported and kept (stubbed here with RM_FAIL).
+                `222222222222 0 false [${digest('2')} docker.io/assistos/roboteam-agent@sha256:${'3'.repeat(64)}]`,
+                // Ploinky's Router authority helper: digest-only, no container between probes, never removed.
+                `aaaaaaaaaaaa 0 false [docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d]`,
+                // A product digest beside another repository's digest: kept.
+                `bbbbbbbbbbbb 0 false [${digest('5')} docker.io/library/node@sha256:${'6'.repeat(64)}]`,
+                // Other product repositories: removed when unused.
+                `cccccccccccc 0 false [docker.io/assistos/bizanso-agent@sha256:${'7'.repeat(64)}]`,
+                // A repository that only starts with a product name: kept.
+                `dddddddddddd 0 false [docker.io/assistos/scriptahub-agent-x@sha256:${'9'.repeat(64)}]`,
+                // Unused but tagged: a later start resolves the tag, so it stays.
+                `333333333333 0 false [docker.io/assistos/scriptahub-agent:runtime ${digest('4')}]`,
+                `444444444444 0 false [docker.io/assistos/local-llm:latest]`,
+                // Unused, no names and not dangling, or an unexpected dangling field: kept.
+                '555555555555 0 false []',
+                '666666666666 0 maybe [x]',
+                // A digest reference with a short or malformed digest: kept.
+                `777777777777 0 false [docker.io/assistos/x@sha256:abc]`,
+                // In use: kept, digest-only or not.
+                `888888888888 2 false [${digest('8')}]`,
+                // Unused and dangling: removed.
+                '999999999999 0 true []',
+                '',
+            ].join('\\n'),
+            RM_FAIL: '222222222222',
+        },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.calls.filter((line) => / image rm /.test(line)), [
+        'box: image rm 111111111111',
+        'box: image rm 222222222222',
+        'box: image rm cccccccccccc',
+        'box: image rm 999999999999',
+    ]);
+    assert.match(result.stdout, new RegExp(`^\\[deploy-qa\\] prune box: removed 111111111111 ${digest('1').replace(/[.]/g, '\\.')}$`, 'm'));
+    assert.match(result.stdout, /^::warning::prune box: podman kept 222222222222$/m);
+    assert.match(result.stdout, /^\[deploy-qa\] prune box: removed 999999999999$/m);
+    assert.match(result.stdout, /^\[deploy-qa\] prune box: removed 3 unused dangling or digest-only image\(s\)$/m);
+    // Host candidates still come only from the dangling listing; the Box listing has no filter.
+    const listings = result.calls.filter((line) => / image ls /.test(line) && !/Size/.test(line));
+    assert.ok(listings.some((line) => /^host: image ls --filter dangling=true /.test(line)), listings.join('\n'));
+    assert.ok(listings.some((line) => /^box: image ls --format /.test(line)), listings.join('\n'));
+    assert.equal(result.calls.some((line) => /(?:prune|--force| -f\b| -a\b|--all)/.test(line)), false, result.calls.join('\n'));
 });
 
 test('deploy: a failing listing only warns and the prune returns success', (t) => {
