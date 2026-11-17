@@ -457,23 +457,30 @@ jobs:
           # Every Bizanso agent the QA registry lists as enabled must still have its folder in the checked-out Bizanso tree, so that
           # a tree without an enabled agent's folder is refused before anything changes. The registry is read inside the Box by a
           # fixed program, and it is a read: nothing has changed when this refuses. Records with an alias are skipped, as the
-          # production deploy skips them. A QA host without a running Box has no registry and passes.
+          # production deploy skips them. The registry lives in the host workspace and outlives a stopped Box, so a host with no
+          # running Box passes only the first call. A caller that has just started the Box passes a second argument and
+          # a missing Box then refuses. The first argument says what the refusal leaves behind.
           QA_REGISTRY_PROGRAM='set -eu
           if [ ! -e .ploinky/agents.json ]; then exit 3; fi
           cat .ploinky/agents.json'
           qa_registry_check() {
+            local outcome="$1" need_box="${2:-}"
             local box=ploinky-box-explorerqaworkspace-7a31ab7775eb running='' file="$RUNNER_TEMP/qa-registry-agents.json" status=0 missing=''
             running="$("${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman ps --quiet --no-trunc --filter 'name=^$box\$'" < /dev/null)" || status=$?
             if [ "$status" -eq 75 ]; then
-              echo "::error::Another Explorer QA operation holds the host lock. Nothing was changed."
+              echo "::error::Another Explorer QA operation holds the host lock. $outcome"
               return 1
             fi
             if [ "$status" -ne 0 ]; then
-              echo "::error::Cannot read the QA registry: the check for a running Box exited $status. Nothing was changed."
+              echo "::error::Cannot read the QA registry: the check for a running Box exited $status. $outcome"
+              return 1
+            fi
+            if [ -z "$running" ] && [ -n "$need_box" ]; then
+              echo "::error::The QA Box is not running although it was just started, so the registry cannot be checked. $outcome"
               return 1
             fi
             if [ -z "$running" ]; then
-              echo "[qa] No QA Box is running, so there is no registry to check."
+              echo "[qa] No QA Box is running yet; the registry is checked again once it runs."
               return 0
             fi
             run_in_box "$QA_REGISTRY_PROGRAM" < /dev/null > "$file" || status=$?
@@ -484,11 +491,11 @@ jobs:
                 return 0
                 ;;
               75)
-                echo "::error::Another Explorer QA operation holds the host lock. Nothing was changed."
+                echo "::error::Another Explorer QA operation holds the host lock. $outcome"
                 return 1
                 ;;
               *)
-                echo "::error::Cannot read the QA registry (exit $status). Nothing was changed."
+                echo "::error::Cannot read the QA registry (exit $status). $outcome"
                 return 1
                 ;;
             esac
@@ -526,17 +533,17 @@ jobs:
             case "$status" in
               0) ;;
               4)
-                echo "::error::The QA registry lists the enabled Bizanso agent(s) ${missing//$'\n'/ }, but the checked-out Bizanso tree has no <agent>/manifest.json for them. Nothing was changed. Disable the agent on QA first, or restore its folder in the Bizanso tree."
+                echo "::error::The QA registry lists the enabled Bizanso agent(s) ${missing//$'\n'/ }, but the checked-out Bizanso tree has no <agent>/manifest.json for them. $outcome Disable the agent on QA first, or restore its folder in the Bizanso tree."
                 return 1
                 ;;
               *)
-                echo "::error::Cannot read the QA registry: it is empty, malformed or not a JSON object (exit $status). Nothing was changed."
+                echo "::error::Cannot read the QA registry: it is empty, malformed or not a JSON object (exit $status). $outcome"
                 return 1
                 ;;
             esac
             echo "[qa] The QA registry lists no Bizanso agent whose folder the checked-out tree lacks."
           }
-          qa_registry_check || exit 1
+          qa_registry_check "Nothing was changed." || exit 1
           # END QA registry check
 
           TUNNEL_LIST_RESPONSE=''
@@ -1170,6 +1177,9 @@ jobs:
             fi
             wait_ready
           fi
+          # The Box runs now, possibly started on a kept workspace whose registry the first check could not read. Nothing
+          # below has copied the Bizanso tree yet.
+          qa_registry_check "The Box was started, but Bizanso was not copied." need_box || exit 1
 
           printf '%s' "$CLOUDFLARE_API_TOKEN" | ploinky_locked var "$CLOUDFLARE_API_SECRET_HANDLE" --stdin
           printf '%s' "$CLOUDFLARE_TUNNEL_TOKEN" | ploinky_locked var "$CLOUDFLARE_TUNNEL_SECRET_HANDLE" --stdin

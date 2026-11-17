@@ -187,7 +187,7 @@ const REGISTRY_END = '# END QA registry check';
 test('deploy: the QA registry check reads inside the Box and comes before the first Cloudflare call, host change and Ploinky command', () => {
     const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
     assert.equal(body.split(REGISTRY_BEGIN).length - 1, 1);
-    const at = body.indexOf('qa_registry_check || exit 1\n');
+    const at = body.indexOf('qa_registry_check "Nothing was changed." || exit 1\n');
     assert.notEqual(at, -1);
     assert.ok(body.indexOf(REGISTRY_BEGIN) < at && at < body.indexOf(REGISTRY_END));
     // Only the read of the running Box and the registry come first. A refusal changes nothing.
@@ -209,7 +209,7 @@ test('deploy: the QA registry check reads inside the Box and comes before the fi
 
 // Runs the check block itself under `set -euo pipefail` with stub ssh, flock and podman. A Box that runs answers the
 // name filter and runs the program in its workspace; `registry` is the text of .ploinky/agents.json, or null for none.
-function runRegistryCheck(t, { registry, boxRunning = true, tree = [], busy = '' }) {
+function runRegistryCheck(t, { registry, boxRunning = true, tree = [], busy = '', upAfter = 0, calls: callLines }) {
     const body = runBlocks(step(deploy, 'Bootstrap the host and deploy through Ploinky commands'))[0];
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-registry-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -236,7 +236,11 @@ if [ -n "\${BUSY:-}" ]; then case "$*" in *"$BUSY"*) exit 75 ;; esac; fi
 shift 5
 exec "$@"`);
     stub('podman', `echo "podman $1 $2" >> "$CALLS"
-if [ "$1" = ps ]; then [ "\${BOX_RUNNING}" != yes ] || echo ploinky-box-explorerqaworkspace-7a31ab7775eb; exit 0; fi
+if [ "$1" = ps ]; then
+  n=$(grep -c '^podman ps' "$CALLS" || true)
+  case "$*" in *" --filter name=^ploinky-box-explorerqaworkspace-7a31ab7775eb\$") [ "\${BOX_RUNNING}" != yes ] || [ "$n" -le "$UP_AFTER" ] || echo ploinky-box-explorerqaworkspace-7a31ab7775eb ;; esac
+  exit 0
+fi
 if [ "$1 $2" = "container exec" ]; then
   shift 2; wd=""
   while [ $# -gt 0 ]; do case "$1" in -i) shift ;; --user|--env) shift 2 ;; --workdir) wd="$2"; shift 2 ;; *) break ;; esac; done
@@ -251,10 +255,11 @@ exit 1`);
 SSH=(fakessh); LOCK=/lock; WORK_DIR='${ws}'
 ${runFn}
 ${block}
+${(callLines || []).join('\n')}
 echo completed`;
     const result = spawnSync('bash', ['-c', script], {
         encoding: 'utf8',
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CALLS: calls, BUSY: busy, BOX_RUNNING: boxRunning ? 'yes' : 'no', RUNNER_TEMP: path.join(dir, 'runner'), GITHUB_WORKSPACE: path.join(dir, 'github') },
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CALLS: calls, BUSY: busy, UP_AFTER: String(upAfter), BOX_RUNNING: boxRunning ? 'yes' : 'no', RUNNER_TEMP: path.join(dir, 'runner'), GITHUB_WORKSPACE: path.join(dir, 'github') },
     });
     return { ...result, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean) : [] };
 }
@@ -290,10 +295,10 @@ test('deploy: no record, alias-only records, other repositories and an empty reg
     }
 });
 
-test('deploy: a Box that is not running passes the registry check and its registry is not read', (t) => {
+test('deploy: a Box that is not running passes the first registry check, which reads nothing', (t) => {
     const result = runRegistryCheck(t, { registry: { x: record('secondAgent') }, boxRunning: false, tree: [] });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, /\[qa\] No QA Box is running, so there is no registry to check\.\ncompleted\n$/);
+    assert.match(result.stdout, /\[qa\] No QA Box is running yet; the registry is checked again once it runs\.\ncompleted\n$/);
     assert.deepEqual(result.calls.filter((line) => line.startsWith('podman')), ['podman ps --quiet']);
 });
 
@@ -311,6 +316,38 @@ test('deploy: an empty, malformed or unreadable registry refuses with its own me
         assert.equal(result.status, 1, `${name}: ${result.stdout}${result.stderr}`);
         assert.match(result.stdout, /::error::Cannot read the QA registry.* Nothing was changed\./, name);
         assert.doesNotMatch(result.stdout, /The QA registry lists|completed/, name);
+    }
+});
+
+test('deploy: a Box that was just started is checked again, and a record without its folder refuses before the copy', (t) => {
+    const second = ['qa_registry_check "The Box was started, but Bizanso was not copied." need_box'];
+    const record2 = { ploinky_bizanso_second_b: record('secondAgent') };
+    // The Box is not running at the first check (one empty answer), then runs: the kept registry refuses at the second.
+    const refused = runRegistryCheck(t, { registry: record2, upAfter: 1, tree: [], calls: second });
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stdout, /\[qa\] No QA Box is running yet; the registry is checked again once it runs\.\n/);
+    assert.match(refused.stdout, /::error::The QA registry lists the enabled Bizanso agent\(s\) secondAgent, but the checked-out Bizanso tree has no <agent>\/manifest\.json for them\. The Box was started, but Bizanso was not copied\. Disable/);
+    assert.doesNotMatch(refused.stdout, /completed/);
+    // The same registry with its folder present passes both calls.
+    const passed = runRegistryCheck(t, { registry: record2, upAfter: 1, tree: ['secondAgent'], calls: second });
+    assert.equal(passed.status, 0, passed.stdout + passed.stderr);
+    assert.match(passed.stdout, /completed\n$/);
+    // A Box that still is not running after its start is a refusal, not a pass.
+    const down = runRegistryCheck(t, { registry: {}, boxRunning: false, tree: [], calls: second });
+    assert.equal(down.status, 1, down.stdout + down.stderr);
+    assert.match(down.stdout, /::error::The QA Box is not running although it was just started, so the registry cannot be checked\. The Box was started, but Bizanso was not copied\./);
+});
+
+test('deploy: the second registry check follows the first start and comes before every value, repository move and the Bizanso copy', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const call = 'qa_registry_check "The Box was started, but Bizanso was not copied." need_box || exit 1\n';
+    assert.equal(body.split(call).length - 1, 1);
+    const at = body.indexOf(call);
+    const start = body.indexOf('ploinky_locked --port "$ROUTER_PORT" start explorer\n            fi\n            wait_ready\n          fi\n');
+    assert.notEqual(start, -1);
+    assert.ok(start < at);
+    for (const marker of ['ploinky_locked var "$CLOUDFLARE_API_SECRET_HANDLE"', 'ploinky_locked uninstall repo', '| run_in_box "$COPY_PROGRAM"', 'ploinky_locked add repo']) {
+        assert.ok(at < body.indexOf(marker), marker);
     }
 });
 

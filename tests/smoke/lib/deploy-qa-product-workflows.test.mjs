@@ -296,7 +296,7 @@ const MARKERS = {
         refusals: [
             'STATUS_OUTPUT="$(ploinky_read status)"',
             'echo "::error::Runtime $agent is not running',
-            '\nqa_registry_check || exit 1\n',
+            '\nqa_registry_check "Nothing was changed." || exit 1\n',
             'run_in_box "$BIZANSO_READ_PROGRAM" < /dev/null)"',
             'echo "::error::The product check found no single running bizanso container.',
             'if [ "$(any_route_draining)" != no ]; then',
@@ -476,7 +476,7 @@ case "$1" in
     prefix=""; cid=""
     for arg in "$@"; do case "$arg" in name=^*) prefix="\${arg#name=^}" ;; id=*) cid="\${arg#id=}" ;; esac; done
     # The registry check asks whether the Box runs: one line when it does, nothing when it does not.
-    case "$prefix" in ploinky-box-*) echo "podman ps box" >> "$STUB/calls.log"; [ -f "$STUB/box-down" ] || echo "$prefix" | tr -d '$'; exit 0 ;; esac
+    case "$prefix" in ploinky-box-*) echo "podman ps box" >> "$STUB/calls.log"; [ -f "$STUB/box-down" ] || [ "$prefix" != 'ploinky-box-explorerqaworkspace-7a31ab7775eb$' ] || echo "\${prefix%\$}"; exit 0 ;; esac
     if [ -n "$cid" ]; then echo "podman ps id=$cid" >> "$STUB/calls.log"; cat "$STUB/running.$cid" 2> /dev/null; exit 0; fi
     echo "podman ps $prefix" >> "$STUB/calls.log"
     cat "$STUB/ps.$prefix" 2> /dev/null; exit 0 ;;
@@ -1239,13 +1239,14 @@ test('Bizanso flow: no record, an alias-only record, other repositories and a mi
     assert.match(runBizansoFlow(noRegistry).stdout, /\[qa\] The running Box has no registry yet, so there is nothing to check\./);
 });
 
-test('Bizanso flow: a Box that is not running passes the check without reading the registry', (t) => {
+test('Bizanso flow: a Box that is not running passes the first check without reading the registry', (t) => {
     const box = bizansoBox(t, { source: { 'bizanso/src/runtime.mjs': 'export default 2;\n' } });
     writeJson(box, 'agents.json', { x: registryRecord(MISSING_FOLDER) });
     box.write('box-down', '1');
     const result = runBizansoFlow(box);
-    // Later refusals may still stop the run; the registry check must not be one of them.
-    assert.match(result.stdout, /\[qa\] No QA Box is running, so there is no registry to check\./);
+    // The stub keeps answering status and the product reads, so the whole run passes.
+    assert.equal(result.status, 0, logOf(result));
+    assert.match(result.stdout, /\[qa\] No QA Box is running yet; the registry is checked again once it runs\./);
     assert.doesNotMatch(logOf(result), /The QA registry lists|Cannot read the QA registry/);
 });
 
