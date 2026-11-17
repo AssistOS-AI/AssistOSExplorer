@@ -209,7 +209,7 @@ test('deploy: the QA registry check reads inside the Box and comes before the fi
 
 // Runs the check block itself under `set -euo pipefail` with stub ssh, flock and podman. A Box that runs answers the
 // name filter and runs the program in its workspace; `registry` is the text of .ploinky/agents.json, or null for none.
-function runRegistryCheck(t, { registry, boxRunning = true, tree = [], busy = '', upAfter = 0, calls: callLines }) {
+function runRegistryCheck(t, { registry, boxRunning = true, tree = [], busy = '', upAfter = 0, boxFile = false, env = {}, calls: callLines }) {
     const body = runBlocks(step(deploy, 'Bootstrap the host and deploy through Ploinky commands'))[0];
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-registry-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -238,7 +238,9 @@ exec "$@"`);
     stub('podman', `echo "podman $1 $2" >> "$CALLS"
 if [ "$1" = ps ]; then
   n=$(grep -c '^podman ps' "$CALLS" || true)
-  case "$*" in *" --filter name=^ploinky-box-explorerqaworkspace-7a31ab7775eb\$") [ "\${BOX_RUNNING}" != yes ] || [ "$n" -le "$UP_AFTER" ] || echo ploinky-box-explorerqaworkspace-7a31ab7775eb ;; esac
+  up=no
+  if [ -n "\${BOX_FILE:-}" ]; then [ ! -e "$BOX_FILE" ] || up=yes; elif [ "\${BOX_RUNNING}" = yes ] && [ "$n" -gt "$UP_AFTER" ]; then up=yes; fi
+  case "$*" in *" --filter name=^ploinky-box-explorerqaworkspace-7a31ab7775eb\$") [ "$up" != yes ] || echo ploinky-box-explorerqaworkspace-7a31ab7775eb ;; esac
   exit 0
 fi
 if [ "$1 $2" = "container exec" ]; then
@@ -259,7 +261,7 @@ ${(callLines || []).join('\n')}
 echo completed`;
     const result = spawnSync('bash', ['-c', script], {
         encoding: 'utf8',
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CALLS: calls, BUSY: busy, UP_AFTER: String(upAfter), BOX_RUNNING: boxRunning ? 'yes' : 'no', RUNNER_TEMP: path.join(dir, 'runner'), GITHUB_WORKSPACE: path.join(dir, 'github') },
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CALLS: calls, BUSY: busy, UP_AFTER: String(upAfter), BOX_FILE: boxFile ? path.join(dir, 'box-up') : '', BOX_RUNNING: boxRunning ? 'yes' : 'no', ...env, RUNNER_TEMP: path.join(dir, 'runner'), GITHUB_WORKSPACE: path.join(dir, 'github') },
     });
     return { ...result, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean) : [] };
 }
@@ -320,13 +322,13 @@ test('deploy: an empty, malformed or unreadable registry refuses with its own me
 });
 
 test('deploy: a Box that was just started is checked again, and a record without its folder refuses before the copy', (t) => {
-    const second = ['qa_registry_check "The Box was started, but Bizanso was not copied." need_box'];
+    const second = ['qa_registry_check "Bizanso was not copied; the Box may have been started." need_box'];
     const record2 = { ploinky_bizanso_second_b: record('secondAgent') };
     // The Box is not running at the first check (one empty answer), then runs: the kept registry refuses at the second.
     const refused = runRegistryCheck(t, { registry: record2, upAfter: 1, tree: [], calls: second });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
     assert.match(refused.stdout, /\[qa\] No QA Box is running yet; the registry is checked again once it runs\.\n/);
-    assert.match(refused.stdout, /::error::The QA registry lists the enabled Bizanso agent\(s\) secondAgent, but the checked-out Bizanso tree has no <agent>\/manifest\.json for them\. The Box was started, but Bizanso was not copied\. Disable/);
+    assert.match(refused.stdout, /::error::The QA registry lists the enabled Bizanso agent\(s\) secondAgent, but the checked-out Bizanso tree has no <agent>\/manifest\.json for them\. Bizanso was not copied; the Box may have been started\. Disable/);
     assert.doesNotMatch(refused.stdout, /completed/);
     // The same registry with its folder present passes both calls.
     const passed = runRegistryCheck(t, { registry: record2, upAfter: 1, tree: ['secondAgent'], calls: second });
@@ -335,12 +337,54 @@ test('deploy: a Box that was just started is checked again, and a record without
     // A Box that still is not running after its start is a refusal, not a pass.
     const down = runRegistryCheck(t, { registry: {}, boxRunning: false, tree: [], calls: second });
     assert.equal(down.status, 1, down.stdout + down.stderr);
-    assert.match(down.stdout, /::error::The QA Box is not running although it was just started, so the registry cannot be checked\. The Box was started, but Bizanso was not copied\./);
+    assert.match(down.stdout, /::error::The QA Box is not running although it was just started, so the registry cannot be checked\. Bizanso was not copied; the Box may have been started\./);
+});
+
+// The start-or-update section of the deploy step, from the Box state to the second registry check, with the Ploinky
+// commands stubbed. The Box exists while the file box-up does; destroy removes it and a start creates it.
+function runRecreate(t, { recreate, registry, tree }) {
+    const body = runBlocks(step(deploy, 'Bootstrap the host and deploy through Ploinky commands'))[0];
+    const graph = body.match(/^GRAPH_RUNTIMES='[^']*'$/m)[0];
+    const states = body.slice(body.indexOf('runtime_states() {'), body.indexOf('\n}\n', body.indexOf('runtime_states() {')) + 3);
+    const from = body.indexOf('BOX_STATE=present\n');
+    const callText = 'qa_registry_check "Bizanso was not copied; the Box may have been started." need_box || exit 1\n';
+    const slice = body.slice(from, body.indexOf(callText) + callText.length);
+    const status = `Agent runtimes:\n${['explorer', 'gitAgent', 'userPersistoAgent', 'emailAgent', 'dpuAgent', 'roboTeamAgent', 'soul-gateway', 'workspaceMonitorAgent', 'local-llm'].map((name) => `  x [running] [ready]\n     agent: ${name}`).join('\n')}\n`;
+    const prelude = `LOG="$CALLS"; ROUTER_PORT=8097
+prune_images() { :; }
+require_free_disk() { :; }
+wait_ready() { :; }
+ploinky_read() { echo "read $*" >> "$LOG"; }
+ploinky_locked() { echo "locked $*" >> "$LOG"; case "$*" in destroy) rm -f "$BOX_FILE" ;; *start*) : > "$BOX_FILE" ;; esac; }
+${graph}
+${states}
+echo reached-start-section >> "$LOG"
+${slice}
+echo second-check-passed`;
+    const result = runRegistryCheck(t, { registry, tree, boxFile: true, boxRunning: false, env: { RECREATE_BOX: recreate, RESET_EXPLORER_CHECKOUT: 'false', STATUS_OUTPUT: status }, calls: [prelude] });
+    return result;
+}
+
+test('deploy: a recreate with a running graph destroys the Box, runs the first start, and only then the second registry check', (t) => {
+    const record2 = { ploinky_bizanso_second_b: record('secondAgent') };
+    const passed = runRecreate(t, { recreate: 'true', registry: record2, tree: ['secondAgent'] });
+    assert.equal(passed.status, 0, passed.stdout + passed.stderr);
+    assert.match(passed.stdout, /second-check-passed\ncompleted\n$/);
+    const locked = passed.calls.filter((line) => line.startsWith('locked'));
+    assert.deepEqual(locked, ['locked destroy', 'locked --port 8097 start explorer']);
+    const refused = runRecreate(t, { recreate: 'true', registry: record2, tree: [] });
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stdout, /::error::The QA registry lists the enabled Bizanso agent\(s\) secondAgent, .* Bizanso was not copied; the Box may have been started\. Disable/);
+    assert.doesNotMatch(refused.stdout, /second-check-passed|The QA Box is not running/);
+    assert.deepEqual(refused.calls.filter((line) => line.startsWith('locked')), ['locked destroy', 'locked --port 8097 start explorer']);
+    // Without a recreate the graph is up and no start runs.
+    const kept = runRecreate(t, { recreate: 'false', registry: record2, tree: ['secondAgent'] });
+    assert.equal(kept.calls.filter((line) => line.startsWith('locked')).length, 0, kept.stdout + kept.stderr);
 });
 
 test('deploy: the second registry check follows the first start and comes before every value, repository move and the Bizanso copy', () => {
     const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
-    const call = 'qa_registry_check "The Box was started, but Bizanso was not copied." need_box || exit 1\n';
+    const call = 'qa_registry_check "Bizanso was not copied; the Box may have been started." need_box || exit 1\n';
     assert.equal(body.split(call).length - 1, 1);
     const at = body.indexOf(call);
     const start = body.indexOf('ploinky_locked --port "$ROUTER_PORT" start explorer\n            fi\n            wait_ready\n          fi\n');

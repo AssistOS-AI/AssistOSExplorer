@@ -1163,6 +1163,9 @@ jobs:
           for agent in $GRAPH_RUNTIMES; do
             grep -qx "$agent running" <<< "$STATUS_STATES" || GRAPH_UP=false
           done
+          # A Box that was just destroyed, or never existed, has no graph whatever the status read before the destroy showed.
+          # The first start then always runs, with the router port, before anything else needs a Box.
+          if [ "$BOX_STATE" = absent ]; then GRAPH_UP=false; fi
           if [ "$GRAPH_UP" = false ]; then
             # `ploinky var` needs a Box, and only `start` accepts the port; a Box created by `var` would take
             # 8080, which Soul Gateway owns on this host. So the first start runs before the values are set.
@@ -1179,7 +1182,7 @@ jobs:
           fi
           # The Box runs now, possibly started on a kept workspace whose registry the first check could not read. Nothing
           # below has copied the Bizanso tree yet.
-          qa_registry_check "The Box was started, but Bizanso was not copied." need_box || exit 1
+          qa_registry_check "Bizanso was not copied; the Box may have been started." need_box || exit 1
 
           printf '%s' "$CLOUDFLARE_API_TOKEN" | ploinky_locked var "$CLOUDFLARE_API_SECRET_HANDLE" --stdin
           printf '%s' "$CLOUDFLARE_TUNNEL_TOKEN" | ploinky_locked var "$CLOUDFLARE_TUNNEL_SECRET_HANDLE" --stdin
