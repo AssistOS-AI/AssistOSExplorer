@@ -25,6 +25,7 @@ export class ScheduleStore {
         const previous = id ? this.getSync(id) : null;
         if (id && !previous) throw Object.assign(invalid('Cron job not found'), { statusCode: 404 });
         if (id && input.revision !== previous.revision) throw conflict('Cron job changed; reload before saving');
+        if (id && input.enabled === false && Object.keys(input).every(key => key === 'enabled' || key === 'revision')) return this.disable(id, input.revision, createdBy);
         const value = { ...previous, ...input };
         const objective = textField(value.objective, 'objective', 32768);
         const privateContext = textField(value.privateContext, 'privateContext', 32768);
@@ -61,6 +62,18 @@ export class ScheduleStore {
             delete record.name;
             if (graph.kind !== 'default') delete record.executionType;
             return this.saveSync(record);
+        });
+    }
+    // Turning a job off only stops future launches, so it must not depend on the
+    // workflow, folder or objective still being valid.
+    disable(id, revision, updatedBy) {
+        return this.database.transaction(() => {
+            const current = this.getSync(id);
+            if (!current) throw Object.assign(invalid('Cron job not found'), { statusCode: 404 });
+            if (current.revision !== revision) throw conflict('Cron job changed; reload before saving');
+            if (current.enabled === false) return current;
+            return this.saveSync({ ...current, enabled: false, nextRunAt: null, pendingLaunch: null, revision: current.revision + 1,
+                updatedBy, updatedAt: new Date(this.now()).toISOString() });
         });
     }
     remove(id) {

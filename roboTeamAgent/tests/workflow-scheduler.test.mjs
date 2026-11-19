@@ -311,3 +311,20 @@ test('agent schedules are generic, idempotent and isolated by signed caller', as
     await agentSchedule(f.service,actor,{operation:'delete-schedule',key:input.key});
     assert.equal(f.service.schedules.listSync().length,1);
 });
+
+test('disabling an agent schedule does not revalidate its workflow', async t => {
+    const { agentSchedule } = await import('../server/roboflow/agent-schedules.mjs');
+    const f = await fixture(t), actor = 'agent:example/producer';
+    const input = { operation: 'upsert-schedule', key: 'review', workflowTypeId: 'scheduled',
+        objective: 'Review', timing: { kind: 'interval', everyMinutes: 1440 }, enabled: true };
+    const created = await agentSchedule(f.service, actor, input);
+    const getSync = f.service.registry.getSync;
+    f.service.registry.getSync = () => null;
+    try {
+        const off = await agentSchedule(f.service, actor, { operation: 'set-schedule-enabled', key: input.key, enabled: false });
+        assert.equal(off.schedule.id, created.schedule.id);
+        assert.equal(off.schedule.enabled, false);
+        assert.equal(off.schedule.nextRunAt, null);
+    } finally { f.service.registry.getSync = getSync; }
+    f.advance(1440); await f.service.scheduler.tick(); assert.equal(f.started.length, 0);
+});
