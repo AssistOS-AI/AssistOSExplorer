@@ -82,3 +82,5 @@ Local instruction-skill selection is a live conversation policy. The default rob
 ### Live agent runs
 
 RoboTeam must publish every running copilot turn, task delegated by the copilot to another agent, robot task and workflow phase to Explorer's Live Sessions list while it runs, and keep it listed for one hour after it ends. Only the signed owner and administrators see a run; owner messages reach the running agent with a correlated receipt, and Stop stops the run (for a workflow phase, it pauses the whole workflow). Publishing must never delay or fail the run itself. DS008 owns the contract.
+
+Agents can manage their own durable schedules through generic MCP operations. Caller-scoped keys make retries idempotent; workflows own all product-specific checks and behavior. See DS007.

@@ -78,7 +78,7 @@ export class WorkflowScheduler {
     async _launch(job, { manual = false, createdBy = job.createdBy, ownerPrincipal = job.ownerPrincipal ?? null } = {}) {
         try {
             if (this.closed) throw new Error('Cron job scheduler stopped before launch');
-            return await this.startFlow({ workflowTypeId: job.workflowTypeId, objective: job.objective, folder: job.folder, executionType: job.executionType,
+            return await this.startFlow({ workflowTypeId: job.workflowTypeId, objective: [job.objective, job.privateContext].filter(Boolean).join('\n\n'), folder: job.folder, executionType: job.executionType,
                 createdBy, ownerPrincipal }, {
                 scheduleId: job.id, scheduledAt: job.pendingLaunch.scheduledAt,
                 onCreated: flow => {

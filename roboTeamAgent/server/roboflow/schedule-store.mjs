@@ -21,12 +21,13 @@ export class ScheduleStore {
     }
     // ownerPrincipal is the signed principal of this saver (null for an
     // unsigned saver): whoever last defined what runs owns its launches.
-    async save(input, createdBy, id, { ownerPrincipal = null } = {}) {
+    async save(input, createdBy, id, { ownerPrincipal = null, agentPrincipal = null, agentKey = null } = {}) {
         const previous = id ? this.getSync(id) : null;
         if (id && !previous) throw Object.assign(invalid('Cron job not found'), { statusCode: 404 });
         if (id && input.revision !== previous.revision) throw conflict('Cron job changed; reload before saving');
         const value = { ...previous, ...input };
         const objective = textField(value.objective, 'objective', 32768);
+        const privateContext = textField(value.privateContext, 'privateContext', 32768);
         const workflowTypeId = textField(value.workflowTypeId, 'workflowTypeId', 80, true);
         const timing = normalizeTiming(value.timing);
         if (value.enabled !== undefined && typeof value.enabled !== 'boolean') throw invalid('enabled must be boolean');
@@ -37,6 +38,10 @@ export class ScheduleStore {
         const selectedFolder = textField(value.folder, 'folder', 4096);
         const folder = selectedFolder ? await this.resolveCwd(selectedFolder) : await this.defaultFolder();
         return this.database.transaction(() => {
+            if (!id && agentPrincipal && agentKey) {
+                const duplicate = this.listSync().find(job => job.agentPrincipal === agentPrincipal && job.agentKey === agentKey);
+                if (duplicate) return duplicate;
+            }
             const current = id ? this.getSync(id) : null;
             if (id && (!current || current.revision !== input.revision)) throw conflict('Cron job changed; reload before saving');
             const graph = this.registry.getSync(workflowTypeId);
@@ -46,7 +51,8 @@ export class ScheduleStore {
             const timestamp = this.now(), now = new Date(timestamp).toISOString(), enabled = value.enabled ?? true;
             const configChanged = !current || current.enabled !== enabled || JSON.stringify(current.timing) !== JSON.stringify(timing);
             const record = { ...current, id: id || `cron_${crypto.randomBytes(12).toString('hex')}`, revision: (current?.revision || 0) + 1,
-                objective, folder, workflowTypeId: graph.id, ...(graph.kind === 'default' ? { executionType: value.executionType } : {}), timing, enabled,
+                objective, privateContext, folder, workflowTypeId: graph.id, ...(graph.kind === 'default' ? { executionType: value.executionType } : {}), timing, enabled,
+                ...(agentPrincipal ? { agentPrincipal, agentKey } : {}),
                 createdBy: current?.createdBy || createdBy, updatedBy: createdBy, ownerPrincipal: ownerPrincipal || null,
                 createdAt: current?.createdAt || now, updatedAt: now,
                 nextRunAt: enabled ? (configChanged ? new Date(nextRun(timing, timestamp)).toISOString() : current.nextRunAt) : null,

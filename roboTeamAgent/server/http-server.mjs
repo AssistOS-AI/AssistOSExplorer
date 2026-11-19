@@ -1,3 +1,4 @@
+import { agentSchedule } from './roboflow/agent-schedules.mjs';
 import { RobotModels } from './robot-models.mjs';
 import { conversationSummaries, workflowSummaries } from './impact-summaries.mjs';
 import { requiredHumanReportSkill } from './required-skills.mjs';
@@ -445,6 +446,13 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         const result = req.method === 'GET' ? await roboflow.scheduleFolders.list(url.searchParams.get('path') || '')
             : await roboflow.scheduleFolders.create(await readJsonBody(req));
         sendJson(res, req.method === 'GET' ? 200 : 201, { ok: true, ...result }); return true;
+    }
+    if (pathname === '/api/roboflow/agent-schedules' && req.method === 'POST') {
+        const principal = req.headers['x-roboteam-agent-principal'];
+        if (req[ACCESS]?.internal !== true || req.headers['x-roboteam-user-id'] || !/^agent:[^/]+\/[^/]+$/.test(principal || '')) {
+            sendError(res, 403, 'verified agent integration required'); return true;
+        }
+        sendJson(res, 200, await agentSchedule(roboflow, principal, await readJsonBody(req))); return true;
     }
     if (pathname === '/api/roboflow/schedules' && req.method === 'GET') {
         sendJson(res, 200, { ok: true, schedules: await roboflow.listSchedules() }); return true;

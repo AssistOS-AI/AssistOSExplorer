@@ -200,6 +200,7 @@ export class RoboFlowService {
             const { pendingLaunch, ...record } = job;
             delete record.name;
             delete record.ownerPrincipal;
+            delete record.privateContext;
             if (this.runFolders.isLegacyDefault(record.folder, root)) record.folder = path.join(root, 'workflow-runs');
             const workflow = this.registry.getSync(job.workflowTypeId);
             const flow = job.lastFlowId && this.store.getSync(job.lastFlowId);

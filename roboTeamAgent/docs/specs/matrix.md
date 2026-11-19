@@ -2,7 +2,7 @@
 
 | Name | Description |
 | --- | --- |
-| [DS000-vision](specsLoader.html?spec=DS000-vision.md) | Defines RoboTeam as one Ploinky-hosted nested-container manager for persistent robots with browser and desktop runs. |
+| [DS000-vision](specsLoader.html?spec=DS000-vision.md) | Defines RoboTeam as the Ploinky-hosted manager of persistent robots, whose browser and desktop runs RoboWork hosts. |
 | [DS001-coding-style](specsLoader.html?spec=DS001-coding-style.md) | Defines source structure, runtime configuration, security practices, and tests for the nested robot runtime. |
 | [DS002-model-strategy](specsLoader.html?spec=DS002-model-strategy.md) | Separates deterministic robot lifecycle from ALA-selected coding-agent and model execution. |
 | [DS003-main-behavior](specsLoader.html?spec=DS003-main-behavior.md) | Defines workspace robots, concurrent CLI conversations, retained visible workstations, observable delegated ALA tasks, global graph workflows, recurring scheduled execution and live agent runs. |

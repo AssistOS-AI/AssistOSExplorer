@@ -7,13 +7,13 @@ import { once } from 'node:events';
 
 const entry = fileURLToPath(new URL('../tools/roboflow.mjs', import.meta.url));
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { resolve, promise }; }
-async function fixture(t, operation, handler, extra = {}) {
+async function fixture(t, operation, handler, extra = {}, metadata = {}) {
     const server = http.createServer(handler);
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const child = spawn(process.execPath, [entry, operation], { env: { ...process.env,
         ROBOTEAM_SERVICE_PORT: String(server.address().port), ROBOTEAM_INTERNAL_TOKEN: 'test', ROBOTEAM_TASK_POLL_INTERVAL_MS: '50' }, stdio: ['pipe', 'pipe', 'pipe'] });
     const exited = once(child, 'exit');
-    child.stdin.end(JSON.stringify({ input: { workflowTypeId: 'example', objective: 'Work', description: 'Generate', ...extra } }));
+    child.stdin.end(JSON.stringify({ input: { workflowTypeId: 'example', objective: 'Work', description: 'Generate', ...extra }, metadata }));
     t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
     return { child, exited };
 }
@@ -93,5 +93,21 @@ test('the start tool forwards the relay\'s owner only from RoboTeam acting for i
         child.stdin.end(JSON.stringify({ input: { workflowTypeId: 'example', ownerPrincipal: 'user:alice' }, ...(metadata ? { metadata } : {}) }));
         assert.equal((await posted.promise).ownerPrincipal, expected);
         child.kill('SIGKILL'); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    }
+});
+
+
+test('generic cron tools forward only verified own-behalf agent identity', async t => {
+    const principal = 'agent:example/producer';
+    const grant = { sub: principal, actor: { kind: 'agent', id: principal } };
+    const f = await fixture(t, 'upsert-schedule', (req,res) => {
+        assert.equal(req.url,'/api/roboflow/agent-schedules');
+        assert.equal(req.headers['x-roboteam-agent-principal'],principal);
+        res.setHeader('content-type','application/json'); res.end('{"schedule":{"id":"test"}}');
+    }, { key:'report' }, { invocation:grant });
+    assert.equal((await f.exited)[0],0);
+    for (const metadata of [{}, {invocation:{...grant,usr:{id:'someone'}}}, {invocation:{...grant,actor:{kind:'agent',id:'agent:other/agent'}}}]) {
+        const rejected = await fixture(t,'upsert-schedule',()=>assert.fail('Unauthorized call reached service'),{key:'report'},metadata);
+        assert.equal((await rejected.exited)[0],1);
     }
 });

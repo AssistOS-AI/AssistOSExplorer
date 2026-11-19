@@ -41,7 +41,7 @@ function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function request(pathname, { method = 'GET', body, user = {}, timeoutMs = 29000, ignoreCancellation = false } = {}) {
+async function request(pathname, { method = 'GET', body, user = {}, agentPrincipal, timeoutMs = 29000, ignoreCancellation = false } = {}) {
     const port = Number(process.env.ROBOTEAM_SERVICE_PORT || 3001);
     const token = String(process.env.ROBOTEAM_INTERNAL_TOKEN || '');
     if (!token) throw new Error('RoboTeam internal token is unavailable');
@@ -50,6 +50,7 @@ async function request(pathname, { method = 'GET', body, user = {}, timeoutMs = 
         headers: {
             'content-type': 'application/json',
             'x-roboteam-internal-token': token,
+            ...(agentPrincipal ? { 'x-roboteam-agent-principal': agentPrincipal } : {}),
             ...(user.id ? { 'x-roboteam-user-id': user.id } : {}),
             ...(user.roles?.length ? { 'x-roboteam-user-roles': JSON.stringify(user.roles) } : {}),
         },
@@ -100,6 +101,11 @@ async function startFlowUntilTerminal({ body, user }) {
 }
 
 const expectedToolNames = {
+    'upsert-schedule': 'roboflow_upsert_schedule',
+    'get-schedule': 'roboflow_get_schedule',
+    'set-schedule-enabled': 'roboflow_set_schedule_enabled',
+    'delete-schedule': 'roboflow_delete_schedule',
+    'run-schedule': 'roboflow_run_schedule',
     'list-workflows': 'roboflow_list_workflows',
     'create-workflow': 'roboflow_create_workflow',
     'update-workflow': 'roboflow_update_workflow',
@@ -118,6 +124,14 @@ async function main() {
     const input = payload.input || payload.arguments || {};
     const user = invocationUser(payload);
 
+    if (['upsert-schedule', 'get-schedule', 'set-schedule-enabled', 'delete-schedule', 'run-schedule'].includes(operation)) {
+        const grant = payload.metadata?.invocation;
+        if (!/^agent:[^/]+\/[^/]+$/.test(grant?.sub || '') || grant?.actor?.kind !== 'agent' || grant.actor.id !== grant.sub
+            || grant.usr || grant.user || grant.delegation || payload.metadata?.user || user.id) throw new Error('Agent-owned schedules require an agent acting on its own behalf');
+        return output(await request('/api/roboflow/agent-schedules', {
+            method: 'POST', body: { ...input, operation }, agentPrincipal: grant.sub,
+        }));
+    }
     if (operation === 'list-workflows') return output(await request('/api/roboflow/workflows', { user }));
     if (operation === 'create-workflow') return output(await request('/api/roboflow/workflows', { method: 'POST', body: input, user }));
     if (operation === 'update-workflow') return output(await request(`/api/roboflow/workflows/${encodeURIComponent(String(input.workflowId || ''))}`, { method: 'PUT', body: input, user }));

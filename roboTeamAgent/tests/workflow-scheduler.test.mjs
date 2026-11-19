@@ -285,3 +285,29 @@ test('a legacy Cron job without an owner launches as the system owner', async t 
     assert.equal(f.started[0].ownerPrincipal, null);
     assert.equal((await f.service.store.get(f.service.schedules.getSync(job.id).lastFlowId)).ownerPrincipal, null);
 });
+
+test('agent schedules are generic, idempotent and isolated by signed caller', async t => {
+    const { agentSchedule } = await import('../server/roboflow/agent-schedules.mjs');
+    const f = await fixture(t), actor = 'agent:example/producer';
+    const input = { operation: 'upsert-schedule', key: 'daily-report', workflowTypeId: 'scheduled',
+        objective: 'Write a report', privateContext: 'Private run context', timing: { kind: 'interval', everyMinutes: 1440 }, enabled: true };
+    const [a,b] = await Promise.all([agentSchedule(f.service,actor,input),agentSchedule(f.service,actor,input)]);
+    assert.equal(a.schedule.id,b.schedule.id);
+    assert.equal(JSON.stringify(await f.service.listSchedules()).includes('Private run context'),false);
+    assert.equal(JSON.stringify(a).includes('Private run context'),false);
+    assert.equal(f.service.schedules.listSync().length,1);
+    f.advance(60);
+    assert.deepEqual(await agentSchedule(f.service,actor,input),a);
+    assert.equal((await agentSchedule(f.service,'agent:other/producer',{operation:'get-schedule',key:input.key})).schedule,null);
+    await assert.rejects(agentSchedule(f.service,'agent:other/producer',{operation:'delete-schedule',key:input.key}),/not found/);
+    await agentSchedule(f.service,actor,{operation:'set-schedule-enabled',key:input.key,enabled:false});
+    f.advance(1440); await f.service.scheduler.tick(); assert.equal(f.started.length,0);
+    const resumed = await agentSchedule(f.service,actor,input);
+    assert.equal(resumed.schedule.id,a.schedule.id);
+    f.advance(1440); await f.service.scheduler.tick(); assert.equal(f.started.length,1);
+    assert.equal(f.service.store.getSync(f.service.schedules.getSync(a.schedule.id).lastFlowId).objective,input.objective+'\n\n'+input.privateContext);
+    const other = await agentSchedule(f.service,'agent:other/producer',input);
+    assert.notEqual(other.schedule.id,a.schedule.id);
+    await agentSchedule(f.service,actor,{operation:'delete-schedule',key:input.key});
+    assert.equal(f.service.schedules.listSync().length,1);
+});
