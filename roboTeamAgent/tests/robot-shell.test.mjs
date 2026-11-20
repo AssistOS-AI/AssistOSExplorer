@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
+import { TOOL_CACHE_DIR } from '../../roboWorkAgent/server/constants.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 import { homeRoboWork } from './helpers/robowork-home.mjs';
 import { prepareRobotShell } from '../../roboWorkAgent/server/robot-shell.mjs';
@@ -27,7 +28,7 @@ test('new robots have shell configuration, repeated preparation preserves user c
     assert.equal(environment.codex, path.join(home, '.codex'));
     assert.equal(environment.pi, path.join(home, '.pi/agent'));
     assert.equal(environment.config, path.join(home, '.config'));
-    assert(environment.path.startsWith('/data/tool-cache/shell-selections/shell/bin:'));
+    assert(environment.path.startsWith(`${TOOL_CACHE_DIR}/shell-selections/shell/bin:`));
     await fs.unlink(path.join(home, '.bashrc'));
     await fs.symlink(path.join(home, '.profile'), path.join(home, '.bashrc'));
     await assert.rejects(prepareRobotShell(home), /ELOOP/);

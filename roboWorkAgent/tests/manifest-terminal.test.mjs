@@ -23,3 +23,11 @@ test('the manifest and the Explorer plugin declare the same terminal profile sur
     // The route's container port is the one the manifest publishes.
     assert.ok(manifest.profiles.default.openPorts.some(entry => entry.endsWith(':3001')));
 });
+
+test('the manifest declares the coding session API on the authenticated surface', async () => {
+    const manifest = await read('../manifest.json');
+    assert.deepEqual(manifest.webtty.codingSessions, { version: 1, api: `${PREFIX}/api/coding-sessions` });
+    assert.equal(manifest.webtty.codingAgents, undefined);
+    // Older routers read only the home profile declaration, which stays exactly as it was.
+    assert.deepEqual(Object.keys(manifest.webtty.homeProfiles).sort(), ['resolve', 'version']);
+});

@@ -65,7 +65,9 @@ export function createRoboWorkServer({ robots, runs, environment, gui = null, te
                 req.url = pathname + url.search;
                 return proxyHttp(req, res, port, publicBasePath, rawBody);
             }
-            if (terminal && pathname.startsWith('/api/terminal-profiles')) return await terminal.handle(req, res, url, { ...access, body: rawBody });
+            if (terminal && (pathname.startsWith('/api/terminal-profiles') || pathname.startsWith('/api/coding-sessions/'))) {
+                return await terminal.handle(req, res, url, { ...access, body: rawBody });
+            }
             throw fail('NOT_FOUND', 'Route not found', 404);
         } catch (error) {
             reply(res, error.statusCode || (error instanceof SyntaxError ? 400 : 500), { code: error.code || 'INTERNAL_ERROR', error: error.statusCode ? error.message : 'RoboWork request failed' });

@@ -10,6 +10,7 @@ import { buildPrivateLaunch } from '../server/launch.mjs';
 import { nativeEnvironment } from '../server/native-environment.mjs';
 import { EnvironmentManager } from '../server/environment.mjs';
 import { alaWorkspaceOptions } from '../server/workspace-view.mjs';
+import { CODING_AGENT_NAMES } from '../server/coding-agents.mjs';
 
 const script = fileURLToPath(import.meta.url);
 const codeRoot = path.dirname(path.dirname(script));
@@ -51,6 +52,20 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
     return { descriptor, paths };
 }
 
+// A coding agent profile replaces the interactive shell with that agent. A login shell still runs first, so the agent
+// gets the same robot profile (`.roboteam-env.sh`) as the agent typed in the robot shell.
+export function shellArguments(shell, descriptor) {
+    const login = shell.endsWith('/bash') ? '--login' : '-l';
+    if (!descriptor.codingAgent) return shell.endsWith('/bash') ? ['--login', '-i'] : ['-i'];
+    if (!CODING_AGENT_NAMES.includes(descriptor.codingAgent)) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
+    // The service computed the native arguments that open or resume the conversation; each is a plain token.
+    const args = descriptor.codingAgentArgs ?? [];
+    if (!Array.isArray(args) || args.length > 8 || args.some(arg => typeof arg !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(arg))) {
+        throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
+    }
+    return [login, '-c', 'exec "$0" "$@"', path.join(descriptor.binPath, descriptor.codingAgent), ...args];
+}
+
 export async function buildShellSandbox(descriptor, { loadSandbox = async entry => import(pathToFileURL(path.join(path.dirname(path.dirname(entry)), 'src/coding-agents/sandbox.mjs')).href) } = {}) {
     const target = homeTarget(descriptor.id);
     // ALA captures its home in static module tables, so this precedes its first import.
@@ -72,7 +87,7 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
     const pin = descriptor.cwd ? api.pinDirectory(descriptor.cwd, descriptor.cwdIdentity) : null;
     if (descriptor.cwd) await fs.mkdir(path.join(descriptor.cwd, '.roboteam'), { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
     const args = api.buildSandboxArgs({ workspace: descriptor.cwd || home, workspaceTarget: cwd, ...(pin ? { workspaceFd: pin.fd } : {}), ignoredPaths: shown.ignoredPaths,
-        binary: shell, args: shell.endsWith('/bash') ? ['--login', '-i'] : ['-i'], env, bwrap,
+        binary: shell, args: shellArguments(shell, descriptor), env, bwrap,
         privateProc: true, home, folders, chdir: cwd, newSession: false });
     // Tool paths are service-selected. Every parent credential and environment value is discarded.
     const boundary = args.indexOf('--');

@@ -1,5 +1,5 @@
 export const CODING_AGENTS = Object.freeze([
-    ['codex', 'Codex'], ['opencode', 'OpenCode'], ['pi', 'Pi'], ['claude', 'Claude Code'],
+    ['codex', 'Codex'], ['opencode', 'OpenCode'], ['pi', 'Pi'], ['omp', 'OMP'], ['claude', 'Claude Code'],
 ]);
 const AGENT_NAMES = new Set(CODING_AGENTS.map(([name]) => name));
 const LOGIN_FILTERS = new Set(['any', 'none', ...AGENT_NAMES]);

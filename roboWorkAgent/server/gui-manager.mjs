@@ -6,6 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 import { MOUNT_REFUSED_EXIT } from './environment.mjs';
+import { CODING_AGENT_NAMES } from './coding-agents.mjs';
 import { RobotPaths, assertPrivateDirectory, directoryIdentity, fail, pinDirectory } from './robot-paths.mjs';
 import { podmanWorkspaceArguments } from './workspace-view.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
@@ -132,6 +133,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, robotsDir = '/robots',
                 '-e', `XDG_CONFIG_HOME=${homeTarget}/.config`, '-e', `XDG_CACHE_HOME=${homeTarget}/.cache`,
                 '-e', `XDG_DATA_HOME=${homeTarget}/.local/share`, '-e', `XDG_STATE_HOME=${homeTarget}/.local/state`,
                 '-e', `PI_CODING_AGENT_DIR=${homeTarget}/.pi/agent`,
+                '-e', `OMP_DIR=${homeTarget}/.omp`,
                 '-e', `CLAUDE_CONFIG_DIR=${homeTarget}/.claude`,
             ] : []),
             '-v', `${homePath}:/config`, '-v', `${homePath}:${homeTarget}`,
@@ -264,7 +266,7 @@ export class GuiManager {
         return this._serialize(robotId, async () => {
             if (this.shuttingDown) throw new Error('GUI service is stopping');
             if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
-            if (!Array.isArray(codingAgents) || codingAgents.some(name => !['codex', 'opencode', 'pi', 'claude'].includes(name))) throw new Error('Invalid coding agents');
+            if (!Array.isArray(codingAgents) || codingAgents.some(name => !CODING_AGENT_NAMES.includes(name))) throw new Error('Invalid coding agents');
             const robot = await this.getRobot(robotId);
             const cwd = await this.resolveCwd(robotId, cwdValue);
             const cwdIdentity = cwd === `/home/${robotId}` ? null : await directoryIdentity(cwd).catch(() => { throw fail('CWD_REFUSED', 'Directory changed while it was being checked'); });

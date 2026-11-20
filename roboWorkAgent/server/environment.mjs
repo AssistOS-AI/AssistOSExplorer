@@ -12,7 +12,7 @@ const execute = promisify(execFile);
 const REF = /^[A-Za-z0-9._-]{1,128}\/[A-Za-z0-9._-]{1,128}$/u;
 const ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
 const SAFE_ENV = new Set(['LANG', 'LC_ALL', 'TERM', 'TZ', 'ALA_SESSIONS', 'ALA_EVENT_STREAM', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR']);
-const TOOL_ENV = new Set(['CODEX_BIN', 'OPENCODE_BIN', 'PI_BIN', 'CLAUDE_BIN']);
+const TOOL_ENV = new Set(['CODEX_BIN', 'OPENCODE_BIN', 'PI_BIN', 'OMP_BIN', 'CLAUDE_BIN']);
 const DEFAULT_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 // Exit status of a run whose mounts are not the directories RoboWork granted. ALA uses the same status.
 export const MOUNT_REFUSED_EXIT = 78;
@@ -172,7 +172,7 @@ export class EnvironmentManager {
             ALA_BWRAP: absolute(bwrap.target), ALA_SANDBOX_HOME: homeTarget,
             CODEX_HOME: `${homeTarget}/.codex`, XDG_CONFIG_HOME: `${homeTarget}/.config`,
             XDG_DATA_HOME: `${homeTarget}/.local/share`, XDG_CACHE_HOME: `${homeTarget}/.cache`,
-            PI_CODING_AGENT_DIR: `${homeTarget}/.pi/agent`, CLAUDE_CONFIG_DIR: `${homeTarget}/.claude` };
+            PI_CODING_AGENT_DIR: `${homeTarget}/.pi/agent`, OMP_DIR: `${homeTarget}/.omp`, CLAUDE_CONFIG_DIR: `${homeTarget}/.claude` };
         // The tool cache is mounted at its own path, so a cached tool keeps the path it has here.
         const cachedTool = async value => {
             if (typeof value !== 'string' || !path.isAbsolute(value)) return null;

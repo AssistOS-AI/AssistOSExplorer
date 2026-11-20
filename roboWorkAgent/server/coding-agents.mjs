@@ -1,13 +1,13 @@
 import path from 'node:path';
 
-export const CODING_AGENT_NAMES = Object.freeze(['codex', 'opencode', 'pi', 'claude']);
+export const CODING_AGENT_NAMES = Object.freeze(['codex', 'opencode', 'pi', 'omp', 'claude']);
 // ALA can inject a Streamable HTTP MCP endpoint into Codex, OpenCode and Claude Code.
-// Pi has no native ALA-managed MCP support, so it cannot drive a GUI task.
+// Pi and OMP have no native ALA-managed MCP support, so they cannot drive a GUI task.
 export const GUI_CODING_AGENTS = Object.freeze(['codex', 'opencode', 'claude']);
 
 export function normalizeCodingAgents(value = ['opencode']) {
     if (!Array.isArray(value) || !value.length || value.some(name => !CODING_AGENT_NAMES.includes(name))) {
-        throw new Error('codingAgents must contain codex, opencode, pi or claude');
+        throw new Error('codingAgents must contain codex, opencode, pi, omp or claude');
     }
     return CODING_AGENT_NAMES.filter(name => value.includes(name));
 }

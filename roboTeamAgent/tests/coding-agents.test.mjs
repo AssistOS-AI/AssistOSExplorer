@@ -21,9 +21,11 @@ test('new robots default to OpenCode and persisted API configuration supports ev
     assert.deepEqual((await new RobotStore({ dataDir: root, roboWork: { call: async () => ({}) } }).get(robot.id)).codingAgents, ['pi']);
     await store.setCodingAgents(robot.id, ['claude']);
     assert.deepEqual(robotCodingAgents(await store.get(robot.id)), ['claude']);
-    await store.setCodingAgents(robot.id, ['codex', 'opencode', 'pi', 'claude']);
-    assert.deepEqual(robotCodingAgents(await store.get(robot.id)), ['codex', 'opencode', 'pi', 'claude']);
-    assert.deepEqual(robotCodingAgents({}), ['codex', 'opencode', 'pi', 'claude']);
+    await store.setCodingAgents(robot.id, ['omp']);
+    assert.deepEqual(robotCodingAgents(await store.get(robot.id)), ['omp']);
+    await store.setCodingAgents(robot.id, ['codex', 'opencode', 'pi', 'omp', 'claude']);
+    assert.deepEqual(robotCodingAgents(await store.get(robot.id)), ['codex', 'opencode', 'pi', 'omp', 'claude']);
+    assert.deepEqual(robotCodingAgents({}), ['codex', 'opencode', 'pi', 'omp', 'claude']);
     for (const codingAgents of [[], ['unknown'], 'codex', null]) {
         await assert.rejects(store.setCodingAgents(robot.id, codingAgents), /codingAgents/);
     }
@@ -40,6 +42,8 @@ test('ALA sees only the selected agent while the shell and GUI mounts offer ever
         const prefix = path.join(cacheRoot, name, 'generation');
         await fs.mkdir(path.join(prefix, 'bin'), { recursive: true });
         await fs.writeFile(path.join(prefix, 'bin', name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+        // OMP is a Bun program; its generation carries the Bun runtime beside it.
+        if (name === 'omp') await fs.writeFile(path.join(prefix, 'bin', 'bun'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
         agents[name] = { path: prefix, binPath: path.join(prefix, 'bin') };
     }
     const cache = new ToolCache({ root: cacheRoot });
@@ -67,7 +71,7 @@ test('ALA sees only the selected agent while the shell and GUI mounts offer ever
             assert.ok(plan.args.includes(`${shell.path}:${path.dirname(shell.binPath)}:ro`));
         }
     }
-    assert.deepEqual((await fs.readdir(shell.binPath)).sort(), [...CODING_AGENT_NAMES].sort());
+    assert.deepEqual((await fs.readdir(shell.binPath)).sort(), [...CODING_AGENT_NAMES, 'bun'].sort());
     const codex = await cache.prepareShellTools(['codex']);
     assert.deepEqual(await fs.readdir(codex.binPath), ['codex']);
     const nextPrefix = path.join(cacheRoot, 'codex', 'next-generation');
@@ -91,4 +95,40 @@ test('Claude Code can drive GUI tasks and keeps its login in the robot home', as
     assert.match(environment, /^export CLAUDE_CONFIG_DIR="\$HOME\/\.claude"$/m);
     assert.match(environment, /^export CLAUDE_BIN='.*\/claude'$/m);
     assert.equal(JSON.parse(await fs.readFile(path.join(home, '.ala', 'config.json'), 'utf8')).codingAgent, 'claude');
+});
+
+test('OMP is a terminal-only agent that keeps its login in the robot home and is installed with Bun', async t => {
+    assert.equal(GUI_CODING_AGENTS.includes('omp'), false);
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-omp-home-'));
+    t.after(() => fs.rm(home, { recursive: true, force: true }));
+    await prepareRobotShell(home, { codingAgents: ['omp'] });
+    assert.equal((await fs.stat(path.join(home, '.omp'))).isDirectory(), true);
+    const environment = await fs.readFile(path.join(home, '.roboteam-env.sh'), 'utf8');
+    assert.match(environment, /^export OMP_DIR="\$HOME\/\.omp"$/m);
+    assert.match(environment, /^export OMP_BIN='.*\/omp'$/m);
+    assert.match(environment, /^unset CODEX_BIN OPENCODE_BIN PI_BIN OMP_BIN CLAUDE_BIN$/m);
+    assert.equal(JSON.parse(await fs.readFile(path.join(home, '.ala', 'config.json'), 'utf8')).codingAgent, 'omp');
+
+    // OMP and Bun are installed together into one prefix, and --version runs with that prefix first on PATH.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-omp-cache-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const cache = new ToolCache({ root, log: () => {}, execFileImpl: async (command, args, options) => {
+        calls.push({ command, args, options });
+        if (args[0] === 'view') return { stdout: args[1].startsWith('bun@') ? '"1.5.0"' : '"19.0.1"' };
+        if (args[0] === 'install') {
+            const prefix = args[args.indexOf('--prefix') + 1];
+            for (const name of ['omp', 'bun']) {
+                await fs.mkdir(path.join(prefix, 'bin'), { recursive: true });
+                await fs.writeFile(path.join(prefix, 'bin', name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+            }
+        }
+        return { stdout: '', stderr: '' };
+    } });
+    const omp = await cache.prepareCodingAgent('omp');
+    assert.deepEqual(omp.versions, { omp: '19.0.1', bun: '1.5.0' });
+    const install = calls.find(call => call.args[0] === 'install');
+    assert.deepEqual(install.args.slice(install.args.indexOf('--prefix') + 2), ['@oh-my-pi/pi-coding-agent@19.0.1', 'bun@1.5.0']);
+    const probe = calls.find(call => call.args[0] === '--version');
+    assert.equal(probe.options.env.PATH.split(':')[0], path.join(path.dirname(probe.command)));
 });

@@ -398,7 +398,7 @@ test('an unavailable ALA leaves the status listing answering with every login ab
     const robots = new RobotManager({ paths, toolCache: {}, soulGateway: {},
         homeOperation: async (id, operation, input) => homeOperation(operation, input, paths.home(id)) });
     await robots.write({ id: 'aaa', name: 'a', codingAgents: ['opencode', 'pi'] });
-    const logins = { codex: false, opencode: false, pi: false, claude: false };
+    const logins = { codex: false, opencode: false, pi: false, omp: false, claude: false };
     process.env.ROBOWORK_ALA_ENTRY = path.join(paths.dataDir, 'missing', 'bin', 'ala.mjs');
     for (let round = 0; round < 2; round++) {
         assert.deepEqual((await robots.status({ robotIds: ['aaa'], includeLogins: true })).robots,

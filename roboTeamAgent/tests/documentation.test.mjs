@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { access, readFile, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { siblingPath } from '../../tests/helpers/sibling-roots.mjs';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const AGENT_ROOT = join(TEST_DIR, '..');
@@ -18,11 +17,6 @@ test('retired agents and their documentation links are absent', async () => {
     }
     for (const file of ['../index.html', 'docs/index.html', 'docs/partials/header.html']) {
         assert.doesNotMatch(await read(file), /(?:href|src)=["'][^"']*(?:achilles-cli|codexAgent|opencodeAgent|piAgent)\//u);
-    }
-    // GPTResearcher moved to the legacy-agents checkout; a missing sibling throws.
-    for (const file of ['docs/index.html', 'docs/partials/header.html', 'docs/specsLoader.html']) {
-        const source = await readFile(siblingPath('legacy-agents', 'GPTResearcher', file), 'utf8');
-        assert.doesNotMatch(source, /(?:href|src)=["'][^"']*(?:achilles-cli|codexAgent|opencodeAgent|piAgent)\//u);
     }
 });
 

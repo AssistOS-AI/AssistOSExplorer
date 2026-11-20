@@ -251,20 +251,6 @@ live-sessions-modal .live-sessions-banner {
     color: var(--danger);
 }
 
-live-sessions-modal .live-sessions-close-dialog h2 {
-    margin: 0 0 10px;
-    font-size: 17px;
-}
-
-live-sessions-modal .live-sessions-close-dialog p {
-    margin: 0 0 10px;
-    font-size: 14px;
-}
-
-live-sessions-modal .live-sessions-close-dialog p[hidden] {
-    display: none;
-}
-
 @media (max-width: 900px) {
     live-sessions-modal .live-sessions-body {
         grid-template-columns: minmax(260px, 310px) minmax(0, 1fr);

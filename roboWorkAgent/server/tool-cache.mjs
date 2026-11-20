@@ -21,6 +21,10 @@ const CODING_AGENT_PACKAGES = Object.freeze({
     codex: Object.freeze({ packageName: '@openai/codex', executable: 'codex' }),
     opencode: Object.freeze({ packageName: 'opencode-ai', executable: 'opencode' }),
     pi: Object.freeze({ packageName: '@earendil-works/pi-coding-agent', executable: 'pi' }),
+    // OMP (Oh My Pi) is a Bun program (`#!/usr/bin/env bun`), so Bun is installed into the same prefix and
+    // linked beside it: ALA puts that prefix's bin first on the sandbox PATH, and the shell view links it too.
+    omp: Object.freeze({ packageName: '@oh-my-pi/pi-coding-agent', executable: 'omp',
+        companions: Object.freeze([Object.freeze({ packageName: 'bun', executable: 'bun' })]) }),
     claude: Object.freeze({ packageName: '@anthropic-ai/claude-code', executable: 'claude' }),
 });
 
@@ -62,6 +66,12 @@ function safeVersion(value, label) {
         throw new Error(`${label} returned an invalid version`);
     }
     return version;
+}
+
+// The executables a coding agent's generation provides under bin/: its own and those of its companions.
+function agentExecutables(nameOrDefinition) {
+    const definition = typeof nameOrDefinition === 'string' ? CODING_AGENT_PACKAGES[nameOrDefinition] : nameOrDefinition;
+    return [definition.executable, ...(definition.companions || []).map(companion => companion.executable)];
 }
 
 function generationName(input) {
@@ -140,18 +150,22 @@ export class ToolCache {
             try {
                 await fs.mkdir(path.join(staging, 'bin'));
                 for (const [name, agent] of Object.entries(agents)) {
-                    const target = path.resolve(agent.binPath, name);
-                    if (!target.startsWith(this.root + path.sep)) throw new Error('Coding-agent executable is outside the shared cache');
-                    const relative = path.relative(path.join(directory, 'bin'), target);
-                    await fs.symlink(relative, path.join(staging, 'bin', name));
+                    for (const executable of agentExecutables(name)) {
+                        const target = path.resolve(agent.binPath, executable);
+                        if (!target.startsWith(this.root + path.sep)) throw new Error('Coding-agent executable is outside the shared cache');
+                        const relative = path.relative(path.join(directory, 'bin'), target);
+                        await fs.symlink(relative, path.join(staging, 'bin', executable));
+                    }
                 }
                 await fs.rename(staging, directory).catch(error => {
                     if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
                 });
                 for (const name of Object.keys(agents)) {
-                    if (!await isExecutable(path.join(directory, 'bin', name))) throw new Error(`Shared ${name} executable is unavailable`);
-                    if (await fs.realpath(path.join(directory, 'bin', name)) !== await fs.realpath(path.join(agents[name].binPath, name))) {
-                        throw new Error(`Shared ${name} executable does not match its cache generation`);
+                    for (const executable of agentExecutables(name)) {
+                        if (!await isExecutable(path.join(directory, 'bin', executable))) throw new Error(`Shared ${executable} executable is unavailable`);
+                        if (await fs.realpath(path.join(directory, 'bin', executable)) !== await fs.realpath(path.join(agents[name].binPath, executable))) {
+                            throw new Error(`Shared ${executable} executable does not match its cache generation`);
+                        }
                     }
                 }
                 const candidate = path.join(this.root, `.shell-${crypto.randomUUID()}`);
@@ -201,8 +215,11 @@ export class ToolCache {
                 if (stamp?.schema !== CACHE_SCHEMA || stamp.name !== name || stamp.generation !== descriptor.generation) return null;
                 const pin = this.versionPins[name];
                 if (pin !== undefined && (descriptor.versions?.[name] !== pin || stamp.versions?.[name] !== pin)) return null;
-                const current = path.join(generation, 'bin', definition.executable);
-                if (!(await isExecutable(current)) || await fs.realpath(current) !== await fs.realpath(executable)) return null;
+                for (const file of agentExecutables(definition)) {
+                    const current = path.join(generation, 'bin', file);
+                    const shared = path.join(binPath, file);
+                    if (!(await isExecutable(current)) || !(await isExecutable(shared)) || await fs.realpath(current) !== await fs.realpath(shared)) return null;
+                }
                 // Same per-agent shape as _prepare/_fallback: the agent's own generation, not the aggregate view.
                 agents[name] = { path: generation, binPath: path.join(generation, 'bin'), versions: stamp.versions || descriptor.versions || {} };
             }
@@ -347,9 +364,11 @@ export class ToolCache {
         };
     }
 
+    // `packageName` may instead be a list of exact `name@version` specifications installed together.
     async _npmInstallHost(directory, packageName, version, { global = false } = {}) {
         const args = [NPM_INSTALL_ARGS[0], ...(global ? ['--global'] : []), ...NPM_INSTALL_ARGS.slice(1)];
-        await this.execFileImpl(this.npmCommand, [...args, '--prefix', directory, `${packageName}@${version}`], {
+        const specifications = Array.isArray(packageName) ? packageName : [`${packageName}@${version}`];
+        await this.execFileImpl(this.npmCommand, [...args, '--prefix', directory, ...specifications], {
             timeout: 10 * 60 * 1000,
             maxBuffer: 8 * 1024 * 1024,
             env: this.processEnv,
@@ -391,18 +410,30 @@ export class ToolCache {
 
     async _prepareCodingAgent(name) {
         const definition = CODING_AGENT_PACKAGES[name];
+        const companions = definition.companions || [];
         return this._prepare(name, async () => {
             const version = this.versionPins[name] ?? await this._npmVersion(definition.packageName);
+            // Companions track their latest release; their versions are part of the generation identity.
+            const companionVersions = Object.fromEntries(await Promise.all(companions.map(async (companion) => (
+                [companion.executable, await this._npmVersion(companion.packageName)]))));
+            const versions = { [name]: version, ...companionVersions };
+            const packages = [`${definition.packageName}@${version}`,
+                ...companions.map(companion => `${companion.packageName}@${companionVersions[companion.executable]}`)];
             return {
-                identity: { package: definition.packageName, version, runtime: process.versions.node },
-                versions: { [name]: version },
-                install: (directory) => this._npmInstallHost(directory, definition.packageName, version, { global: true }),
+                identity: { package: definition.packageName, version, runtime: process.versions.node,
+                    ...(companions.length ? { companions: companionVersions } : {}) },
+                versions,
+                install: (directory) => this._npmInstallHost(directory, packages, null, { global: true }),
                 validate: async (directory) => {
-                    const executable = path.join(directory, 'bin', definition.executable);
-                    if (!(await isExecutable(executable))) throw new Error(`prepared ${name} executable is missing`);
-                    await this.execFileImpl(executable, ['--version'], { timeout: 30000, maxBuffer: 1024 * 1024, env: this.processEnv });
+                    const bin = path.join(directory, 'bin');
+                    for (const executable of agentExecutables(definition)) {
+                        if (!(await isExecutable(path.join(bin, executable)))) throw new Error(`prepared ${name} executable ${executable} is missing`);
+                    }
+                    // A companion runtime is found on PATH, as it is in a robot.
+                    const env = companions.length ? { ...this.processEnv, PATH: [bin, this.processEnv.PATH].filter(Boolean).join(path.delimiter) } : this.processEnv;
+                    await this.execFileImpl(path.join(bin, definition.executable), ['--version'], { timeout: 30000, maxBuffer: 1024 * 1024, env });
                 },
-                result: (directory) => ({ path: directory, binPath: path.join(directory, 'bin'), versions: { [name]: version } }),
+                result: (directory) => ({ path: directory, binPath: path.join(directory, 'bin'), versions }),
             };
         });
     }
@@ -528,7 +559,7 @@ export class ToolCache {
                 throw new Error(`cached generation is not the pinned ${name} version ${pin}`);
             }
             const required = codingAgent
-                ? [path.join(directory, 'bin', codingAgent.executable)]
+                ? agentExecutables(codingAgent).map(executable => path.join(directory, 'bin', executable))
                 : RUNTIME_BUNDLE_FILES[name]
                     ? RUNTIME_BUNDLE_FILES[name].filter(file => file.startsWith('bin/')).map(file => path.join(directory, file))
                     : name === 'browser'

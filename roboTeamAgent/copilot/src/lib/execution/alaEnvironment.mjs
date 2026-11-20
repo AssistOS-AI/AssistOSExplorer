@@ -10,7 +10,7 @@ export function nativeEnvironment(env, home) {
     }
     return { ...result, HOME: home, CODEX_HOME: path.join(home, '.codex'),
         XDG_CONFIG_HOME: path.join(home, '.config'), XDG_DATA_HOME: path.join(home, '.local/share'),
-        XDG_CACHE_HOME: path.join(home, '.cache'), PI_CODING_AGENT_DIR: path.join(home, '.pi/agent'),
+        XDG_CACHE_HOME: path.join(home, '.cache'), PI_CODING_AGENT_DIR: path.join(home, '.pi/agent'), OMP_DIR: path.join(home, '.omp'),
         CLAUDE_CONFIG_DIR: path.join(home, '.claude') };
 }
 

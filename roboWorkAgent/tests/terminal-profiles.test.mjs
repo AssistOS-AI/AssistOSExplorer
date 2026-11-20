@@ -7,8 +7,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { resolveAlaInstallation } from '../server/ala-installation.mjs';
 import { RobotPaths } from '../server/robot-paths.mjs';
+import { CODING_AGENT_NAMES } from '../server/coding-agents.mjs';
 import { createTerminalProfiles, ensureTerminalStub, parseTerminalProfile, terminalProfileAccess } from '../server/terminal-profiles.mjs';
-import { buildShellSandbox, buildTerminalLaunch, readTerminalDescriptor } from '../scripts/robot-shell.mjs';
+import { buildShellSandbox, buildTerminalLaunch, readTerminalDescriptor, shellArguments } from '../scripts/robot-shell.mjs';
 import { prepareRobotShell } from '../server/robot-shell.mjs';
 
 async function prepareReady(api, profile) {
@@ -42,10 +43,16 @@ async function fixture(t) {
     } };
     const runtimeBundle = { prepare: async () => { calls.runtime++; return { ala: { entry: '/opt/ala/bin/ala.mjs' }, bwrap: { bin: '/opt/bwrap' } }; },
         prepareAla: async () => { calls.ala++; return { entry: '/opt/ala/bin/ala.mjs' }; } };
-    const api = createTerminalProfiles({ paths, toolCache, runtimeBundle, environment,
-        robots: { require: async id => { if (id !== robot.id) throw new Error('Unknown robot'); return robot; } },
-        homeOperation: async (...args) => calls.home.push(args) });
-    return { root, paths, stub, calls, api, environment, runtimeBundle };
+    const homeSessions = [];
+    const sessionCatalogs = {
+        presetsSessionId: async (alaRoot, agent) => { calls.catalog = alaRoot; return agent === 'claude'; },
+        argumentsFor: async (_alaRoot, agent, { resume, sessionId }) => resume ? [`resume-${agent}`, resume] : ['--session-id', sessionId],
+    };
+    const api = createTerminalProfiles({ paths, toolCache, runtimeBundle, environment, sessionCatalogs,
+        robots: { require: async id => { if (id !== robot.id) throw new Error('Unknown robot'); return robot; },
+            status: async ({ robotIds }) => ({ robots: robotIds.map(id => ({ id, activeAgent: robot.activeAgent })) }) },
+        homeOperation: async (...args) => args[1] === 'coding_sessions' ? (calls.home.push(args), { sessions: homeSessions }) : calls.home.push(args) });
+    return { root, paths, stub, calls, api, environment, runtimeBundle, robot, homeSessions };
 }
 
 test('catalog and resolve are readonly, even before first preparation; compound environment identity is required', async t => {
@@ -500,4 +507,115 @@ test('selected Environment terminal overrides the image storage config before Po
     const launch = await buildTerminalLaunch({ id: 'robot-a', environment: 'repo/agent', cacheRoot: f.paths.dataDir,
         alaEntry: '/opt/ala/bin/ala.mjs', bwrap: '/usr/bin/bwrap' }, f.paths, { environment });
     assert.equal(launch.command, 'podman');
+});
+
+test('a coding agent profile names an agent of the robot, optionally a conversation, and keeps the shell profile unchanged', async t => {
+    const f = await fixture(t);
+    assert.deepEqual(parseTerminalProfile('robot-a.default.codex'), { id: 'robot-a', key: 'default', codingAgent: 'codex', resume: null, sessionId: null });
+    assert.deepEqual(parseTerminalProfile(PROFILE), { id: 'robot-a', key: 'default', codingAgent: null, resume: null, sessionId: null });
+    assert.deepEqual(parseTerminalProfile('robot-a.default.opencode.r-ses_1'), { id: 'robot-a', key: 'default', codingAgent: 'opencode', resume: 'ses_1', sessionId: null });
+    assert.deepEqual(parseTerminalProfile('robot-a.default.claude.n-abc-1'), { id: 'robot-a', key: 'default', codingAgent: 'claude', resume: null, sessionId: 'abc-1' });
+    for (const value of ['robot-a.default.bash', 'robot-a.default.codex.extra', 'robot-a.default.', 'robot-a.default.codex.r-',
+        'robot-a.default.codex.x-1', 'robot-a.default.codex.r-1.more', 'robot-a.default.codex.r-a/b']) {
+        assert.throws(() => parseTerminalProfile(value), { code: 'INVALID_INPUT' });
+    }
+    assert.equal((await f.api.resolve('robot-a.default.opencode')).allowed, true);
+    assert.equal((await f.api.resolve('robot-a.default.opencode.r-ses_1')).allowed, true);
+    // Every supported coding agent opens, even one the robot's own runs do not use.
+    assert.equal((await f.api.resolve('robot-a.default.codex')).allowed, true);
+    assert.deepEqual(await f.api.resolveLive('robot-a.default.opencode'), { allowed: false });
+    assert.equal(f.calls.tools, 0);
+});
+
+test('a coding session launch prepares a new or resumed conversation of an enabled agent of the robot', async t => {
+    const f = await fixture(t);
+    await fs.mkdir(path.join(f.paths.workspaceRoot, 'project'));
+    f.robot.codingAgents = ['codex', 'claude'];
+    const state = name => path.join(f.paths.dataDir, 'server-state/terminal', `${name}.json`);
+    const fresh = await f.api.launch({ robot: 'robot a', codingAgent: 'codex', directory: 'project', resume: null });
+    assert.deepEqual(fresh, { ok: true, profile: 'robot-a.default.codex', robot: { id: 'robot-a', name: 'Robot A' }, codingAgent: 'codex', nativeSessionId: null });
+    const descriptor = JSON.parse(await fs.readFile(state('robot-a.default.codex'), 'utf8'));
+    assert.equal(descriptor.codingAgent, 'codex'); assert.deepEqual(descriptor.codingAgentArgs, []);
+    assert.equal(f.calls.catalog, '/opt/ala');
+    const resumed = await f.api.launch({ robot: 'robot-a', codingAgent: 'codex', directory: 'project', resume: 'thread-1' });
+    assert.equal(resumed.profile, 'robot-a.default.codex.r-thread-1'); assert.equal(resumed.nativeSessionId, 'thread-1');
+    assert.deepEqual(JSON.parse(await fs.readFile(state(resumed.profile), 'utf8')).codingAgentArgs, ['resume-codex', 'thread-1']);
+    // An agent that accepts an identifier chosen in advance gets one, so the caller knows its native session.
+    const preset = await f.api.launch({ robot: 'robot-a', codingAgent: 'claude', directory: 'project', resume: null });
+    assert.match(preset.nativeSessionId, /^[0-9a-f-]{36}$/u);
+    assert.equal(preset.profile, `robot-a.default.claude.n-${preset.nativeSessionId}`);
+    assert.deepEqual(JSON.parse(await fs.readFile(state(preset.profile), 'utf8')).codingAgentArgs, ['--session-id', preset.nativeSessionId]);
+    assert.equal((await f.api.launch({ robot: 'robot-a', codingAgent: 'opencode', directory: 'project', resume: null })).profile, 'robot-a.default.opencode');
+    await assert.rejects(f.api.launch({ robot: 'robot-a', codingAgent: 'vim', directory: 'project', resume: null }), { code: 'UNKNOWN_CODING_AGENT', statusCode: 404 });
+    await assert.rejects(f.api.launch({ robot: 'nobody', codingAgent: 'codex', directory: 'project', resume: null }), { code: 'UNKNOWN_ROBOT', statusCode: 404 });
+    // The folder is checked before anything is prepared: never the workspace root or its private state.
+    for (const directory of ['', '.data', 'missing']) {
+        await assert.rejects(f.api.launch({ robot: 'robot-a', codingAgent: 'codex', directory, resume: null }), { code: 'CWD_REFUSED', statusCode: 409 });
+    }
+    // Without a robot name the robot named default is used.
+    await assert.rejects(f.api.launch({ robot: null, codingAgent: 'codex', directory: 'project', resume: null }), error => error.code === 'UNKNOWN_ROBOT' && /default robot/u.test(error.message));
+    f.robot.name = 'default';
+    assert.equal((await f.api.launch({ robot: null, codingAgent: 'codex', directory: 'project', resume: null })).profile, 'robot-a.default.codex');
+    // Conversation descriptors older than a day are pruned on the next preparation; agent profiles stay.
+    const old = Date.now() / 1000 - 2 * 24 * 3600;
+    await fs.utimes(state(resumed.profile), old, old);
+    await fs.utimes(state('robot-a.default.codex'), old, old);
+    await f.api.launch({ robot: null, codingAgent: 'codex', directory: 'project', resume: null });
+    await assert.rejects(fs.access(state(resumed.profile)), { code: 'ENOENT' });
+    await fs.access(state('robot-a.default.codex'));
+});
+
+test('the coding session routes admit administrators with exact bodies and list robots, agents and history', async t => {
+    const f = await fixture(t);
+    const request = async (route, body, access = ADMIN) => {
+        const res = { writeHead(status) { this.status = status; }, end(text) { this.body = JSON.parse(text); } };
+        await f.api.handle({ method: 'POST' }, res, new URL(`/base-agent-additional-server/roboWorkAgent/3001/api/coding-sessions/${route}`, 'http://fixture'),
+            { ...access, body: Buffer.from(JSON.stringify(body)) });
+        return res;
+    };
+    assert.equal((await request('robots', {}, { ...ADMIN, canAdmin: false })).status, 403);
+    assert.deepEqual((await request('robots', {})).body, { ok: true, robots: [{ id: 'robot-a', name: 'Robot A', default: false }] });
+    f.robot.codingAgents = ['codex', 'opencode'];
+    f.robot.activeAgent = 'opencode';
+    assert.deepEqual((await request('agents', { robot: 'robot-a' })).body,
+        { ok: true, robot: { id: 'robot-a', name: 'Robot A' }, active: 'opencode', codingAgents: [...CODING_AGENT_NAMES] });
+    await fs.mkdir(path.join(f.paths.workspaceRoot, 'project'));
+    f.homeSessions.push({ id: 'ses_1', title: 'Chat', createdAt: 1, updatedAt: 2 });
+    const history = await request('history', { robot: 'robot-a', codingAgent: 'opencode', directory: 'project' });
+    assert.deepEqual(history.body, { ok: true, robot: { id: 'robot-a', name: 'Robot A' }, codingAgent: 'opencode', sessions: f.homeSessions });
+    // The robot home is read only by the confined home helper, for exactly that robot and folder.
+    assert.deepEqual(f.calls.home.at(-1), ['robot-a', 'coding_sessions', { codingAgent: 'opencode', cwd: path.join(f.paths.workspaceRoot, 'project') }]);
+    assert.equal((await request('history', { robot: 'robot-a', codingAgent: 'claude', directory: 'project' })).status, 200);
+    assert.equal((await request('history', { robot: 'robot-a', codingAgent: 'vim', directory: 'project' })).status, 404);
+    const launched = await request('launch', { robot: 'robot-a', codingAgent: 'opencode', directory: 'project', resume: 'ses_1' });
+    assert.equal(launched.status, 200); assert.equal(launched.body.profile, 'robot-a.default.opencode.r-ses_1');
+    for (const [route, body] of [['robots', { extra: 1 }], ['agents', {}], ['agents', { robot: 7 }],
+        ['history', { robot: null, codingAgent: 'Codex!', directory: 'project' }], ['history', { robot: null, codingAgent: 'codex', directory: '../x' }],
+        ['launch', { robot: null, codingAgent: 'codex', directory: 'project' }], ['launch', { robot: null, codingAgent: 'codex', directory: 'project', resume: '../x' }],
+        ['launch', { robot: null, codingAgent: 'codex', directory: '/abs', resume: null }]]) {
+        assert.equal((await request(route, body)).status, 400, `${route} ${JSON.stringify(body)}`);
+    }
+    assert.equal((await request('unknown', {})).status, 404);
+});
+
+test('a coding agent sandbox runs the agent through a login shell instead of an interactive shell', async t => {
+    const f = await fixture(t);
+    await f.api.prepare('robot-a.default.opencode');
+    const { descriptor } = await readTerminalDescriptor(f.paths, 'robot-a.default.opencode', f.stub, f.stub);
+    const previous = process.env.ALA_SANDBOX_HOME;
+    t.after(() => { if (previous === undefined) delete process.env.ALA_SANDBOX_HOME; else process.env.ALA_SANDBOX_HOME = previous; });
+    let options;
+    await buildShellSandbox(descriptor, { loadSandbox: async () => ({ canMountPrivateProc: () => true,
+        buildSandboxArgs: input => { options = input; return ['--', input.binary, ...input.args]; } }) });
+    const binary = path.join(descriptor.binPath, 'opencode');
+    assert.deepEqual(options.args.slice(-2), ['exec "$0" "$@"', binary]);
+    assert.equal(options.args[1], '-c');
+    assert.deepEqual(shellArguments('/bin/sh', descriptor), ['-l', '-c', 'exec "$0" "$@"', binary]);
+    assert.deepEqual(shellArguments('/bin/sh', { ...descriptor, codingAgentArgs: ['--resume', 'abc-1'] }),
+        ['-l', '-c', 'exec "$0" "$@"', binary, '--resume', 'abc-1']);
+    for (const codingAgentArgs of [['$(id)'], ['a b'], 'resume', Array(9).fill('x')]) {
+        assert.throws(() => shellArguments('/bin/sh', { ...descriptor, codingAgentArgs }), { code: 'PROFILE_REFUSED' });
+    }
+    assert.deepEqual(shellArguments('/bin/bash', { ...descriptor, codingAgent: undefined }), ['--login', '-i']);
+    assert.throws(() => shellArguments('/bin/bash', { ...descriptor, codingAgent: 'rm' }), { code: 'PROFILE_REFUSED' });
 });

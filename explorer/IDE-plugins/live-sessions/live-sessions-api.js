@@ -18,6 +18,7 @@ const ROW_KEYS = [
 // Shell-only optional keys. Agent rows keep the shared required set and reject all of these.
 const SHELL_OPTIONAL_KEYS = [
     'endedAt', 'exitReason', 'closePolicy', 'pendingStopUntil', 'ownerViewOpen', 'profileLabel',
+    'profileProvider', 'profileId', 'cwd',
     'closure', 'closureScope', 'recordCleanup',
 ];
 
@@ -68,6 +69,9 @@ export function parseLiveSessionsPayload(payload) {
             || (Object.hasOwn(row, 'ownerViewOpen') && typeof row.ownerViewOpen !== 'boolean')
             || (Object.hasOwn(row, 'profileLabel') && row.profileLabel !== null
                 && (!row.profileLabel || !displayText(row.profileLabel, 128)))
+            || ['profileProvider', 'profileId'].some(key => Object.hasOwn(row, key) && row[key] !== null
+                && (!row[key] || !displayText(row[key], 128)))
+            || (Object.hasOwn(row, 'cwd') && (typeof row.cwd !== 'string' || !displayText(row.cwd, 4096)))
             || (Object.hasOwn(row, 'closure') && (row.status !== 'exited' || !CLOSURES.includes(row.closure)))
             || (Object.hasOwn(row, 'closureScope') && (row.closure !== 'unconfirmed' || !CLOSURE_SCOPES.includes(row.closureScope)))
             || (Object.hasOwn(row, 'recordCleanup') && (row.status !== 'exited' || row.recordCleanup !== 'failed'))) {
@@ -270,7 +274,7 @@ export async function setLiveSessionClosePolicy(id, policy, options = {}) {
     return Object.freeze({ closePolicy: payload.closePolicy, pendingStopUntil: payload.pendingStopUntil });
 }
 
-// Awaited close intent for an owner view that Explorer itself is closing (Stop it in the close dialog). Resolves
+// Awaited close intent for an owner view, for a caller that needs the server's answer. Resolves
 // {pending: true, until} when the server armed its grace period, or {pending: false} (optionally with reason
 // 'superseded') when it only ended the view. Any other 2xx body is rejected; nothing is ever retried automatically.
 export async function submitLiveSessionCloseIntent(id, viewId, policy, options = {}) {

@@ -1,4 +1,4 @@
-const AGENTS = ['codex', 'opencode', 'pi', 'claude'];
+const AGENTS = ['codex', 'opencode', 'pi', 'omp', 'claude'];
 
 export class RobotModels {
     constructor({ robotStore, runtimeManager }) {

@@ -310,6 +310,7 @@
                 "codex",
                 "opencode",
                 "pi",
+                "omp",
                 "claude"
               ],
               "optional": true

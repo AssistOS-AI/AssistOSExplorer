@@ -6,8 +6,7 @@ import {
 } from '../../../../web-components/modals/terminal-target-modal/terminal-target-modal.js';
 import {
     aggregateLiveSessions, discoverLiveSessionSources, ENDED_STATUSES, killLiveSession,
-    mintLiveSessionAttach, navigateLiveSessionWindow, sendLiveSessionCloseIntent, setLiveSessionClosePolicy,
-    stopAgentSession, submitLiveSessionCloseIntent,
+    mintLiveSessionAttach, navigateLiveSessionWindow, sendLiveSessionCloseIntent, stopAgentSession,
 } from '../../live-sessions-api.js';
 import { hostWindow, postCueToHost, postViewToHost } from '../../live-sessions-bridge.js';
 import {
@@ -59,32 +58,6 @@ export function closePolicyStatusText(row, now = Date.now()) {
     return row.closePolicy === 'stop' && row.ownerViewOpen === false ? 'Set to stop on close, still running' : '';
 }
 
-// Why a close choice did not complete. A request that timed out or failed may still have reached Ploinky, so a Stop
-// that was sent is never reported as not applied, and nothing here claims that the terminal is still running.
-function closeChoiceFailure(choice, stage, error) {
-    if (error?.status === 401) return failureMessage(error);
-    if (choice === 'keep') return 'Keep running could not be confirmed, so this view stays open. Try again, or choose Cancel.';
-    if (stage === 'policy') return 'Stop it could not be confirmed, so this view stays open. Try again, or choose Keep running or Cancel.';
-    if (error?.status === 409) return 'This view is no longer current, so Stop it was not applied to it. Choose Keep running, or reattach and try again.';
-    return 'Stop it may have been accepted: if so, the terminal stops in about 30 seconds unless it is reopened or set to Keep running. This view stays open.';
-}
-
-// What the status says when the chosen view went away or changed. `sentPolicy` is the close policy Ploinky already
-// accepted for the session before that was noticed, or null when nothing was sent.
-export function closeDecisionLostText(sentPolicy, viewShown) {
-    if (sentPolicy === 'keep') {
-        return viewShown
-            ? 'The terminal view changed while your choice was applied. Its close choice was set to Keep running, so the terminal keeps running; close the view again to choose.'
-            : 'Its close choice was set to Keep running before the view closed, so the terminal keeps running.';
-    }
-    if (sentPolicy === 'stop') {
-        return viewShown
-            ? 'The terminal view changed while your choice was applied. Its close choice was set to Stop it, but no stop was armed for this view, so the terminal keeps running while a view is open. Close the view again to choose, or set Keep running.'
-            : 'Its close choice was set to Stop it, but the view closed before a stop was requested for it, so no stop was armed from here.';
-    }
-    return 'The terminal view changed before your choice was applied. Nothing was sent for it; close it again to choose.';
-}
-
 function sameOriginMessage(event, frame) {
     const win = globalThis.window;
     const origin = win?.location?.origin ?? globalThis.location?.origin;
@@ -109,13 +82,9 @@ export class LiveSessionsModal {
         // The terminal that was embedded when the Explorer tab last unloaded, re-attached once by the first read.
         this.restore = readEmbeddedTerminalKey();
         this.shellAvailable = true;
-        // The one pending Keep running / Stop it / Cancel decision; every close request shares it.
-        this.closeDecision = null;
         this.handleClick = this.handleClick.bind(this);
         this.handleViewMessage = this.handleViewMessage.bind(this);
         this.handlePageHide = this.handlePageHide.bind(this);
-        this.handleCloseDialogCancel = this.handleCloseDialogCancel.bind(this);
-        this.handleDecisionPageHide = this.handleDecisionPageHide.bind(this);
         invalidate();
     }
 
@@ -128,14 +97,6 @@ export class LiveSessionsModal {
         this.viewerElement = this.element.querySelector('#liveSessionsViewer');
         this.viewerTitle = this.element.querySelector('#liveSessionsViewerTitle');
         this.frameElement = this.element.querySelector('#liveSessionsFrame');
-        this.closeDialog = this.element.querySelector('#liveSessionsCloseDialog');
-        this.closeText = this.element.querySelector('#liveSessionsCloseText');
-        this.closeStatus = this.element.querySelector('#liveSessionsCloseStatus');
-        this.closeKeep = this.element.querySelector('#liveSessionsCloseKeep');
-        this.closeStop = this.element.querySelector('#liveSessionsCloseStop');
-        this.closeCancel = this.element.querySelector('#liveSessionsCloseCancel');
-        this.closeDialog?.removeEventListener?.('cancel', this.handleCloseDialogCancel);
-        this.closeDialog?.addEventListener?.('cancel', this.handleCloseDialogCancel);
         this.listElement.removeEventListener('click', this.handleClick);
         this.listElement.addEventListener('click', this.handleClick);
         if (!this.started) {
@@ -154,7 +115,6 @@ export class LiveSessionsModal {
         }
         this.pendingPopups.clear();
         this.listElement?.removeEventListener('click', this.handleClick);
-        this.closeDialog?.removeEventListener?.('cancel', this.handleCloseDialogCancel);
         this.detachViewer();
         // Closing the panel is an explicit detach: a later Explorer start must not restore this view.
         clearEmbeddedTerminalKey();
@@ -272,9 +232,7 @@ export class LiveSessionsModal {
             item.appendChild(textElement('p', `${row.detail} · ${row.cwdDisplay}`, 'live-sessions-detail'));
             item.appendChild(textElement('p', `${row.status} · ${row.ownerLabel} · ${row.viewerCount} viewer${row.viewerCount === 1 ? '' : 's'} · ${row.status === 'exited' ? 'Input closed' : row.kind === 'shell' && row.isOwner ? 'You can type' : row.kind !== 'shell' && row.isOwner && row.capabilities.message ? 'You can message' : 'Watch only'} · ${row.access === 'ro' ? 'Read-only folder' : 'Read/write folder'}`));
             if (row.kind === 'shell') {
-                const policy = [row.profileLabel ? `Profile: ${row.profileLabel}` : '',
-                    row.closePolicy ? `Close choice: ${row.closePolicy === 'stop' ? 'Stop it' : 'Keep running'}` : ''].filter(Boolean);
-                if (policy.length) item.appendChild(textElement('p', policy.join(' · '), 'live-sessions-detail'));
+                if (row.profileLabel) item.appendChild(textElement('p', `Profile: ${row.profileLabel}`, 'live-sessions-detail'));
                 const policyStatus = closePolicyStatusText(row);
                 if (policyStatus) item.appendChild(textElement('p', policyStatus, 'live-sessions-notice'));
             }
@@ -289,8 +247,7 @@ export class LiveSessionsModal {
                 if (confirmation) item.appendChild(textElement('p', row.kind === 'shell' ? 'Kill this terminal and its running processes?'
                     : row.kind === 'workflow-phase' ? 'Pause the whole workflow? It can be resumed from Observability.' : 'Stop this run?'));
                 const rowActions = [['attach', row.kind === 'shell' ? 'Attach' : 'Watch']];
-                if (row.kind === 'shell' && row.isOwner && row.closePolicy === 'stop') rowActions.push(['keep-running', 'Keep running']);
-                if (row.kind === 'shell' || row.viewUrl) rowActions.push(['pop-out', 'Pop out']);
+                if (row.kind === 'shell' || row.viewUrl) rowActions.push(['pop-out', 'Open in new tab']);
                 if (row.transcriptUrl) rowActions.push(['transcript', 'Transcript']);
                 if (row.capabilities.stop && !ENDED_STATUSES.includes(row.status)) rowActions.push(['kill', row.kind === 'shell' ? 'Kill' : row.kind === 'workflow-phase' ? 'Pause workflow' : 'Stop']);
                 for (const [action, label] of confirmation
@@ -324,7 +281,7 @@ export class LiveSessionsModal {
 
     // `supersedes` is the view an Explorer restore recovers; only a plain attach can carry it.
     async performAction(id, action, { supersedes } = {}) {
-        if (this.closed || this.pendingId || this.closeDecision || !this.canUseSessions()) return;
+        if (this.closed || this.pendingId || !this.canUseSessions()) return;
         const row = this.rows.get(id);
         if (!row || row.status === 'exited') return;
         if (row.kind === 'shell' && !isAdminUser(globalThis.assistOS?.user)) return;
@@ -335,8 +292,7 @@ export class LiveSessionsModal {
             this.listElement.querySelector(`[data-session-id="${id}"][data-session-action="${action === 'kill' ? 'confirm-kill' : 'kill'}"]`)?.focus();
             return;
         }
-        if (!['attach', 'pop-out', 'transcript', 'confirm-kill', 'keep-running'].includes(action) || (action === 'confirm-kill' && this.confirmId !== id)) return;
-        if (action === 'keep-running' && (row.kind !== 'shell' || !row.isOwner || row.closePolicy !== 'stop')) return;
+        if (!['attach', 'pop-out', 'transcript', 'confirm-kill'].includes(action) || (action === 'confirm-kill' && this.confirmId !== id)) return;
         if (action === 'confirm-kill' && (!row.capabilities.stop || ENDED_STATUSES.includes(row.status))) return;
         if (action === 'pop-out' && row.kind !== 'shell' && !row.viewUrl) return;
         if (action === 'transcript' && !row.transcriptUrl) return;
@@ -350,11 +306,7 @@ export class LiveSessionsModal {
         this.pendingId = id;
         this.renderRows();
         try {
-            if (action === 'keep-running') {
-                const result = await this.withRequest((options) => setLiveSessionClosePolicy(row.id, 'keep', options));
-                if (this.closed) return;
-                if (this.embedded?.sessionId === row.id) this.embedded.policy = result.closePolicy;
-            } else if (action === 'confirm-kill') {
+            if (action === 'confirm-kill') {
                 await this.withRequest((options) => row.kind === 'shell' ? killLiveSession(row.id, options) : stopAgentSession(row.sessionSource, row, options));
                 if (this.closed) return;
                 this.confirmId = '';
@@ -365,7 +317,7 @@ export class LiveSessionsModal {
                     if (!navigateLiveSessionWindow(popup, action === 'transcript' ? row.transcriptUrl : row.viewUrl, row.sessionSource.agent)) throw new Error('The tab could not be opened.');
                     this.pendingPopups.delete(popup);
                 } else {
-                    // Watching replaces the embedded view, so an owned terminal there gets its close choice first.
+                    // Watching replaces the embedded view; the terminal it showed keeps running.
                     if (!await this.prepareViewClose('switch') || this.closed) return;
                     this.detachViewer();
                     const mountSequence = this.attachSequence;
@@ -382,7 +334,7 @@ export class LiveSessionsModal {
                     this.streamPresenter.updateSession(row, row.sessionSource);
                 }
             } else {
-                // Attaching replaces the embedded view (pop-out does not): the close choice completes before any mint.
+                // Attaching replaces the embedded view (opening a new tab does not); the terminal it showed keeps running.
                 if (action === 'attach' && (!await this.prepareViewClose('switch') || this.closed || !this.canUseSessions())) return;
                 const sequence = ++this.attachSequence;
                 const claim = action === 'attach' && supersedes ? { supersedes } : {};
@@ -413,7 +365,7 @@ export class LiveSessionsModal {
             this.pendingId = '';
             if (!this.closed) this.renderRows();
         }
-        if (!this.closed && ['confirm-kill', 'keep-running'].includes(action)) void this.refresh();
+        if (!this.closed && action === 'confirm-kill') void this.refresh();
     }
 
     // Re-attaches the terminal that was embedded when Explorer last unloaded, through the ordinary attach-token flow.
@@ -431,7 +383,7 @@ export class LiveSessionsModal {
         if (!this.closed && this.viewerId !== id) clearEmbeddedTerminalKey();
     }
 
-    // The Detach view button. Detaching an owned running terminal asks first; detachViewer() itself stays unconditional.
+    // The Detach view button. The terminal keeps running; only Kill stops it.
     async requestDetachViewer() {
         if (this.closed || !this.viewerId) return;
         if (!await this.prepareViewClose('detach') || this.closed) return;
@@ -448,164 +400,17 @@ export class LiveSessionsModal {
     }
 
     // Asked before an Explorer-managed close disposes or replaces the current view: Detach view, switching session,
-    // closing or replacing the panel, and reloading it. Resolves true when that may proceed, false to keep the identical
-    // frame, stream, selection and stored key. A reload asks nothing and changes nothing, because the page re-attaches
-    // from the stored key; any open choice is withdrawn without a request. Every other reason asks only for an owned
-    // running shell view, and all concurrent requests share the one pending choice.
+    // closing or replacing the panel, and reloading it. A terminal always keeps running when its view closes; only
+    // Kill stops it. An owned view is ended with a keep signal, so Ploinky does not hold it for a reconnect. A reload
+    // signals nothing, because the page re-attaches from the stored key.
     prepareViewClose(reason) {
         if (!CLOSE_REASONS.includes(reason)) return Promise.resolve(false);
-        if (reason === 'reload') {
-            if (this.closeDecision) this.settleCloseDecision(this.closeDecision, false);
-            return Promise.resolve(true);
+        const target = reason === 'reload' || this.closed ? null : this.ownedShellView();
+        if (target?.embedded.viewId && target.embedded.keepSentFor !== target.embedded.viewId) {
+            target.embedded.keepSentFor = target.embedded.viewId;
+            sendLiveSessionCloseIntent(target.row.id, target.embedded.viewId, 'keep');
         }
-        if (this.closed) return Promise.resolve(true);
-        if (this.closeDecision) return this.closeDecision.promise;
-        const target = this.ownedShellView();
-        if (!target) return Promise.resolve(true);
-        const decision = {
-            reason,
-            sessionId: target.row.id,
-            title: target.row.title,
-            frame: target.embedded.frame,
-            // Empty while the view is still connecting: Stop it then waits for the view's announcement.
-            viewId: target.embedded.viewId,
-            sequence: this.attachSequence,
-            busy: false,
-            settled: false,
-        };
-        decision.promise = new Promise((resolve) => { decision.resolve = resolve; });
-        this.closeDecision = decision;
-        const dialog = this.closeDialog;
-        if (typeof dialog?.showModal !== 'function') {
-            // Without the dialog nothing can be chosen, so nothing closes.
-            if (this.statusElement) this.statusElement.textContent = 'The close choice could not be shown. Reload Live Sessions and try again.';
-            this.settleCloseDecision(decision, false);
-            return decision.promise;
-        }
-        this.renderCloseDialog(decision, '');
-        globalThis.window?.addEventListener?.('pagehide', this.handleDecisionPageHide);
-        try {
-            dialog.showModal();
-        } catch (_) {
-            if (this.statusElement) this.statusElement.textContent = 'The close choice could not be shown. Reload Live Sessions and try again.';
-            this.settleCloseDecision(decision, false);
-        }
-        return decision.promise;
-    }
-
-    // `status` null keeps the current status line.
-    renderCloseDialog(decision, status) {
-        if (this.closeText) {
-            this.closeText.textContent = `"${decision.title}" keeps running unless you choose Stop it. Stop it ends it about 30 seconds after this view closes, unless it is reopened, set to Keep running or open elsewhere by then.`;
-        }
-        if (status !== null && this.closeStatus) {
-            const text = status || (decision.viewId ? '' : 'This view is still connecting. Stop it becomes available once it connects; Keep running and Cancel work now.');
-            this.closeStatus.textContent = text;
-            this.closeStatus.hidden = !text;
-        }
-        if (this.closeKeep) this.closeKeep.disabled = decision.busy;
-        if (this.closeStop) this.closeStop.disabled = decision.busy || !decision.viewId;
-        if (this.closeCancel) this.closeCancel.disabled = decision.busy;
-    }
-
-    // Whether the view the choice was opened for is still the selected owned view. Late work never acts on another one.
-    closeDecisionCurrent(decision) {
-        const target = this.ownedShellView();
-        return Boolean(target) && !this.closed && target.embedded.frame === decision.frame
-            && target.row.id === decision.sessionId && this.attachSequence === decision.sequence
-            && (!decision.viewId || target.embedded.viewId === decision.viewId);
-    }
-
-    // The chosen view went away or changed during the choice, and nothing more is sent for it. With no view left there is
-    // nothing to protect, so the close may proceed; a different view stays, and the person decides again. The status
-    // names a policy request that was already accepted for the session.
-    closeDecisionLost(decision, sentPolicy = null) {
-        const viewShown = Boolean(this.embedded);
-        if (this.statusElement && (viewShown || sentPolicy)) this.statusElement.textContent = closeDecisionLostText(sentPolicy, viewShown);
-        this.settleCloseDecision(decision, !viewShown);
-    }
-
-    // The dialog buttons: Keep running, Stop it or Cancel.
-    async chooseViewClose(_target, choice) {
-        const decision = this.closeDecision;
-        if (!decision || decision.settled || decision.busy) return;
-        if (choice === 'cancel') {
-            this.settleCloseDecision(decision, false);
-            return;
-        }
-        if (!['keep', 'stop'].includes(choice) || (choice === 'stop' && !decision.viewId)) return;
-        if (!this.closeDecisionCurrent(decision)) {
-            this.closeDecisionLost(decision);
-            return;
-        }
-        decision.busy = true;
-        this.renderCloseDialog(decision, choice === 'stop' ? 'Stopping…' : 'Keeping it running…');
-        let stage = 'policy';
-        try {
-            // Keep running cancels any stop already pending for this shell. Stop it first sets the policy, which by
-            // itself arms nothing while this view is open, and then signals this exact view.
-            await this.withRequest((options) => setLiveSessionClosePolicy(decision.sessionId, choice, options));
-            if (decision.settled) return;
-            if (!this.closeDecisionCurrent(decision)) {
-                this.closeDecisionLost(decision, choice);
-                return;
-            }
-            if (choice === 'keep') {
-                if (this.statusElement) this.statusElement.textContent = 'The terminal keeps running. Reopen it from Live Sessions.';
-                this.settleCloseDecision(decision, true);
-                return;
-            }
-            stage = 'intent';
-            const result = await this.withRequest((options) => submitLiveSessionCloseIntent(decision.sessionId, decision.viewId, 'stop', options));
-            if (decision.settled) return;
-            // Accepted: Ploinky ended this view, so its frame may be disposed. A late answer never disposes another view.
-            // Another view is shown when anything identifying the chosen view changed: a new frame, attachment, session
-            // or a newer announcement in the same frame.
-            const shown = this.embedded;
-            const otherView = Boolean(shown) && (shown.frame !== decision.frame || shown.sessionId !== decision.sessionId
-                || shown.viewId !== decision.viewId || this.attachSequence !== decision.sequence);
-            const seconds = result.pending ? Math.max(0, Math.ceil((result.until - Date.now()) / 1000)) : 0;
-            let outcome;
-            if (result.pending) {
-                outcome = otherView
-                    ? `Stop it was accepted for the earlier view. Another view is shown now and stays open; the terminal stops in about ${seconds} s only if no owner view is open then and it is not reopened or set to Keep running.`
-                    : `The terminal stops in about ${seconds} s unless it is reopened, set to Keep running or open elsewhere.`;
-            } else {
-                outcome = result.reason === 'superseded'
-                    ? 'This view had already been replaced, so no stop was armed. The terminal is still running.'
-                    : 'Its close choice changed to Keep running meanwhile, so no stop was armed. The terminal is still running.';
-                if (otherView) outcome += ' Another view is shown now, so it stays open.';
-            }
-            if (this.statusElement) this.statusElement.textContent = outcome;
-            this.settleCloseDecision(decision, !otherView);
-        } catch (error) {
-            if (decision.settled) return;
-            decision.busy = false;
-            this.renderCloseDialog(decision, closeChoiceFailure(choice, stage, error));
-        }
-    }
-
-    settleCloseDecision(decision, approved) {
-        if (decision.settled) return;
-        decision.settled = true;
-        if (this.closeDecision === decision) this.closeDecision = null;
-        globalThis.window?.removeEventListener?.('pagehide', this.handleDecisionPageHide);
-        try {
-            if (this.closeDialog?.open) this.closeDialog.close();
-        } catch (_) {}
-        decision.resolve(approved === true);
-    }
-
-    // Escape in the close dialog is Cancel, except while a choice is being applied.
-    handleCloseDialogCancel(event) {
-        event?.preventDefault?.();
-        const decision = this.closeDecision;
-        if (decision && !decision.busy) this.settleCloseDecision(decision, false);
-    }
-
-    // Native navigation removes this document: an open choice is withdrawn without any request.
-    handleDecisionPageHide() {
-        if (this.closeDecision) this.settleCloseDecision(this.closeDecision, false);
+        return Promise.resolve(true);
     }
 
     beginEmbedded(frame, row) {
@@ -628,12 +433,6 @@ export class LiveSessionsModal {
             || !['keep', 'stop'].includes(data.policy)) return;
         embedded.viewId = data.viewId;
         embedded.policy = data.policy;
-        // A close choice opened while this view was still connecting can offer Stop it once the view is known.
-        const decision = this.closeDecision;
-        if (decision && !decision.settled && decision.frame === embedded.frame && !decision.viewId) {
-            decision.viewId = data.viewId;
-            this.renderCloseDialog(decision, decision.busy ? null : '');
-        }
         if (!embedded.registered) {
             embedded.registered = true;
             // Inside the Explorer panel this page cannot tell the panel being closed from the Explorer tab closing,
@@ -666,10 +465,8 @@ export class LiveSessionsModal {
         }
     }
 
-    // The unconditional disposal: an approved close, an exited or vanished shell, an authorization refusal, Kill and
-    // unload. A close choice still open for the view is settled as approved, without any request of its own.
+    // The unconditional disposal: a close, an exited or vanished shell, an authorization refusal, Kill and unload.
     detachViewer() {
-        if (this.closeDecision) this.settleCloseDecision(this.closeDecision, true);
         this.attachSequence += 1;
         this.clearEmbedded();
         this.viewerId = '';

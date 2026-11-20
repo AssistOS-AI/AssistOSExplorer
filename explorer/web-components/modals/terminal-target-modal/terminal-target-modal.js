@@ -4,7 +4,7 @@ import { retryOnStaleBrowserProof } from '../../../services/infrastructure/brows
 const DISCOVERY_PATH = '/webtty/target-discoveries';
 const PROFILE_SOURCE_LOCATION = 'terminal-profiles:source';
 const PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const UNAVAILABLE_REASONS = Object.freeze(['home-unreachable', 'home-read-only']);
+const UNAVAILABLE_REASONS = Object.freeze(['home-unreachable', 'home-read-only', 'quarantined']);
 const MAX_PROFILES = 256;
 const PROFILE_TIMEOUT_MS = 5000;
 const PREPARE_TIMEOUT_MS = 30000;
@@ -628,6 +628,9 @@ export class TerminalTargetModal {
         }
         if (target.unavailable === 'home-read-only') {
             return { disabled: true, reason: `This container can only read ${robot.label}'s home folder` };
+        }
+        if (target.unavailable === 'quarantined') {
+            return { disabled: true, reason: 'This container is quarantined after an unproven terminal cleanup; restart the workspace' };
         }
         return { disabled: false, reason: '' };
     }

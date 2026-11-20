@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { assertPrivateDirectory, fail, robotId, runId, homeTarget, within } from './robot-paths.mjs';
 import { RunChannels, validateChannels } from './run-channels.mjs';
 import { buildPrivateLaunch } from './launch.mjs';
-import { codingAgentEnvironment } from './coding-agents.mjs';
+import { CODING_AGENT_NAMES, codingAgentEnvironment } from './coding-agents.mjs';
 import { MOUNT_REFUSED_EXIT } from './environment.mjs';
 import { alaWorkspaceOptions, isHiddenWorkspaceEntry } from './workspace-view.mjs';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
@@ -110,7 +110,7 @@ export class RunManager {
         if (!ala || typeof ala !== 'object' || typeof ala.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(ala.sessionId)
             || (ala.turnId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/u.test(ala.turnId))
             || (ala.permissions !== undefined && !['full-access', 'ask-for-approval'].includes(ala.permissions))
-            || (ala.ca !== undefined && !['auto', 'codex', 'opencode', 'pi', 'claude'].includes(ala.ca))) throw fail('INVALID_INPUT', 'Invalid ALA options');
+            || (ala.ca !== undefined && !['auto', ...CODING_AGENT_NAMES].includes(ala.ca))) throw fail('INVALID_INPUT', 'Invalid ALA options');
         for (const key of ['resume', 'workflowExecution']) if (ala[key] !== undefined && typeof ala[key] !== 'boolean') throw fail('INVALID_INPUT', 'Invalid ALA option');
         for (const key of ['model', 'effort']) if (ala[key] !== undefined && (typeof ala[key] !== 'string' || !ala[key] || ala[key].length > 512 || /[\x00-\x1f]/u.test(ala[key]))) throw fail('INVALID_INPUT', 'Invalid ALA option');
         const cwd = await this.paths.grant(input.cwd, 'cwd');

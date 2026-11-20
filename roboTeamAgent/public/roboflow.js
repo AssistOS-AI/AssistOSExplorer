@@ -10,7 +10,7 @@ initPageNavigation({ fallbackUrl: new URL('?tab=workflow-types', document.baseUR
 initExecutionStateLegend(document.querySelector('.phase-state-legend'));
 
 const element = (tag, text) => { const node = document.createElement(tag); node.textContent = text; return node; };
-const CODING_AGENT_LABELS = { codex: 'Codex', opencode: 'OpenCode', pi: 'Pi', claude: 'Claude Code' };
+const CODING_AGENT_LABELS = { codex: 'Codex', opencode: 'OpenCode', pi: 'Pi', omp: 'OMP', claude: 'Claude Code' };
 
 // The robot, coding agent and model of a phase, as far as they are known yet.
 function renderStageTitle(instance) {

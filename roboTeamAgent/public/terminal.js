@@ -9,6 +9,7 @@ const PROFILE_BASE = '/base-agent-additional-server/roboWorkAgent/3001/api/termi
 const UNAVAILABLE_REASONS = Object.freeze({
     'home-unreachable': 'This RoboWork terminal cannot see the robot\'s home folder.',
     'home-read-only': 'This RoboWork terminal can only read the robot\'s home folder.',
+    'quarantined': 'This RoboWork terminal is quarantined after an unproven terminal cleanup. Restart the workspace to recover it.',
 });
 
 // The robot is chosen by the card that was clicked. The router resolves its

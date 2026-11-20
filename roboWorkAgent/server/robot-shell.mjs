@@ -4,10 +4,11 @@ import { installSoulGatewayPlugin } from './soul-gateway-service.mjs';
 import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
 import { ensureAgentConfig } from './agent-model-config.mjs';
 import { CODING_AGENT_NAMES } from './coding-agents.mjs';
+import { TOOL_CACHE_DIR } from './constants.mjs';
 
 // The robot shell offers every coding agent; the robot's selection only
 // configures which agents ALA runs.
-function shellEnvironment({ binPath, cacheRoot = '/root/tool-cache' } = {}) {
+function shellEnvironment({ binPath, cacheRoot = TOOL_CACHE_DIR } = {}) {
     const directory = binPath || `${cacheRoot}/shell-selections/shell/bin`;
     const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
     return `# Desktop shells use the same home as every other robot execution.
@@ -28,9 +29,11 @@ export XDG_CACHE_HOME="$HOME/.cache"
 export XDG_DATA_HOME="$HOME/.local/share"
 export XDG_STATE_HOME="$HOME/.local/state"
 export PI_CODING_AGENT_DIR="$HOME/.pi/agent"
+# OMP (Oh My Pi) keeps its login database and sessions here; ALA reads the same directory.
+export OMP_DIR="$HOME/.omp"
 # Claude Code keeps its login and sessions here; ALA reads the same directory.
 export CLAUDE_CONFIG_DIR="$HOME/.claude"
-unset CODEX_BIN OPENCODE_BIN PI_BIN CLAUDE_BIN
+unset CODEX_BIN OPENCODE_BIN PI_BIN OMP_BIN CLAUDE_BIN
 roboteam_saved_ifs=$IFS
 IFS=:
 roboteam_clean_path=
@@ -51,7 +54,7 @@ const SOURCE = '\n# RoboTeam shared coding-agent environment\n. "$HOME/.roboteam
 export async function prepareRobotShell(home, options) {
     const stat = await fs.lstat(home);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe robot home');
-    for (const directory of ['.codex', '.config/opencode/plugins', '.cache', '.local/share', '.local/state', '.pi/agent', '.claude']) {
+    for (const directory of ['.codex', '.config/opencode/plugins', '.cache', '.local/share', '.local/state', '.pi/agent', '.omp', '.claude']) {
         let current = home;
         for (const segment of directory.split('/')) {
             current = path.join(current, segment);

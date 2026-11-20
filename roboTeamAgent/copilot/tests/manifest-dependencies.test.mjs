@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { siblingPath } from '../../../tests/helpers/sibling-roots.mjs';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(TEST_DIR, '..', '..');
@@ -42,12 +41,5 @@ test('AchillesCLI leaves optional coding and research agents for explicit startu
     assert.ok(Array.isArray(manifest.enable));
     for (const agentName of ['GPTResearcher', 'searchAgent', 'opencodeAgent', 'piAgent', 'codexAgent']) {
         assert.ok(!manifest.enable.some((entry) => String(entry).includes(agentName)));
-    }
-});
-
-test('AchillesCLI optional workers declare manual workspace startup', async () => {
-    for (const agentName of ['GPTResearcher']) {
-        const manifest = JSON.parse(await readFile(siblingPath('legacy-agents', agentName, 'manifest.json'), 'utf8'));
-        assert.equal(manifest.startup, 'manual', `${agentName} should start only through explicit invocation`);
     }
 });

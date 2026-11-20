@@ -42,7 +42,7 @@ async function savedCodingAgent(home, agentConfigPath, names) {
     try { config = JSON.parse(await fs.readFile(file, 'utf8')); }
     catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
     // The same rules as ALA's own loadConfig.
-    const agents = [...names, 'omp'];
+    const agents = names;
     const models = config?.models ?? {};
     const efforts = config?.efforts ?? {};
     const valid = isRecord(config) && Object.keys(config).every(key => ['codingAgent', 'models', 'efforts'].includes(key))
@@ -100,6 +100,10 @@ export async function homeOperation(operation, input, home = process.env.HOME) {
     if (operation === 'delete') {
         for (const entry of await fs.readdir(home)) await fs.rm(path.join(home, entry), { recursive: true, force: true });
         return { ok: true };
+    }
+    if (operation === 'coding_sessions') {
+        const { listCodingSessions } = await import('./coding-sessions.mjs');
+        return listCodingSessions(home, input, { alaRoot: path.dirname(path.dirname(process.env.ROBOWORK_ALA_ENTRY)) });
     }
     if (operation === 'git_config_set') {
         const { setGitHomeConfig } = await import('./git-home-config.mjs');

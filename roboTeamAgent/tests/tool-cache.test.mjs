@@ -13,7 +13,7 @@ async function writeExecutable(filePath) {
 
 // Builds what a service leaves on disk: per-agent generations with current.json and
 // stamp.json, plus the shell selection whose bin symlinks point at those generations.
-async function writePreparedShell(cacheRoot, versions = { codex: '1.0.0', opencode: '1.0.0', pi: '1.0.0', claude: '1.0.0' }, tag = 'a') {
+async function writePreparedShell(cacheRoot, versions = { codex: '1.0.0', opencode: '1.0.0', pi: '1.0.0', omp: '1.0.0', claude: '1.0.0' }, tag = 'a') {
     const schema = toolCacheInternals.CACHE_SCHEMA;
     const generation = path.join(cacheRoot, 'shell-generations', `g-${tag}`);
     await fs.mkdir(path.join(generation, 'bin'), { recursive: true });
@@ -23,6 +23,11 @@ async function writePreparedShell(cacheRoot, versions = { codex: '1.0.0', openco
         const directory = path.join(cacheRoot, name, 'generations', id);
         const binary = path.join(directory, 'bin', definition.executable);
         await writeExecutable(binary);
+        for (const companion of definition.companions || []) {
+            const companionBinary = path.join(directory, 'bin', companion.executable);
+            await writeExecutable(companionBinary);
+            await fs.symlink(path.relative(path.join(generation, 'bin'), companionBinary), path.join(generation, 'bin', companion.executable));
+        }
         const stamp = { schema, name, generation: id, versions: { [name]: versions[name] } };
         await fs.writeFile(path.join(directory, 'stamp.json'), JSON.stringify(stamp));
         await fs.writeFile(path.join(cacheRoot, name, 'current.json'), JSON.stringify(stamp));
@@ -42,11 +47,14 @@ test('startup warms every tool and concurrent requests reuse the same installati
         execFileImpl: async (_command, args) => {
             if (args[0] === 'view') return { stdout: '"1.2.3"' };
             if (args[0] === 'install') {
-                installs.push(args.at(-1));
                 const prefix = args[args.indexOf('--prefix') + 1];
-                const definition = Object.values(toolCacheInternals.CODING_AGENT_PACKAGES)
-                    .find(value => args.at(-1) === `${value.packageName}@1.2.3`);
-                await writeExecutable(path.join(prefix, 'bin', definition.executable));
+                const packages = Object.values(toolCacheInternals.CODING_AGENT_PACKAGES)
+                    .flatMap(value => [value, ...(value.companions || [])]);
+                for (const specification of args.slice(args.indexOf('--prefix') + 2)) {
+                    installs.push(specification);
+                    const definition = packages.find(value => specification === `${value.packageName}@1.2.3`);
+                    await writeExecutable(path.join(prefix, 'bin', definition.executable));
+                }
             } else if (args[0] === 'run' && args.includes('/usr/local/bin/npm')) {
                 installs.push(args.at(-1));
                 const prefix = args[args.indexOf('-v') + 1].slice(0, -':/install'.length);
@@ -71,13 +79,13 @@ test('startup warms every tool and concurrent requests reuse the same installati
     assert.equal(results[1].value, desktop);
     assert.equal(results[2].value, browser);
     assert.deepEqual(installs.sort(), [
-        '@anthropic-ai/claude-code@1.2.3', '@earendil-works/pi-coding-agent@1.2.3', '@openai/codex@1.2.3',
-        '@playwright/mcp@1.2.3', 'opencode-ai@1.2.3', 'supergateway@1.2.3',
+        '@anthropic-ai/claude-code@1.2.3', '@earendil-works/pi-coding-agent@1.2.3', '@oh-my-pi/pi-coding-agent@1.2.3',
+        '@openai/codex@1.2.3', '@playwright/mcp@1.2.3', 'bun@1.2.3', 'opencode-ai@1.2.3', 'supergateway@1.2.3',
     ]);
     await fs.access(path.join(desktop.path, 'computer-use-linux'));
-    for (const name of ['codex', 'opencode', 'pi', 'claude']) await fs.access(path.join(shell.binPath, name));
+    for (const name of ['codex', 'opencode', 'pi', 'omp', 'bun', 'claude']) await fs.access(path.join(shell.binPath, name));
     await cache.warmup();
-    assert.equal(installs.length, 6);
+    assert.equal(installs.length, 8);
 });
 
 test('startup failure leaves other families available and failed preparation can retry', async () => {
@@ -491,7 +499,7 @@ test('peekShellTools reuses a consistent prepared shell and rejects pin or selec
     assert.equal(await make().peekShellTools(), null, 'current.json ahead of a stale selection');
     assert.equal(await make({ pi: '2.0.0' }).peekShellTools(), null, 'pinned version not what the selection resolves to');
 
-    await writePreparedShell(root, { codex: '1.0.0', opencode: '1.0.0', pi: '2.0.0', claude: '1.0.0' }, 'c');
+    await writePreparedShell(root, { codex: '1.0.0', opencode: '1.0.0', pi: '2.0.0', omp: '1.0.0', claude: '1.0.0' }, 'c');
     assert.ok(await make({ pi: '2.0.0' }).peekShellTools(), 'relinked selection is consistent again');
     await fs.rm(path.join(root, 'codex', 'current.json'));
     assert.equal(await make().peekShellTools(), null, 'missing descriptor');
