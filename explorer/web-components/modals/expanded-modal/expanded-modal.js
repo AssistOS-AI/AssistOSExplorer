@@ -1,5 +1,6 @@
 import { ensureMarketplaceAgentRunning } from "../../../services/infrastructure/marketplaceAgentRuntime.js";
 import assistosSDK from "../../../services/assistosSDK.js";
+import { waitForComponentReady } from "../../../shared/ui/component-readiness.js";
 import { relayBreadcrumbFieldEvent, relayBreadcrumbSelectEvent, syncBreadcrumbSelects, hasFocusedBreadcrumbField } from "./breadcrumbFields.js";
 import {
     probeAgentRuntimeMcp,
@@ -14,6 +15,7 @@ const MAX_RETRIES = 90;
 const MIN_WIDTH = 720;
 const MIN_HEIGHT = 480;
 const DEFAULT_ALLOW = "camera; microphone; display-capture; autoplay; fullscreen; clipboard-write";
+const DEFAULT_LOADING_SELECTOR = '[data-app-loading="true"]';
 const AGENT_REF_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 // A same-origin page in the frame may define this to be asked before the panel closes or is replaced.
 const FRAME_CLOSE_GUARD = "__beforeExpandedModalClose";
@@ -213,6 +215,8 @@ export class ExpandedModal {
 
     cancelLoading() {
         this.loadController.abort();
+        this.stopFrameReadyWait?.();
+        this.stopFrameNavigationWatch?.();
         this.finishWait?.();
         this.stopHeaderObserver();
         if (this.frame) {
@@ -390,15 +394,64 @@ export class ExpandedModal {
     isFrameReady() {
         try {
             const doc = this.frame?.contentDocument;
-            if (!doc) return false;
+            if (!doc || doc.URL === "about:blank") return false;
             const expectedTitle = this.attr("ready-title");
-            if (expectedTitle) {
-                return String(doc.title || "").trim() === expectedTitle;
-            }
-            return Boolean(doc.body) && !/upstream_unavailable/.test(doc.body.textContent || "");
+            if (expectedTitle && String(doc.title || "").trim() !== expectedTitle) return false;
+            if (!doc.body || /upstream_unavailable/.test(doc.body.textContent || "")) return false;
+            const selector = this.attr("loading-selector") || DEFAULT_LOADING_SELECTOR;
+            return !doc.querySelector(selector);
         } catch {
             return false;
         }
+    }
+
+    waitForFrameReady(frame) {
+        const selector = this.attr("loading-selector") || DEFAULT_LOADING_SELECTOR;
+        const doc = frame.contentDocument;
+        if (!selector || !doc?.documentElement || !doc.querySelector(selector)) return false;
+        this.setState("Loading…");
+        const signal = this.loadController.signal;
+        const stop = () => {
+            observer.disconnect();
+            clearTimeout(timeout);
+            signal.removeEventListener('abort', stop);
+            if (this.stopFrameReadyWait === stop) this.stopFrameReadyWait = null;
+        };
+        const observer = new MutationObserver(() => {
+            if (signal.aborted || frame !== this.frame) { stop(); return; }
+            if (!this.isFrameReady()) return;
+            stop();
+            this.clearRetry();
+            this.syncFrameHeader();
+            this.setState("");
+        });
+        const timeout = setTimeout(() => {
+            stop();
+            if (!signal.aborted && frame === this.frame) this.setState("Not responding. Use Reload to try again.");
+        }, 30_000);
+        this.stopFrameReadyWait = stop;
+        signal.addEventListener('abort', stop, { once: true });
+        observer.observe(doc.documentElement, { attributes: true, childList: true, subtree: true });
+        return true;
+    }
+
+    observeFrameNavigation(frame) {
+        this.stopFrameNavigationWatch?.();
+        const controller = new AbortController();
+        this.stopFrameNavigationWatch = () => controller.abort();
+        const current = () => !this.closed && !this.loadController.signal.aborted && frame === this.frame;
+        try {
+            frame.contentWindow?.addEventListener("pagehide", () => {
+                if (!current()) return;
+                this.stopFrameReadyWait?.();
+                this.setState("Loading…");
+            }, { signal: controller.signal });
+            frame.contentWindow?.addEventListener("pageshow", (event) => {
+                if (!event.persisted || !current()) return;
+                if (this.isFrameReady()) this.setState("");
+                else this.waitForFrameReady(frame);
+            }, { signal: controller.signal });
+        } catch (_) { /* Cross-origin frames cannot expose their document lifecycle. */ }
     }
 
     loadFrame(query = "") {
@@ -498,18 +551,21 @@ export class ExpandedModal {
         frame.setAttribute("allow", this.attr("allow") || DEFAULT_ALLOW);
         frame.addEventListener("load", () => {
             if (this.loadController.signal.aborted || frame !== this.frame) return;
+            this.stopFrameReadyWait?.();
+            if (frame.contentDocument?.URL === "about:blank") return;
+            this.observeFrameNavigation(frame);
             this.observeFrameGuard();
             this.syncFrameHeader();
             if (this.isFrameReady()) {
                 this.clearRetry();
                 this.setState("");
-            } else {
+            } else if (!this.waitForFrameReady(frame)) {
                 this.scheduleRetry();
             }
         });
         this.frame = frame;
-        this.body.insertBefore(frame, this.body.firstChild);
         this.loadFrame();
+        this.body.insertBefore(frame, this.body.firstChild);
     }
 
     async mountComponentContent() {
@@ -535,14 +591,9 @@ export class ExpandedModal {
             this.contentProxy = element;
             this.appliedProps = JSON.stringify(props);
             const node = element.element?.deref?.();
-            if (node) {
-                await node.presenterReadyPromise;
-                if (this.closed || !host.isConnected) return;
-                await node.renderCompletePromise;
-                if (this.closed || !host.isConnected) return;
-                await node.webSkelPresenter?.initialLoad;
-                if (this.closed || !host.isConnected) return;
-            }
+            if (!await waitForComponentReady(node, () => this.closed || !host.isConnected)) return;
+            if (typeof requestAnimationFrame === "function") await new Promise(requestAnimationFrame);
+            if (this.closed || !host.isConnected) return;
             const reloadButton = this.element.querySelector("#expandedModalReload");
             if (reloadButton) reloadButton.hidden = typeof this.componentPresenter()?.getReloadProps !== "function";
             this.setState("");

@@ -58,6 +58,7 @@ function persistResume(coordinator, descriptor = {}, key = "") {
             agentRef: descriptor.agentRef || "",
             allow: descriptor.allow || "",
             readyTitle: descriptor.readyTitle || "",
+            loadingSelector: descriptor.loadingSelector || "",
             title: descriptor.title || "",
             fullscreen: descriptor.fullscreen
         }));

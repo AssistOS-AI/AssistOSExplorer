@@ -5,6 +5,7 @@ import { installAuthNavigationGuard } from '../../services/infrastructure/authNa
 import { fetchAuthenticatedUser } from '../../services/infrastructure/authApi.js';
 import { filterRuntimePluginsByPolicy } from '../../utils/pluginUtils.core.js';
 import { initializeTheme } from '../../shared/ui/theme.js';
+import { waitForComponentReady } from '../../shared/ui/component-readiness.js';
 
 // The Live Sessions page: the same list and terminal viewer the panel used to mount inside the Explorer shell,
 // served as its own page so the shared expanded modal can show it in an iframe like the RoboTeam and Soul Gateway
@@ -144,14 +145,17 @@ export async function startLiveSessionsPage({
         const element = webSkel.createElement(PANEL_COMPONENT, root, {}, { 'data-presenter': PANEL_COMPONENT }, true);
         const node = element.element?.deref?.();
         mounted = node;
-        await node?.presenterReadyPromise;
-        await node?.renderCompletePromise;
-        await node?.webSkelPresenter?.initialLoad;
+        await waitForComponentReady(node);
         showStatus(status, '');
         return { assistOS, webSkel, element };
     } catch (error) {
         console.error('[live-sessions] The page could not start:', error);
         showStatus(status, 'Live Sessions could not be loaded. Reload to try again.');
         return null;
+    } finally {
+        const document = root?.ownerDocument;
+        const ready = () => document?.documentElement?.setAttribute('data-app-loading', 'false');
+        if (typeof win?.requestAnimationFrame === 'function') win.requestAnimationFrame(ready);
+        else ready();
     }
 }

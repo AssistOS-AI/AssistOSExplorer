@@ -3595,19 +3595,48 @@ function exportPage(lazyPage = null) {
     };
 }
 
+// Alpine mounts all tabs; only the active tab's first render releases the Explorer loader.
+function withDashboardReadiness(factory) {
+    return (...args) => {
+        const component = factory(...args);
+        const init = component.init;
+        component.init = async function (...initArgs) {
+            const active = !this._lazyPage || activeDashboardPage() === this._lazyPage;
+            const root = globalThis.document?.documentElement;
+            const starting = active && root?.getAttribute('data-app-loading') === 'true';
+            try {
+                return await init.apply(this, initArgs);
+            } catch (error) {
+                if (!starting) throw error;
+                const status = document.querySelector('#dashboardStartupError');
+                if (status) {
+                    status.textContent = 'Soul Gateway could not load this page. Reload to try again.';
+                    status.hidden = false;
+                }
+            } finally {
+                if (starting) {
+                    await this.$nextTick?.();
+                    requestAnimationFrame(() => root.setAttribute('data-app-loading', 'false'));
+                }
+            }
+        };
+        return component;
+    };
+}
+
 Object.assign(window, {
     app,
-    providersPage,
-    logsPage,
-    costsPage,
-    activityPage,
-    errorsPage,
-    modelsPage,
-    tiersPage,
-    keysPage,
-    blacklistPage,
-    middlewaresPage,
-    exportPage,
+    providersPage: withDashboardReadiness(providersPage),
+    logsPage: withDashboardReadiness(logsPage),
+    costsPage: withDashboardReadiness(costsPage),
+    activityPage: withDashboardReadiness(activityPage),
+    errorsPage: withDashboardReadiness(errorsPage),
+    modelsPage: withDashboardReadiness(modelsPage),
+    tiersPage: withDashboardReadiness(tiersPage),
+    keysPage: withDashboardReadiness(keysPage),
+    blacklistPage: withDashboardReadiness(blacklistPage),
+    middlewaresPage: withDashboardReadiness(middlewaresPage),
+    exportPage: withDashboardReadiness(exportPage),
     formatTime,
     formatDate,
     renderContent,

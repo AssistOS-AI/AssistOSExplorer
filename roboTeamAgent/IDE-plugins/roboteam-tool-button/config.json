@@ -14,7 +14,8 @@
         "mode": "iframe",
         "url": "/base-agent-additional-server/roboTeamAgent/3001/",
         "agentRef": "AchillesIDE/roboTeamAgent",
-        "fullscreen": true
+        "fullscreen": true,
+        "loadingSelector": "[data-roboteam-ready=\"false\"]"
     },
     "dependencies": []
 }

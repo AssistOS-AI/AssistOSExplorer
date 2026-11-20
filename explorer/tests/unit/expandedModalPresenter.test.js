@@ -2,18 +2,149 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
+import { waitForComponentReady } from '../../shared/ui/component-readiness.js';
 
 const source = (await fs.readFile(new URL('../../web-components/modals/expanded-modal/expanded-modal.js', import.meta.url), 'utf8'))
     .replace(/^import[\s\S]*?;\n/gm, '').replace('export class ExpandedModal', 'class ExpandedModal');
 function presenter(extra = {}) {
     const frames = [];
-    const context = vm.createContext({ window: { innerWidth: 1200, innerHeight: 800 }, console, AbortController, AbortSignal, clearTimeout, requestAnimationFrame: callback => frames.push(callback), setTimeout, ...extra });
+    const context = vm.createContext({ window: { innerWidth: 1200, innerHeight: 800 }, console, AbortController, AbortSignal, clearTimeout, waitForComponentReady, requestAnimationFrame: callback => frames.push(callback), setTimeout, ...extra });
     vm.runInContext(`${source}\nthis.Modal = ExpandedModal;`, context);
     const element = { isConnected: true, querySelector: () => ({ textContent: '' }) };
     const modal = new context.Modal(element, () => {});
     modal.paint = () => frames.splice(0).forEach(callback => callback());
     return modal;
 }
+
+test('frame readiness excludes about:blank and waits for the declared application loading marker', () => {
+    const p = presenter();
+    let loading = true;
+    const doc = { URL: 'about:blank', body: { textContent: '' }, querySelector: () => loading ? {} : null };
+    p.frame = { contentDocument: doc };
+    p.attr = key => key === 'loading-selector' ? '[data-roboteam-ready="false"]' : '';
+    assert.equal(p.isFrameReady(), false);
+    doc.URL = 'https://example.test/robots';
+    assert.equal(p.isFrameReady(), false);
+    loading = false;
+    assert.equal(p.isFrameReady(), true);
+    // Other documents, including workflow pages without the marker, remain usable.
+    p.attr = () => '';
+    assert.equal(p.isFrameReady(), true);
+});
+
+function applicationWait() {
+    let observer;
+    let timeout;
+    let loading = true;
+    const p = presenter({
+        MutationObserver: class {
+            constructor(callback) { this.notify = callback; observer = this; }
+            observe() {}
+            disconnect() { this.disconnected = true; }
+        },
+        setTimeout: callback => { timeout = callback; return 1; },
+        clearTimeout() {},
+    });
+    p.attr = key => key === 'loading-selector' ? '[data-roboteam-ready="false"]' : '';
+    p.frame = { contentDocument: { URL: 'https://example.test/robots', documentElement: {}, body: { textContent: '' }, querySelector: () => loading ? {} : null } };
+    const states = [];
+    p.setState = state => states.push(state);
+    p.syncFrameHeader = () => {};
+    p.waitForFrameReady(p.frame);
+    assert.deepEqual(states, ['Loading…']);
+    states.length = 0;
+    return { p, states, ready() { loading = false; observer.notify(); }, notify() { observer.notify(); }, observer: () => observer, expire() { timeout(); } };
+}
+
+test('application readiness keeps the overlay until rendering completes and then disconnects', () => {
+    const f = applicationWait();
+    f.notify();
+    assert.deepEqual(f.states, []);
+    f.ready();
+    assert.deepEqual(f.states, ['']);
+    assert.equal(f.observer().disconnected, true);
+    assert.equal(f.p.stopFrameReadyWait, null);
+});
+
+test('application readiness is cancelled on close and cannot clear a replacement loader', () => {
+    const f = applicationWait();
+    f.p.loadController.abort();
+    f.ready();
+    f.expire();
+    assert.equal(f.observer().disconnected, true);
+    assert.deepEqual(f.states, []);
+    const replacement = applicationWait();
+    replacement.p.frame = {};
+    replacement.ready();
+    assert.deepEqual(replacement.states, []);
+});
+
+test('an application that never becomes ready reports reload without restarting its requests', () => {
+    const f = applicationWait();
+    f.expire();
+    assert.deepEqual(f.states, ['Not responding. Use Reload to try again.']);
+    assert.equal(f.observer().disconnected, true);
+});
+
+test('iframe applications share a default loading marker without toolbar-specific configuration', () => {
+    const p = presenter();
+    p.attr = () => '';
+    let loading = true;
+    p.frame = { contentDocument: { URL: 'https://example.test/app', body: { textContent: '' }, querySelector(selector) {
+        assert.equal(selector, '[data-app-loading="true"]');
+        return loading ? {} : null;
+    } } };
+    assert.equal(p.isFrameReady(), false);
+    loading = false;
+    assert.equal(p.isFrameReady(), true);
+});
+
+test('frame document navigation restores the loader and cached-page return clears it; close cancels listeners', () => {
+    const p = presenter();
+    const events = new EventTarget();
+    p.frame = { contentWindow: events };
+    const states = [];
+    p.setState = state => states.push(state);
+    p.isFrameReady = () => true;
+    p.observeFrameNavigation(p.frame);
+    events.dispatchEvent(new Event('pagehide'));
+    const returned = new Event('pageshow');
+    returned.persisted = true;
+    events.dispatchEvent(returned);
+    assert.deepEqual(states, ['Loading…', '']);
+    p.stopFrameNavigationWatch();
+    events.dispatchEvent(new Event('pagehide'));
+    assert.deepEqual(states, ['Loading…', '']);
+});
+
+test('component readiness waits for initial data, its final render and a paint before hiding', async () => {
+    let dataReady, renderReady;
+    const initialLoad = new Promise(resolve => { dataReady = resolve; });
+    const finalRender = new Promise(resolve => { renderReady = resolve; });
+    const node = { presenterReadyPromise: Promise.resolve(), renderCompletePromise: Promise.resolve(), webSkelPresenter: { initialLoad } };
+    const p = presenter({ document: { createElement: () => ({ isConnected: true }) }, assistOS: { UI: {
+        createElement: () => ({ element: { deref: () => node } }),
+    } } });
+    p.attr = () => 'sample-panel';
+    p.componentProps = () => ({});
+    p.body = { appendChild() {} };
+    const states = [];
+    p.setState = value => states.push(value);
+    const pending = p.mountComponentContent();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(states, ['Loading…']);
+    node.renderCompletePromise = finalRender;
+    dataReady();
+    await new Promise(resolve => setImmediate(resolve));
+    p.paint();
+    assert.deepEqual(states, ['Loading…']);
+    renderReady();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(states, ['Loading…']);
+    p.paint();
+    await pending;
+    assert.deepEqual(states, ['Loading…', '']);
+});
 
 test('fullscreen restore retains custom size and clamps it to the viewport', () => {
     const p = presenter();

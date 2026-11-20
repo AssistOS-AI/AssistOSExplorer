@@ -103,6 +103,17 @@ function environment(t, { admin = true } = {}) {
     return { modal, elements };
 }
 
+test('the mounted session list exposes its first refresh to the host loader', async t => {
+    const { modal } = environment(t);
+    let finish;
+    const firstRead = new Promise(resolve => { finish = resolve; });
+    modal.refresh = () => firstRead;
+    modal.afterRender();
+    assert.equal(modal.initialLoad, firstRead);
+    finish();
+    await modal.initialLoad;
+});
+
 test('Live Sessions survives real discovery and normalization as an authenticated toolbar component', async () => {
     const config = JSON.parse(await fs.readFile(path.join(root, 'IDE-plugins/live-sessions/config.json'), 'utf8'));
     const manifest = JSON.parse(await fs.readFile(path.join(root, 'manifest.json'), 'utf8'));

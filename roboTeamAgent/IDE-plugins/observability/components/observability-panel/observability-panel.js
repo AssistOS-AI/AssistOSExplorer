@@ -30,7 +30,7 @@ export class ObservabilityPanel {
         this.element.addEventListener('input', this.onAnswerChange);
         this.element.addEventListener('submit', this.onAnswer);
         this.render();
-        void this.refresh();
+        this.initialLoad = this.refresh();
         this.clock = setInterval(() => this.renderDurations(), 1000);
     }
 

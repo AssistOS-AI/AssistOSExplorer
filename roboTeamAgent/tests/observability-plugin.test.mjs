@@ -7,6 +7,20 @@ import { ObservabilityPanel } from '../IDE-plugins/observability/components/obse
 
 const pluginDirectory = path.resolve(import.meta.dirname, '../IDE-plugins/observability');
 
+test('Observability exposes its first workflow read to the shared loader', async () => {
+    const panel = new ObservabilityPanel({ addEventListener() {}, removeEventListener() {}, querySelector() {} }, () => {});
+    let finish;
+    const firstRead = new Promise(resolve => { finish = resolve; });
+    panel.render = () => {};
+    panel.refresh = () => firstRead;
+    try {
+        panel.afterRender();
+        assert.equal(panel.initialLoad, firstRead);
+        finish();
+        await panel.initialLoad;
+    } finally { panel.afterUnload(); }
+});
+
 test('Observability declares a fullscreen toolbar plugin immediately after RoboTeam', async () => {
     const plugin = JSON.parse(await fs.readFile(path.join(pluginDirectory, 'config.json'), 'utf8'));
     const roboTeam = JSON.parse(await fs.readFile(path.join(pluginDirectory, '../roboteam-tool-button/config.json'), 'utf8'));

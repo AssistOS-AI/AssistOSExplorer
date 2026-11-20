@@ -1,7 +1,37 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import vm from 'node:vm';
 import { initPageNavigation, restoreNavigationFocus } from '../public/page-navigation.js';
+
+test('dashboard signals readiness after initial data and view restoration reach a render frame', async () => {
+    const source = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+    const start = source.indexOf('await loadRobots();\nrestoreDashboardView(initialView);');
+    const end = source.indexOf("window.addEventListener('pageshow'", start);
+    assert.ok(start >= 0 && end > start);
+    let resolveData;
+    const data = new Promise(resolve => { resolveData = resolve; });
+    const dataset = {};
+    const frames = [];
+    let restored = false;
+    const running = vm.runInNewContext(`(async () => { ${source.slice(start, end)} })()`, {
+        loadRobots: () => data,
+        restoreDashboardView: () => { restored = true; }, initialView: {},
+        requestAnimationFrame: callback => frames.push(callback),
+        document: { documentElement: { dataset } },
+    });
+    assert.equal(dataset.roboteamReady, undefined);
+    resolveData();
+    await running;
+    assert.equal(restored, true);
+    assert.equal(dataset.roboteamReady, undefined);
+    frames.shift()();
+    assert.equal(dataset.roboteamReady, 'true');
+    const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
+    assert.match(html, /<html[^>]*data-roboteam-ready="false"/);
+    const config = JSON.parse(await readFile(new URL('../IDE-plugins/roboteam-tool-button/config.json', import.meta.url), 'utf8'));
+    assert.equal(config.toolbarModal.loadingSelector, '[data-roboteam-ready="false"]');
+});
 
 function link(href) {
     return { href, listeners: {}, addEventListener(name, listener) { this.listeners[name] = listener; } };

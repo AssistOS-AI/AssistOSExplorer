@@ -585,6 +585,9 @@ createForm.addEventListener('submit', async (event) => {
 
 await loadRobots();
 restoreDashboardView(initialView);
+requestAnimationFrame(() => {
+    document.documentElement.dataset.roboteamReady = 'true';
+});
 window.addEventListener('pageshow', async event => {
     if (!event.persisted) return;
     await loadRobots();

@@ -54,8 +54,27 @@ function harness({ registered = { name: PANEL_COMPONENT }, user = { roles: ['adm
         filterRuntimePluginsByPolicy: (plugins, policy) => { log.push(['policy', policy]); const filtered = filterRuntimePluginsByPolicy(plugins, policy); dependencies.lastPlugins = filtered; return filtered; },
         fetchImpl: async (url) => { log.push(['fetch', url]); return { ok: true, json: async () => manifest }; },
     };
-    return { log, status, root, win, assistOS, webSkel, dependencies };
+    return { log, status, root, win, assistOS, webSkel, dependencies, presenter };
 }
+
+test('the page keeps the shared loading marker through the first session read and releases after render', async () => {
+    const page = harness();
+    let finish;
+    page.presenter.initialLoad = new Promise(resolve => { finish = resolve; });
+    let loading = 'true';
+    const frames = [];
+    page.root.ownerDocument = { documentElement: { setAttribute: (name, value) => { assert.equal(name, 'data-app-loading'); loading = value; } } };
+    page.win.requestAnimationFrame = callback => frames.push(callback);
+    const starting = startLiveSessionsPage({ root: page.root, status: page.status, win: page.win, dependencies: page.dependencies });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(loading, 'true');
+    assert.equal(page.status.hidden, false);
+    finish();
+    await starting;
+    assert.equal(loading, 'true');
+    frames.shift()();
+    assert.equal(loading, 'false');
+});
 
 test('the page bootstraps WebSkel, the signed-in user and the source catalog, then mounts the panel into its root', async () => {
     const page = harness();

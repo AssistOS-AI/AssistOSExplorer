@@ -50,3 +50,5 @@ The embedded dashboard reuses Explorer's shared UI assets and theme (light or da
 The dashboard mounts every tab component once, relies on Alpine to call each component's <code>init()</code> exactly once, and defers a tab's initial data requests until that tab is the active page (selected by the location hash, defaulting to Providers). Tabs that refresh on navigation re-run <code>init()</code> on each <code>page-change</code> to their page; the remaining tabs load once on first visit.
 
 The toolbar declares its shared iframe modal in `toolbarModal`. Explorer opens the shell immediately and handles agent startup and readiness inside it; the toolbar must not wait for a settings inventory lookup before showing the panel.
+
+The dashboard HTML starts with `data-app-loading="true"`. Only the active tab's first initialization clears it, after its data and Alpine DOM update reach a render frame. Inactive lazy tabs and the log stream do not block startup. An initial request failure renders a plain reload message before clearing the marker. Toolbar and embedded Settings launches use the same signal; no fixed minimum delay is added.

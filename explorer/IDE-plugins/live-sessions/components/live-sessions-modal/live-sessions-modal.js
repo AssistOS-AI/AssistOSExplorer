@@ -140,7 +140,7 @@ export class LiveSessionsModal {
         this.listElement.addEventListener('click', this.handleClick);
         if (!this.started) {
             this.started = true;
-            void this.refresh();
+            this.initialLoad = this.refresh();
         }
     }
 
