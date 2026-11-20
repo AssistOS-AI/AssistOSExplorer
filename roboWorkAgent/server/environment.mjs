@@ -172,7 +172,8 @@ export class EnvironmentManager {
             ALA_BWRAP: absolute(bwrap.target), ALA_SANDBOX_HOME: homeTarget,
             CODEX_HOME: `${homeTarget}/.codex`, XDG_CONFIG_HOME: `${homeTarget}/.config`,
             XDG_DATA_HOME: `${homeTarget}/.local/share`, XDG_CACHE_HOME: `${homeTarget}/.cache`,
-            PI_CODING_AGENT_DIR: `${homeTarget}/.pi/agent`, OMP_DIR: `${homeTarget}/.omp`, CLAUDE_CONFIG_DIR: `${homeTarget}/.claude` };
+            // No PI_CODING_AGENT_DIR: Pi and OMP both read it, so with it OMP would use Pi's state directory.
+            OMP_DIR: `${homeTarget}/.omp`, CLAUDE_CONFIG_DIR: `${homeTarget}/.claude` };
         // The tool cache is mounted at its own path, so a cached tool keeps the path it has here.
         const cachedTool = async value => {
             if (typeof value !== 'string' || !path.isAbsolute(value)) return null;

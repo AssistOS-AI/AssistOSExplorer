@@ -132,7 +132,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, robotsDir = '/robots',
                 '-e', `HOME=${homeTarget}`,
                 '-e', `XDG_CONFIG_HOME=${homeTarget}/.config`, '-e', `XDG_CACHE_HOME=${homeTarget}/.cache`,
                 '-e', `XDG_DATA_HOME=${homeTarget}/.local/share`, '-e', `XDG_STATE_HOME=${homeTarget}/.local/state`,
-                '-e', `PI_CODING_AGENT_DIR=${homeTarget}/.pi/agent`,
+                // No PI_CODING_AGENT_DIR: Pi and OMP both read it, so with it OMP would use Pi's state directory.
                 '-e', `OMP_DIR=${homeTarget}/.omp`,
                 '-e', `CLAUDE_CONFIG_DIR=${homeTarget}/.claude`,
             ] : []),

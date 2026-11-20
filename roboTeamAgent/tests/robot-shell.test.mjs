@@ -26,7 +26,8 @@ test('new robots have shell configuration, repeated preparation preserves user c
     { cwd: home, env: { ...process.env, HOME: home, ROBOTEAM_WORKING_DIRECTORY: store.robotPath(robot.id) }, encoding: 'utf8' }));
     assert.equal(environment.cwd, store.robotPath(robot.id));
     assert.equal(environment.codex, path.join(home, '.codex'));
-    assert.equal(environment.pi, path.join(home, '.pi/agent'));
+    // Pi and OMP both read PI_CODING_AGENT_DIR, so it stays unset and each uses its own directory under HOME.
+    assert.equal(environment.pi, undefined);
     assert.equal(environment.config, path.join(home, '.config'));
     assert(environment.path.startsWith(`${TOOL_CACHE_DIR}/shell-selections/shell/bin:`));
     await fs.unlink(path.join(home, '.bashrc'));

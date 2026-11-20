@@ -28,8 +28,11 @@ export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_CACHE_HOME="$HOME/.cache"
 export XDG_DATA_HOME="$HOME/.local/share"
 export XDG_STATE_HOME="$HOME/.local/state"
-export PI_CODING_AGENT_DIR="$HOME/.pi/agent"
-# OMP (Oh My Pi) keeps its login database and sessions here; ALA reads the same directory.
+# Pi and OMP (Oh My Pi, a Pi fork) both take PI_CODING_AGENT_DIR as their state directory, so it is never set:
+# Pi then keeps its state in $HOME/.pi/agent and OMP in $HOME/.omp/agent, the directories ALA reads, and neither
+# writes its logins or sessions into the other's.
+unset PI_CODING_AGENT_DIR
+# ALA finds OMP's state through OMP_DIR; OMP itself derives the same directory from HOME.
 export OMP_DIR="$HOME/.omp"
 # Claude Code keeps its login and sessions here; ALA reads the same directory.
 export CLAUDE_CONFIG_DIR="$HOME/.claude"
