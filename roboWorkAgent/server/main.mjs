@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { RobotPaths } from './robot-paths.mjs';
 import { ToolCache } from './tool-cache.mjs';
 import { RuntimeBundle } from './runtime-bundle.mjs';
@@ -11,7 +12,7 @@ import { GitCredentialStore } from './git-credentials.mjs';
 import { createGitCredentialSockets } from './git-credential-socket.mjs';
 import { listenCsvMailGit } from './csv-mail-git.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
-import { PUBLIC_BASE_PATH } from './constants.mjs';
+import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
 import { GuiManager, proxySessionHttp, proxySessionWebSocket } from './gui-manager.mjs';
 import { ProxyAgentClient } from './proxy-pool/proxy-client.mjs';
 import { createTerminalProfiles } from './terminal-profiles.mjs';
@@ -46,11 +47,20 @@ const gui = new GuiManager({ dataDir: paths.dataDir, robotsDir: paths.robotsDir,
 });
 robots.gui = gui; runs.gui = gui;
 await gui.initialize();
+// Superseded tool generations are collected exactly here: leftover runs are already killed (runs.initialize) and Browser and
+// Desktop containers are already removed (gui.initialize), and the container, with its terminals, ends when this service
+// exits, so nothing can still use a generation. Only the renames are awaited; deleting the trash happens after listen.
+const collection = await toolCache.collectGarbage({ terminalStateDir: path.join(paths.dataDir, 'server-state', 'terminal'),
+    legacyNpmCache: path.join(DATA_DIR, '.npm') }).catch(error => {
+    console.error(`[tool-cache] garbage collection failed: ${error?.code || 'FAILED'}`);
+    return { cleanup: async () => {} };
+});
 const terminal = createTerminalProfiles({ paths, robots, toolCache, homeOperation, environment, runtimeBundle });
 const server = createRoboWorkServer({ robots, runs, environment, gui, terminal, internalToken, publicBasePath: PUBLIC_BASE_PATH,
     proxyHttp: proxySessionHttp, proxyWebSocket: proxySessionWebSocket });
 server.listen(Number(process.env.ROBOWORK_SERVICE_PORT || 3001), process.env.ROBOWORK_SERVICE_HOST || '0.0.0.0', () => {
     console.log('RoboWork service ready');
+    void collection.cleanup().catch(error => console.error(`[tool-cache] trash cleanup failed: ${error?.code || 'FAILED'}`));
     // Downloads must not delay service readiness; requests share pending cache preparations.
     console.log('[runtime-bundle] startup preparation starting');
     void runtimeBundle.warmup().then(() => console.log('[runtime-bundle] startup preparation ready'), error => {

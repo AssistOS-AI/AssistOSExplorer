@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { DATA_DIR, TOOL_REFRESH_INTERVAL_MS, TOOL_FALLBACK_RETRY_MS, BROWSER_IMAGE, DESKTOP_IMAGE } from './constants.mjs';
 import { OPENCODE_PLUGIN_PACKAGE, openCodePluginState } from './opencode-plugin-seed.mjs';
 import { RUNTIME_BUNDLE_FILES } from './runtime-bundle.mjs';
+import { collectToolCache } from './tool-cache-gc.mjs';
 
 const execFileAsync = promisify(execFile);
 const CACHE_SCHEMA = 'roboteam-tool-cache-v1';
@@ -38,6 +39,13 @@ const AGY_MANIFEST_BASE_URL = 'https://antigravity-cli-auto-updater-974169037036
 // its final path under an exclusive lock instead of being renamed from staging. A lock older than this is abandoned.
 const IN_PLACE_LOCK_STALE_MS = 30 * 60 * 1000;
 const UV_PYTHON = '3.12';
+// The bundles startup collection looks into; the OpenCode plugin templates are collected through their own rule.
+const COLLECTED_BUNDLES = Object.freeze([...Object.keys(CODING_AGENT_PACKAGES), 'desktop', 'browser', 'bwrap', 'ala']);
+
+// Every host npm command gets its own throwaway cache, so nothing accumulates in the shared HOME cache.
+function npmCacheArgs(directory) {
+    return ['--cache', path.join(directory, 'cache'), '--update-notifier=false'];
+}
 
 const PIN_VARIABLES = Object.freeze(Object.fromEntries(
     Object.keys(CODING_AGENT_PACKAGES).map((name) => [name, `ROBOTEAM_${name.toUpperCase()}_VERSION`]),
@@ -133,6 +141,20 @@ export class ToolCache {
 
     prepareCodex() {
         return this.prepareCodingAgent('codex');
+    }
+
+    // Removes superseded generations once at startup, before the service listens and before any preparation starts
+    // (RoboWork's `main.mjs` calls it after leftover runs and GUI containers are gone). Resolves after the renames into
+    // `<root>/.trash`; the returned `cleanup()` deletes the trash and `legacyNpmCache` and is meant to run in the
+    // background. Neither the pass nor the cleanup ever rejects.
+    async collectGarbage({ terminalStateDir = null, legacyNpmCache = null } = {}) {
+        try {
+            return await collectToolCache({ root: this.root, bundles: COLLECTED_BUNDLES, pluginBundle: PLUGIN_TEMPLATE_BUNDLE,
+                cacheSchema: CACHE_SCHEMA, terminalStateDir, legacyNpmCache, now: this.now(), leftoverMs: IN_PLACE_LOCK_STALE_MS, log: this.log });
+        } catch (error) {
+            this.log(`[tool-cache] garbage collection skipped: ${error?.code || error?.message}`);
+            return { cleanup: async () => {} };
+        }
     }
 
     async warmup() {
@@ -308,9 +330,9 @@ export class ToolCache {
             this.log(`[tool-cache] preparing ${OPENCODE_PLUGIN_PACKAGE} ${plan.version}`);
             await fs.writeFile(path.join(staging, 'package.json'),
                 `${JSON.stringify({ dependencies: { [OPENCODE_PLUGIN_PACKAGE]: plan.version } }, null, 2)}\n`, { mode: 0o600 });
-            await this.execFileImpl(this.npmCommand, [...PLUGIN_TEMPLATE_NPM_ARGS, '--prefix', staging], {
+            await this._withNpmCache(cacheArgs => this.execFileImpl(this.npmCommand, [...PLUGIN_TEMPLATE_NPM_ARGS, ...cacheArgs, '--prefix', staging], {
                 timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: this.processEnv,
-            });
+            }));
             const state = await openCodePluginState(staging, plan.version);
             if (!state.current) throw new Error(`prepared ${OPENCODE_PLUGIN_PACKAGE} is not exactly ${plan.version}`);
             await fs.writeFile(path.join(staging, 'stamp.json'), `${JSON.stringify({
@@ -351,12 +373,23 @@ export class ToolCache {
         return entry.promise;
     }
 
+    // Runs a host npm command with a throwaway cache below the tool cache, removed afterwards whatever the outcome.
+    async _withNpmCache(operation) {
+        await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
+        const directory = await fs.mkdtemp(path.join(this.root, '.npm-'));
+        try {
+            return await operation(npmCacheArgs(directory));
+        } finally {
+            await fs.rm(directory, { recursive: true, force: true }).catch(error => this.log(`[tool-cache] could not remove a throwaway npm cache: ${error?.code || error?.message}`));
+        }
+    }
+
     async _npmVersion(packageName) {
-        const result = await this.execFileImpl(this.npmCommand, ['view', `${packageName}@latest`, 'version', '--json'], {
+        const result = await this._withNpmCache(cacheArgs => this.execFileImpl(this.npmCommand, ['view', `${packageName}@latest`, 'version', '--json', ...cacheArgs], {
             timeout: 30000,
             maxBuffer: 1024 * 1024,
             env: this.processEnv,
-        });
+        }));
         let value;
         try { value = JSON.parse(result.stdout); } catch { value = result.stdout; }
         if (Array.isArray(value)) value = value.at(-1);
@@ -473,11 +506,11 @@ export class ToolCache {
     async _npmInstallHost(directory, packageName, version, { global = false } = {}) {
         const args = [NPM_INSTALL_ARGS[0], ...(global ? ['--global'] : []), ...NPM_INSTALL_ARGS.slice(1)];
         const specifications = Array.isArray(packageName) ? packageName : [`${packageName}@${version}`];
-        await this.execFileImpl(this.npmCommand, [...args, '--prefix', directory, ...specifications], {
+        await this._withNpmCache(cacheArgs => this.execFileImpl(this.npmCommand, [...args, ...cacheArgs, '--prefix', directory, ...specifications], {
             timeout: 10 * 60 * 1000,
             maxBuffer: 8 * 1024 * 1024,
             env: this.processEnv,
-        });
+        }));
     }
 
     async _npmInstallContainer(directory, image, packageName, version) {
@@ -793,4 +826,4 @@ export class ToolCache {
     }
 }
 
-export const toolCacheInternals = { CACHE_SCHEMA, CODING_AGENT_PACKAGES, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, PLUGIN_TEMPLATE_NPM_ARGS, TOOL_MOUNT_PATH, codingAgentVersionPins, generationName, safeVersion, toolProcessEnv };
+export const toolCacheInternals = { CACHE_SCHEMA, CODING_AGENT_PACKAGES, IN_PLACE_LOCK_STALE_MS, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, PLUGIN_TEMPLATE_NPM_ARGS, TOOL_MOUNT_PATH, codingAgentVersionPins, generationName, npmCacheArgs, safeVersion, toolProcessEnv };
