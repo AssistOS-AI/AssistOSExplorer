@@ -329,7 +329,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
     return dialog;
 }
 
-const CODING_AGENT_LABELS = { codex: 'Codex', opencode: 'OpenCode', pi: 'Pi', omp: 'OMP', claude: 'Claude Code' };
+const CODING_AGENT_LABELS = { codex: 'Codex', opencode: 'OpenCode', pi: 'Pi', omp: 'OMP', claude: 'Claude Code', vibe: 'Mistral Vibe' };
 
 export function codingAgentLabel(names) {
     return names.map(name => CODING_AGENT_LABELS[name] || name).join(', ');
@@ -352,6 +352,7 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
                 <label><input type="radio" name="codingAgent" value="pi"> Pi</label>
                 <label><input type="radio" name="codingAgent" value="omp"> OMP</label>
                 <label><input type="radio" name="codingAgent" value="claude"> Claude Code</label>
+                <label><input type="radio" name="codingAgent" value="vibe"> Mistral Vibe</label>
             </fieldset>
             <section class="coding-model-field" aria-label="Default model">
                 <label id="coding-model-label">Default model</label>
@@ -378,7 +379,7 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
     const lifetime = new AbortController();
     const catalogs = new Map(), drafts = new Map();
     let saved = {}, savedEfforts = {}, defaults = {}, pendingModel = null, stage = 'models', ready = false, saving = false, request = null, activeIndex = -1;
-    const names = robot.codingAgents || ['codex', 'opencode', 'pi', 'omp', 'claude'];
+    const names = robot.codingAgents || ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe'];
     const busy = robot.run.state !== 'stopped' || ['queued', 'starting', 'running', 'pausing'].includes(robot.run.task?.state);
     const agent = () => form.querySelector('input[name="codingAgent"]:checked')?.value;
     const selection = () => drafts.has(agent()) ? drafts.get(agent()) : { model: saved[agent()] || null, effort: savedEfforts[agent()] || null };

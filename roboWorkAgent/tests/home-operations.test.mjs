@@ -58,7 +58,7 @@ test('the in-service status reads only the robot home: no server credential and 
     await fs.mkdir(home);
     const status = () => robotStatus(home, { includeLogins: true, codingAgents: ['opencode'] }, { env: nativeEnvironment({ PATH: '/usr/bin:/bin' }, home) });
     // The server's own provider key is not a robot login.
-    assert.deepEqual((await status()).logins, { codex: false, opencode: false, pi: false, omp: false, claude: false });
+    assert.deepEqual((await status()).logins, { codex: false, opencode: false, pi: false, omp: false, claude: false, vibe: false });
     // Another home's login reached through a linked parent directory is not this robot's.
     await fs.symlink(path.join(other, '.local'), path.join(home, '.local'));
     assert.equal((await status()).logins.opencode, false);
@@ -66,5 +66,5 @@ test('the in-service status reads only the robot home: no server credential and 
     await fs.rm(path.join(home, '.local'));
     await fs.mkdir(path.join(home, '.local', 'share', 'opencode'), { recursive: true });
     await fs.writeFile(path.join(home, '.local', 'share', 'opencode', 'auth.json'), auth);
-    assert.deepEqual(await status(), { activeAgent: 'opencode', logins: { codex: false, opencode: true, pi: false, omp: false, claude: false } });
+    assert.deepEqual(await status(), { activeAgent: 'opencode', logins: { codex: false, opencode: true, pi: false, omp: false, claude: false, vibe: false } });
 });

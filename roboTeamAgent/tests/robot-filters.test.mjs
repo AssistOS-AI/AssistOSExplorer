@@ -26,7 +26,7 @@ test('login and agent-in-use filters combine', () => {
 });
 
 test('the card summary appears only for robots with a login', () => {
-    assert.deepEqual(loginSummary(robots[0]), { text: 'Logged in 2/5', title: 'Logged in: OpenCode, Claude Code\nNot logged in: Codex, Pi, OMP' });
+    assert.deepEqual(loginSummary(robots[0]), { text: 'Logged in 2/6', title: 'Logged in: OpenCode, Claude Code\nNot logged in: Codex, Pi, OMP, Mistral Vibe' });
     assert.equal(loginSummary(robots[1]), null);
     assert.equal(loginSummary({ name: 'x' }), null);
 });

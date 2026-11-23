@@ -36,7 +36,15 @@ unset PI_CODING_AGENT_DIR
 export OMP_DIR="$HOME/.omp"
 # Claude Code keeps its login and sessions here; ALA reads the same directory.
 export CLAUDE_CONFIG_DIR="$HOME/.claude"
-unset CODEX_BIN OPENCODE_BIN PI_BIN OMP_BIN CLAUDE_BIN
+# Mistral Vibe keeps its configuration, sessions and stored API key here; ALA reads the same directory. The failing
+# keyring backend makes its sign-in store the key in $VIBE_HOME/.env, where RoboTeam detects the login (the null
+# backend would accept the key and drop it, so every new terminal would ask for a login again).
+export VIBE_HOME="$HOME/.vibe"
+export PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring
+# The account's model catalog (models beyond the built-in ones), the same one ALA uses.
+export VIBE_EXPERIMENTAL_ENABLE_MODEL_CATALOG=true
+export VIBE_ENABLE_UPDATE_CHECKS=false
+unset CODEX_BIN OPENCODE_BIN PI_BIN OMP_BIN CLAUDE_BIN VIBE_BIN
 roboteam_saved_ifs=$IFS
 IFS=:
 roboteam_clean_path=
@@ -57,7 +65,7 @@ const SOURCE = '\n# RoboTeam shared coding-agent environment\n. "$HOME/.roboteam
 export async function prepareRobotShell(home, options) {
     const stat = await fs.lstat(home);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe robot home');
-    for (const directory of ['.codex', '.config/opencode/plugins', '.cache', '.local/share', '.local/state', '.pi/agent', '.omp', '.claude']) {
+    for (const directory of ['.codex', '.config/opencode/plugins', '.cache', '.local/share', '.local/state', '.pi/agent', '.omp', '.claude', '.vibe']) {
         let current = home;
         for (const segment of directory.split('/')) {
             current = path.join(current, segment);

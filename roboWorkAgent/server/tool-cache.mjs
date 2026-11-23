@@ -26,7 +26,14 @@ const CODING_AGENT_PACKAGES = Object.freeze({
     omp: Object.freeze({ packageName: '@oh-my-pi/pi-coding-agent', executable: 'omp',
         companions: Object.freeze([Object.freeze({ packageName: 'bun', executable: 'bun' })]) }),
     claude: Object.freeze({ packageName: '@anthropic-ai/claude-code', executable: 'claude' }),
+    // Mistral Vibe is a Python program published on PyPI. uv installs it with a managed CPython into its own
+    // virtual environment inside the generation; see _prepareUvAgent.
+    vibe: Object.freeze({ packageName: 'mistral-vibe', executable: 'vibe', installer: 'uv' }),
 });
+// A virtual environment records absolute paths (its interpreter, script headers), so a uv generation is installed at
+// its final path under an exclusive lock instead of being renamed from staging. A lock older than this is abandoned.
+const IN_PLACE_LOCK_STALE_MS = 30 * 60 * 1000;
+const UV_PYTHON = '3.12';
 
 const PIN_VARIABLES = Object.freeze(Object.fromEntries(
     Object.keys(CODING_AGENT_PACKAGES).map((name) => [name, `ROBOTEAM_${name.toUpperCase()}_VERSION`]),
@@ -96,6 +103,7 @@ export class ToolCache {
         this.root = path.resolve(options.root || path.join(options.dataDir || DATA_DIR, 'tool-cache'));
         this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
         this.npmCommand = options.npmCommand || '/usr/local/bin/npm';
+        this.tarCommand = options.tarCommand || '/usr/bin/tar';
         this.images = {
             desktop: options.desktopImage || DESKTOP_IMAGE,
             browser: options.browserImage || BROWSER_IMAGE,
@@ -365,6 +373,50 @@ export class ToolCache {
     }
 
     // `packageName` may instead be a list of exact `name@version` specifications installed together.
+    async _pypiVersion(packageName) {
+        if (typeof this.fetchImpl !== 'function') throw new Error('fetch is unavailable');
+        const response = await this.fetchImpl(`https://pypi.org/pypi/${encodeURIComponent(packageName)}/json`, {
+            headers: { accept: 'application/json', 'user-agent': 'RoboTeamAgent' },
+        });
+        if (!response.ok) throw new Error(`${packageName} release lookup failed with HTTP ${response.status}`);
+        const value = await response.json();
+        return safeVersion(value?.info?.version, packageName);
+    }
+
+    async _uvRelease() {
+        if (typeof this.fetchImpl !== 'function') throw new Error('fetch is unavailable');
+        const response = await this.fetchImpl('https://api.github.com/repos/astral-sh/uv/releases/latest', {
+            headers: { accept: 'application/vnd.github+json', 'user-agent': 'RoboTeamAgent' },
+        });
+        if (!response.ok) throw new Error(`uv release lookup failed with HTTP ${response.status}`);
+        const release = await response.json();
+        const target = this.arch === 'x64' ? 'x86_64' : this.arch === 'arm64' ? 'aarch64' : null;
+        if (!target) throw new Error(`uv does not support architecture ${this.arch}`);
+        const assetName = `uv-${target}-unknown-linux-gnu.tar.gz`;
+        const asset = release.assets?.find((candidate) => candidate?.name === assetName);
+        if (!asset?.browser_download_url) throw new Error(`uv release has no ${assetName} asset`);
+        if (!/^sha256:[0-9a-f]{64}$/u.test(String(asset.digest || ''))) throw new Error(`uv release asset ${assetName} has no SHA-256 digest`);
+        return { version: safeVersion(release.tag_name, 'uv'), assetName, url: asset.browser_download_url, digest: asset.digest };
+    }
+
+    // Downloads the uv release archive, checks its upstream digest, and unpacks the static uv binary into `directory`.
+    async _downloadUv(directory, release) {
+        const response = await this.fetchImpl(release.url, { headers: { 'user-agent': 'RoboTeamAgent' } });
+        if (!response.ok) throw new Error(`uv download failed with HTTP ${response.status}`);
+        const content = Buffer.from(await response.arrayBuffer());
+        const digest = `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`;
+        if (digest !== release.digest) throw new Error('uv release digest did not match the downloaded asset');
+        await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+        const archive = path.join(directory, release.assetName);
+        await fs.writeFile(archive, content, { mode: 0o600 });
+        await this.execFileImpl(this.tarCommand, ['--no-same-owner', '--strip-components=1', '-xzf', archive, '-C', directory],
+            { timeout: 120000, maxBuffer: 1024 * 1024, env: this.processEnv });
+        await fs.rm(archive, { force: true });
+        const uv = path.join(directory, 'uv');
+        if (!(await isExecutable(uv))) throw new Error('uv archive has no uv executable');
+        return uv;
+    }
+
     async _npmInstallHost(directory, packageName, version, { global = false } = {}) {
         const args = [NPM_INSTALL_ARGS[0], ...(global ? ['--global'] : []), ...NPM_INSTALL_ARGS.slice(1)];
         const specifications = Array.isArray(packageName) ? packageName : [`${packageName}@${version}`];
@@ -408,8 +460,49 @@ export class ToolCache {
         ], { timeout: 60000, maxBuffer: 4 * 1024 * 1024, env: process.env });
     }
 
+    // A uv agent: the generation holds bin/<executable> (uv's link), tools/<package> (its virtual environment) and
+    // python/ (the managed CPython it was created from). uv itself is used for the installation only.
+    async _prepareUvAgent(name) {
+        const definition = CODING_AGENT_PACKAGES[name];
+        return this._prepare(name, async () => {
+            const [version, uv] = await Promise.all([
+                this.versionPins[name] ?? this._pypiVersion(definition.packageName),
+                this._uvRelease(),
+            ]);
+            const versions = { [name]: version, uv: uv.version };
+            return {
+                identity: { package: definition.packageName, version, installer: 'uv', uv: uv.version, python: UV_PYTHON, arch: this.arch },
+                versions,
+                inPlace: true,
+                install: async (directory) => {
+                    const work = path.join(directory, '.uv');
+                    try {
+                        const uvBinary = await this._downloadUv(work, uv);
+                        await this.execFileImpl(uvBinary, ['tool', 'install', '--no-config', '--python', UV_PYTHON,
+                            `${definition.packageName}==${version}`], {
+                            timeout: 15 * 60 * 1000,
+                            maxBuffer: 8 * 1024 * 1024,
+                            env: { ...this.processEnv, UV_TOOL_DIR: path.join(directory, 'tools'), UV_TOOL_BIN_DIR: path.join(directory, 'bin'),
+                                UV_PYTHON_INSTALL_DIR: path.join(directory, 'python'), UV_CACHE_DIR: path.join(work, 'cache'),
+                                UV_PYTHON_PREFERENCE: 'only-managed', UV_NO_PROGRESS: '1' },
+                        });
+                    } finally {
+                        await fs.rm(work, { recursive: true, force: true });
+                    }
+                },
+                validate: async (directory) => {
+                    const executable = path.join(directory, 'bin', definition.executable);
+                    if (!(await isExecutable(executable))) throw new Error(`prepared ${name} executable is missing`);
+                    await this.execFileImpl(executable, ['--version'], { timeout: 60000, maxBuffer: 1024 * 1024, env: this.processEnv });
+                },
+                result: (directory) => ({ path: directory, binPath: path.join(directory, 'bin'), versions }),
+            };
+        });
+    }
+
     async _prepareCodingAgent(name) {
         const definition = CODING_AGENT_PACKAGES[name];
+        if (definition.installer === 'uv') return this._prepareUvAgent(name);
         const companions = definition.companions || [];
         return this._prepare(name, async () => {
             const version = this.versionPins[name] ?? await this._npmVersion(definition.packageName);
@@ -493,7 +586,9 @@ export class ToolCache {
         const target = path.join(generationsRoot, generation);
         try {
             await fs.mkdir(generationsRoot, { recursive: true, mode: 0o700 });
-            if (!(await this._generationIsUsable(target, plan.validate))) {
+            if (!(await this._generationIsUsable(target, plan.validate)) && plan.inPlace) {
+                await this._installInPlace(name, target, generation, plan);
+            } else if (!(await this._generationIsUsable(target, plan.validate))) {
                 const stagingRoot = path.join(bundleRoot, 'staging');
                 const staging = path.join(stagingRoot, crypto.randomUUID());
                 await fs.mkdir(staging, { recursive: true, mode: 0o700 });
@@ -523,6 +618,38 @@ export class ToolCache {
             return plan.result(target);
         } catch (error) {
             return this._fallback(name, error);
+        }
+    }
+
+    async _installInPlace(name, target, generation, plan) {
+        const lock = `${target}.lock`;
+        let handle;
+        try {
+            handle = await fs.open(lock, 'wx', 0o600);
+        } catch (error) {
+            if (error?.code !== 'EEXIST') throw error;
+            const stat = await fs.stat(lock).catch(() => null);
+            if (stat && this.now() - stat.mtimeMs < IN_PLACE_LOCK_STALE_MS) throw new Error(`${name} preparation is already in progress`);
+            await fs.rm(lock, { force: true });
+            handle = await fs.open(lock, 'wx', 0o600);
+        }
+        try {
+            // A generation without a stamp is an interrupted installation and is started again.
+            await fs.rm(target, { recursive: true, force: true });
+            await fs.mkdir(target, { recursive: true, mode: 0o700 });
+            this.log(`[tool-cache] preparing ${name} ${Object.values(plan.versions).join(', ')}`);
+            await plan.install(target);
+            await plan.validate(target);
+            await fs.writeFile(path.join(target, 'stamp.json'), `${JSON.stringify({
+                schema: CACHE_SCHEMA, name, generation, identity: plan.identity, versions: plan.versions,
+                preparedAt: new Date().toISOString(), ...(plan.metadata?.() || {}),
+            }, null, 2)}\n`, { mode: 0o600 });
+        } catch (error) {
+            await fs.rm(target, { recursive: true, force: true });
+            throw error;
+        } finally {
+            await handle.close();
+            await fs.rm(lock, { force: true });
         }
     }
 

@@ -134,6 +134,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, robotsDir = '/robots',
                 '-e', `XDG_DATA_HOME=${homeTarget}/.local/share`, '-e', `XDG_STATE_HOME=${homeTarget}/.local/state`,
                 // No PI_CODING_AGENT_DIR: Pi and OMP both read it, so with it OMP would use Pi's state directory.
                 '-e', `OMP_DIR=${homeTarget}/.omp`,
+                '-e', `VIBE_HOME=${homeTarget}/.vibe`, '-e', 'PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring', '-e', 'VIBE_EXPERIMENTAL_ENABLE_MODEL_CATALOG=true',
                 '-e', `CLAUDE_CONFIG_DIR=${homeTarget}/.claude`,
             ] : []),
             '-v', `${homePath}:/config`, '-v', `${homePath}:${homeTarget}`,

@@ -269,7 +269,7 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
         card.querySelector('.avatar').textContent = initials(robot.name);
         card.querySelector('h3').textContent = robot.name;
         card.querySelector('.robot-id').textContent = robot.id;
-        const codingAgents = robot.codingAgents || ['codex', 'opencode', 'pi', 'omp', 'claude'];
+        const codingAgents = robot.codingAgents || ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe'];
         const agentLine = card.querySelector('.active-coding-agent');
         agentLine.textContent = `Coding agent: ${codingAgentLabel(codingAgents)}`;
         const logins = loginSummary(robot);

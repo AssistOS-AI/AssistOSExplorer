@@ -19,7 +19,7 @@ import { codingAgentLabel } from '../webchat/webchatProgressState.mjs';
 import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
 import { captureRunProducer } from './runProducer.mjs';
 
-const BACKENDS = ['codex', 'opencode', 'pi', 'omp', 'claude'];
+const BACKENDS = ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
 const MAX_OUTPUT = 16 * 1024 * 1024;
 
@@ -125,7 +125,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             // unsupported optional task override must leave robot defaults intact.
         }
         if (!backend || !isInstalled(backend)) {
-            throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN, PI_BIN, OMP_BIN or CLAUDE_BIN and authenticate it in the dedicated ALA home.`);
+            throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN, PI_BIN, OMP_BIN, CLAUDE_BIN or VIBE_BIN and authenticate it in the dedicated ALA home.`);
         }
         return { cwd, home, workspaceRoot, session, resume: Boolean(resumeBackend), backend,
             requestedBackend: resumeBackend ? null : requestedBackend, models, efforts, permissionMode, agents, robotId, env: envSnapshot };
@@ -203,8 +203,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const config = await configuration(sessionId, env);
             await selectTaskEffort(config, controller.signal);
             const { cwd, home, backend, api, permissionMode } = config;
-            // Pi and OMP have no native ask mode. Reject before transcript or native state creation.
-            if ((backend === 'pi' || backend === 'omp') && permissionMode === 'ask-for-approval') {
+            // Pi, OMP and Mistral Vibe have no native ask mode. Reject before transcript or native state creation.
+            if (['pi', 'omp', 'vibe'].includes(backend) && permissionMode === 'ask-for-approval') {
                 throw new Error(`${codingAgentLabel(backend)} does not support ask-for-approval; select full-access or use Codex, OpenCode or Claude Code.`);
             }
             const snapshot = await skillCatalog.refresh(sessionId, { execution: true, cwd });

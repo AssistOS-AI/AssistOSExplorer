@@ -311,7 +311,8 @@
                 "opencode",
                 "pi",
                 "omp",
-                "claude"
+                "claude",
+                "vibe"
               ],
               "optional": true
             },
