@@ -1112,6 +1112,34 @@ jobs:
             echo "::error::Timed out waiting for the graph runtimes to stay ready."
             return 1
           }
+          # RoboTeam's manifest declares these two `link-install` checkouts at the workspace root. They hold no agent
+          # folder, so `ploinky update repo <name>` cannot resolve them ("not installed") and the repository listing
+          # never names them. Each moves by a fast-forward inside the Box under the host lock, and only when it exists.
+          # A checkout that is a symlink, has another (or a redirected) origin, is off its branch, is dirty (untracked files count) or has diverged fails the
+          # run and is left untouched. The program holds no single quote, because run_in_box wraps it in one.
+          LINK_INSTALL_PROGRAM='set -eu
+          export GIT_ALLOW_PROTOCOL=https
+          for name in AdvancedLanguageAgent DocumentationSkills; do
+            if [ ! -e "$name" ] && [ ! -L "$name" ]; then echo "$name is not at the workspace root; skipped."; continue; fi
+            if [ -L "$name" ]; then echo "$name is a symlink; left untouched." >&2; exit 1; fi
+            url=https://github.com/AssistOS-AI/$name.git
+            link_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$name" "$@"; }
+            origin=$(link_git remote get-url origin) || { echo "$name has no origin; left untouched." >&2; exit 1; }
+            if [ "$origin" != "$url" ] && [ "$origin" != "${url%.git}" ]; then echo "$name has an unexpected origin; left untouched." >&2; exit 1; fi
+            branch=$(link_git symbolic-ref --short HEAD) || { echo "$name is on a detached HEAD; left untouched." >&2; exit 1; }
+            if [ -n "$(link_git status --porcelain)" ]; then echo "$name has uncommitted or untracked changes; left untouched." >&2; exit 1; fi
+            link_git fetch --quiet "$url" "+refs/heads/$branch:refs/remotes/origin/$branch"
+            if link_git merge-base --is-ancestor HEAD "refs/remotes/origin/$branch"; then
+              :
+            else
+              status=$?
+              if [ "$status" -eq 1 ]; then echo "$name has commits that $branch lacks; left untouched." >&2
+              else echo "$name could not be compared with origin/$branch; left untouched." >&2; fi
+              exit 1
+            fi
+            link_git merge --quiet --ff-only "refs/remotes/origin/$branch"
+            echo "$name $(link_git rev-parse --short HEAD) on $branch."
+          done'
           # Start never fetches a checkout that exists, so kept sources move forward here. A full `ploinky update`
           # fails on an enabled repository with no Git checkout, so each other repository moves on its own; a
           # dirty or diverged required source fails the run and is left untouched.
@@ -1131,6 +1159,10 @@ jobs:
                 ploinky_locked update repo "$repo"
               fi
             done
+            if ! run_in_box "$LINK_INSTALL_PROGRAM" < /dev/null; then
+              echo "::error::A link-install checkout could not be fast-forwarded (it must be clean, untracked files included) and was left untouched, or another Explorer QA operation holds the host lock. Repositories may already have changed; no restart has occurred."
+              exit 1
+            fi
           }
 
           if [ "${CLOUDFLARE_TUNNEL_CREATED:-}" = true ] && grep -qx 'QA_KEPT_PUBLICATION=true' "$BOOTSTRAP_LOG"; then
