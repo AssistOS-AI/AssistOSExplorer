@@ -350,6 +350,10 @@ test('every refusal comes before the first mutation, in the specified order', ()
         const steps = ['Validate GitHub configuration', 'Prepare SSH key', DEPLOY_STEP[key]].map((name) => source.indexOf(`- name: ${name}\n`));
         assert.deepEqual([...steps].sort((a, b) => a - b), steps);
         assert.ok(body.indexOf("<<'REMOTE'") < body.indexOf('# BEGIN QA product flow'));
+        if (key === 'scriptahub') {
+            // The dependency gate is the resolve step: it runs before the step that pulls, tags, merges and restarts.
+            assert.ok(source.indexOf('- name: Resolve the ScriptaHub source and the published images\n') < source.indexOf(`- name: ${DEPLOY_STEP[key]}\n`));
+        }
         assert.ok(flow.indexOf('BOX_STATE=present') > flow.indexOf('STATUS_OUTPUT="$(ploinky_read status)"'));
         assert.ok(flow.indexOf('BOX_STATE=present') < flow.indexOf('prune_images pre'));
         // The prune is not a mutation of product state, and no mutation precedes it.
@@ -814,7 +818,8 @@ const manifestWith = (change) => `${JSON.stringify(change(JSON.parse(bizansoFile
 function writeTree(dir, files) {
     for (const [name, content] of Object.entries(files)) {
         fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
-        fs.writeFileSync(path.join(dir, name), content);
+        if (content !== null && typeof content === 'object') fs.symlinkSync(content.symlink, path.join(dir, name));
+        else fs.writeFileSync(path.join(dir, name), content);
     }
 }
 function vcs(cwd, ...args) {
@@ -1361,32 +1366,58 @@ const AGENT_ID = hex('e');
 const ROBOT_ID = hex('f');
 const OLD_ROBOTEAM_ID = hex('1');
 const OLD_AGENT_ID = hex('2');
-const scriptaFiles = (extra = {}) => ({
+const INPUTS = 'scriptahubAgent/deployment/dependency-inputs.txt';
+const LOCKFILE = 'skills/a/external/html/package-lock.json';
+const FINGERPRINT_LABEL = 'io.assistos.scriptahub.dependency-fingerprint';
+// A null value leaves the file out; { symlink } makes a link.
+const scriptaFiles = (extra = {}) => Object.fromEntries(Object.entries({
     'skills/a/SKILL.md': 'skill a\n',
+    [LOCKFILE]: '{}\n',
+    [INPUTS]: `${INPUTS}\n${LOCKFILE}\n`,
     'scriptahubAgent/deployment/start.mjs': 'start\n',
     'scriptahubAgent/site/reader/reader.css': 'body {}\n',
     'README.md': 'one\n',
     ...extra,
-});
-const platformJson = (revision, other = revision, trees = ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)]) => {
-    const labels = (value) => ({ 'org.opencontainers.image.revision': value, 'io.assistos.scriptahub.skills-tree': trees[0], 'io.assistos.scriptahub.deployment-tree': trees[1], 'io.assistos.scriptahub.reader-css-blob': trees[2], 'io.assistos.scriptahub.assets-image': `docker.io/assistos/scriptahub-assets@sha256:${'d'.repeat(64)}` });
+}).filter(([, value]) => value !== null));
+// An independent oracle of dependency fingerprint v1: sha256 of the header and one "<blob id> <path>" line per listed file.
+const blobId = (bytes) => crypto.createHash('sha1').update(`blob ${Buffer.byteLength(bytes)}\0`).update(bytes).digest('hex');
+function parseInputs(text) {
+    if (!text || text.includes('\r') || !text.endsWith('\n')) throw new Error('dependency inputs');
+    const lines = text.slice(0, -1).split('\n');
+    lines.forEach((line, index) => {
+        if (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(line) || line.split('/').some((part) => part === '.' || part === '..')) throw new Error(`path ${line}`);
+        if (index && lines[index - 1] >= line) throw new Error(`order ${line}`);
+    });
+    if (!lines.includes(INPUTS)) throw new Error('self');
+    return lines;
+}
+const oracleFingerprint = (files) => {
+    const hash = crypto.createHash('sha256').update('scriptahub-dependency-fingerprint-v1\n');
+    for (const file of parseInputs(files[INPUTS])) hash.update(`${blobId(files[file])} ${file}\n`);
+    return hash.digest('hex');
+};
+const GOLDEN = { files: { [INPUTS]: `${INPUTS}\nskills/x/external/html/package-lock.json\n`, 'skills/x/external/html/package-lock.json': '{}\n' }, fingerprint: 'b46a273fb33f3535a42f1244c246494d87596d7214588d45b9bdb74877b40016' };
+const BASE_FINGERPRINT = oracleFingerprint(scriptaFiles());
+// The legacy tree labels stay published for the transition; the gate no longer reads them.
+const platformJson = (revision, other = revision, fingerprint = BASE_FINGERPRINT, extra = {}) => {
+    const labels = (value) => ({ 'org.opencontainers.image.revision': value, 'io.assistos.scriptahub.skills-tree': 'a'.repeat(40), 'io.assistos.scriptahub.deployment-tree': 'b'.repeat(40), 'io.assistos.scriptahub.reader-css-blob': 'c'.repeat(40), 'io.assistos.scriptahub.assets-image': `docker.io/assistos/scriptahub-assets@sha256:${'d'.repeat(64)}`, ...(fingerprint === null ? {} : { [FINGERPRINT_LABEL]: fingerprint }), ...extra });
     return JSON.stringify({ 'linux/amd64': { config: { Labels: labels(revision) } }, 'linux/arm64': { config: { Labels: labels(other) } } });
 };
 
 // A source checkout on the runner with the image revision T and the head H, the QA checkout in the Box at `old`, and the
 // registry, the local images and the containers the full update starts from.
 function scriptaBox(t, options = {}) {
-    const { headFiles = {}, image = 'ancestor', old = 'image', robotJson, agentJson, localRobot = false, robotRevisionPulled } = options;
+    const { headFiles = {}, image = 'ancestor', old = 'image', robotJson, agentJson, localRobot = false, robotRevisionPulled, fingerprint = BASE_FINGERPRINT, labelExtra = {}, baseFiles = {} } = options;
     const box = makeBox(t);
     const source = path.join(box.github, '.qa-scriptahub-source');
-    const base = commitTree(source, scriptaFiles(), 'image revision');
+    const base = commitTree(source, scriptaFiles(baseFiles), 'image revision');
     let imageRevision = base;
     if (image === 'divergent') {
         vcs(source, 'checkout', '--quiet', '-b', 'other');
-        imageRevision = commitTree(source, scriptaFiles({ 'README.md': 'other\n' }), 'other');
+        imageRevision = commitTree(source, scriptaFiles({ ...baseFiles, 'README.md': 'other\n' }), 'other');
         vcs(source, 'checkout', '--quiet', 'main');
         for (const entry of fs.readdirSync(source)) if (entry !== '.git') fs.rmSync(path.join(source, entry), { recursive: true, force: true });
-        writeTree(source, scriptaFiles());
+        writeTree(source, scriptaFiles(baseFiles));
     }
     if (image === 'unknown') imageRevision = 'a'.repeat(40);
     const head = image === 'head' ? base : commitTree(source, scriptaFiles({ 'README.md': 'two\n', ...headFiles }), 'head');
@@ -1398,8 +1429,7 @@ function scriptaBox(t, options = {}) {
     box.write(`imagetools.raw.${refKey(`${ROBOT_REPO}:runtime`)}`, robotRaw);
     box.write(`imagetools.raw.${refKey(`${AGENT_REPO}:runtime`)}`, agentRaw);
     box.write(`imagetools.json.${refKey(`${ROBOT_REPO}@${robotIndex}`)}`, robotJson ?? platformJson(imageRevision));
-    const trees = ['skills', 'scriptahubAgent/deployment', 'scriptahubAgent/site/reader/reader.css'].map((p) => vcs(source, 'rev-parse', `${base}:${p}`));
-    box.write(`imagetools.json.${refKey(`${AGENT_REPO}@${agentIndex}`)}`, agentJson ?? robotJson ?? platformJson(imageRevision, imageRevision, trees));
+    box.write(`imagetools.json.${refKey(`${AGENT_REPO}@${agentIndex}`)}`, agentJson ?? robotJson ?? platformJson(imageRevision, imageRevision, fingerprint, labelExtra));
     box.registry([
         [`${AGENT_REPO}@${agentIndex}`, AGENT_ID, robotRevisionPulled ?? imageRevision, '-'],
         [`${ROBOT_REPO}@${robotIndex}`, ROBOT_ID, robotRevisionPulled ?? imageRevision, '-'],
@@ -1441,11 +1471,17 @@ const noScriptaMutation = (box, before) => {
     assert.equal(checkoutHead(box), before, 'the QA checkout did not move');
 };
 
-test('ScriptaHub gate: the checkout moves only when the three copied paths equal those of the agent image revision', (t) => {
+test('ScriptaHub gate: the checkout moves when the dependency fingerprint equals the image label, whatever else changed', (t) => {
     const accepted = {
         'the image was built from the head': { image: 'head' },
         'only README.md changed after the image revision': {},
         'a path the image does not copy changed': { headFiles: { 'docs/notes.md': 'new\n' } },
+        'a skill SKILL.md changed after the image revision': { headFiles: { 'skills/a/SKILL.md': 'changed\n' } },
+        'a new skill source file': { headFiles: { 'skills/b/SKILL.md': 'new\n' } },
+        'the deployment launcher changed': { headFiles: { 'scriptahubAgent/deployment/start.mjs': 'changed\n' } },
+        'the reader stylesheet changed': { headFiles: { 'scriptahubAgent/site/reader/reader.css': 'body { color: red }\n' } },
+        // The legacy tree labels are still published but nothing reads them.
+        'legacy tree labels that are wrong, malformed or empty': { labelExtra: { 'io.assistos.scriptahub.skills-tree': '0'.repeat(40), 'io.assistos.scriptahub.deployment-tree': 'x', 'io.assistos.scriptahub.reader-css-blob': '' } },
     };
     for (const [name, options] of Object.entries(accepted)) {
         const box = scriptaBox(t, options);
@@ -1456,15 +1492,12 @@ test('ScriptaHub gate: the checkout moves only when the three copied paths equal
         assert.equal(env.SCRIPTA_AGENT_REVISION, box.imageRevision, name);
         assert.equal(env.SCRIPTA_ROBOTEAM_INDEX, box.robotIndex, name);
         assert.equal(env.SCRIPTA_AGENT_INDEX, box.agentIndex, name);
-        assert.equal(env.SCRIPTA_COPIED_TREES.split(' ').length, 3, name);
-        assert.match(env.SCRIPTA_COPIED_TREES, /^[0-9a-f]{40}( [0-9a-f]{40}){2}$/, name);
-        assert.equal(env.SCRIPTA_AGENT_REVISION, box.imageRevision, name);
+        assert.equal(env.SCRIPTA_DEPENDENCY_FINGERPRINT, BASE_FINGERPRINT, name);
+        assert.equal(Object.hasOwn(env, 'SCRIPTA_COPIED_TREES'), false, name);
     }
     const refused = {
-        'skills changed after the image': { headFiles: { 'skills/a/SKILL.md': 'changed\n' }, path: 'skills' },
-        'a new skill file': { headFiles: { 'skills/b/SKILL.md': 'new\n' }, path: 'skills' },
-        'the deployment folder changed': { headFiles: { 'scriptahubAgent/deployment/start.mjs': 'changed\n' }, path: 'scriptahubAgent/deployment' },
-        'the reader stylesheet changed': { headFiles: { 'scriptahubAgent/site/reader/reader.css': 'body { color: red }\n' }, path: 'scriptahubAgent/site/reader/reader.css' },
+        'a lockfile of a skill changed after the image': { headFiles: { [LOCKFILE]: '{"changed":true}\n' }, path: LOCKFILE },
+        'the dependency inputs list changed': { headFiles: { [INPUTS]: `${INPUTS}\n${LOCKFILE}\nskills/a/external/html/package.json\n`, 'skills/a/external/html/package.json': '{}\n' }, path: INPUTS },
         'the image revision is not an ancestor of the head': { image: 'divergent', path: null, message: /is not an ancestor of main@/ },
         'the image revision is not in the history': { image: 'unknown', path: null, message: /is not an ancestor of main@/ },
     };
@@ -1473,11 +1506,68 @@ test('ScriptaHub gate: the checkout moves only when the three copied paths equal
         const { result } = resolveScripta(box);
         assert.notEqual(result.status, 0, name);
         const log = logOf(result);
-        assert.match(log, options.message || new RegExp(`::error::${options.path.replace(/\//g, '\\/')} differs from the agent image source labels`), name);
+        assert.match(log, options.message || new RegExp(`::error::Skill dependencies changed after the agent image revision: .*changed inputs: [^)]*${options.path.replace(/[./]/g, '\\$&')}`), name);
         for (const word of ['publish-scriptahub-agent-image.yml', 'Nothing was changed']) {
             assert.ok(log.includes(word), `${name}: ${word}`);
         }
+        assert.equal(fs.readFileSync(box.githubEnv, 'utf8'), '', `${name}: nothing exported`);
         assert.equal(box.calls().some((line) => /^(?:ploinky|podman)/.test(line)), false);
+    }
+});
+
+test('ScriptaHub flow: a skill source change after the image revision moves the checkout and logs "dependency fingerprint equal"', (t) => {
+    const box = scriptaBox(t, { headFiles: { 'skills/a/SKILL.md': 'changed after the image\n' } });
+    const result = runScriptaFlow(box);
+    assert.equal(result.status, 0, logOf(result));
+    assert.match(result.stdout, new RegExp(`\\[deploy-qa-scriptahub\\] main main@${box.head}; agent image revision ${box.imageRevision}; dependency fingerprint equal\\n`));
+    assert.equal(checkoutHead(box), box.head, 'the checkout moved');
+    assert.equal(fs.readFileSync(path.join(box.clone, 'skills/a/SKILL.md'), 'utf8'), 'changed after the image\n');
+    assert.equal(exported(box).SCRIPTA_DEPENDENCY_FINGERPRINT, BASE_FINGERPRINT);
+    assert.ok(box.calls().includes('ploinky restart'));
+});
+
+// Every refusal of the gate stops the run in the resolve step: no value is exported, so the deploy step cannot start,
+// and nothing was pulled, tagged, merged or restarted.
+test('ScriptaHub gate: every dependency refusal stops before the first pull, tag, merge or restart', (t) => {
+    const rewrite = (box, change) => {
+        const file = path.join(box.stub, `imagetools.json.${refKey(`${AGENT_REPO}@${box.agentIndex}`)}`);
+        const platforms = JSON.parse(fs.readFileSync(file, 'utf8'));
+        change(platforms, box);
+        fs.writeFileSync(file, JSON.stringify(platforms));
+    };
+    const label = (value, platforms = ['linux/amd64', 'linux/arm64']) => (box) => rewrite(box, (json) => {
+        for (const platform of platforms) {
+            if (value === undefined) delete json[platform].config.Labels[FINGERPRINT_LABEL];
+            else json[platform].config.Labels[FINGERPRINT_LABEL] = value;
+        }
+    });
+    const cases = {
+        'the label is missing on both platforms': { setup: label(undefined), message: /::error::The agent image predates mounted skill sources/ },
+        'the label is on amd64 only': { setup: label(undefined, ['linux/arm64']), message: /::error::Invalid ScriptaHub image labels/ },
+        'the label is on arm64 only': { setup: label(undefined, ['linux/amd64']), message: /::error::Invalid ScriptaHub image labels/ },
+        'the label differs between the platforms': { setup: (box) => rewrite(box, (json) => { json['linux/arm64'].config.Labels[FINGERPRINT_LABEL] = 'e'.repeat(64); }), message: /::error::Invalid ScriptaHub image labels/ },
+        'the label has uppercase hex': { setup: label(BASE_FINGERPRINT.toUpperCase()), message: /::error::Invalid ScriptaHub image labels/ },
+        'the label is 63 digits': { setup: label(BASE_FINGERPRINT.slice(1)), message: /::error::Invalid ScriptaHub image labels/ },
+        'the label is 65 digits': { setup: label(`${BASE_FINGERPRINT}0`), message: /::error::Invalid ScriptaHub image labels/ },
+        'the label is a 40-digit tree id': { setup: label('a'.repeat(40)), message: /::error::Invalid ScriptaHub image labels/ },
+        'the label is not hex': { setup: label('g'.repeat(64)), message: /::error::Invalid ScriptaHub image labels/ },
+        'the label is empty': { setup: label(''), message: /::error::Invalid ScriptaHub image labels/ },
+        'the label is not the fingerprint of the image revision': { setup: label('f'.repeat(64)), message: /::error::The agent image dependency fingerprint f{64} differs from the fingerprint [0-9a-f]{64} of its revision [0-9a-f]{40}\./ },
+        'a lockfile changed after the image revision': { options: { headFiles: { [LOCKFILE]: '{"changed":true}\n' } }, message: new RegExp(`::error::Skill dependencies changed after the agent image revision: .*changed inputs: ${LOCKFILE.replace(/[./]/g, '\\$&')}`) },
+        'a listed input became a symlink at the head': { options: { headFiles: { [LOCKFILE]: { symlink: 'SKILL.md' } } }, message: /::error::The dependency fingerprint of main@[0-9a-f]{40} could not be computed\./ },
+        'a listed input was deleted at the head': { options: { headFiles: { [LOCKFILE]: null } }, message: /::error::The dependency fingerprint of main@[0-9a-f]{40} could not be computed\./ },
+        'the inputs list is malformed at the head': { options: { headFiles: { [INPUTS]: `${LOCKFILE}\n${INPUTS}\n` } }, message: /::error::The dependency fingerprint of main@[0-9a-f]{40} could not be computed\./ },
+        'the image revision has no inputs list': { options: { baseFiles: { [INPUTS]: null } }, message: /::error::The dependency fingerprint of the agent image revision [0-9a-f]{40} could not be computed\./ },
+    };
+    for (const [name, scenario] of Object.entries(cases)) {
+        const box = scriptaBox(t, scenario.options);
+        scenario.setup?.(box);
+        const { result } = resolveScripta(box);
+        assert.notEqual(result.status, 0, `${name}: ${logOf(result)}`);
+        assert.match(logOf(result), scenario.message, name);
+        assert.match(logOf(result), /Nothing was changed/, name);
+        assert.equal(fs.readFileSync(box.githubEnv, 'utf8'), '', `${name}: nothing exported, so the deploy step has no source to start from`);
+        noScriptaMutation(box, box.base);
     }
 });
 
@@ -1515,32 +1605,62 @@ test('ScriptaHub gate: malformed or inconsistent registry answers refuse the run
     }
 });
 
-test('ScriptaHub gate rejects missing or inconsistent copied-input labels on either platform', (t) => {
-    for (const key of ['io.assistos.scriptahub.skills-tree', 'io.assistos.scriptahub.deployment-tree', 'io.assistos.scriptahub.reader-css-blob', 'io.assistos.scriptahub.assets-image']) {
+test('ScriptaHub gate rejects a revision, assets or dependency fingerprint label that is wrong on either platform', (t) => {
+    const wrong = { 'org.opencontainers.image.revision': '0'.repeat(41), 'io.assistos.scriptahub.assets-image': '0'.repeat(40), [FINGERPRINT_LABEL]: '0'.repeat(40) };
+    for (const [key, value] of Object.entries(wrong)) {
         for (const platform of ['linux/amd64', 'linux/arm64']) {
             const box = scriptaBox(t);
             const file = path.join(box.stub, `imagetools.json.${refKey(`${AGENT_REPO}@${box.agentIndex}`)}`);
             const config = JSON.parse(fs.readFileSync(file, 'utf8'));
-            config[platform].config.Labels[key] = '0'.repeat(40);
+            config[platform].config.Labels[key] = value;
             fs.writeFileSync(file, JSON.stringify(config));
             const { result } = resolveScripta(box);
             assert.notEqual(result.status, 0, `${key} ${platform}`);
+            assert.match(logOf(result), /Invalid ScriptaHub image labels\. Nothing was changed\./, `${key} ${platform}`);
             assert.equal(fs.readFileSync(box.githubEnv, 'utf8'), '');
         }
     }
+    // The legacy tree labels are not required: an image without them passes.
+    const box = scriptaBox(t);
+    const file = path.join(box.stub, `imagetools.json.${refKey(`${AGENT_REPO}@${box.agentIndex}`)}`);
+    const config = JSON.parse(fs.readFileSync(file, 'utf8'));
+    for (const platform of Object.keys(config)) for (const key of ['skills-tree', 'deployment-tree', 'reader-css-blob']) delete config[platform].config.Labels[`io.assistos.scriptahub.${key}`];
+    fs.writeFileSync(file, JSON.stringify(config));
+    const { result } = resolveScripta(box);
+    assert.equal(result.status, 0, logOf(result));
 });
 
 const programOf = (key, name) => deployBody(key).match(new RegExp(`^${name}='([^']*)'$`, 'm'))[1];
 const runProgram = (box, program, input = '') => spawnSync(PROGRAM_SHELL, ['-c', program, 'sh'], { cwd: box.ws, input, encoding: 'utf8', env: box.env() });
 
-test('ScriptaHub read program: a wrong origin, a dirty tree, a symlinked .git or a detached head is refused, and a clean checkout prints its branch, head and copied trees', (t) => {
+test('ScriptaHub read program: a wrong origin, a dirty tree, a symlinked .git or a detached head is refused, and a clean checkout prints its branch, head and dependency fingerprint', (t) => {
     const program = programOf('scriptahub', 'SCRIPTAHUB_READ_PROGRAM');
     const box = scriptaBox(t);
     const ok = runProgram(box, program);
     assert.equal(ok.status, 0, ok.stderr);
-    assert.match(ok.stdout, /^BRANCH=main\nHEAD=[0-9a-f]{40}\nCOPIED=[0-9a-f]{40} [0-9a-f]{40} [0-9a-f]{40}\n$/);
+    assert.match(ok.stdout, /^BRANCH=main\nHEAD=[0-9a-f]{40}\nDEPENDENCIES=[0-9a-f]{64}\n$/);
     assert.equal(ok.stdout.match(/HEAD=(\S+)/)[1], box.base);
-    assert.equal(ok.stdout.match(/COPIED=(.*)/)[1], ['skills', 'scriptahubAgent/deployment', 'scriptahubAgent/site/reader/reader.css'].map((p) => vcs(box.clone, 'rev-parse', `HEAD:${p}`)).join(' '));
+    assert.equal(ok.stdout.match(/DEPENDENCIES=(.*)/)[1], BASE_FINGERPRINT);
+    assert.equal(ok.stderr, '');
+
+    // A checkout that predates the inputs list, or whose list is unusable, is still readable: the product check needs only the
+    // branch and the head before the move. The empty value never equals the label, so the post-move check refuses it.
+    const predates = scriptaBox(t);
+    vcs(predates.clone, 'rm', '--quiet', INPUTS);
+    vcs(predates.clone, 'commit', '--quiet', '-m', 'predates the dependency inputs');
+    const old = runProgram(predates, program);
+    assert.equal(old.status, 0, old.stderr);
+    assert.match(old.stdout, /^BRANCH=main\nHEAD=[0-9a-f]{40}\nDEPENDENCIES=\n$/);
+    assert.match(old.stderr, /\ndependency fingerprint: cannot read scriptahubAgent\/deployment\/dependency-inputs\.txt at [0-9a-f]{40}\n$/);
+    const inputLinked = scriptaBox(t);
+    fs.rmSync(path.join(inputLinked.clone, LOCKFILE));
+    fs.symlinkSync('SKILL.md', path.join(inputLinked.clone, LOCKFILE));
+    vcs(inputLinked.clone, 'add', '-A');
+    vcs(inputLinked.clone, 'commit', '--quiet', '-m', 'an input became a symlink');
+    const link = runProgram(inputLinked, program);
+    assert.equal(link.status, 0, link.stderr);
+    assert.match(link.stdout, /\nDEPENDENCIES=\n$/);
+    assert.match(link.stderr, new RegExp(`^dependency fingerprint: ${LOCKFILE.replace(/[./]/g, '\\$&')} is not a regular file at [0-9a-f]{40}\\n$`));
 
     const origin = scriptaBox(t);
     vcs(origin.clone, 'config', 'remote.origin.url', 'https://example.test/other.git');
@@ -1678,7 +1798,7 @@ test('ScriptaHub flow: a source and image change moves the checkout, tags the ge
     assert.equal(result.status, 0, logOf(result));
     const env = exported(box);
     inOrder(result.stdout, [
-        new RegExp(`\\[deploy-qa-scriptahub\\] main main@${box.head}; agent image revision ${box.imageRevision}; copied trees equal\\n`),
+        new RegExp(`\\[deploy-qa-scriptahub\\] main main@${box.head}; agent image revision ${box.imageRevision}; dependency fingerprint equal\\n`),
         new RegExp(`\\[deploy-qa-scriptahub\\] checkout ${box.base} -> ${box.head}\\n`),
         new RegExp(`\\[deploy-qa-scriptahub\\] agent image ${AGENT_ID}; RoboTeam image ${ROBOT_ID}; roboteam-agent:runtime before ${OLD_ROBOTEAM_ID}\\n`),
         /\[deploy-qa-scriptahub\] restart result: whole\n/,
@@ -1825,9 +1945,9 @@ test('ScriptaHub flow: a moved tag, a corrupted checkout or a lock held stop the
     assert.deepEqual(moved.calls().filter((line) => /^podman tag.*roboteam|^ploinky restart/.test(line)), []);
 
     const corrupted = scriptaBox(t);
-    const bad = runScriptaFlow(corrupted, { SCRIPTA_COPIED_TREES: `${'1'.repeat(40)} ${'2'.repeat(40)} ${'3'.repeat(40)}` });
+    const bad = runScriptaFlow(corrupted, { SCRIPTA_DEPENDENCY_FINGERPRINT: '1'.repeat(64) });
     assert.notEqual(bad.status, 0);
-    assert.match(bad.stdout, /Post-mutation failure: the ScriptaHub checkout moved to [0-9a-f]{40}, but its copied trees .* are not the ones the agent image was built from .*scriptahub-agent:runtime tag names the pulled agent image\. roboteam-agent:runtime was not retagged and nothing was restarted; the checkout is left moved\./);
+    assert.match(bad.stdout, /Post-mutation failure: the ScriptaHub checkout moved to [0-9a-f]{40}, but its dependency fingerprint \([0-9a-f]{64}\) is not the one the agent image carries \(1{64}\)\..*scriptahub-agent:runtime tag names the pulled agent image\. roboteam-agent:runtime was not retagged and nothing was restarted; the checkout is left moved\./);
     assert.equal(checkoutHead(corrupted), corrupted.head);
     assert.deepEqual(corrupted.calls().filter((line) => /^podman tag /.test(line) && line.endsWith(ROBOTEAM_TAG) || /^ploinky restart/.test(line)), []);
 
@@ -2061,10 +2181,19 @@ test('ScriptaHub resolve: nothing but regex-checked values reaches GITHUB_ENV, a
         assert.notEqual(result.status, 0, JSON.stringify(label));
         assert.equal(fs.readFileSync(box.githubEnv, 'utf8'), '');
     }
+    // The dependency fingerprint label is held to the same rule: a value with a line break would add a variable to GITHUB_ENV.
+    const hostileFingerprint = `${BASE_FINGERPRINT}\nSCRIPTA_HEAD=${'0'.repeat(40)}`;
+    for (const fingerprint of [hostileFingerprint, `${BASE_FINGERPRINT}\n`, `${BASE_FINGERPRINT.slice(0, 63)}\n`]) {
+        const box = scriptaBox(t, { fingerprint });
+        const { result } = resolveScripta(box);
+        assert.notEqual(result.status, 0, JSON.stringify(fingerprint));
+        assert.equal(fs.readFileSync(box.githubEnv, 'utf8'), '');
+    }
     const good = scriptaBox(t);
     const resolved = resolveScripta(good);
     assert.equal(resolved.env.SCRIPTA_AGENT_REVISION, good.base);
-    const shapes = { SCRIPTA_HEAD: /^[0-9a-f]{40}$/, SCRIPTA_BRANCH: /^[A-Za-z0-9][A-Za-z0-9._/-]*$/, SCRIPTA_ROBOTEAM_INDEX: /^sha256:[0-9a-f]{64}$/, SCRIPTA_AGENT_INDEX: /^sha256:[0-9a-f]{64}$/, SCRIPTA_COPIED_TREES: /^[0-9a-f]{40}( [0-9a-f]{40}){2}$/, SCRIPTA_AGENT_REVISION: /^[0-9a-f]{40}$/ };
+    assert.deepEqual(Object.keys(resolved.env), ['SCRIPTA_HEAD', 'SCRIPTA_BRANCH', 'SCRIPTA_AGENT_REVISION', 'SCRIPTA_AGENT_INDEX', 'SCRIPTA_ROBOTEAM_INDEX', 'SCRIPTA_DEPENDENCY_FINGERPRINT']);
+    const shapes = { SCRIPTA_HEAD: /^[0-9a-f]{40}$/, SCRIPTA_BRANCH: /^[A-Za-z0-9][A-Za-z0-9._/-]*$/, SCRIPTA_ROBOTEAM_INDEX: /^sha256:[0-9a-f]{64}$/, SCRIPTA_AGENT_INDEX: /^sha256:[0-9a-f]{64}$/, SCRIPTA_DEPENDENCY_FINGERPRINT: /^[0-9a-f]{64}$/, SCRIPTA_AGENT_REVISION: /^[0-9a-f]{40}$/ };
     for (const [name, shape] of Object.entries(shapes)) assert.match(resolved.env[name], shape, name);
     // The Bizanso step writes four values, each checked or built from the runner's own temp path.
     const biz = bizansoBox(t);
@@ -2124,4 +2253,174 @@ test('restart_product: a drain timeout counts as a refused drain, and the error 
     const coded = code.exec(restartScript(code, 'bizanso'));
     assert.deepEqual(restartCalls(code), ['ploinky restart bizanso/bizanso']);
     assert.match(coded.stdout, /::error::The targeted drain of bizanso\/bizanso/);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The dependency fingerprint block: one marked shell function that the resolve step runs on the runner and the Box programs
+// run in the Box. Its text is the same in every use, and it must fail closed wherever parseDependencyInputs of the
+// ScriptaHubAgent reference implementation throws.
+
+const FP_BEGIN = `${I}# BEGIN ScriptaHub dependency fingerprint`;
+const FP_END = `${I}# END ScriptaHub dependency fingerprint`;
+const fingerprintBlocks = (source) => {
+    const found = [];
+    let from = 0;
+    for (;;) {
+        const start = source.indexOf(`\n${FP_BEGIN}\n`, from);
+        if (start === -1) return found;
+        const end = source.indexOf(`\n${FP_END}\n`, start);
+        assert.notEqual(end, -1, 'an unterminated fingerprint block');
+        found.push(source.slice(start + 1, end + 1 + FP_END.length));
+        from = end;
+    }
+};
+const unindent10 = (text) => text.split('\n').map((line) => (line.startsWith(I) ? line.slice(I.length) : line)).join('\n');
+const FP_BLOCK = fingerprintBlocks(workflow('scriptahub'))[0];
+const FP_SHELLS = [...new Set([PROGRAM_SHELL, 'bash', ...(fs.existsSync('/bin/dash') ? ['/bin/dash'] : [])])];
+
+test('the dependency fingerprint block is byte-identical in the four places that use it, and has no single quote', () => {
+    const product = workflow('scriptahub');
+    const resolveStep = step(product, 'Resolve the ScriptaHub source and the published images');
+    const readProgram = programOf('scriptahub', 'SCRIPTAHUB_READ_PROGRAM');
+    assert.equal(fingerprintBlocks(resolveStep).length, 1, 'product resolve step');
+    assert.equal(fingerprintBlocks(product).length, 2, 'product: the resolve step and the read program');
+    assert.ok(deployBody('scriptahub').includes(unindent10(FP_BLOCK)), 'the read program holds the block');
+    assert.ok(readProgram.includes(unindent10(FP_BLOCK).split('\n').slice(1, -1).join('\n')), 'the read program holds the function');
+    const ploinky = fingerprintBlocks(ploinkyNow);
+    assert.equal(ploinky.length, 2, 'full deploy: the resolve step and the pre-restart program');
+    assert.equal(fingerprintBlocks(step(ploinkyNow, 'Resolve the ScriptaHub source and the published images')).length, 1);
+    for (const use of [...fingerprintBlocks(product), ...ploinky]) assert.equal(use, FP_BLOCK);
+    assert.equal(FP_BLOCK.includes("'"), false, 'a single quote would end the single-quoted Box program');
+    // Git runs only through fp_git, with hooks and fsmonitor off, as every other Git call of the in-Box programs does.
+    const gitLines = FP_BLOCK.split('\n').filter((line) => /(^|[^A-Za-z_])git /.test(line.replace(/"[^"]*"/g, '""')) && !/^\s*#/.test(line));
+    assert.deepEqual(gitLines.map((line) => line.trim()), ['fp_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$repo" "$@"; }']);
+    assert.equal(FP_BLOCK.split('\n').filter((line) => /^ *#/.test(line) === false && line.trim() && !line.startsWith(`${I}`)).length, 0, 'every line is indented like the rest of the step');
+    // The Box programs run with errexit and no pipefail: no pipeline in the block may end in a failure that is not checked.
+    for (const line of FP_BLOCK.split('\n').filter((entry) => / \| /.test(entry) && !/^\s*#/.test(entry))) {
+        assert.match(line, /\) \|\| fp_fail "/, `a pipeline must be checked: ${line}`);
+    }
+});
+
+function fixtureRepo(t, files, { gitlinks = {} } = {}) {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-fp-')));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const git = (...args) => {
+        const result = spawnSync('git', ['-c', 'core.autocrlf=false', '-c', 'user.email=t@example.test', '-c', 'user.name=t', '-c', 'init.defaultBranch=main', ...args], { cwd: dir, encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        return result.stdout.trim();
+    };
+    git('init', '--quiet');
+    for (const [name, content] of Object.entries(files)) {
+        fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+        if (typeof content === 'string') fs.writeFileSync(path.join(dir, name), content);
+        else if (content.symlink !== undefined) fs.symlinkSync(content.symlink, path.join(dir, name));
+        else fs.writeFileSync(path.join(dir, name), content.exec, { mode: 0o755 });
+    }
+    git('add', '-A');
+    for (const [name, sha] of Object.entries(gitlinks)) git('update-index', '--add', '--cacheinfo', `160000,${sha},${name}`);
+    git('commit', '--quiet', '--allow-empty', '-m', 'fixture');
+    return { dir, rev: git('rev-parse', 'HEAD'), git };
+}
+// How the callers use it: the result is tested, so errexit does not apply inside the function.
+function runFingerprint(shell, repo, rev = repo.rev) {
+    const script = `${unindent10(FP_BLOCK)}\nif out=$(scripta_dependency_fingerprint "$1" "$2"); then printf "OK %s\\n" "$out"; else printf "FAIL [%s]\\n" "$out"; fi`;
+    const result = spawnSync(shell, ['-c', script, 'sh', repo.dir, rev], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: os.tmpdir() } });
+    assert.equal(result.status, 0, result.stderr);
+    return { stdout: result.stdout, stderr: result.stderr };
+}
+
+test('the dependency fingerprint block produces the golden vector, and Git and the oracle agree on the fixture blobs', (t) => {
+    const repo = fixtureRepo(t, GOLDEN.files);
+    assert.equal(repo.git('rev-parse', `${repo.rev}:${INPUTS}`), 'd67c3732bb949e42f387870a4b7b259d7587f9dd');
+    assert.equal(repo.git('rev-parse', `${repo.rev}:skills/x/external/html/package-lock.json`), '0967ef424bce6791893e9a57bb952f80fd536e93');
+    assert.equal(oracleFingerprint(GOLDEN.files), GOLDEN.fingerprint);
+    for (const shell of FP_SHELLS) {
+        const result = runFingerprint(shell, repo);
+        assert.deepEqual(result, { stdout: `OK ${GOLDEN.fingerprint}\n`, stderr: '' }, shell);
+    }
+});
+
+test('the dependency fingerprint block agrees with the oracle on valid lists', (t) => {
+    const names = [INPUTS, 'skills/a/External.TXT', 'skills/a/.hidden/x_1.2-3', 'skills/a/...', 'skills/b/run', 'zz'];
+    const files = { [INPUTS]: `${[...names].sort().join('\n')}\n`, 'skills/a/External.TXT': 'upper\n', 'skills/a/.hidden/x_1.2-3': '', 'skills/a/...': 'dots\n', 'skills/b/run': { exec: '#!/bin/sh\n' }, zz: 'z\n', 'other.txt': 'not listed\n' };
+    const oracleFiles = { ...files, 'skills/b/run': '#!/bin/sh\n' };
+    const repo = fixtureRepo(t, files);
+    for (const shell of FP_SHELLS) assert.deepEqual(runFingerprint(shell, repo), { stdout: `OK ${oracleFingerprint(oracleFiles)}\n`, stderr: '' }, shell);
+    // An unlisted file changes nothing, a listed one changes the value.
+    const other = fixtureRepo(t, { ...files, 'other.txt': 'edited\n' });
+    assert.equal(runFingerprint(PROGRAM_SHELL, other).stdout, `OK ${oracleFingerprint(oracleFiles)}\n`);
+    const changed = fixtureRepo(t, { ...files, zz: 'edited\n' });
+    assert.notEqual(runFingerprint(PROGRAM_SHELL, changed).stdout, `OK ${oracleFingerprint(oracleFiles)}\n`);
+});
+
+test('the dependency fingerprint block fails closed wherever parseDependencyInputs rejects, and on a bad tree entry or commit', (t) => {
+    const lock = { [LOCKFILE]: '{}\n' };
+    const withList = (text, extra = {}) => ({ ...lock, ...extra, [INPUTS]: text });
+    const valid = `${INPUTS}\n${LOCKFILE}\n`;
+    // syntactic: the oracle, which mirrors the reference parser, must reject the list text too.
+    const syntactic = {
+        'CRLF line endings': [`${INPUTS}\r\n${LOCKFILE}\r\n`, /LF line endings/],
+        'a missing final newline': [`${INPUTS}\n${LOCKFILE}`, /exactly one newline/],
+        'two final newlines': [`${valid}\n`, /exactly one newline/],
+        'a blank line between entries': [`${INPUTS}\n\n${LOCKFILE}\n`, /blank line/],
+        'a leading blank line': [`\n${valid}`, /blank line/],
+        'an empty file': ['', /empty/],
+        'a lone newline': ['\n', /empty/],
+        'entries out of order': [`${LOCKFILE}\n${INPUTS}\n`, /strictly ascending/],
+        'a duplicate entry': [`${INPUTS}\n${LOCKFILE}\n${LOCKFILE}\n`, /strictly ascending/],
+        'a .. segment': [`${INPUTS}\nskills/../x\n${LOCKFILE}\n`, /invalid dependency input path/],
+        'a . segment': [`${INPUTS}\nskills/./x\n${LOCKFILE}\n`, /invalid dependency input path/],
+        'an absolute path': [`/etc/passwd\n${valid}`, /invalid dependency input path/],
+        'a trailing slash': [`${INPUTS}\nskills/a/\n${LOCKFILE}\n`, /invalid dependency input path/],
+        'an empty segment': [`${INPUTS}\nskills//a\n${LOCKFILE}\n`, /invalid dependency input path/],
+        'a space in a path': [`${INPUTS}\nskills/a b\n${LOCKFILE}\n`, /invalid dependency input path/],
+        'a glob character': [`${INPUTS}\nskills/a/*\n${LOCKFILE}\n`, /invalid dependency input path/],
+        'a pathspec magic prefix': [`:(top)x\n${valid}`, /invalid dependency input path/],
+        'a non-ASCII path': [`${valid}skills/a/é\n`, /invalid dependency input path/],
+        'the list missing itself': [`${LOCKFILE}\n`, /must list scriptahubAgent\/deployment\/dependency-inputs\.txt/],
+    };
+    for (const [name, [text, message]] of Object.entries(syntactic)) {
+        assert.throws(() => parseInputs(text), undefined, `${name}: the oracle must reject this list too`);
+        const repo = fixtureRepo(t, withList(text));
+        for (const shell of FP_SHELLS) {
+            const result = runFingerprint(shell, repo);
+            assert.equal(result.stdout, 'FAIL []\n', `${name} (${shell})`);
+            assert.match(result.stderr, message, `${name} (${shell})`);
+        }
+    }
+    // structural: the list parses, but a listed entry is not a plain blob of the commit.
+    const structural = {
+        'a listed path absent from the tree': [fixtureRepo(t, withList(`${valid}skills/zzz.json\n`)), /skills\/zzz\.json is not a regular file/],
+        'a listed directory': [fixtureRepo(t, withList(`${INPUTS}\nskills/a\n${LOCKFILE}\n`)), /skills\/a is not a regular file/],
+        'a listed symlink': [fixtureRepo(t, { ...withList(valid), [LOCKFILE]: { symlink: 'SKILL.md' } }), new RegExp(`${LOCKFILE.replace(/[./]/g, '\\$&')} is not a regular file`)],
+        'a listed gitlink': [fixtureRepo(t, withList(`${valid}skills/b/mod\n`), { gitlinks: { 'skills/b/mod': 'a'.repeat(40) } }), /skills\/b\/mod is not a regular file/],
+        'the inputs file itself a symlink': [fixtureRepo(t, { ...lock, [INPUTS]: { symlink: `${INPUTS}\n` } }), /dependency-inputs\.txt is not a regular file/],
+        'an inputs file that is a directory': [fixtureRepo(t, { ...lock, [`${INPUTS}/x`]: 'x\n' }), /cannot read/],
+        'no inputs file': [fixtureRepo(t, lock), /cannot read/],
+    };
+    for (const [name, [repo, message]] of Object.entries(structural)) {
+        for (const shell of FP_SHELLS) {
+            const result = runFingerprint(shell, repo);
+            assert.equal(result.stdout, 'FAIL []\n', `${name} (${shell})`);
+            assert.match(result.stderr, message, `${name} (${shell})`);
+        }
+    }
+    // a list the oracle accepts is not rejected because of this table's helpers
+    const repo = fixtureRepo(t, withList(valid));
+    assert.equal(runFingerprint(PROGRAM_SHELL, repo).stdout, `OK ${oracleFingerprint(withList(valid))}\n`);
+    // the commit argument: short, uppercase, expression-like and unknown values fail before Git sees them
+    for (const rev of ['', 'abc', repo.rev.toUpperCase(), `${repo.rev.slice(0, 39)}g`, `${repo.rev}0`, 'HEAD', '0'.repeat(40)]) {
+        for (const shell of FP_SHELLS) {
+            const result = runFingerprint(shell, repo, rev);
+            assert.equal(result.stdout, 'FAIL []\n', `rev "${rev}" (${shell})`);
+            assert.match(result.stderr, /^dependency fingerprint: |\ndependency fingerprint: /, `rev "${rev}" (${shell})`);
+        }
+    }
+    // Called plainly under sh -eu, as a Box program does, a rejection ends the program.
+    for (const shell of FP_SHELLS) {
+        const script = `set -eu\n${unindent10(FP_BLOCK)}\nout=$(scripta_dependency_fingerprint "$1" "$2")\necho NOT-REACHED`;
+        const bad = spawnSync(shell, ['-c', script, 'sh', repo.dir, 'HEAD'], { encoding: 'utf8' });
+        assert.notEqual(bad.status, 0, shell);
+        assert.doesNotMatch(bad.stdout, /NOT-REACHED/, shell);
+    }
 });
