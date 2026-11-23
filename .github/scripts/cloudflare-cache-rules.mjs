@@ -197,8 +197,15 @@ async function inventory(request, target, descriptions) {
     const r1 = rules.find(rule => rule.ref === target.r1);
     const r2 = rules.find(rule => rule.ref === target.r2);
     requireState(rules.length + Number(!r1) + Number(!r2) <= 10, 'Insufficient Free-plan cache rule capacity');
+    const foreign = rules.filter(rule => rule !== r1 && rule !== r2);
     for (const rule of rules) {
-        requireState(rule === r1 || rule === r2, 'Foreign rule in the request cache phase');
+        if (foreign.includes(rule)) {
+            // Disabling the owned R2 is always safe, so only r2-off may proceed beside a
+            // foreign rule, and only while that rule claims no owned description.
+            requireState(target.operation === 'r2-off', 'Foreign rule in the request cache phase');
+            requireState(!descriptions.has(rule.description), 'Ambiguous ownership of cache rule');
+            continue;
+        }
         requireState(rule.action === 'set_cache_settings' && typeof rule.enabled === 'boolean'
             && (!descriptions.has(rule.description) || descriptions.get(rule.description) === rule.ref)
             && hostRestricted(rule.expression, host => host === target.host), 'Ambiguous ownership of cache rule');
@@ -209,11 +216,17 @@ async function inventory(request, target, descriptions) {
         requireState(hostRestricted(rule.expression, host => host !== target.host), 'Cache Response Rule may match the managed host');
     }
     const ordered = !r1 || !r2 || rules.indexOf(r2) < rules.indexOf(r1);
-    return { entry, response, r1, r2, ordered };
+    return { entry, response, r1, r2, ordered, foreign };
 }
 
 function ruleFields({ id, version, last_updated, ...fields }) {
     return fields;
+}
+
+// A rule update carries the full rule definition, so a switch resends the
+// owned definition just read back with only `enabled` changed.
+function switched({ ref, description, expression, action, action_parameters }, enabled) {
+    return { ref, description, expression, action, action_parameters, enabled };
 }
 
 function sameRule(actual, desired) {
@@ -248,14 +261,15 @@ async function undoActivation(request, original, desired, descriptions) {
         requireState(entry?.id === original.entryId && matches.length === 1 && !response?.rules.some(claimsR2)
             && rule.id === original.ruleId && typeof rule.enabled === 'boolean'
             && sameRule(rule, { ...desired, enabled: rule.enabled }), 'Original R2 identity or definition changed');
-        return rule.enabled;
+        return rule;
     }
-    if (!await readOriginal()) return false;
+    const rule = await readOriginal();
+    if (!rule.enabled) return false;
     let failure;
     try {
-        await request(`/rulesets/${original.entryId}/rules/${original.ruleId}`, 'PATCH', { enabled: false });
+        await request(`/rulesets/${original.entryId}/rules/${original.ruleId}`, 'PATCH', switched(rule, false));
     } catch (error) { failure = error; }
-    if (await readOriginal()) throw failure ?? new Error('Original R2 is still enabled');
+    if ((await readOriginal()).enabled) throw failure ?? new Error('Original R2 is still enabled');
     return true;
 }
 
@@ -293,7 +307,7 @@ export async function run(argv, { env = process.env, fetchImpl = globalThis.fetc
         state = await read();
         const other = key === 'r1' ? 'r2' : 'r1';
         requireState(isDeepStrictEqual(before.response, state.response) && isDeepStrictEqual(before[other], state[other])
-            && (!before.entry || before.entry.id === state.entry?.id) && (!current || current.id === state[key]?.id),
+            && isDeepStrictEqual(before.foreign, state.foreign) && (!before.entry || before.entry.id === state.entry?.id) && (!current || current.id === state[key]?.id),
         'Unrelated rule content, identity or order changed during reconciliation');
         requireState(sameRule(state[key], expected) && (!(before.ordered || payload.position) || state.ordered),
             'Owned cache rule write did not converge');
@@ -307,9 +321,11 @@ export async function run(argv, { env = process.env, fetchImpl = globalThis.fetc
     }
     if (operation === 'r2-off') {
         if (state.r2?.enabled) {
-            await write('r2', { ...ruleFields(state.r2), enabled: false }, { enabled: false });
+            await write('r2', { ...ruleFields(state.r2), enabled: false }, switched(state.r2, false));
         }
         if (!target.ifPresent && (!sameRule(state.r2, desired.r2) || !state.ordered)) {
+            // Creating or repairing R2 is not a disable, so foreign rules still refuse it.
+            requireState(!state.foreign.length, 'Foreign rule in the request cache phase');
             const position = state.r1 ? { position: { before: state.r1.id } } : {};
             await write('r2', desired.r2, { ...desired.r2, ...position });
         }
@@ -326,7 +342,7 @@ export async function run(argv, { env = process.env, fetchImpl = globalThis.fetc
                 catch { throw new Error('Unable to create exclusive activation receipt before enable'); }
             }
             try {
-                await write('r2', { ...desired.r2, enabled: true }, { enabled: true });
+                await write('r2', { ...desired.r2, enabled: true }, switched(state.r2, true));
             } catch (error) {
                 try { await undoActivation(request, original, desired.r2, descriptions); }
                 catch (recoveryError) { throw new Error(`${error.message}; unable to confirm R2 off: ${recoveryError.message}`); }

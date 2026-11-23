@@ -5,13 +5,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { entry, fixture, foreign, host, id, inventoryPath, prepared, requestPhase, responsePhase, r1, r2,
+import { definition, entry, fixture, foreign, host, id, inventoryPath, prepared, requestPhase, responsePhase, r1, r2,
     tokenEnv, zone } from './cloudflare-cache-rules-fixture.mjs';
 
 const operations = [['check'], ['ensure-r1'], ['r2-off'], ['r2-on'], ['r2-off', '--if-present']];
 const pageParameters = { cache: true, edge_ttl: { mode: 'bypass_by_default' }, browser_ttl: { mode: 'respect_origin' } };
-const toggle = (api, enabled) => ({ method: 'PATCH',
-    path: `/rulesets/${api.state.request.id}/rules/${api.owned(r2).id}`, body: { enabled } });
+// A switch resends the page's full definition as read back, with only `enabled` changed.
+const toggle = (api, enabled, page = api.owned(r2)) => ({ method: 'PATCH',
+    path: `/rulesets/${api.state.request.id}/rules/${page.id}`,
+    body: { ...structuredClone(Object.fromEntries(definition.map(key => [key, page[key]]))), enabled } });
 
 async function rejects(api, promise, message, expected) {
     await assert.rejects(promise, error => {
@@ -27,7 +29,7 @@ export function registerCacheRulesTests(run, scriptUrl) {
     const check = (name, callback) => test(`shared cache rules - ${name}`, callback);
     check('the local reconciler matches the canonical SHA-256', () => {
         assert.equal(createHash('sha256').update(readFileSync(scriptUrl)).digest('hex'),
-            '1cd22bb8149e242c139bc5accf7939dbb4de649f8d15c4896468e3a7d184a241',
+            '852c0909b36800e1471675ff95154467d14187ea1502c4d0fc075c10767cf887',
             "The other repository's reconciler copy must change too. Update both copies and their SHA-256 pins together.");
     });
 
@@ -108,9 +110,10 @@ export function registerCacheRulesTests(run, scriptUrl) {
         await rejects(api, api.invoke('r2-on'));
         assert.equal(api.writes().length, 1);
         api.state.calls.length = 0;
+        const drifted = toggle(api, false);
         assert.equal(await api.invoke('r2-off'), 'applied');
         const [disable, repair] = api.writes();
-        assert.deepEqual(disable, toggle(api, false));
+        assert.deepEqual(disable, drifted);
         assert.equal(api.writes().length, 2);
         assert.equal(repair.method, 'PATCH');
         assert.equal(repair.path, disable.path);
@@ -147,7 +150,7 @@ export function registerCacheRulesTests(run, scriptUrl) {
         assert.deepEqual(api.writes(), [toggle(api, false)]);
     });
 
-    check('all foreign request rules and overlapping or unprovable response expressions refuse every operation', async () => {
+    check('foreign request rules refuse all but r2-off, and overlapping or unprovable response expressions refuse every operation', async () => {
         const expressions = ['true', `http.host eq "${host}"`, 'starts_with(http.request.uri.path, "/")',
             '(http.host eq "other.example" and http.cookie ne "") or true', 'http.host eq "other.example" and true OR true',
             'not (http.host eq "other.example")', `http.host in {"other.example" "${host}"}`,
@@ -157,8 +160,84 @@ export function registerCacheRulesTests(run, scriptUrl) {
             for (const expression of key === 'request' ? [...expressions, foreign(1).expression] : expressions) {
                 const api = await prepared(run);
                 api.state[key].rules.push({ ...foreign(1), expression, enabled: false });
-                for (const args of operations) await rejects(api, api.invoke(...args), `${phase} ${expression}`);
+                for (const args of operations) {
+                    if (key === 'request' && args[0] === 'r2-off') assert.equal(await api.invoke(...args), 'unchanged');
+                    else await rejects(api, api.invoke(...args), `${phase} ${expression}`);
+                }
                 assert.deepEqual(api.writes(), []);
+            }
+        }
+    });
+
+    const others = api => api.state.request.rules.filter(rule => ![r1, r2].includes(rule.ref));
+    async function enabledBeside(...rules) {
+        const api = await prepared(run);
+        await api.invoke('r2-on');
+        api.state.request.rules.unshift(rules[0]);
+        api.state.request.rules.push(...rules.slice(1));
+        api.state.calls.length = 0;
+        return api;
+    }
+
+    check('r2-off disables the owned page beside foreign request rules and leaves them unchanged', async () => {
+        for (const args of [['r2-off'], ['r2-off', '--if-present']]) {
+            const api = await enabledBeside({ ...foreign(40), expression: 'true' },
+                { ...foreign(41), expression: `(http.host eq "${host}")`, enabled: false });
+            const unrelated = structuredClone(others(api));
+            for (const op of ['check', 'ensure-r1', 'r2-on']) await rejects(api, api.invoke(op), op, /Foreign rule/);
+            assert.deepEqual(api.writes(), []);
+            const disable = toggle(api, false);
+            assert.equal(await api.invoke(...args), 'applied');
+            assert.equal(await api.invoke(...args), 'unchanged');
+            assert.deepEqual(api.writes(), [disable]);
+            assert.equal(api.owned(r2).enabled, false);
+            assert.deepEqual(others(api), unrelated);
+            assert.deepEqual(api.state.request.rules.map(rule => rule.ref), [foreign(40).ref, r2, r1, foreign(41).ref]);
+        }
+    });
+
+    check('beside a foreign request rule, r2-off still refuses to create or repair the page', async () => {
+        const api = await enabledBeside(foreign(42));
+        const page = api.owned(r2);
+        page.action_parameters.cache_key = { custom_key: {} };
+        const disable = toggle(api, false);
+        await rejects(api, api.invoke('r2-off'), undefined, /Foreign rule/);
+        assert.deepEqual(api.writes(), [disable]);
+        assert.equal(page.enabled, false);
+        api.state.request.rules.splice(api.state.request.rules.indexOf(page), 1);
+        api.state.calls.length = 0;
+        await rejects(api, api.invoke('r2-off'), undefined, /Foreign rule/);
+        assert.equal(await api.invoke('r2-off', '--if-present'), 'unchanged');
+        assert.deepEqual(api.writes(), []);
+    });
+
+    check('a foreign request rule claiming an owned description or ref refuses r2-off before any write', async () => {
+        const claims = [`Respect origin cache policy on ${host}`, `Origin-controlled cache for ${host}`,
+            `Bypass credentialed requests to ${host}`, `Credentialed request cache bypass for ${host}`]
+            .map(description => ({ ...foreign(43), description }));
+        for (const claim of [...claims, { ...foreign(44), ref: r2 }, { ...foreign(45), ref: r1 }]) {
+            for (const args of [['r2-off'], ['r2-off', '--if-present']]) {
+                const api = await enabledBeside(claim);
+                await rejects(api, api.invoke(...args), JSON.stringify(claim), /Ambiguous ownership|Duplicate rule/);
+                assert.deepEqual(api.writes(), []);
+                assert.equal(api.state.request.rules.find(rule => rule.id === api.owned(r2)?.id)?.enabled ?? true, true);
+            }
+        }
+    });
+
+    check('a foreign request rule changed, moved, removed or added during the r2-off switch fails verification', async () => {
+        const changes = [
+            s => { s.request.rules[0].description = 'concurrent edit'; },
+            s => { s.request.rules.push(s.request.rules.shift()); },
+            s => { s.request.rules.pop(); },
+            s => { s.request.rules.push(foreign(48)); },
+        ];
+        for (const change of changes) {
+            for (const args of [['r2-off'], ['r2-off', '--if-present']]) {
+                const api = await enabledBeside(foreign(46), foreign(47));
+                api.state.afterWrite = call => { if (call.body.enabled === false) change(api.state); };
+                await rejects(api, api.invoke(...args), String(change), /Unrelated rule/);
+                assert.deepEqual(api.writes(), [toggle(api, false)]);
             }
         }
     });
@@ -221,16 +300,18 @@ export function registerCacheRulesTests(run, scriptUrl) {
             const page = api.owned(r2);
             page.enabled = true;
             page.action_parameters.cache_key = { custom_key: {} };
+            const disable = toggle(api, false);
+            // Only the repair moves the page, so its position distinguishes it from the switch.
             if (fault === 'refusal') {
-                api.state.before = call => call.method === 'PATCH' && call.body.ref
+                api.state.before = call => call.method === 'PATCH' && call.body.position
                     && Response.json({ success: false, errors: [{ message: api.token }] }, { status: 403 });
             } else {
-                api.state.afterWrite = call => { if (call.body.ref) page.action_parameters.cache = false; };
+                api.state.afterWrite = call => { if (call.body.position) page.action_parameters.cache = false; };
             }
             await rejects(api, api.invoke('r2-off'));
             assert.equal(page.enabled, false);
             assert.equal(api.writes().length, 2);
-            assert.deepEqual(api.writes()[0], toggle(api, false));
+            assert.deepEqual(api.writes()[0], disable);
             assert.equal(api.writes()[1].body.enabled, false);
         }
     });
@@ -337,7 +418,9 @@ export function registerCacheRulesTests(run, scriptUrl) {
             if (failure.endsWith('conflict')) {
                 const phase = failure.startsWith('request') ? 'request' : 'response';
                 assert.deepEqual(api.state[phase].rules.at(-1), { ...foreign(30), expression: 'true' });
-                await rejects(api, api.invoke('r2-off'));
+                // Only a foreign response rule still blocks r2-off; the page is already off.
+                if (phase === 'request') assert.equal(await api.invoke('r2-off'), 'unchanged');
+                else await rejects(api, api.invoke('r2-off'));
                 assert.equal(api.writes().length, 2);
             }
         }

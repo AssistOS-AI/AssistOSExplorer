@@ -9,6 +9,7 @@ export const tokenEnv = 'TEST_RUNNER_RULES_TOKEN';
 export const requestPhase = 'http_request_cache_settings';
 export const responsePhase = 'http_response_cache_settings';
 export const id = n => n.toString(16).padStart(32, '0');
+export const definition = ['ref', 'description', 'expression', 'action', 'action_parameters', 'enabled'];
 export const inventoryPath = phase => `/rulesets/phases/${phase}/entrypoint`;
 export const entry = (phase, rules) => ({ id: id(phase === requestPhase ? 100 : 101), kind: 'zone', phase, rules });
 export const foreign = n => ({
@@ -34,14 +35,19 @@ export function fixture(run) {
             assert.equal(state.request, null);
             assert.equal(body.kind, 'zone');
             assert.equal(body.phase, requestPhase);
-            state.request = entry(requestPhase, body.rules.map(rule => ({ ...rule, id: id(next++) })));
+            state.request = entry(requestPhase, structuredClone(body.rules).map(rule => ({ ...rule, id: id(next++) })));
             return success(state.request);
         }
         const set = state.request;
         assert.ok(set);
         const collection = `/rulesets/${set.id}/rules`;
-        const { position, ...fields } = body;
+        // Store copies so later edits to a stored rule cannot rewrite the recorded call.
+        const { position, ...fields } = structuredClone(body);
         let rule;
+        if (method === 'PATCH' && !definition.every(key => Object.hasOwn(fields, key))) {
+            // Like the Rulesets API, a rule update must carry the full rule definition.
+            return Response.json({ success: false, result: null, errors: [{ code: 20021 }] }, { status: 400 });
+        }
         if (method === 'POST') {
             assert.equal(path, collection);
             assert.ok([r1, r2].includes(fields.ref));
