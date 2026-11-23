@@ -21,7 +21,7 @@ Metrics services must derive cost, usage, error, activity, and token views from 
 
 ### Live delivery and export
 
-The broadcast hub must distribute completed or updated audit rows to authenticated SSE and WebSocket subscribers and apply supported filters. It must send heartbeats or pings at configured intervals, remove disconnected subscribers, and stop all subscriptions during shutdown. Exports must page through stored rows using <code>EXPORT_BATCH_SIZE</code> and produce valid JSON or escaped CSV.
+The broadcast hub must distribute completed or updated audit rows to authenticated SSE and WebSocket subscribers and apply supported filters. It must send heartbeats or pings at configured intervals, remove disconnected subscribers, and stop all subscriptions during shutdown. Exports must page through stored rows using <code>EXPORT_BATCH_SIZE</code> and produce valid JSON or escaped CSV. Export responses must carry <code>Cache-Control: private, no-store</code>: the Router relays agent headers unchanged, and a shared cache in front of it, such as Cloudflare, which caches <code>.csv</code> URLs by default, must never keep an administrator's export.
 
 ### Background jobs
 
