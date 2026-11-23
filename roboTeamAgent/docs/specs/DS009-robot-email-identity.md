@@ -11,7 +11,7 @@ A robot often needs a mailbox of its own for its work. In RoboTeam a robot owns 
 
 ### Email robots
 
-A robot's email address is its name when the whole name is a plain `local@domain` address of at most 80 characters, the robot name limit, without spaces, quotes or angle brackets, so it can be placed in instructions unchanged. `server/robot-email.mjs` decides this with `robotEmailAddress(robot)`; any other name means the robot has no mailbox. Robots cannot be renamed, so a robot keeps its address for its whole life, and deleting the robot ends it. A robot created with Create robot under an address as its name is an email robot as well.
+A robot's email address is its name when the whole name is a plain `local@domain` address of at most 80 characters, the robot name limit, without spaces, quotes or angle brackets, so it can be placed in instructions unchanged. `server/robot-email.mjs` decides this with `robotEmailAddress(robot)`; any other name means the robot has no mailbox. The address is read from the name each time, so renaming the robot changes its address, or removes it when the new name is not an address; the dashboard asks for confirmation before such a rename, and the robot's Chromium may still be signed in to the previous mailbox. Deleting the robot ends it. A robot created with Create robot under an address as its name is an email robot as well.
 
 ### Import
 

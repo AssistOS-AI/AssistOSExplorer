@@ -16,7 +16,7 @@ async function fixture(t, options = {}) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-graph-')));
     const robots = [{ id: 'default-id', name: 'default', codingAgents: ['codex'] }, { id: 'worker-id', name: 'worker', codingAgents: ['codex'] }];
     const started = [], stopped = [], messages = [], resumed = [];
-    const robotStore = { list: async () => robots, getByName: async name => robots.find(robot => robot.name === name), get: async id => robots.find(robot => robot.id === id) };
+    const robotStore = { list: async () => robots, getDefault: async () => robots.find(robot => robot.name === 'default'), get: async id => robots.find(robot => robot.id === id) };
     const runtimeManager = { resolveCwd: async value => value || root,
         startTask(robot, type, request) { started.push({ robot, type, request, taskId: request.runtimeTaskId }); return { taskId: request.runtimeTaskId, state: 'queued',
             ...(['browser', 'desktop'].includes(type) ? { sessionUrl: `/api/robots/${robot.id}/session/` } : {}) }; },

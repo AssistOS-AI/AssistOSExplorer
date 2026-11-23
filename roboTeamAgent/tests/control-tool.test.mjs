@@ -27,7 +27,7 @@ function runControl(port) {
         child.once('close', (code) => resolve({ code, stdout, stderr }));
         child.stdin.end(JSON.stringify({
             tool: 'startSimpleALATaskForRobot',
-            input: { robotName: 'Analyst', cwd: '/workspace', task: 'Inspect files' },
+            input: { robotId: 'analyst-a1b2c3', cwd: '/workspace', task: 'Inspect files' },
         }));
     });
 }
@@ -59,7 +59,7 @@ function runInterruptedDesktopControl(port) {
         child.once('close', (code) => resolve({ code, stdout, stderr }));
         child.stdin.end(JSON.stringify({
             tool: 'startDesktopTaskForRobot',
-            input: { robotName: 'Analyst', cwd: '/workspace', task: 'Inspect the desktop' },
+            input: { robotId: 'analyst-a1b2c3', cwd: '/workspace', task: 'Inspect the desktop' },
         }));
     });
 }

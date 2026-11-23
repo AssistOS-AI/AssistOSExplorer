@@ -223,6 +223,77 @@ robotLoginFilter.addEventListener('change', () => updateRobotFilters({ login: ro
 robotAgentFilter.addEventListener('change', () => updateRobotFilters({ agent: robotAgentFilter.value }));
 document.querySelector('#robotFilterClear').addEventListener('click', () => updateRobotFilters({ query: '', login: '', agent: '' }));
 
+// Mirrors server/robot-email.mjs: a robot whose name is an email address uses it as its mailbox in Browser and
+// Desktop tasks, so renaming such a robot also changes the address it presents.
+const EMAIL_NAME = /^[^\s@]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/u;
+
+const renameDialog = document.querySelector('#renameRobotDialog');
+const renameForm = document.querySelector('#renameRobotForm');
+const renameInput = renameForm.querySelector('input[name="name"]');
+const renameNote = document.querySelector('#renameRobotNote');
+const renameMessage = document.querySelector('#renameRobotMessage');
+let renameTarget = null;
+let renameBusy = false;
+
+// The note appears while the old or the typed name is an email address, so the person sees the mailbox effect before
+// renaming, without a second confirmation.
+function updateRenameNote() {
+    const name = renameInput.value.trim();
+    const changesAddress = renameTarget && name && name !== renameTarget.name
+        && (EMAIL_NAME.test(renameTarget.name) || EMAIL_NAME.test(name));
+    renameNote.hidden = !changesAddress;
+    if (!changesAddress) return;
+    renameNote.textContent = `A robot whose name is an email address uses it as its own mailbox in Browser and Desktop tasks. After the rename it `
+        + `${EMAIL_NAME.test(name) ? `presents itself as ${name}` : 'no longer has an email address'}, even if its Chromium is still signed in to `
+        + `${EMAIL_NAME.test(renameTarget.name) ? renameTarget.name : 'another mailbox'}.`;
+}
+
+function closeRenameDialog() {
+    if (renameBusy || !renameDialog.open) return;
+    renameDialog.close();
+    renameTarget?.button.focus();
+    renameTarget = null;
+}
+
+function renameRobot(robot, button) {
+    renameTarget = { id: robot.id, name: robot.name, button };
+    renameInput.value = robot.name;
+    renameMessage.textContent = '';
+    renameMessage.className = 'message';
+    updateRenameNote();
+    renameDialog.showModal();
+    renameInput.select();
+}
+
+renameInput.addEventListener('input', updateRenameNote);
+document.querySelector('#renameRobotClose').addEventListener('click', closeRenameDialog);
+document.querySelector('#renameRobotCancel').addEventListener('click', closeRenameDialog);
+renameDialog.addEventListener('cancel', event => { event.preventDefault(); closeRenameDialog(); });
+renameForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!renameTarget || renameBusy) return;
+    const name = renameInput.value.trim();
+    if (name === renameTarget.name) return closeRenameDialog();
+    renameBusy = true;
+    renameDialog.setAttribute('aria-busy', 'true');
+    for (const control of renameForm.querySelectorAll('button, input')) control.disabled = true;
+    try {
+        await api(`api/robots/${encodeURIComponent(renameTarget.id)}/name`, { method: 'PATCH', body: { name } });
+        formMessage.textContent = `Robot ${renameTarget.name} renamed to ${name}.`;
+        formMessage.className = 'message success';
+        renameBusy = false;
+        closeRenameDialog();
+        await loadRobots();
+    } catch (error) {
+        renameMessage.textContent = error.message;
+        renameMessage.className = 'message error';
+    } finally {
+        renameBusy = false;
+        renameDialog.setAttribute('aria-busy', 'false');
+        for (const control of renameForm.querySelectorAll('button, input')) control.disabled = false;
+    }
+});
+
 function renderRobots(robots, canAdmin = false, total = robots.length) {
     robotsList.replaceChildren();
     robotCount.textContent = `${total} ${total === 1 ? 'robot' : 'robots'}`;
@@ -246,10 +317,16 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
             finally { terminalButton.disabled = false; }
         });
         card.querySelector('.open-chat').addEventListener('click', () => {
-            const params = new URLSearchParams({ agent: routeKey, robot: robot.name, 'workspace-dir': `achilles-cli/${robot.id}`, 'forward-envelope': '1' });
+            // robot-id selects the robot; robot is only the label WebChat shows.
+            const params = new URLSearchParams({ agent: routeKey, 'robot-id': robot.id, robot: robot.name,
+                'workspace-dir': `achilles-cli/${robot.id}`, 'forward-envelope': '1' });
             window.open(`/webchat?${params}`, '_blank', 'noopener');
         });
         card.querySelector('.manage-skills').addEventListener('click', () => openSkillsDialog(robot, { api, onChanged: loadRobots, canAdmin }));
+        const renameButton = card.querySelector('.rename-robot');
+        // The default robot keeps its name; the server refuses its rename as well.
+        renameButton.hidden = !(canAdmin && robot.name !== 'default');
+        renameButton.addEventListener('click', () => renameRobot(robot, renameButton));
         const deleteButton = card.querySelector('.delete-robot');
         // The default robot is permanent; the server refuses its deletion as well.
         const deletable = canAdmin && robot.name !== 'default';

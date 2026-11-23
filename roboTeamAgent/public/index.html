@@ -133,6 +133,23 @@
             <div id="cronList" class="robot-list"></div>
         </section>
     </div>
+    <dialog id="renameRobotDialog" class="create-robot-dialog" aria-labelledby="renameRobotTitle">
+        <div class="create-robot-heading">
+            <h2 id="renameRobotTitle">Rename robot</h2>
+            <button id="renameRobotClose" class="button icon-button" type="button"
+                    aria-label="Close rename robot dialog" title="Close">×
+            </button>
+        </div>
+        <form id="renameRobotForm" class="robot-form">
+            <label><span>Name</span><input name="name" maxlength="80" required></label>
+            <p id="renameRobotNote" class="message" hidden></p>
+            <p id="renameRobotMessage" class="message" role="status"></p>
+            <div class="create-robot-actions">
+                <button id="renameRobotCancel" class="button secondary" type="button">Cancel</button>
+                <button class="button primary" type="submit">Rename</button>
+            </div>
+        </form>
+    </dialog>
     <dialog id="cronDialog" class="create-robot-dialog cron-dialog" aria-labelledby="cronDialogTitle">
         <div class="create-robot-heading"><h2 id="cronDialogTitle">Create Cron job</h2><button id="cronClose" class="button icon-button" type="button" aria-label="Close Cron job dialog" title="Close">×</button></div>
         <form id="cronForm" class="robot-form">
@@ -239,6 +256,7 @@
                 <div class="manage-options" data-robot-menu-options hidden>
                     <a class="button secondary robot-logs-link" target="_blank" rel="noopener noreferrer" title="Open logs in a new tab">Logs</a>
                     <button class="button secondary manage-skills" type="button">Manage skills</button>
+                    <button class="button secondary rename-robot" type="button" hidden>Rename</button>
                     <button class="button secondary configure-coding-agent" type="button" hidden>Coding agent</button>
                     <button class="button secondary release-proxy" type="button" hidden title="The robot receives a proxy again when its workstation next starts">Release proxy</button>
                     <button class="button secondary remove-git-credentials" type="button" hidden>Remove git credentials</button>

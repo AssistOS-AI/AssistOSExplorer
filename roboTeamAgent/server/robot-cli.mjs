@@ -22,18 +22,24 @@ process.prependOnceListener('SIGTERM', () => process.exit(0));
     process.on('exit', (code) => logDiagnostic(diagnosticsDir, 'process.exit', { code, exitCode: process.exitCode ?? null }));
 }
 try {
-    let robotName = 'default';
+    // RoboTeam opens a robot's chat with --robot-id; --robot <name> is for a person in a terminal, and the
+    // WebChat link also carries it, as the display label, beside the id.
+    let robotId = null;
+    let robotName = null;
     const args = [];
     const input = process.argv.slice(2);
     for (let index = 0; index < input.length; index++) {
         const arg = input[index];
         if (arg === '--') { args.push(...input.slice(index)); break; }
-        if (arg === '--robot') robotName = input[++index];
+        if (arg === '--robot-id') robotId = input[++index] ?? '';
+        else if (arg.startsWith('--robot-id=')) robotId = arg.slice(11);
+        else if (arg === '--robot') robotName = input[++index] ?? '';
         else if (arg.startsWith('--robot=')) robotName = arg.slice(8);
         else args.push(arg);
     }
-    if (!robotName) throw new Error('--robot requires a robot name.');
-    const context = await prepareCopilotContext(robotName, { holdUsage: true });
+    if (robotId === '') throw new Error('--robot-id requires a robot id.');
+    if (robotName === '') throw new Error('--robot requires a robot name.');
+    const context = await prepareCopilotContext(robotId ? { id: robotId } : { name: robotName }, { holdUsage: true });
     releaseUsage = context.releaseUsage;
     const { setRobotContext } = await import('../copilot/src/lib/execution/robotContext.mjs');
     setRobotContext(context);

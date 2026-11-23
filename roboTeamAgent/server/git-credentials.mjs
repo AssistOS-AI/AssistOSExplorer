@@ -120,11 +120,12 @@ export class RobotGitCredentials {
         return credentialSummary(await this.roboWork.call('robot_git_credentials_status', { robotId }));
     }
 
-    async robotByName(robotName) {
-        const name = text(robotName);
-        if (!name) throw failure('robotName is required', CREDENTIALS_INVALID, 400);
-        const robot = await this.robotStore.getByName(name);
-        if (!robot) throw failure(`robot ${name} was not found`, ROBOT_NOT_FOUND, 404);
+    async robotById(robotId) {
+        const id = text(robotId);
+        if (!id) throw failure('robotId is required', CREDENTIALS_INVALID, 400);
+        if (!/^[a-z0-9][a-z0-9-]{2,63}$/u.test(id)) throw failure(`robot ${id} was not found`, ROBOT_NOT_FOUND, 404);
+        const robot = await this.robotStore.get(id);
+        if (!robot) throw failure(`robot ${id} was not found`, ROBOT_NOT_FOUND, 404);
         return robot;
     }
 
@@ -137,7 +138,7 @@ export class RobotGitCredentials {
 
     async save(user, input = {}) {
         requireAdministrator(user);
-        const robot = await this.robotByName(input.robotName);
+        const robot = await this.robotById(input.robotId);
         const token = tokenField(input);
         const githubLogin = field(input, 'githubLogin', { required: true });
         const name = field(input, 'name');
@@ -165,8 +166,8 @@ export class RobotGitCredentials {
         });
     }
 
-    async removeByName(user, robotName) {
+    async removeById(user, robotId) {
         requireAdministrator(user);
-        return this.remove(user, await this.robotByName(robotName));
+        return this.remove(user, await this.robotById(robotId));
     }
 }

@@ -9,7 +9,8 @@ try {
     for await (const chunk of process.stdin) raw += chunk;
     const payload = JSON.parse(raw || '{}');
     const input = payload.input || payload.arguments || payload.params?.arguments || {};
-    const context = await prepareCopilotContext(input.robot || 'default', { seed: false });
+    // WebChat forwards robot-id from its link; a robot name is accepted only when no id is given.
+    const context = await prepareCopilotContext(input['robot-id'] ? { id: input['robot-id'] } : { name: input.robot }, { seed: false });
     const sets = publicSkillsets(context.robot);
     const inventory = await skillCatalogRequest({ skillsets: context.skillsets, robot: context.robot, input,
         mutate: process.argv.includes('--set-skill') });

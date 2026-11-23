@@ -188,11 +188,11 @@ test('a RoboWork refusal or bad cwd reaches the HTTP caller with its code and re
         [new Error('private detail'), 500, { ok: false, error: 'request failed' }],
     ]) {
         const robot = { id: 'robot-abc', name: 'analyst' };
-        const server = createRoboTeamServer({ robotStore: { list: async () => [robot], getByName: async () => robot, get: async () => robot },
+        const server = createRoboTeamServer({ robotStore: { list: async () => [robot], get: async () => robot },
             runtimeManager: { workspaceRoot: os.tmpdir(), roboWork: {}, openDesktop: async () => { throw error; } }, skillsets: {}, internalToken: 'test-token' });
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
         const response = await fetch(`http://127.0.0.1:${server.address().port}/api/control`, { method: 'POST',
-            headers: { 'x-roboteam-internal-token': 'test-token', 'x-roboteam-listing-origin': 'agent', 'content-type': 'application/json' }, body: JSON.stringify({ operation: 'open-desktop', robotName: 'analyst', cwd: '/' }) });
+            headers: { 'x-roboteam-internal-token': 'test-token', 'x-roboteam-listing-origin': 'agent', 'content-type': 'application/json' }, body: JSON.stringify({ operation: 'open-desktop', robotId: 'robot-abc', cwd: '/' }) });
         server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
         assert.equal(response.status, status);
         assert.deepEqual(await response.json(), body);

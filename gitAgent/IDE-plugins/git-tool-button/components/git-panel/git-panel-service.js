@@ -97,11 +97,11 @@ export function createGitCommitService({ callTool, callAgentTool, isActive, onAb
         disconnectGithubAuth: () => callGitAuthJson('git_auth_disconnect'),
         storeManualGitToken: (token) => callGitAuthJson('git_auth_store_token', { token }),
         robotCredentialsTargets: () => callRobotCredentialsJson('git_robot_credentials_targets'),
-        saveRobotCredentials: ({ robotName, name = '', email = '' }) => callRobotCredentialsJson(
+        saveRobotCredentials: ({ robotId, name = '', email = '' }) => callRobotCredentialsJson(
             'git_robot_credentials_save',
-            compact({ robotName, name: name || null, email: email || null })
+            compact({ robotId, name: name || null, email: email || null })
         ),
-        deleteRobotCredentials: (robotName) => callRobotCredentialsJson('git_robot_credentials_delete', { robotName }),
+        deleteRobotCredentials: (robotId) => callRobotCredentialsJson('git_robot_credentials_delete', { robotId }),
         getStoredGitToken: async () => {
             const result = await callGitAuthJson('git_auth_status');
             return result?.token || '';

@@ -240,7 +240,7 @@ async function resolveGithubIdentity({ workspaceRoot, authInfo, token, name, ema
 export async function saveRobotCredentials({
     authInfo,
     workspaceRoot,
-    robotName,
+    robotId,
     name = '',
     email = '',
     createAgentClient,
@@ -248,7 +248,7 @@ export async function saveRobotCredentials({
     getConnectionUser = getGithubConnectionUser,
     fetchProfile = fetchGithubUserProfile
 } = {}) {
-    const robot = text(robotName);
+    const robot = text(robotId);
     if (!robot) return failure(ROBOT_CREDENTIAL_CODES.invalid, 'Choose a robot.');
     if (!hasWorkspaceUser(authInfo)) {
         return failure(ROBOT_CREDENTIAL_CODES.signInRequired, 'Saving git credentials to a robot requires a signed-in workspace user.');
@@ -267,7 +267,7 @@ export async function saveRobotCredentials({
         return failure(ROBOT_CREDENTIAL_CODES.githubLoginUnknown, 'GitHub did not confirm which account the stored token belongs to. Check that the token is valid.');
     }
     const response = await callRoboTeam('robot_git_credentials_save', {
-        robotName: robot,
+        robotId: robot,
         token,
         githubLogin: identity.githubLogin,
         name: identity.name,
@@ -277,23 +277,23 @@ export async function saveRobotCredentials({
     const payload = response.payload || {};
     return {
         ok: true,
-        robot: normalizeRobotReference(payload.robot || { name: robot }),
+        robot: normalizeRobotReference(payload.robot || { id: robot }),
         metadata: normalizeMetadata(payload.metadata)
     };
 }
 
-export async function deleteRobotCredentials({ authInfo, robotName, createAgentClient } = {}) {
-    const robot = text(robotName);
+export async function deleteRobotCredentials({ authInfo, robotId, createAgentClient } = {}) {
+    const robot = text(robotId);
     if (!robot) return failure(ROBOT_CREDENTIAL_CODES.invalid, 'Choose a robot.');
     if (!hasWorkspaceUser(authInfo)) {
         return failure(ROBOT_CREDENTIAL_CODES.signInRequired, 'Removing robot git credentials requires a signed-in workspace user.');
     }
-    const response = await callRoboTeam('robot_git_credentials_delete', { robotName: robot }, { authInfo, createAgentClient });
+    const response = await callRoboTeam('robot_git_credentials_delete', { robotId: robot }, { authInfo, createAgentClient });
     if (!response.ok) return response;
     const payload = response.payload || {};
     return {
         ok: true,
-        robot: normalizeRobotReference(payload.robot || { name: robot }),
+        robot: normalizeRobotReference(payload.robot || { id: robot }),
         deleted: payload.deleted !== false
     };
 }

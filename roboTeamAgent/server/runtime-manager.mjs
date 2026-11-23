@@ -525,7 +525,7 @@ export class RuntimeManager {
             const emailAddress = GUI_MODES.has(task.type) ? robotEmailAddress(robot) : null;
             if (task.cancelRequested) throw new Error('task was paused');
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
-                '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+                '--robot-id', robot.id, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             // An error event is not proof that a possible producer has exited.
             // Observe close before any child setup can fail, and retain ownership
             // through both that close and the controller's final cleanup.

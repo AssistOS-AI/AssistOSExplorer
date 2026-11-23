@@ -72,18 +72,38 @@ export function robotFolderName(name) {
     return segment;
 }
 
+const ROBOT_ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
+
+// The WebChat folder of a robot opened at the workspace root: `achilles-cli/<robot id>`, so renaming the robot keeps
+// its conversations. A folder an earlier version named after the robot's name is moved there once, when the id
+// folder does not exist yet; a link or anything that is not a plain directory is left alone.
+export function robotWorkingFolder(root, robotId, robotName) {
+    const parent = path.join(root, 'achilles-cli');
+    if (!ROBOT_ID.test(String(robotId || ''))) return path.join(parent, robotFolderName(robotName));
+    const target = path.join(parent, robotId);
+    const legacy = robotName ? path.join(parent, robotFolderName(robotName)) : null;
+    if (legacy && legacy !== target && !fs.existsSync(target)) {
+        try {
+            if (fs.lstatSync(legacy).isDirectory()) fs.renameSync(legacy, target);
+        } catch (error) {
+            if (error?.code !== 'ENOENT') throw error;
+        }
+    }
+    return target;
+}
+
 export function initializeCliOptions(args, options = {}) {
     const parsed = parseCliOptions(args, options);
     if (parsed.help || parsed.version) return parsed;
     const env = options.env ?? process.env;
-    // A robot cannot work in the workspace root, so a WebChat opened there works in `achilles-cli/<robot>`.
+    // A robot cannot work in the workspace root, so a WebChat opened there works in `achilles-cli/<robot id>`.
     // Terminal CLI use keeps the directory it was given.
     if (isWebchatRuntime(args, env)) {
         const root = resolveAchillesWorkspaceRoot(parsed.workingDir, env);
         let selected = path.resolve(parsed.workingDir);
         try { selected = fs.realpathSync(selected); } catch { /* a missing directory is not the root */ }
         if (selected === root) {
-            parsed.workingDir = path.join(root, 'achilles-cli', robotFolderName(env.ROBOTEAM_COPILOT_ROBOT_NAME));
+            parsed.workingDir = robotWorkingFolder(root, env.ROBOTEAM_COPILOT_ROBOT_ID, env.ROBOTEAM_COPILOT_ROBOT_NAME);
         }
     }
     parsed.workingDir = ensureAchillesWorkingDirectory(parsed.workingDir, options.env ?? process.env);

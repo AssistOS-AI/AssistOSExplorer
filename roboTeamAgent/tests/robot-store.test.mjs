@@ -76,6 +76,26 @@ test('enforces workspace-wide unique names and deletes by robot id', async () =>
     });
 });
 
+test('a rename changes only the display name; the default robot keeps its name and no other robot takes it', async () => {
+    await withStore(async (store) => {
+        const fallback = await store.ensureDefaultRobot();
+        const robot = await store.create({ name: 'Analyst' });
+        await store.create({ name: 'Taken' });
+        const renamed = await store.rename(robot.id, '  Researcher  ');
+        assert.equal(renamed.id, robot.id);
+        assert.equal(renamed.name, 'Researcher');
+        assert.equal((await store.get(robot.id)).name, 'Researcher');
+        assert.equal(await store.getByName('Analyst'), null);
+        assert.equal((await store.rename(robot.id, 'Researcher')).name, 'Researcher');
+        await assert.rejects(store.rename(robot.id, 'Taken'), { code: 'ROBOT_NAME_TAKEN', statusCode: 409 });
+        await assert.rejects(store.rename(robot.id, 'default'), { code: 'ROBOT_NAME_RESERVED', statusCode: 409 });
+        await assert.rejects(store.rename(fallback.id, 'Main'), { code: 'ROBOT_PROTECTED', statusCode: 409 });
+        await assert.rejects(store.rename(robot.id, '   '), /robot name is required/);
+        await assert.rejects(store.rename('missing-000000', 'Other'), /robot not found/);
+        assert.equal((await store.getDefault()).id, fallback.id);
+    });
+});
+
 test('startup reuses an ordinary default robot unchanged and refuses its deletion', async () => {
     await withStore(async (store, dataDir, calls) => {
         const existing = await store.create({ name: 'default' });

@@ -13,7 +13,7 @@ function stubRobotStore(dataDir, robots = []) {
         dataDir,
         list: async () => robots,
         get: async (id) => robots.find((robot) => robot.id === id) || null,
-        getByName: async (name) => robots.find((robot) => robot.name === name) || null,
+        getDefault: async () => robots.find((robot) => robot.name === 'default') || null,
         robotPath: (id) => path.join(dataDir, 'robots', id),
     };
 }
