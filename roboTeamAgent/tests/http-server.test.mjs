@@ -136,6 +136,10 @@ test('skillset mutations are admin-only, including rejection of internal agents'
             body: JSON.stringify({ name: 'docs', source: '/workspace/docs' }),
         });
         assert.equal(response.status, 200);
+        // The changed robot comes back with its repositories, so the dialog does not read every robot again.
+        const changed = await response.json();
+        assert.equal(changed.robot.id, robot.id);
+        assert.ok(Array.isArray(changed.robot.repositories));
     }
     assert.equal(calls.length, 3);
     const removeUrl = `${fixture.baseUrl}/api/robots/${robot.id}/skillsets?name=repo-4d529e42-fad0-43b7-b357-95029c882355`;

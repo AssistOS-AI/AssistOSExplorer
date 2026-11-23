@@ -63,6 +63,16 @@ function liveTitle(text) {
     return first ? `Copilot · ${first.length > 120 ? `${first.slice(0, 119)}…` : first}` : 'Copilot turn';
 }
 
+// ALA reports its own failure on lines that start with `ala: `; they carry the coding agent's error and the reason it
+// states. The error names only those lines, while every diagnostic line, launch messages included, stays in the run's
+// log as a diagnostic event. Without such a line all diagnostics are kept, as before.
+export function alaFailureText(code, diagnostics = '') {
+    const lines = String(diagnostics).split('\n').map(value => value.trim()).filter(Boolean);
+    const own = lines.filter(value => value.startsWith('ala: ')).map(value => value.slice(5).trim()).filter(Boolean);
+    if (own.length) return `ALA execution failed (${code}): ${own.join('\n')}`;
+    return `ALA execution failed (${code}).${lines.length ? `\n${lines.join('\n')}` : ''}`;
+}
+
 export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settings = workspaceSettings,
     interactions, backgroundTasks, installation, execution = {}, webchatLogsBase = '', modelCache = null, livePublisher = null,
     roboWork = new RoboWorkClient() } = {}) {
@@ -529,7 +539,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         if (protocolError) throw protocolError;
         if (outcome.code === 130) throw interrupted();
         if (outcome.signal === 'SERVICE_RESTART') throw interrupted();
-        if (outcome.code !== 0) throw Object.assign(new Error(`ALA execution failed (${outcome.code ?? outcome.signal}).${diagnostics.trim() ? `\n${diagnostics.trim()}` : ''}`), { exitCode: outcome.code });
+        if (outcome.code !== 0) throw Object.assign(new Error(alaFailureText(outcome.code ?? outcome.signal, diagnostics)), { exitCode: outcome.code });
         if (!selected || finalText === null || !stdout.trim() || stdout.trimEnd() !== finalText.trimEnd()) {
             throw new Error('ALA completed without a valid matching native final result.');
         }

@@ -859,8 +859,11 @@ export function createRoboTeamServer(options) {
                 if (req.method === 'POST') await skillsets.add(skillsetsId, body);
                 else if (req.method === 'PATCH') await skillsets.setSkillsetEnabled(skillsetsId, body);
                 else await skillsets.remove(skillsetsId, url.searchParams.get('name') ?? body.name);
-                await roboflow?.refreshCoverage();
-                return sendJson(res, 200, { ok: true });
+                // Workflow coverage is computed on every read, so nothing is refreshed here. The changed robot is
+                // returned, so the skills dialog never reloads every robot and its runtime status after one toggle.
+                const updated = await robotStore.get(skillsetsId);
+                return sendJson(res, 200, { ok: true, ...(updated ? { robot: publicRobot(updated, runtimeManager.status(updated.id),
+                    { privileged: true, workspaceRoot: runtimeManager.workspaceRoot }) } : {}) });
             }
             if (pathname === '/api/control' && req.method === 'POST') {
                 const body = await readJsonBody(req);

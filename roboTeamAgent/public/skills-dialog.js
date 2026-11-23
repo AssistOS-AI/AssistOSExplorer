@@ -20,6 +20,7 @@ export function skillRepositoryLabel(repo) {
 }
 
 export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
+    let changed = false;
     const dialog = document.createElement('dialog');
     dialog.className = 'skills-dialog skills-manager-dialog';
     dialog.setAttribute('aria-labelledby', 'skills-dialog-title');
@@ -254,12 +255,14 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         render();
         try {
             const route = `api/robots/${robot.id}/skillsets`;
-            await api(method === 'DELETE' ? `${route}?name=${encodeURIComponent(body.name)}` : route,
+            const response = await api(method === 'DELETE' ? `${route}?name=${encodeURIComponent(body.name)}` : route,
                 method === 'DELETE' ? { method } : { method, body });
-            const result = await api('api/robots');
-            const updated = result.robots.find(item => item.id === robot.id);
+            // The change answers with the robot itself; reading every robot is only the fallback of an older server.
+            const updated = response?.robot?.id === robot.id ? response.robot
+                : (await api('api/robots')).robots.find(item => item.id === robot.id);
             if (!updated) throw new Error('Robot is no longer available.');
-            current = updated;
+            current = { ...current, ...updated };
+            changed = true;
             if (method === 'POST') {
                 form.reset();
                 const added = current.repositories?.find(repo => !idsBefore.has(repo.id));
@@ -267,7 +270,6 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
                 addController.complete();
             }
             setMessage(updating ? `Selection ${body.enabled ? 'enabled' : 'disabled'}.` : method === 'POST' ? 'Repository added.' : 'Repository removed. Selected skills from this source will be unavailable when tasks next start or resume.');
-            await onChanged();
         } catch (error) {
             setMessage(error.message, true);
         } finally {
@@ -300,7 +302,8 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         const toggle = dialog.querySelector('[data-robot-menu-toggle][aria-expanded="true"]');
         if (event.key === 'Escape' && toggle) { event.preventDefault(); event.stopPropagation(); closeMenus(); toggle.focus(); }
     });
-    const cleanup = () => { lifetime.abort(); if (addDialog.open) addDialog.close(); dialog.remove(); };
+    // The robot list behind the dialog is read again once, when the dialog closes after a change.
+    const cleanup = () => { lifetime.abort(); if (addDialog.open) addDialog.close(); dialog.remove(); if (changed) { changed = false; void onChanged(); } };
     const close = () => { dialog.close(); cleanup(); if (opener?.isConnected) opener.focus(); };
     dialog.querySelector('.close-skills').addEventListener('click', close);
     dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });

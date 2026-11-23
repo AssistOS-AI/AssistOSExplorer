@@ -479,3 +479,15 @@ test('a registered repository is used anywhere in the workspace, even when Ploin
     await assert.rejects(launched.live.capture(await f.store.get(f.robot.id), reference.policyId, project),
         /local skillset Documents is outside the workspace or its original path changed/u);
 });
+
+test('adding a repository reads the Ploinky listing once, and the robot view that follows reuses it', async t => {
+    const f = await fixture(t);
+    const client = f.skillsets.repositoriesClient;
+    let listings = 0;
+    f.skillsets.repositoriesClient = { ...client, listRepositories: async () => { listings++; return client.listRepositories(); } };
+    f.skillsets.listing = null;
+    await f.skillsets.add(f.robot.id, { source: 'Documents' });
+    const view = await f.store.get(f.robot.id);
+    assert.deepEqual(publicSkillsets(view).map(set => set.id), ['Documents/reports', 'Documents/reading']);
+    assert.equal(listings, 1);
+});
