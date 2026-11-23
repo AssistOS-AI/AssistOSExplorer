@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { DATA_DIR, TOOL_REFRESH_INTERVAL_MS, BROWSER_IMAGE, DESKTOP_IMAGE } from './constants.mjs';
+import { DATA_DIR, TOOL_REFRESH_INTERVAL_MS, TOOL_FALLBACK_RETRY_MS, BROWSER_IMAGE, DESKTOP_IMAGE } from './constants.mjs';
 import { OPENCODE_PLUGIN_PACKAGE, openCodePluginState } from './opencode-plugin-seed.mjs';
 import { RUNTIME_BUNDLE_FILES } from './runtime-bundle.mjs';
 
@@ -29,7 +29,11 @@ const CODING_AGENT_PACKAGES = Object.freeze({
     // Mistral Vibe is a Python program published on PyPI. uv installs it with a managed CPython into its own
     // virtual environment inside the generation; see _prepareUvAgent.
     vibe: Object.freeze({ packageName: 'mistral-vibe', executable: 'vibe', installer: 'uv' }),
+    // Google's Antigravity CLI is a native binary published through its updater's release manifest; see
+    // _prepareManifestAgent.
+    agy: Object.freeze({ packageName: 'antigravity-cli', executable: 'agy', installer: 'agy-manifest' }),
 });
+const AGY_MANIFEST_BASE_URL = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests';
 // A virtual environment records absolute paths (its interpreter, script headers), so a uv generation is installed at
 // its final path under an exclusive lock instead of being renamed from staging. A lock older than this is abandoned.
 const IN_PLACE_LOCK_STALE_MS = 30 * 60 * 1000;
@@ -113,6 +117,7 @@ export class ToolCache {
         this.arch = options.arch || process.arch;
         this.log = options.log || ((message) => console.log(message));
         this.refreshIntervalMs = Math.max(60000, Number(options.refreshIntervalMs) || TOOL_REFRESH_INTERVAL_MS);
+        this.fallbackRetryMs = Math.max(1000, Number(options.fallbackRetryMs) || TOOL_FALLBACK_RETRY_MS);
         this.now = options.now || Date.now;
         if (options.versionPins) {
             for (const name of Object.keys(options.versionPins)) {
@@ -146,11 +151,12 @@ export class ToolCache {
         return results;
     }
 
-    prepareShellTools(names = Object.keys(CODING_AGENT_PACKAGES)) {
+    // `maxAgeMs` asks for a recheck when the last one is older, for a session that should start the current release.
+    prepareShellTools(names = Object.keys(CODING_AGENT_PACKAGES), { maxAgeMs } = {}) {
         const selected = [...new Set(names)].sort();
         const shellName = selected.length === Object.keys(CODING_AGENT_PACKAGES).length ? 'shell' : `shell-${selected.join('-')}`;
         return this._once(shellName, async () => {
-            const agents = await this.prepareCodingAgents(selected);
+            const agents = await this.prepareCodingAgents(selected, { maxAgeMs });
             const generation = generationName(Object.fromEntries(Object.entries(agents).map(([name, value]) => [name, value.path])));
             const directory = path.join(this.root, 'shell-generations', generation);
             await fs.mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
@@ -237,14 +243,14 @@ export class ToolCache {
         }
     }
 
-    prepareCodingAgent(name) {
+    prepareCodingAgent(name, { maxAgeMs } = {}) {
         if (!Object.hasOwn(CODING_AGENT_PACKAGES, name)) throw new Error(`unsupported coding agent: ${name}`);
-        return this._once(name, () => this._prepareCodingAgent(name));
+        return this._once(name, () => this._prepareCodingAgent(name), maxAgeMs);
     }
 
-    async prepareCodingAgents(names = Object.keys(CODING_AGENT_PACKAGES)) {
+    async prepareCodingAgents(names = Object.keys(CODING_AGENT_PACKAGES), { maxAgeMs } = {}) {
         const uniqueNames = [...new Set(names)];
-        const prepared = await Promise.all(uniqueNames.map((name) => this.prepareCodingAgent(name)));
+        const prepared = await Promise.all(uniqueNames.map((name) => this.prepareCodingAgent(name, { maxAgeMs })));
         return Object.fromEntries(uniqueNames.map((name, index) => [name, prepared[index]]));
     }
 
@@ -326,13 +332,18 @@ export class ToolCache {
         return this._once(mode, () => (mode === 'desktop' ? this._prepareDesktop() : this._prepareBrowser()));
     }
 
-    _once(key, operation) {
+    // Coalesces concurrent preparations and reuses a finished one while it is fresh: for the refresh interval, for
+    // the shorter `maxAgeMs` a caller asks for, and only for the fallback retry delay when the result is a fallback
+    // (a shell view counts as one when any of its agents fell back), so an unreachable registry is retried soon.
+    _once(key, operation, maxAgeMs = this.refreshIntervalMs) {
         const existing = this.inflight.get(key);
-        if (existing && (existing.pending || this.now() - existing.checkedAt < this.refreshIntervalMs)) return existing.promise;
-        const entry = { promise: null, pending: true, checkedAt: 0 };
+        if (existing && (existing.pending || this.now() - existing.checkedAt < Math.min(maxAgeMs, existing.lifetimeMs))) return existing.promise;
+        const entry = { promise: null, pending: true, checkedAt: 0, lifetimeMs: this.refreshIntervalMs };
         entry.promise = Promise.resolve().then(operation).then((result) => {
             entry.pending = false;
             entry.checkedAt = this.now();
+            const fellBack = result?.fallback || Object.values(result?.agents || {}).some(agent => agent?.fallback);
+            if (fellBack) entry.lifetimeMs = this.fallbackRetryMs;
             return result;
         });
         this.inflight.set(key, entry);
@@ -415,6 +426,48 @@ export class ToolCache {
         const uv = path.join(directory, 'uv');
         if (!(await isExecutable(uv))) throw new Error('uv archive has no uv executable');
         return uv;
+    }
+
+    // The latest Antigravity CLI release: { version, url, sha512 } from Google's manifest for this architecture. Only
+    // an HTTPS archive on Google's release storage is accepted.
+    async _agyRelease() {
+        if (typeof this.fetchImpl !== 'function') throw new Error('fetch is unavailable');
+        const platform = this.arch === 'x64' ? 'linux_amd64' : this.arch === 'arm64' ? 'linux_arm64' : null;
+        if (!platform) throw new Error(`Antigravity CLI does not support architecture ${this.arch}`);
+        const response = await this.fetchImpl(`${AGY_MANIFEST_BASE_URL}/${platform}.json`, {
+            headers: { accept: 'application/json', 'user-agent': 'RoboTeamAgent' },
+        });
+        if (!response.ok) throw new Error(`Antigravity CLI release lookup failed with HTTP ${response.status}`);
+        const manifest = await response.json();
+        let url;
+        try { url = new URL(manifest?.url); } catch { throw new Error('Antigravity CLI manifest has no valid release URL'); }
+        if (url.protocol !== 'https:' || url.hostname !== 'storage.googleapis.com' || !url.pathname.endsWith('.tar.gz')) {
+            throw new Error('Antigravity CLI manifest does not reference a release archive on Google storage');
+        }
+        if (!/^[0-9a-f]{128}$/u.test(String(manifest?.sha512 || ''))) throw new Error('Antigravity CLI manifest has no SHA-512 digest');
+        return { version: safeVersion(manifest.version, 'Antigravity CLI'), url: url.href, sha512: manifest.sha512 };
+    }
+
+    // Downloads the release archive, checks its SHA-512 digest, and unpacks its `antigravity` executable as bin/agy.
+    async _downloadAgy(directory, release) {
+        const response = await this.fetchImpl(release.url, { headers: { 'user-agent': 'RoboTeamAgent' } });
+        if (!response.ok) throw new Error(`Antigravity CLI download failed with HTTP ${response.status}`);
+        const content = Buffer.from(await response.arrayBuffer());
+        if (crypto.createHash('sha512').update(content).digest('hex') !== release.sha512) {
+            throw new Error('Antigravity CLI release digest did not match the downloaded archive');
+        }
+        const bin = path.join(directory, 'bin');
+        await fs.mkdir(bin, { recursive: true, mode: 0o755 });
+        const archive = path.join(directory, 'release.tar.gz');
+        await fs.writeFile(archive, content, { mode: 0o600 });
+        try {
+            await this.execFileImpl(this.tarCommand, ['--no-same-owner', '-xzf', archive, '-C', bin, 'antigravity'],
+                { timeout: 120000, maxBuffer: 1024 * 1024, env: this.processEnv });
+        } finally {
+            await fs.rm(archive, { force: true });
+        }
+        await fs.rename(path.join(bin, 'antigravity'), path.join(bin, 'agy'));
+        await fs.chmod(path.join(bin, 'agy'), 0o755);
     }
 
     async _npmInstallHost(directory, packageName, version, { global = false } = {}) {
@@ -500,9 +553,36 @@ export class ToolCache {
         });
     }
 
+    // The manifest names only the latest release. A pin is honoured by installing only when the manifest offers that
+    // exact version; otherwise preparation fails and falls back to a stamped generation of the pinned version.
+    async _prepareManifestAgent(name) {
+        const definition = CODING_AGENT_PACKAGES[name];
+        return this._prepare(name, async () => {
+            const release = await this._agyRelease();
+            const pin = this.versionPins[name];
+            if (pin !== undefined && pin !== release.version) {
+                throw new Error(`the Antigravity CLI manifest offers ${release.version}, not the pinned ${pin}`);
+            }
+            const versions = { [name]: release.version };
+            return {
+                identity: { package: definition.packageName, version: release.version, sha512: release.sha512, arch: this.arch },
+                versions,
+                install: (directory) => this._downloadAgy(directory, release),
+                validate: async (directory) => {
+                    const executable = path.join(directory, 'bin', definition.executable);
+                    if (!(await isExecutable(executable))) throw new Error(`prepared ${name} executable is missing`);
+                    await this.execFileImpl(executable, ['--version'], { timeout: 60000, maxBuffer: 1024 * 1024,
+                        env: { ...this.processEnv, AGY_CLI_DISABLE_AUTO_UPDATE: '1' } });
+                },
+                result: (directory) => ({ path: directory, binPath: path.join(directory, 'bin'), versions }),
+            };
+        });
+    }
+
     async _prepareCodingAgent(name) {
         const definition = CODING_AGENT_PACKAGES[name];
         if (definition.installer === 'uv') return this._prepareUvAgent(name);
+        if (definition.installer === 'agy-manifest') return this._prepareManifestAgent(name);
         const companions = definition.companions || [];
         return this._prepare(name, async () => {
             const version = this.versionPins[name] ?? await this._npmVersion(definition.packageName);

@@ -12,7 +12,7 @@ const execute = promisify(execFile);
 const REF = /^[A-Za-z0-9._-]{1,128}\/[A-Za-z0-9._-]{1,128}$/u;
 const ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
 const SAFE_ENV = new Set(['LANG', 'LC_ALL', 'TERM', 'TZ', 'ALA_SESSIONS', 'ALA_EVENT_STREAM', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR']);
-const TOOL_ENV = new Set(['CODEX_BIN', 'OPENCODE_BIN', 'PI_BIN', 'OMP_BIN', 'CLAUDE_BIN', 'VIBE_BIN']);
+const TOOL_ENV = new Set(['CODEX_BIN', 'OPENCODE_BIN', 'PI_BIN', 'OMP_BIN', 'CLAUDE_BIN', 'VIBE_BIN', 'AGY_BIN']);
 const DEFAULT_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 // Exit status of a run whose mounts are not the directories RoboWork granted. ALA uses the same status.
 export const MOUNT_REFUSED_EXIT = 78;

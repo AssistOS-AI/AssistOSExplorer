@@ -456,3 +456,26 @@ test('a mixed repository contributes only its root skills/ folder, not its agent
     const captured = await f.capture(f.robot, { skillSets: ['Mixed'] });
     assert.deepEqual(selectedSkills(captured.entries.map(entry => entry.identity)), ['Mixed/report']);
 });
+
+test('a registered repository is used anywhere in the workspace, even when Ploinky was started in a folder below it', async t => {
+    const f = await fixture(t);
+    await f.skillsets.add(f.robot.id, { source: 'Documents' });
+    // Ploinky finds the workspace root by walking up from the launch folder and passes that folder as the launch scope.
+    const project = path.join(f.workspaceRoot, 'project');
+    await fs.mkdir(project);
+    const launched = new RobotSkillsets({ robotStore: f.store, workspaceRoot: f.workspaceRoot, scopeRoot: project, discoverSkills,
+        repositoriesClient: { listRepositories: async () => [...f.listed.values()].map(entry => entry()) } });
+    const reference = await launched.start(await f.store.get(f.robot.id), { skillSets: ['Documents/reports'] }, (_robot, selection) => selection);
+    const captured = await launched.live.capture(await f.store.get(f.robot.id), reference.policyId, project);
+    f.releases.push(captured.release);
+    assert.deepEqual(selectedSkills(captured.resolvedSkills), ['Documents/read-pdf', 'Documents/write-doc']);
+
+    // Outside the workspace a repository is still refused.
+    const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'robot-skillsets-outside-')));
+    t.after(() => fs.rm(outside, { recursive: true, force: true }));
+    await fs.cp(f.source, path.join(outside, 'Documents'), { recursive: true });
+    f.listed.set('Documents', () => listedRepository('Documents', path.join(outside, 'Documents'), { url: 'https://example.invalid/Documents.git' }));
+    launched.listing = null;
+    await assert.rejects(launched.live.capture(await f.store.get(f.robot.id), reference.policyId, project),
+        /local skillset Documents is outside the workspace or its original path changed/u);
+});

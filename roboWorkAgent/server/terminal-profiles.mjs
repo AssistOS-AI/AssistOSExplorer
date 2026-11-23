@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { directoryIdentity, fail, robotId } from './robot-paths.mjs';
 import { CODING_AGENT_NAMES, robotCodingAgents } from './coding-agents.mjs';
+import { TOOL_SESSION_CHECK_MS } from './constants.mjs';
 import { NATIVE_SESSION_ID, codingSessionArguments, presetsSessionId } from './coding-sessions.mjs';
 
 export const TERMINAL_PROFILE_ADMIN_REQUIRED = 'administrator access by a signed-in user is required';
@@ -245,7 +246,7 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         if (prepareOperations.has(profile)) return prepareOperations.get(profile);
         const operation = (async () => {
             const selected = await selection(profile);
-            const tools = await toolCache.prepareShellTools();
+            const tools = await toolCache.prepareShellTools(undefined, { maxAgeMs: TOOL_SESSION_CHECK_MS });
             const bundle = selected.environment ? await runtimeBundle.prepare()
                 : { ala: await runtimeBundle.prepareAla(), bwrap: { bin: '/usr/bin/bwrap' } };
             if (selected.environment) await environment.prepare(selected.environment);

@@ -19,7 +19,7 @@ import { codingAgentLabel } from '../webchat/webchatProgressState.mjs';
 import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
 import { captureRunProducer } from './runProducer.mjs';
 
-const BACKENDS = ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe'];
+const BACKENDS = ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe', 'agy'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
 const MAX_OUTPUT = 16 * 1024 * 1024;
 
@@ -46,7 +46,7 @@ function validateNativeSession(session, home, cwd) {
         throw new Error('ALA native session backend/continuation mismatch; the existing conversation has not been replaced.');
     }
     const requiredFields = native.agent === 'codex' ? ['threadId']
-        : native.agent === 'pi' ? ['sessionId', 'sessionFile'] : ['sessionId'];
+        : native.agent === 'pi' ? ['sessionId', 'sessionFile'] : native.agent === 'agy' ? ['conversationId'] : ['sessionId'];
     if (requiredFields.some((field) => typeof native.continuation[field] !== 'string' || !native.continuation[field].trim())) {
         throw new Error('ALA native continuation is corrupt; restore it or create a new conversation.');
     }
@@ -125,7 +125,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             // unsupported optional task override must leave robot defaults intact.
         }
         if (!backend || !isInstalled(backend)) {
-            throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN, PI_BIN, OMP_BIN, CLAUDE_BIN or VIBE_BIN and authenticate it in the dedicated ALA home.`);
+            throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN, PI_BIN, OMP_BIN, CLAUDE_BIN, VIBE_BIN or AGY_BIN and authenticate it in the dedicated ALA home.`);
         }
         return { cwd, home, workspaceRoot, session, resume: Boolean(resumeBackend), backend,
             requestedBackend: resumeBackend ? null : requestedBackend, models, efforts, permissionMode, agents, robotId, env: envSnapshot };
@@ -203,8 +203,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const config = await configuration(sessionId, env);
             await selectTaskEffort(config, controller.signal);
             const { cwd, home, backend, api, permissionMode } = config;
-            // Pi, OMP and Mistral Vibe have no native ask mode. Reject before transcript or native state creation.
-            if (['pi', 'omp', 'vibe'].includes(backend) && permissionMode === 'ask-for-approval') {
+            // Pi, OMP, Mistral Vibe and the Antigravity CLI have no native ask mode. Reject before transcript or native state creation.
+            if (['pi', 'omp', 'vibe', 'agy'].includes(backend) && permissionMode === 'ask-for-approval') {
                 throw new Error(`${codingAgentLabel(backend)} does not support ask-for-approval; select full-access or use Codex, OpenCode or Claude Code.`);
             }
             const snapshot = await skillCatalog.refresh(sessionId, { execution: true, cwd });

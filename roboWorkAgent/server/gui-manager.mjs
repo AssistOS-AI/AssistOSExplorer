@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { waitForPreparation, preparationCancelled } from './preparation.mjs';
 import { MOUNT_REFUSED_EXIT } from './environment.mjs';
 import { CODING_AGENT_NAMES } from './coding-agents.mjs';
+import { TOOL_SESSION_CHECK_MS } from './constants.mjs';
 import { RobotPaths, assertPrivateDirectory, directoryIdentity, fail, pinDirectory } from './robot-paths.mjs';
 import { podmanWorkspaceArguments } from './workspace-view.mjs';
 import { ProxyRelay } from './proxy-pool/proxy-relay.mjs';
@@ -134,7 +135,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, robotsDir = '/robots',
                 '-e', `XDG_DATA_HOME=${homeTarget}/.local/share`, '-e', `XDG_STATE_HOME=${homeTarget}/.local/state`,
                 // No PI_CODING_AGENT_DIR: Pi and OMP both read it, so with it OMP would use Pi's state directory.
                 '-e', `OMP_DIR=${homeTarget}/.omp`,
-                '-e', `VIBE_HOME=${homeTarget}/.vibe`, '-e', 'PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring', '-e', 'VIBE_EXPERIMENTAL_ENABLE_MODEL_CATALOG=true',
+                '-e', `VIBE_HOME=${homeTarget}/.vibe`, '-e', 'PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring', '-e', 'VIBE_EXPERIMENTAL_ENABLE_MODEL_CATALOG=true', '-e', 'SSH_TTY=roboteam-agy-file-auth', '-e', 'AGY_CLI_DISABLE_AUTO_UPDATE=1',
                 '-e', `CLAUDE_CONFIG_DIR=${homeTarget}/.claude`,
             ] : []),
             '-v', `${homePath}:/config`, '-v', `${homePath}:${homeTarget}`,
@@ -314,7 +315,7 @@ export class GuiManager {
         const wait = operation => waitForPreparation(operation, signal);
         try {
             await this.prepareRobot(robotId); check();
-            const [tools, shellTools] = await wait(Promise.all([this.toolCache.prepareMode(mode), this.toolCache.prepareShellTools()]));
+            const [tools, shellTools] = await wait(Promise.all([this.toolCache.prepareMode(mode), this.toolCache.prepareShellTools(undefined, { maxAgeMs: TOOL_SESSION_CHECK_MS })]));
             check();
             await this.homeOps(robotId, 'shell', { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
             if (mode === 'desktop') await this.homeOps(robotId, 'desktop-launchers', {});

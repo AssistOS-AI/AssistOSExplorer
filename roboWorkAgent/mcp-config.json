@@ -312,7 +312,8 @@
                 "pi",
                 "omp",
                 "claude",
-                "vibe"
+                "vibe",
+                "agy"
               ],
               "optional": true
             },

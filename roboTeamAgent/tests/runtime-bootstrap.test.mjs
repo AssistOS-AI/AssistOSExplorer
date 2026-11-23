@@ -215,7 +215,7 @@ test('manifest selects runtime-only GUI images and the persistent tool cache', a
     const constants = await import('../server/constants.mjs');
     // The manifest declares only the optional exact coding-agent version pins; proxy secrets live in proxyAgent.
     assert.deepEqual(manifest.profiles.default.env, [
-        'ROBOTEAM_CODEX_VERSION', 'ROBOTEAM_OPENCODE_VERSION', 'ROBOTEAM_PI_VERSION', 'ROBOTEAM_OMP_VERSION', 'ROBOTEAM_CLAUDE_VERSION', 'ROBOTEAM_VIBE_VERSION',
+        'ROBOTEAM_CODEX_VERSION', 'ROBOTEAM_OPENCODE_VERSION', 'ROBOTEAM_PI_VERSION', 'ROBOTEAM_OMP_VERSION', 'ROBOTEAM_CLAUDE_VERSION', 'ROBOTEAM_VIBE_VERSION', 'ROBOTEAM_AGY_VERSION',
     ]);
 
     assert.equal(constants.DESKTOP_IMAGE, 'docker.io/assistos/roboteam-desktop:runtime');
