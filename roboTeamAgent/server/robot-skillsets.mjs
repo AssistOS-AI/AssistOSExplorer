@@ -84,13 +84,18 @@ export class RobotSkillsets {
         const client = this.repositoriesClient || await repositoryClient();
         const bareUrl = value => String(value || '').replace(/\.git$/, '');
         const matches = entry => entry.name === source || entry.source === source || bareUrl(entry.url) === bareUrl(source);
-        let repo = (await client.listRepositories()).find(matches);
+        let repositories = await client.listRepositories();
+        let repo = repositories.find(matches);
         if ((!repo || repo.origin === 'remote') && !path.isAbsolute(source)) {
             let url;
             try { url = new URL(repo?.url || source); } catch { throw invalid('repository is unavailable'); }
             if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) throw invalid('use a credential-free HTTPS Git URL');
-            repo = (await client.prepareRepository({ url: url.href, name: repo?.name || path.basename(url.pathname).replace(/\.git$/, '') })).find(matches);
+            repositories = await client.prepareRepository({ url: url.href, name: repo?.name || path.basename(url.pathname).replace(/\.git$/, '') });
+            repo = repositories.find(matches);
         }
+        // The listing just read, after any preparation, is the current one: the robot view that follows reuses it
+        // instead of asking Ploinky for every repository and skill catalog again.
+        this.listing = { repositories: Promise.resolve(repositories), expires: Date.now() + CATALOG_TTL_MS };
         if (!repo || repo.origin === 'remote') throw invalid('repository is unavailable');
         return repo;
     }
@@ -108,7 +113,6 @@ export class RobotSkillsets {
         if (local === dataRoot || local.startsWith(`${dataRoot}${path.sep}`) || dataRoot.startsWith(`${local}${path.sep}`)) throw invalid('skillset source cannot contain robot private data');
         const sets = repo.skillsets || [];
         const skills = sets.length ? [...new Set(sets.flatMap(set => set.skills))] : repo.skills;
-        this.listing = null;
         return this.robotStore.withRobot(robotId, async (robot, save) => {
             const available = robot.repositories || [];
             if (available.some(entry => entry.name === repo.name)) throw invalid('repository already exists');

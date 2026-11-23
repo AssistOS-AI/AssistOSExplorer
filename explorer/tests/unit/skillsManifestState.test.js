@@ -579,3 +579,39 @@ test('read_skills_manifest_state reuses the prepareRepository listing for later 
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   }
 });
+
+test('toggling, adding and removing list repositories once per call regardless of entry count', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-mutate-once-'));
+  try {
+    const projectDir = path.join(workspaceRoot, 'project');
+    await fs.mkdir(projectDir, { recursive: true });
+    const manifest = [];
+    for (const name of ['repo-one', 'repo-two', 'repo-three', 'repo-four']) {
+      const repoDir = path.join(workspaceRoot, name);
+      await writeFile(path.join(repoDir, 'skills', `${name}-skill`, 'SKILL.md'), `---\nname: ${name}-skill\n---\n`);
+      await fs.mkdir(path.join(repoDir, '.git'), { recursive: true });
+      if (name !== 'repo-four') manifest.push({ url: repoDir, name, branch: null, skills: [`${name}-skill`] });
+    }
+    await writeFile(path.join(projectDir, 'ploinky-skills-manifest.json'), JSON.stringify(manifest, null, 2));
+    let listCalls = 0;
+    const handlers = createHandlers(workspaceRoot, [], (client) => {
+      const original = client.listRepositories.bind(client);
+      client.listRepositories = async () => { listCalls += 1; return original(); };
+    });
+    const count = async (call) => { listCalls = 0; const result = parseJsonResponse(await call()); return [listCalls, result]; };
+
+    const [toggled, off] = await count(() => handlers.set_skills_manifest_skill_enabled({ folderPath: projectDir, repoName: 'repo-two', skill: 'repo-two-skill', enabled: false }));
+    assert.equal(toggled, 1);
+    assert.deepEqual(off.repositories.find(repo => repo.name === 'repo-two').skills, []);
+
+    const [added, withFour] = await count(() => handlers.add_skills_manifest_repo({ folderPath: projectDir, url: path.join(workspaceRoot, 'repo-four'), name: 'repo-four' }));
+    assert.equal(added, 1);
+    assert.deepEqual(withFour.repositories.map(repo => repo.name), ['repo-one', 'repo-two', 'repo-three', 'repo-four']);
+
+    const [removed, withoutOne] = await count(() => handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName: 'repo-one' }));
+    assert.equal(removed, 1);
+    assert.deepEqual(withoutOne.repositories.map(repo => repo.name), ['repo-two', 'repo-three', 'repo-four']);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});

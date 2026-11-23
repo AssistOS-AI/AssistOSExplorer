@@ -362,3 +362,21 @@ test('a manually entered URL is still prepared and saved as entered', async (t) 
     assert.deepEqual(calls.prepare.map((call) => call.url), [CONFIGURED_URL]);
     assert.deepEqual(manifest.map((entry) => [entry.name, entry.url]), [['real-skills', CONFIGURED_URL]]);
 });
+
+test('adding and removing use the state the mutation answers with and never read it again', async () => {
+    const { modal, calls } = createModal({ tools: {
+        add_skills_manifest_repo: () => ({ ok: true, added: true, message: 'new added.', repositories: [repository('old'), repository('new')] }),
+        remove_skills_manifest_repo: () => ({ ok: true, repositories: [repository('old')] }),
+        read_skills_manifest_state: () => { throw new Error('the state must not be read again'); },
+    } });
+    modal.listEl = { innerHTML: '' };
+    modal.state.repositories = [repository('old')];
+    modal.selectedRepository = 'old';
+    modal.urlInput.value = 'new';
+    await modal.addRepository();
+    assert.equal(modal.selectedRepository, 'new');
+    assert.deepEqual(modal.state.repositories.map((repo) => repo.name), ['old', 'new']);
+    await modal.removeRepository('new');
+    assert.deepEqual(modal.state.repositories.map((repo) => repo.name), ['old']);
+    assert.equal(calls.filter((call) => call.name === 'read_skills_manifest_state').length, 0);
+});
