@@ -23,6 +23,7 @@ import { runtimeSettingsController } from "./settings-runtime-controller.js";
 import { accountController } from "./settings-account-controller.js";
 import { usersController } from "./settings-users-controller.js";
 import { hardwareController } from "./settings-hardware-controller.js";
+import { cacheController } from "./settings-cache-controller.js";
 import { buildSettingsUrl, updateSettingsLocation } from "../../../shared/ui/settings-navigation.js";
 import {
     loadEditorAutoSavePreference,
@@ -47,7 +48,7 @@ export class SettingsModal {
         this.element = element;
         this.invalidate = invalidate;
         this.props = props || {};
-        const initialTab = [...BASE_TABS, 'users', 'hardware'].includes(this.props.tab) ? this.props.tab : 'agents';
+        const initialTab = [...BASE_TABS, 'users', 'hardware', 'cache'].includes(this.props.tab) ? this.props.tab : 'agents';
         this.requestedInitialTab = initialTab;
         this.state = {
             activeTab: initialTab,
@@ -96,6 +97,7 @@ export class SettingsModal {
             accountSettingsAccess: false,
             hardwareAccessChecked: false,
             hardwareAccess: false,
+            cacheAccess: false,
         };
         this.savedPreferences = this.preferenceSignature();
         this.invalidate();
@@ -113,6 +115,7 @@ export class SettingsModal {
         this.bindEvents();
         this.refreshUsersAccess();
         void this.refreshHardwareAccess();
+        void this.refreshCacheAccess();
         if (this.state.activeTab === "plugins" && !this.state.pluginDataLoaded) {
             await this.loadPluginSettingsData();
         }
@@ -136,6 +139,9 @@ export class SettingsModal {
         this.usersTab = this.element.querySelector('[data-admin-tab]');
         this.hardwareTab = this.element.querySelector('[data-hardware-tab]');
         this.hardwareSection = this.element.querySelector('[data-section="hardware"]');
+        this.cacheTab = this.element.querySelector('[data-cache-tab]');
+        this.cacheSection = this.element.querySelector('[data-section="cache"]');
+        this.cacheAccessStatus = this.element.querySelector('[data-cache-access-status]');
         this.listEl = this.element.querySelector("#keymapList");
         this.warningEl = this.element.querySelector("#keymapWarning");
         this.pluginSettingsListEl = this.element.querySelector("#pluginSettingsList");
@@ -200,10 +206,12 @@ export class SettingsModal {
 
     switchTab(_target, tab) {
         this.requestedInitialTab = '';
+        if (this.cacheAccessStatus) this.cacheAccessStatus.hidden = true;
         const allowedTabs = this.getAllowedTabs();
         this.state.activeTab = allowedTabs.includes(tab) ? tab : 'agents';
         this.updateTabUI();
         if (this.state.activeTab === 'hardware') void this.loadHardwarePanel();
+        if (this.state.activeTab === 'cache') void this.loadCachePanel();
         if (this.state.activeTab === "plugins" && !this.state.pluginDataLoaded) {
             this.loadPluginSettingsData().catch((error) => {
                 this.state.pluginStatus = error?.message || "Failed to load plugin settings.";
@@ -236,6 +244,7 @@ export class SettingsModal {
         return [...BASE_TABS,
             ...(this.state.usersAccess || this.state.accountSettingsAccess ? ['users'] : []),
             ...(this.state.hardwareAccess ? ['hardware'] : []),
+            ...(this.state.cacheAccess ? ['cache'] : []),
         ];
     }
 
@@ -259,6 +268,8 @@ export class SettingsModal {
             this.usersTab.hidden = !this.state.usersAccess && !this.state.accountSettingsAccess;
         }
         if (this.hardwareTab) this.hardwareTab.hidden = !this.state.hardwareAccess;
+        if (this.cacheTab) this.cacheTab.hidden = !this.state.cacheAccess;
+        this.cacheSection?.querySelector('cache-panel')?.dispatchEvent(new CustomEvent('cache-active', { detail: this.state.activeTab === 'cache' }));
         this.hardwareSection?.querySelector('hardware-limits-panel')?.dispatchEvent(new CustomEvent('hardware-limits-active', { detail: this.state.activeTab === 'hardware' }));
 
         const sections = [
@@ -271,6 +282,7 @@ export class SettingsModal {
             { key: 'avatar', element: this.avatarSection },
             { key: 'users', element: this.usersSection },
             { key: 'hardware', element: this.hardwareSection },
+            { key: 'cache', element: this.cacheSection },
         ];
         sections.forEach(({ key, element }) => {
             if (!element) return;
@@ -283,6 +295,7 @@ export class SettingsModal {
         if (this.actionsEl) {
             this.actionsEl.hidden = this.state.activeTab === "users"
                 || this.state.activeTab === "hardware"
+                || this.state.activeTab === "cache"
                 || this.state.activeTab === "avatar"
                 || this.state.activeTab === "agents"
                 || this.state.activeTab === "account";
@@ -475,6 +488,12 @@ export class SettingsModal {
         return { tab: this.state.activeTab };
     }
 
+    afterUnload() {
+        this.hardwareClosed = true;
+        this.hardwareAbort?.abort();
+        this.cacheAbort?.abort();
+    }
+
     closeModal(payload) {
         const shell = this.element.closest('expanded-modal')?.webSkelPresenter;
         if (!shell) return;
@@ -491,5 +510,6 @@ Object.assign(
     avatarController,
     accountController,
     usersController,
-    hardwareController
+    hardwareController,
+    cacheController
 );
