@@ -24,6 +24,9 @@ env:
   DELETE_DATA: ${{ inputs.delete_data }}
   ROUTER_PORT: '8097'
   PUBLIC_HOST: 'explorer-qa.axiologic.dev'
+  CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+  CLOUDFLARE_CACHE_R1_REF: 'explorer_qa_cache_r1'
+  CLOUDFLARE_CACHE_R2_REF: 'explorer_qa_cache_r2'
   CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'
   CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: '091c4096-d1c8-4dbc-bb12-0c6357431d96'
   SOUL_GATEWAY_WORKSPACE: 'soulGateway'
@@ -49,7 +52,7 @@ jobs:
           node-version: '24'
 
       - name: Test these workflows
-        run: node --test tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs
+        run: node --test tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs tests/smoke/lib/deploy-qa-cache-rules.test.mjs tests/smoke/lib/deploy-qa-cache-origin.test.mjs tests/smoke/lib/deploy-qa-cache-workflows.test.mjs
 
       - name: Validate GitHub configuration
         env:
@@ -126,6 +129,12 @@ jobs:
           chmod 600 "$HOST_KEY_CANDIDATE"
           echo "Validated the pinned Explorer QA SSH host identity."
 
+      - name: Disable QA page caching
+        id: cache_off
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --if-present
+
       - name: Prepare SSH key
         env:
           SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
@@ -136,6 +145,12 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           install -m 600 "$RUNNER_TEMP/explorer_qa_known_hosts" ~/.ssh/explorer_qa_known_hosts
+
+      - name: Disable QA page caching after a failed rule change
+        if: ${{ always() && (steps.cache_off.outcome == 'failure' || steps.cache_off.outcome == 'cancelled') }}
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --if-present
 
       - name: Destroy the Box through Ploinky commands
         run: |

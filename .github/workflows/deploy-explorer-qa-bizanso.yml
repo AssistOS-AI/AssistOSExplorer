@@ -8,6 +8,12 @@ name: Deploy Explorer QA Bizanso
 
 on:
   workflow_dispatch:
+    inputs:
+      force_cache_probe_failure:
+        description: 'T9 negative control. Fail the QA origin cache probe and leave the page rule off.'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-explorer-qa
@@ -22,6 +28,9 @@ env:
   PUBLIC_HOST: 'explorer-qa.axiologic.dev'
   PUBLIC_URL: 'https://explorer-qa.axiologic.dev'
   SOUL_GATEWAY_ROUTER_PORT: '8080'
+  CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+  CLOUDFLARE_CACHE_R1_REF: 'explorer_qa_cache_r1'
+  CLOUDFLARE_CACHE_R2_REF: 'explorer_qa_cache_r2'
 
 jobs:
   deploy:
@@ -46,7 +55,7 @@ jobs:
           node-version: '24'
 
       - name: Test these workflows
-        run: node --test tests/smoke/lib/deploy-qa-product-workflows.test.mjs
+        run: node --test tests/smoke/lib/deploy-qa-product-workflows.test.mjs tests/smoke/lib/deploy-qa-cache-rules.test.mjs tests/smoke/lib/deploy-qa-cache-origin.test.mjs tests/smoke/lib/deploy-qa-cache-workflows.test.mjs
 
       - name: Validate GitHub configuration
         env:
@@ -80,6 +89,15 @@ jobs:
           fi
           chmod 600 "$HOST_KEY_CANDIDATE"
           echo "Validated the pinned Explorer QA SSH host identity."
+
+      - name: Disable QA page caching
+        id: cache_off
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/cloudflare-cache-rules.mjs ensure-r1 --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN
+          node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN
 
       - name: Prepare SSH key
         env:
@@ -139,8 +157,11 @@ jobs:
           echo "[deploy-qa-bizanso] Bizanso source $COMMIT, tree $TREE, image $IMAGE"
 
       - name: Deploy Bizanso through Ploinky commands
+        env:
+          EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN }}
         run: |
           set -euo pipefail
+          export -n EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN
           umask 077
 
           SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
@@ -291,6 +312,7 @@ jobs:
             exit 1
           fi
           echo "[deploy-qa-bizanso] Ploinky checkout $PLOINKY_COMMIT (not moved)."
+          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME" >> "$GITHUB_ENV"
 
           # BEGIN QA product flow
           REMOTE_ENV="cd '$WORK_DIR' && export PATH='$QA_NODE_HOME/bin':\"\$PATH\" PLOINKY_WORKSPACE_ROOT='$WORK_DIR'"
@@ -1024,6 +1046,9 @@ jobs:
             echo "::error::QA routes are not healthy before this run ($ROUTES_STATE). Nothing was changed. Dispatch deploy-explorer-qa-ploinky.yml."
             exit 1
           fi
+          # The existing Router can now receive the purge credential for this admitted QA target.
+          QA_NODE_HOME="$QA_NODE_HOME" EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN="${EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN:-}" bash "$GITHUB_WORKSPACE/.github/scripts/qa-cache-router.sh" pre
+          unset EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN
           # Refusal 7: free what earlier rollouts left behind, then refuse to start on a full disk.
           prune_images pre
           require_free_disk
@@ -1142,6 +1167,13 @@ jobs:
             sleep 5
           done
 
+      - name: Verify and clear the new QA origin cache
+        id: cache_probe
+        env:
+          EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN }}
+          QA_CACHE_FORCE_PROBE_FAILURE: ${{ inputs.force_cache_probe_failure }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/qa-cache-router.sh" post
+
       - name: Create summary
         if: always()
         run: |
@@ -1149,7 +1181,7 @@ jobs:
             echo "## Explorer QA Bizanso Deploy"
             echo ""
             echo "- Host: \`${SSH_USER}@${SSH_HOST}\`, workspace \`~/${WORKSPACE}\`"
-            echo "- Scope: only \`bizanso/bizanso\` inside the running Box. The Ploinky checkout, the Box, the tunnel and every other repository are untouched"
+            echo "- Scope: \`bizanso/bizanso\` and its cache on \`$PUBLIC_HOST\`"
             echo "- Source: private Bizanso default branch \`${BIZANSO_SOURCE_COMMIT:-not-resolved}\`, tree \`${BIZANSO_SOURCE_TREE:-not-resolved}\`"
             echo "- Image: \`${BIZANSO_IMAGE:-not-resolved}\`"
             echo "- Restart scope and result: the \`restart scope\` and \`restart result\` lines of the deploy step"
@@ -1172,3 +1204,22 @@ jobs:
             "$RUNNER_TEMP/qa-product-agents.json" \
             "$RUNNER_TEMP/qa-product-targeted.log" \
             "$RUNNER_TEMP/qa-product-restart.log"
+
+      - name: Enable QA page caching
+        id: cache_on
+        if: ${{ success() && steps.cache_probe.outputs.verified == 'true' }}
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-on --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+
+      - name: Disable QA page caching after a failed initial guard
+        if: ${{ always() && (steps.cache_off.outcome == 'failure' || steps.cache_off.outcome == 'cancelled') }}
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --if-present
+
+      - name: Disable QA page caching after a cancelled activation
+        if: ${{ always() && steps.cache_on.outcome == 'cancelled' }}
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
