@@ -371,7 +371,9 @@ test('robot cards render the credential line and a confirmed Remove git credenti
     assert.match(html, /<button class="button secondary remove-git-credentials" type="button" hidden>Remove git credentials<\/button>/);
     // The action sits in the More actions menu outside the Delete robot section, so the default robot offers it too.
     assert.doesNotMatch(html, /robot-danger-actions" hidden>[\s\S]*remove-git-credentials[\s\S]*<\/div>\s*<\/div>\s*<\/div>/);
-    assert.match(source, /const label = `GitHub: \$\{credentials\.githubLogin \|\| 'unknown account'\} · saved by \$\{saver\}\$\{date\}`;/);
+    // The account stays on the card; who saved the credentials and when are in the robot details.
+    assert.match(source, /const label = `GitHub: \$\{credentials\.githubLogin \|\| 'unknown account'\}`;/);
+    assert.match(source, /return `GitHub: \$\{credentials\.githubLogin \|\| 'unknown account'\}, saved by \$\{saver\}\$\{date\}`;/);
     assert.match(source, /remove\.hidden = !\(configured && credentials\.canRemove === true\);/);
     assert.match(source, /if \(!confirm\(`Remove the GitHub credentials of [^`]+`\)\) return;/);
     assert.match(source, /api\(`api\/robots\/\$\{encodeURIComponent\(robot\.id\)\}\/git-credentials`, \{ method: 'DELETE' \}\)/);

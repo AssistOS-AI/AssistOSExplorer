@@ -165,13 +165,43 @@ async function stopRobot(robot, button) {
     }
 }
 
-// Git credentials a robot holds: GitHub login, saving workspace user and date only; the token never reaches the page.
+// Git credentials a robot holds: the GitHub account stays on the card; who saved them and when are in the details.
+// The token never reaches the page.
 function gitCredentialsLabel(credentials) {
-    const savedAt = credentials.savedAt ? new Date(credentials.savedAt) : null;
-    const date = savedAt && !Number.isNaN(savedAt.getTime()) ? ` · ${savedAt.toLocaleDateString()}` : '';
-    const saver = credentials.savedBy?.username || credentials.savedBy?.id || 'unknown user';
-    const label = `GitHub: ${credentials.githubLogin || 'unknown account'} · saved by ${saver}${date}`;
+    const label = `GitHub: ${credentials.githubLogin || 'unknown account'}`;
     return credentials.readable === false ? `${label} (unreadable; save them again)` : label;
+}
+
+function gitCredentialsDetails(credentials) {
+    if (credentials?.configured !== true) return 'GitHub: no credentials';
+    const savedAt = credentials.savedAt ? new Date(credentials.savedAt) : null;
+    const date = savedAt && !Number.isNaN(savedAt.getTime()) ? ` on ${savedAt.toLocaleString()}` : '';
+    const saver = credentials.savedBy?.username || credentials.savedBy?.id || 'unknown user';
+    return `GitHub: ${credentials.githubLogin || 'unknown account'}, saved by ${saver}${date}`;
+}
+
+// The active coding agent with the model and effort it runs with; an agent without a chosen model uses its own default.
+function showRobotCodingSettings(card, robot, codingAgents) {
+    const agent = robot.codingAgent || codingAgents[0];
+    card.querySelector('.robot-agent-chip').textContent = codingAgentLabel([agent]);
+    // null is the agent's own default; a missing field is a service that does not report the model yet.
+    const model = card.querySelector('.robot-model-chip');
+    model.hidden = robot.codingModel === undefined;
+    model.textContent = robot.codingModel || 'default model';
+    model.classList.toggle('muted', !robot.codingModel);
+    const effort = card.querySelector('.robot-effort-chip');
+    effort.hidden = !robot.codingEffort;
+    effort.textContent = robot.codingEffort ? `effort: ${robot.codingEffort}` : '';
+}
+
+// The robot's id and the less frequent details, shown when the pointer or focus is on the info icon.
+function showRobotDetails(card, robot, codingAgents) {
+    const lines = [`ID: ${robot.id}`];
+    if (codingAgents.length > 1) lines.push(`Enabled coding agents: ${codingAgentLabel(codingAgents)}`);
+    if (robot.gitCredentials) lines.push(gitCredentialsDetails(robot.gitCredentials));
+    const details = card.querySelector('.robot-details');
+    details.querySelector('.robot-details-tip').textContent = lines.join('\n');
+    details.setAttribute('aria-label', `Details of ${robot.name}: ${lines.join('; ')}`);
 }
 
 function showRobotGitCredentials(card, robot) {
@@ -318,8 +348,9 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
         });
         card.querySelector('.open-chat').addEventListener('click', () => {
             // robot-id selects the robot; robot is only the label WebChat shows.
+            // The default robot, whose name never changes, keeps achilles-cli/default, the folder Explorer opens too.
             const params = new URLSearchParams({ agent: routeKey, 'robot-id': robot.id, robot: robot.name,
-                'workspace-dir': `achilles-cli/${robot.id}`, 'forward-envelope': '1' });
+                'workspace-dir': `achilles-cli/${robot.name === 'default' ? 'default' : robot.id}`, 'forward-envelope': '1' });
             window.open(`/webchat?${params}`, '_blank', 'noopener');
         });
         card.querySelector('.manage-skills').addEventListener('click', () => openSkillsDialog(robot, { api, onChanged: loadRobots, canAdmin }));
@@ -345,10 +376,10 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
         });
         card.querySelector('.avatar').textContent = initials(robot.name);
         card.querySelector('h3').textContent = robot.name;
-        card.querySelector('.robot-id').textContent = robot.id;
         const codingAgents = robot.codingAgents || ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe', 'agy'];
         const agentLine = card.querySelector('.active-coding-agent');
-        agentLine.textContent = `Coding agent: ${codingAgentLabel(codingAgents)}`;
+        showRobotCodingSettings(card, robot, codingAgents);
+        showRobotDetails(card, robot, codingAgents);
         const logins = loginSummary(robot);
         if (logins) {
             const marker = document.createElement('span');

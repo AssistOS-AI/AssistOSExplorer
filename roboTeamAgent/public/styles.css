@@ -388,7 +388,17 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .run-state { display: inline-flex; align-items: center; gap: 4px; color: var(--text-soft); font-size: .65rem; line-height: 1.3; font-weight: 400; }
 .run-state::before { content: ""; flex: 0 0 4px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
 .robot-meta { display: flex; align-items: start; flex-wrap: wrap; color: var(--text-soft); font-size: var(--font-xs); flex-direction: column }
-.robot-meta .active-coding-agent { margin: 0; font-size: inherit; }
+.robot-meta .active-coding-agent { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 2px 0 4px; font-size: inherit; }
+.robot-chip { display: inline-flex; align-items: center; max-width: 100%; padding: 1px 8px; color: var(--text); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 999px; font-size: var(--font-xs); line-height: 1.5; overflow-wrap: anywhere; }
+.robot-chip[hidden] { display: none; }
+.robot-agent-chip { color: var(--accent); background: var(--bg-active); border-color: rgba(var(--accent-rgb), .25); font-weight: 600; }
+.robot-model-chip { font-family: var(--mono-font); }
+.robot-model-chip.muted { color: var(--text-soft); font-family: inherit; font-style: italic; }
+.robot-details { position: relative; display: inline-flex; outline: none; cursor: help; }
+.robot-details-icon { display: grid; width: 16px; height: 16px; place-items: center; color: var(--text-soft); border: 1px solid var(--border-strong); border-radius: 50%; font-size: .65rem; font-style: italic; font-weight: 600; font-family: Georgia, serif; }
+.robot-details:hover .robot-details-icon, .robot-details:focus-visible .robot-details-icon { color: var(--accent); border-color: var(--accent); }
+.robot-details-tip { position: absolute; z-index: 20; top: calc(100% + 6px); left: -8px; display: none; width: max-content; max-width: min(420px, 80vw); padding: 8px 10px; color: var(--surface); background: var(--surface-dark); border-radius: var(--radius-md); box-shadow: 0 6px 20px rgba(0, 0, 0, .18); font-size: var(--font-xs); font-weight: 400; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+.robot-details:hover .robot-details-tip, .robot-details:focus-visible .robot-details-tip { display: block; }
 .robot-mode { font-size: inherit; }
 .robot-proxy { font-size: inherit; overflow-wrap: anywhere; }
 .robot-git-credentials { font-size: inherit; overflow-wrap: anywhere; }

@@ -664,7 +664,8 @@ export function createRoboTeamServer(options) {
                     const view = publicRobot(robot, runtimeManager.status(robot.id), { privileged: listing.canAdmin, workspaceRoot: runtimeManager.workspaceRoot });
                     const status = statuses.get(robot.id);
                     const credentials = viewer ? await robotCredentialsView(robot, viewer) : null;
-                    return { ...view, codingAgent: status?.activeAgent || null,
+                    return { ...view, codingAgent: status?.activeAgent || null, codingModel: status?.activeModel || null,
+                        codingEffort: status?.activeEffort || null,
                         ...(listing.canAdmin ? { codingAgentLogins: status?.logins || {} } : {}),
                         ...(credentials ? { gitCredentials: credentials } : {}) };
                 }));

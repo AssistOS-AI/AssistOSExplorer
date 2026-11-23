@@ -93,3 +93,20 @@ test('a WebChat at the workspace root works in achilles-cli/<robot id>, and the 
     assert.equal((await fs.stat(path.join(realRoot, 'achilles-cli', 'Renamed'))).isDirectory(), true);
     assert.equal(await fs.readFile(path.join(target, 'note.txt'), 'utf8'), 'kept');
 });
+
+test('the default robot works in achilles-cli/default and takes over the folder the dashboard opened under its id', async t => {
+    const root = await fixture(t);
+    const realRoot = await fs.realpath(root);
+    const env = { ...process.env, PLOINKY_WORKSPACE_ROOT: root, ROBOTEAM_COPILOT_ROBOT_ID: 'default-a1b2c3', ROBOTEAM_COPILOT_ROBOT_NAME: 'default' };
+    const byId = path.join(realRoot, 'achilles-cli', 'default-a1b2c3');
+    const folder = path.join(realRoot, 'achilles-cli', 'default');
+    await fs.mkdir(byId, { recursive: true });
+    await fs.writeFile(path.join(byId, 'note.txt'), 'kept');
+    // WebChat may create the link's folder, still empty, before the copilot starts.
+    await fs.mkdir(folder);
+    const opened = initializeCliOptions([`--dir=${folder}`, '--sso-user=test'], { env }).workingDir;
+    assert.equal(opened, folder);
+    assert.equal(await fs.readFile(path.join(folder, 'note.txt'), 'utf8'), 'kept');
+    await assert.rejects(fs.stat(byId), { code: 'ENOENT' });
+    assert.equal(initializeCliOptions([`--dir=${root}`, '--sso-user=test'], { env }).workingDir, folder);
+});

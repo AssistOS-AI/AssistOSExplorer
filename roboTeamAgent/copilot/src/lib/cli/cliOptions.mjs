@@ -74,21 +74,33 @@ export function robotFolderName(name) {
 
 const ROBOT_ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
 
-// The WebChat folder of a robot opened at the workspace root: `achilles-cli/<robot id>`, so renaming the robot keeps
+// The WebChat folder of a robot opened at the workspace root: `achilles-cli/<robot id>` (`achilles-cli/default` for the
+// default robot), so renaming a robot keeps
 // its conversations. A folder an earlier version named after the robot's name is moved there once, when the id
 // folder does not exist yet; a link or anything that is not a plain directory is left alone.
+// Moves a robot's earlier WebChat folder to the one it uses now, when the new one is absent or still empty (WebChat
+// may have created it before the copilot starts). A link or anything that is not a plain directory is left alone.
+function adoptFolder(source, target) {
+    if (source === target) return;
+    try {
+        if (!fs.lstatSync(source).isDirectory()) return;
+        if (fs.existsSync(target)) {
+            if (!fs.lstatSync(target).isDirectory() || fs.readdirSync(target).length) return;
+            fs.rmdirSync(target);
+        }
+        fs.renameSync(source, target);
+    } catch (error) {
+        if (error?.code !== 'ENOENT' && error?.code !== 'ENOTEMPTY') throw error;
+    }
+}
+
 export function robotWorkingFolder(root, robotId, robotName) {
     const parent = path.join(root, 'achilles-cli');
-    if (!ROBOT_ID.test(String(robotId || ''))) return path.join(parent, robotFolderName(robotName));
+    // The default robot is the one robot whose name never changes; it keeps `achilles-cli/default`, which Explorer's
+    // Copilot button and the dashboard open as well.
+    if (robotName === 'default' || !ROBOT_ID.test(String(robotId || ''))) return path.join(parent, robotFolderName(robotName));
     const target = path.join(parent, robotId);
-    const legacy = robotName ? path.join(parent, robotFolderName(robotName)) : null;
-    if (legacy && legacy !== target && !fs.existsSync(target)) {
-        try {
-            if (fs.lstatSync(legacy).isDirectory()) fs.renameSync(legacy, target);
-        } catch (error) {
-            if (error?.code !== 'ENOENT') throw error;
-        }
-    }
+    if (robotName) adoptFolder(path.join(parent, robotFolderName(robotName)), target);
     return target;
 }
 
@@ -104,6 +116,12 @@ export function initializeCliOptions(args, options = {}) {
         try { selected = fs.realpathSync(selected); } catch { /* a missing directory is not the root */ }
         if (selected === root) {
             parsed.workingDir = robotWorkingFolder(root, env.ROBOTEAM_COPILOT_ROBOT_ID, env.ROBOTEAM_COPILOT_ROBOT_NAME);
+        }
+        // The dashboard opened the default robot in `achilles-cli/<its id>` before it used `achilles-cli/default`.
+        const defaultFolder = path.join(root, 'achilles-cli', 'default');
+        if (env.ROBOTEAM_COPILOT_ROBOT_NAME === 'default' && ROBOT_ID.test(String(env.ROBOTEAM_COPILOT_ROBOT_ID || ''))
+            && [path.resolve(parsed.workingDir), (() => { try { return fs.realpathSync(parsed.workingDir); } catch { return ''; } })()].includes(defaultFolder)) {
+            adoptFolder(path.join(root, 'achilles-cli', env.ROBOTEAM_COPILOT_ROBOT_ID), defaultFolder);
         }
     }
     parsed.workingDir = ensureAchillesWorkingDirectory(parsed.workingDir, options.env ?? process.env);
