@@ -121,7 +121,9 @@ function createHarness({ plugins }) {
     const barContainer = new FakeNode('div', { id: 'fileExpPluginBar', classes: ['app-plugin-bar'] });
     const accountContainer = new FakeNode('div', { id: 'fileExpAccountMenuPlugins', classes: ['app-plugin-account-slot'] });
     const toolbarContainer = new FakeNode('div', { id: 'fileExpToolbarPlugins', classes: ['app-toolbar-slot'] });
+    const dropdownContainer = new FakeNode('div', { id: 'fileExpToolbarPluginsDropdown', classes: ['app-menu-list'] });
     root.appendChild(toolbarContainer);
+    root.appendChild(dropdownContainer);
     root.appendChild(barContainer);
     root.appendChild(accountContainer);
 
@@ -189,6 +191,7 @@ function createHarness({ plugins }) {
         barContainer,
         accountContainer,
         toolbarContainer,
+        dropdownContainer,
         gate: (kind, name) => gate(kind === 'register' ? registrationGates : renderGates, name),
         max: () => ({ registrations: maxRegistrationsInFlight, renders: maxRendersInFlight }),
         restore() {
@@ -343,9 +346,9 @@ test('mountOnStart: the toolbar slot mounts only opted-in plugins at start and l
     const harness = createHarness({
         plugins: {
             'file-exp:toolbar': [
-                plugin('plain', 'plugin-plain', 1),
-                plugin('eager', 'plugin-eager', 2, { mountOnStart: true }),
-                plugin('explicit-off', 'plugin-off', 3, { mountOnStart: false }),
+                plugin('help', 'plugin-plain', 1, { agent: 'explorer' }),
+                plugin('webmeet', 'plugin-eager', 2, { agent: 'webmeetAgent', mountOnStart: true }),
+                plugin('bizanso', 'plugin-off', 3, { agent: 'bizanso', mountOnStart: false }),
             ]
         }
     });
@@ -355,7 +358,7 @@ test('mountOnStart: the toolbar slot mounts only opted-in plugins at start and l
         assert.deepEqual(harness.events.filter((event) => event.startsWith('register-')), ['register-start:plugin-eager']);
         // While it loads, the opted-in plugin shows the loading placeholder, never the on-demand trigger.
         const loadingMount = harness.toolbarContainer.querySelectorAll('[data-app-plugin-key]')
-            .find((node) => node.getAttribute('data-app-plugin-key') === 'agent/eager');
+            .find((node) => node.getAttribute('data-app-plugin-key') === 'webmeetAgent/webmeet');
         assert.ok(loadingMount.querySelector('[data-app-plugin-loading]'));
         assert.equal(loadingMount.querySelector('[data-app-plugin-trigger]'), null);
         harness.gate('register', 'plugin-eager').resolve();
@@ -363,22 +366,22 @@ test('mountOnStart: the toolbar slot mounts only opted-in plugins at start and l
         harness.gate('render', 'plugin-eager').resolve();
         await rendering;
 
-        assert.deepEqual(keysIn(harness.toolbarContainer), ['agent/plain', 'agent/eager', 'agent/explicit-off']);
+        assert.deepEqual(keysIn(harness.toolbarContainer), ['explorer/help', 'webmeetAgent/webmeet', 'bizanso/bizanso']);
         const mounts = new Map(harness.toolbarContainer.querySelectorAll('[data-app-plugin-key]')
             .map((node) => [node.getAttribute('data-app-plugin-key'), node]));
-        for (const [key, component] of [['agent/plain', 'plugin-plain'], ['agent/explicit-off', 'plugin-off']]) {
+        for (const [key, component] of [['explorer/help', 'plugin-plain'], ['bizanso/bizanso', 'plugin-off']]) {
             assert.ok(mounts.get(key).querySelector('[data-app-plugin-trigger]'), `${key} keeps its on-demand trigger`);
             assert.equal(mounts.get(key).querySelector(component), null, `${key} is not mounted`);
         }
-        assert.ok(mounts.get('agent/eager').querySelector('plugin-eager'), 'the opted-in plugin is mounted');
-        assert.equal(mounts.get('agent/eager').querySelector('[data-app-plugin-trigger]'), null);
-        assert.equal(mounts.get('agent/eager').querySelector('[data-app-plugin-loading]'), null, 'loading state finalized');
+        assert.ok(mounts.get('webmeetAgent/webmeet').querySelector('plugin-eager'), 'the opted-in plugin is mounted');
+        assert.equal(mounts.get('webmeetAgent/webmeet').querySelector('[data-app-plugin-trigger]'), null);
+        assert.equal(mounts.get('webmeetAgent/webmeet').querySelector('[data-app-plugin-loading]'), null, 'loading state finalized');
 
         // A second render updates the mounted plugin and never registers or mounts it again.
         await renderApplicationPluginSlots(harness.fileExp);
         assert.equal(harness.events.filter((event) => event === 'register-start:plugin-eager').length, 1);
         assert.equal(harness.toolbarContainer.querySelectorAll('plugin-eager').length, 1);
-        assert.deepEqual(keysIn(harness.toolbarContainer), ['agent/plain', 'agent/eager', 'agent/explicit-off']);
+        assert.deepEqual(keysIn(harness.toolbarContainer), ['explorer/help', 'webmeetAgent/webmeet', 'bizanso/bizanso']);
     } finally {
         harness.restore();
     }
@@ -386,13 +389,42 @@ test('mountOnStart: the toolbar slot mounts only opted-in plugins at start and l
 
 test('mountOnStart: without an opted-in plugin the toolbar slot registers and mounts nothing', async () => {
     const harness = createHarness({
-        plugins: { 'file-exp:toolbar': [plugin('plain', 'plugin-plain', 1), plugin('other', 'plugin-other', 2)] }
+        plugins: { 'file-exp:toolbar': [plugin('help', 'plugin-plain', 1, { agent: 'explorer' }), plugin('webmeet', 'plugin-other', 2, { agent: 'webmeetAgent' })] }
     });
     try {
         await renderApplicationPluginSlots(harness.fileExp);
         assert.deepEqual(harness.events, []);
         assert.equal(harness.toolbarContainer.querySelectorAll('[data-app-plugin-trigger]').length, 2);
         assert.equal(harness.toolbarContainer.querySelectorAll('plugin-plain').length, 0);
+    } finally {
+        harness.restore();
+    }
+});
+
+
+test('Tools mounts moved toolbar plugins once with dropdown context while Help stays lazy in the toolbar', async () => {
+    const tool = plugin('git', 'plugin-git', 100, { agent: 'gitAgent' });
+    const harness = createHarness({
+        plugins: {
+            'file-exp:toolbar': [tool, plugin('help', 'plugin-help', 400, { agent: 'explorer' })],
+            'file-exp:toolbar-plugins-dropdown': [tool],
+        },
+    });
+    try {
+        const rendering = renderApplicationPluginSlots(harness.fileExp);
+        await tick();
+        assert.deepEqual(keysIn(harness.toolbarContainer), ['explorer/help']);
+        assert.deepEqual(keysIn(harness.dropdownContainer), ['gitAgent/git']);
+        harness.gate('register', 'plugin-git').resolve();
+        await tick();
+        harness.gate('render', 'plugin-git').resolve();
+        await rendering;
+        const mounted = harness.dropdownContainer.querySelector('plugin-git');
+        assert.equal(mounted.getAttribute('data-host-slot'), 'file-exp:toolbar-plugins-dropdown');
+        assert.equal(mounted.getAttribute('data-host-orientation'), 'dropdown');
+        await renderApplicationPluginSlots(harness.fileExp);
+        assert.equal(harness.dropdownContainer.querySelectorAll('plugin-git').length, 1);
+        assert.equal(harness.events.filter(event => event === 'register-start:plugin-git').length, 1);
     } finally {
         harness.restore();
     }
