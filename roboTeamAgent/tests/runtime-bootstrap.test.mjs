@@ -177,7 +177,6 @@ test('manifest readiness waits for the RoboTeam service, within the launcher sta
     assert.deepEqual(manifest.readiness, {
         protocol: 'tcp',
         port: Number(manifest.profiles.default.openPorts.find(entry => entry.startsWith('3001:')).split(':')[1]),
-        timeoutSeconds: 600,
     });
     assert.deepEqual(manifest.health.readiness, {
         interval: 1,
@@ -185,12 +184,12 @@ test('manifest readiness waits for the RoboTeam service, within the launcher sta
         failureThreshold: 300,
         successThreshold: 1,
     });
-    // Ploinky waits failureThreshold * (interval + timeout) seconds: as long as the launcher waits for the service.
+    // Ploinky's budget is failureThreshold * (interval + timeout) seconds, as long as the launcher waits for the
+    // service; it reads no readiness.timeoutSeconds.
     const launcher = await readFile(join(AGENT_ROOT, 'scripts/startAgent.sh'), 'utf8');
     const launcherWait = Number(launcher.match(/ROBOTEAM_STARTUP_WAIT_SECONDS:-(\d+)/)[1]);
     const { interval, timeout, failureThreshold } = manifest.health.readiness;
     assert.equal(failureThreshold * (interval + timeout), launcherWait);
-    assert.equal(manifest.readiness.timeoutSeconds, launcherWait);
 });
 
 test('manifest requests the bounded nested Podman capability', async () => {

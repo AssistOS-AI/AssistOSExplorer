@@ -14,8 +14,7 @@
   },
   "readiness": {
     "protocol": "tcp",
-    "port": 3001,
-    "timeoutSeconds": 600
+    "port": 3001
   },
   "health": {
     "readiness": {
