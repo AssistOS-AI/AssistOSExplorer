@@ -199,7 +199,8 @@ export function mountGoogleSignIn({
             });
             phase = 'ready';
             button.hidden = false;
-            googleId.renderButton(button, { type: 'standard', theme: 'outline', size: 'large', text: 'signin_with' });
+            // Google personalizes a large button ("Sign in as <name>"); medium always shows "Sign in with Google".
+            googleId.renderButton(button, { type: 'standard', theme: 'outline', size: 'medium', text: 'signin_with' });
             status.textContent = 'Choose Sign in with Google to continue. Allow the Google popup if your browser blocks it.';
         } catch {
             if (!isCurrent(version) || !['loading', 'ready'].includes(phase)) return;
