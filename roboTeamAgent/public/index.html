@@ -70,9 +70,9 @@
             <div class="robot-filters" role="search" aria-label="Filter robots">
                 <input id="robotSearch" type="search" placeholder="Search name or ID" aria-label="Search robots by name or ID" autocomplete="off" spellcheck="false">
                 <label id="robotLoginFilterField" class="robot-filter-field" hidden><span>Login</span>
-                    <select id="robotLoginFilter"><option value="">Any</option><option value="any">Logged into any</option><option value="none">Not logged in</option><option value="codex">Logged into Codex</option><option value="opencode">Logged into OpenCode</option><option value="pi">Logged into Pi</option><option value="omp">Logged into OMP</option><option value="claude">Logged into Claude Code</option></select></label>
+                    <select id="robotLoginFilter"><option value="">Any</option><option value="any">Logged into any</option><option value="none">Not logged in</option><option value="codex">Logged into Codex</option><option value="opencode">Logged into OpenCode</option><option value="pi">Logged into Pi</option><option value="omp">Logged into OMP</option><option value="claude">Logged into Claude Code</option><option value="vibe">Logged into Mistral Vibe</option><option value="agy">Logged into Antigravity CLI</option></select></label>
                 <label class="robot-filter-field"><span>Agent in use</span>
-                    <select id="robotAgentFilter"><option value="">Any</option><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="pi">Pi</option><option value="omp">OMP</option><option value="claude">Claude Code</option></select></label>
+                    <select id="robotAgentFilter"><option value="">Any</option><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="pi">Pi</option><option value="omp">OMP</option><option value="claude">Claude Code</option><option value="vibe">Mistral Vibe</option><option value="agy">Antigravity CLI</option></select></label>
             </div>
             <p id="robotFilterSummary" class="robot-filter-summary" hidden><span></span> <button id="robotFilterClear" class="folder-text-action" type="button">Clear filters</button></p>
             <p id="formMessage" class="message" role="status"></p>
@@ -133,6 +133,23 @@
             <div id="cronList" class="robot-list"></div>
         </section>
     </div>
+    <dialog id="renameRobotDialog" class="create-robot-dialog" aria-labelledby="renameRobotTitle">
+        <div class="create-robot-heading">
+            <h2 id="renameRobotTitle">Rename robot</h2>
+            <button id="renameRobotClose" class="button icon-button" type="button"
+                    aria-label="Close rename robot dialog" title="Close">×
+            </button>
+        </div>
+        <form id="renameRobotForm" class="robot-form">
+            <label><span>Name</span><input name="name" maxlength="80" required></label>
+            <p id="renameRobotNote" class="message" hidden></p>
+            <p id="renameRobotMessage" class="message" role="status"></p>
+            <div class="create-robot-actions">
+                <button id="renameRobotCancel" class="button secondary" type="button">Cancel</button>
+                <button class="button primary" type="submit">Rename</button>
+            </div>
+        </form>
+    </dialog>
     <dialog id="cronDialog" class="create-robot-dialog cron-dialog" aria-labelledby="cronDialogTitle">
         <div class="create-robot-heading"><h2 id="cronDialogTitle">Create Cron job</h2><button id="cronClose" class="button icon-button" type="button" aria-label="Close Cron job dialog" title="Close">×</button></div>
         <form id="cronForm" class="robot-form">
@@ -211,9 +228,9 @@
                 <span class="run-state"></span>
             </div>
             <div class="robot-info">
-                <div class="robot-title-row"><h3></h3>: <span class="robot-id"></span></div>
+                <div class="robot-title-row"><h3></h3><span class="robot-details" tabindex="0"><span class="robot-details-icon" aria-hidden="true">i</span><span class="robot-details-tip" role="tooltip"></span></span></div>
                 <div class="robot-meta">
-                    <p class="active-coding-agent"></p>
+                    <p class="active-coding-agent"><span class="robot-chip robot-agent-chip"></span><span class="robot-chip robot-model-chip"></span><span class="robot-chip robot-effort-chip" hidden></span></p>
                     <span class="robot-mode" hidden></span>
                     <span class="robot-proxy" hidden></span>
                     <span class="robot-git-credentials" hidden></span>
@@ -239,6 +256,7 @@
                 <div class="manage-options" data-robot-menu-options hidden>
                     <a class="button secondary robot-logs-link" target="_blank" rel="noopener noreferrer" title="Open logs in a new tab">Logs</a>
                     <button class="button secondary manage-skills" type="button">Manage skills</button>
+                    <button class="button secondary rename-robot" type="button" hidden>Rename</button>
                     <button class="button secondary configure-coding-agent" type="button" hidden>Coding agent</button>
                     <button class="button secondary release-proxy" type="button" hidden title="The robot receives a proxy again when its workstation next starts">Release proxy</button>
                     <button class="button secondary remove-git-credentials" type="button" hidden>Remove git credentials</button>

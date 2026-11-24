@@ -183,7 +183,7 @@ test('compact robot markup keeps Open and Stop outside grouped administration an
     const robotMeta = robotTemplate.slice(robotTemplate.indexOf('<div class="robot-meta"'), robotTemplate.indexOf('<div class="robot-actions"'));
     assert.doesNotMatch(robotMeta, /view-logs|robot-logs-link/, 'Logs left the card metadata');
     assert.match(main, /class="robot-identity"[\s\S]*class="avatar"[\s\S]*class="run-state"/);
-    assert.match(main, /class="robot-title-row"><h3><\/h3>[\s:]*<span class="robot-id"/);
+    assert.match(main, /class="robot-title-row"><h3><\/h3><span class="robot-details" tabindex="0">/);
     assert.match(source, /state\.textContent = robot\.run\.state;/);
     assert.match(source, /mode\.textContent = robot\.run\.mode \|\| '';/);
     assert.match(html, /<a class="button secondary robot-logs-link" target="_blank" rel="noopener noreferrer"/);

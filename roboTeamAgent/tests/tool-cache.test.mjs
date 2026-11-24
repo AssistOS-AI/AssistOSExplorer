@@ -5,6 +5,50 @@ import path from 'node:path';
 import test from 'node:test';
 import { ToolCache, toolCacheInternals } from '../../roboWorkAgent/server/tool-cache.mjs';
 
+// The uv release archive the fakes serve, and its digest, so the downloaded asset verifies.
+const UV_ARCHIVE = Buffer.from('fake uv archive');
+const UV_DIGEST = `sha256:${(await import('node:crypto')).createHash('sha256').update(UV_ARCHIVE).digest('hex')}`;
+
+// The Antigravity CLI release archive the fakes serve, and its SHA-512 digest.
+const AGY_ARCHIVE = Buffer.from('fake agy archive');
+const AGY_SHA512 = (await import('node:crypto')).createHash('sha512').update(AGY_ARCHIVE).digest('hex');
+
+// Answers the tar extractions and the uv installation that Mistral Vibe and the Antigravity CLI perform.
+async function fakeUvInstall(command, args, options, installs) {
+    if (command.endsWith('/tar') && args.at(-1) === 'antigravity') {
+        installs.push('antigravity-cli');
+        await writeExecutable(path.join(args[args.indexOf('-C') + 1], 'antigravity'));
+        return true;
+    }
+    if (command.endsWith('/tar')) {
+        await writeExecutable(path.join(args[args.indexOf('-C') + 1], 'uv'));
+        return true;
+    }
+    if (command.endsWith('/uv') && args[0] === 'tool') {
+        installs.push(args.at(-1));
+        await writeExecutable(path.join(options.env.UV_TOOL_BIN_DIR, args.at(-1).split('==')[0] === 'mistral-vibe' ? 'vibe' : 'unknown'));
+        return true;
+    }
+    return false;
+}
+
+// GitHub and PyPI release answers for the uv installer.
+function fakeUvFetch(url, version = '1.2.3') {
+    const value = String(url);
+    if (value.includes('pypi.org/pypi/')) return { ok: true, json: async () => ({ info: { version } }) };
+    if (value.includes('astral-sh/uv/releases/latest')) {
+        return { ok: true, json: async () => ({ tag_name: '0.9.0', assets: [{ name: 'uv-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url: 'https://downloads.invalid/uv.tar.gz', digest: UV_DIGEST }] }) };
+    }
+    if (value === 'https://downloads.invalid/uv.tar.gz') return { ok: true, arrayBuffer: async () => UV_ARCHIVE };
+    if (value.includes('antigravity-cli-auto-updater')) {
+        return { ok: true, json: async () => ({ version: '1.5.15', sha512: AGY_SHA512,
+            url: 'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.15/linux-x64/cli_linux_x64.tar.gz' }) };
+    }
+    if (value.startsWith('https://storage.googleapis.com/antigravity-public/')) return { ok: true, arrayBuffer: async () => AGY_ARCHIVE };
+    return null;
+}
+
 async function writeExecutable(filePath) {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
@@ -13,7 +57,7 @@ async function writeExecutable(filePath) {
 
 // Builds what a service leaves on disk: per-agent generations with current.json and
 // stamp.json, plus the shell selection whose bin symlinks point at those generations.
-async function writePreparedShell(cacheRoot, versions = { codex: '1.0.0', opencode: '1.0.0', pi: '1.0.0', omp: '1.0.0', claude: '1.0.0' }, tag = 'a') {
+async function writePreparedShell(cacheRoot, versions = { codex: '1.0.0', opencode: '1.0.0', pi: '1.0.0', omp: '1.0.0', claude: '1.0.0', vibe: '1.0.0', agy: '1.0.0' }, tag = 'a') {
     const schema = toolCacheInternals.CACHE_SCHEMA;
     const generation = path.join(cacheRoot, 'shell-generations', `g-${tag}`);
     await fs.mkdir(path.join(generation, 'bin'), { recursive: true });
@@ -44,7 +88,8 @@ test('startup warms every tool and concurrent requests reuse the same installati
     const installs = [];
     const cache = new ToolCache({
         root, arch: 'x64', log: () => {},
-        execFileImpl: async (_command, args) => {
+        execFileImpl: async (command, args, options) => {
+            if (await fakeUvInstall(command, args, options, installs)) return { stdout: '', stderr: '' };
             if (args[0] === 'view') return { stdout: '"1.2.3"' };
             if (args[0] === 'install') {
                 const prefix = args[args.indexOf('--prefix') + 1];
@@ -63,13 +108,13 @@ test('startup warms every tool and concurrent requests reuse the same installati
             }
             return { stdout: '', stderr: '' };
         },
-        fetchImpl: async url => String(url).includes('/releases/latest') ? {
+        fetchImpl: async url => fakeUvFetch(url) || (String(url).includes('/releases/latest') ? {
             ok: true,
             json: async () => ({ tag_name: 'v1.2.3', assets: [{
                 name: 'computer-use-linux-x86_64-unknown-linux-gnu',
                 browser_download_url: 'https://downloads.invalid/computer-use-linux',
             }] }),
-        } : { ok: true, arrayBuffer: async () => Buffer.from('#!/bin/sh\nexit 0\n') },
+        } : { ok: true, arrayBuffer: async () => Buffer.from('#!/bin/sh\nexit 0\n') }),
     });
     const [results, desktop, browser, shell] = await Promise.all([
         cache.warmup(), cache.prepareMode('desktop'), cache.prepareMode('browser'), cache.prepareShellTools(),
@@ -80,12 +125,12 @@ test('startup warms every tool and concurrent requests reuse the same installati
     assert.equal(results[2].value, browser);
     assert.deepEqual(installs.sort(), [
         '@anthropic-ai/claude-code@1.2.3', '@earendil-works/pi-coding-agent@1.2.3', '@oh-my-pi/pi-coding-agent@1.2.3',
-        '@openai/codex@1.2.3', '@playwright/mcp@1.2.3', 'bun@1.2.3', 'opencode-ai@1.2.3', 'supergateway@1.2.3',
+        '@openai/codex@1.2.3', '@playwright/mcp@1.2.3', 'antigravity-cli', 'bun@1.2.3', 'mistral-vibe==1.2.3', 'opencode-ai@1.2.3', 'supergateway@1.2.3',
     ]);
     await fs.access(path.join(desktop.path, 'computer-use-linux'));
-    for (const name of ['codex', 'opencode', 'pi', 'omp', 'bun', 'claude']) await fs.access(path.join(shell.binPath, name));
+    for (const name of ['codex', 'opencode', 'pi', 'omp', 'bun', 'claude', 'vibe', 'agy']) await fs.access(path.join(shell.binPath, name));
     await cache.warmup();
-    assert.equal(installs.length, 8);
+    assert.equal(installs.length, 10);
 });
 
 test('startup failure leaves other families available and failed preparation can retry', async () => {
@@ -150,6 +195,47 @@ test('prepares coding agents once and reuses persistent generations', async (t) 
     assert.equal(await fs.access(path.join(agents.opencode.binPath, 'opencode')).then(() => true), true);
     assert.equal(await fs.access(path.join(agents.pi.binPath, 'pi')).then(() => true), true);
     assert.throws(() => cache.prepareCodingAgent('unknown'), /unsupported coding agent/);
+});
+
+test('retries a fallback preparation after the fallback delay and rechecks for a session after its shorter age', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-tool-cache-retry-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    let clock = 0;
+    let online = true;
+    let views = 0;
+    const execFileImpl = async (command, args) => {
+        if (args[0] === 'view') {
+            views += 1;
+            if (!online) throw new Error('registry unreachable');
+            return { stdout: '"1.0.0"\n', stderr: '' };
+        }
+        if (args[0] === 'install') await writeExecutable(path.join(args[args.indexOf('--prefix') + 1], 'bin', 'codex'));
+        return { stdout: '', stderr: '' };
+    };
+    const cache = new ToolCache({ root, execFileImpl, now: () => clock, refreshIntervalMs: 6 * 60 * 60 * 1000,
+        fallbackRetryMs: 5 * 60 * 1000, log: () => {} });
+    assert.equal((await cache.prepareCodex()).fallback, undefined);
+    assert.equal(views, 1);
+
+    // A fresh result is reused for the refresh interval, unless a session asks for a recheck after a shorter age.
+    clock = 60 * 1000;
+    await cache.prepareCodex();
+    assert.equal(views, 1);
+    await cache.prepareCodingAgent('codex', { maxAgeMs: 30 * 1000 });
+    assert.equal(views, 2);
+
+    // An unreachable registry gives the last generation, and the lookup is retried after the fallback delay.
+    online = false;
+    clock = 7 * 60 * 60 * 1000;
+    assert.equal((await cache.prepareCodex()).fallback, true);
+    assert.equal(views, 3);
+    clock += 60 * 1000;
+    await cache.prepareCodex();
+    assert.equal(views, 3);
+    online = true;
+    clock += 5 * 60 * 1000;
+    assert.equal((await cache.prepareCodex()).fallback, undefined);
+    assert.equal(views, 4);
 });
 
 test('removes Ploinky symlink options only from managed tool processes', () => {
@@ -499,9 +585,116 @@ test('peekShellTools reuses a consistent prepared shell and rejects pin or selec
     assert.equal(await make().peekShellTools(), null, 'current.json ahead of a stale selection');
     assert.equal(await make({ pi: '2.0.0' }).peekShellTools(), null, 'pinned version not what the selection resolves to');
 
-    await writePreparedShell(root, { codex: '1.0.0', opencode: '1.0.0', pi: '2.0.0', omp: '1.0.0', claude: '1.0.0' }, 'c');
+    await writePreparedShell(root, { codex: '1.0.0', opencode: '1.0.0', pi: '2.0.0', omp: '1.0.0', claude: '1.0.0', vibe: '1.0.0', agy: '1.0.0' }, 'c');
     assert.ok(await make({ pi: '2.0.0' }).peekShellTools(), 'relinked selection is consistent again');
     await fs.rm(path.join(root, 'codex', 'current.json'));
     assert.equal(await make().peekShellTools(), null, 'missing descriptor');
     assert.deepEqual(calls, []);
+});
+
+test('Mistral Vibe is installed by uv at its final generation path, under a lock, with its managed Python', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-vibe-cache-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const installs = [];
+    const calls = [];
+    let failInstall = false;
+    const make = (options = {}) => new ToolCache({ root, arch: 'x64', log: () => {}, ...options,
+        execFileImpl: async (command, args, execOptions) => {
+            calls.push({ command, args, env: execOptions?.env });
+            if (failInstall && command.endsWith('/uv')) throw new Error('uv failed');
+            if (await fakeUvInstall(command, args, execOptions, installs)) return { stdout: '', stderr: '' };
+            return { stdout: 'vibe 3.1.3', stderr: '' };
+        },
+        fetchImpl: async (url) => fakeUvFetch(url, '3.1.3') || { ok: false, status: 404 } });
+    const vibe = await make().prepareCodingAgent('vibe');
+    assert.deepEqual(vibe.versions, { vibe: '3.1.3', uv: '0.9.0' });
+    assert.equal(vibe.binPath, path.join(vibe.path, 'bin'));
+    assert.equal(path.dirname(vibe.path), path.join(root, 'vibe', 'generations'), 'installed where it is used, not renamed from staging');
+    const install = calls.find(call => call.command.endsWith('/uv'));
+    assert.deepEqual(install.args, ['tool', 'install', '--no-config', '--python', '3.12', 'mistral-vibe==3.1.3']);
+    assert.equal(install.command, path.join(vibe.path, '.uv', 'uv'));
+    assert.equal(install.env.UV_TOOL_DIR, path.join(vibe.path, 'tools'));
+    assert.equal(install.env.UV_TOOL_BIN_DIR, path.join(vibe.path, 'bin'));
+    assert.equal(install.env.UV_PYTHON_INSTALL_DIR, path.join(vibe.path, 'python'));
+    assert.equal(install.env.UV_PYTHON_PREFERENCE, 'only-managed');
+    assert.equal(await fs.stat(path.join(vibe.path, '.uv')).catch(() => null), null, 'uv and its cache are removed');
+    assert.equal(await fs.stat(`${vibe.path}.lock`).catch(() => null), null, 'the lock is released');
+    const stamp = JSON.parse(await fs.readFile(path.join(vibe.path, 'stamp.json'), 'utf8'));
+    assert.deepEqual(stamp.identity, { package: 'mistral-vibe', version: '3.1.3', installer: 'uv', uv: '0.9.0', python: '3.12', arch: 'x64' });
+    assert.equal(installs.length, 1);
+    assert.equal((await make().prepareCodingAgent('vibe')).path, vibe.path);
+    assert.equal(installs.length, 1, 'a stamped generation is reused');
+
+    // An operator pin selects another generation; a failed installation leaves nothing behind and falls back.
+    failInstall = true;
+    const pinned = await make({ versionPins: { vibe: '3.0.0' } }).prepareCodingAgent('vibe').catch(error => error);
+    assert.match(pinned.message, /could not prepare vibe tools: uv failed; no valid fallback cache: cached generation is not the pinned vibe version 3\.0\.0/u);
+    assert.deepEqual((await fs.readdir(path.join(root, 'vibe', 'generations'))).sort(), [path.basename(vibe.path)]);
+    const fallback = await make().prepareCodingAgent('vibe');
+    assert.equal(fallback.path, vibe.path);
+
+    // A generation another process is installing is not touched while its lock is fresh.
+    failInstall = false;
+    const busy = make({ versionPins: { vibe: '3.0.1' } });
+    await fs.mkdir(path.join(root, 'vibe', 'generations'), { recursive: true });
+    const generation = toolCacheInternals.generationName({ package: 'mistral-vibe', version: '3.0.1', installer: 'uv', uv: '0.9.0', python: '3.12', arch: 'x64' });
+    await fs.writeFile(path.join(root, 'vibe', 'generations', `${generation}.lock`), '');
+    const refused = await busy.prepareCodingAgent('vibe').catch(error => error);
+    assert.match(refused.message, /vibe preparation is already in progress/u);
+});
+
+test('a uv release whose digest does not match is never unpacked', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-uv-digest-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const cache = new ToolCache({ root, arch: 'x64', log: () => {},
+        execFileImpl: async (command, args) => { calls.push(command); return { stdout: '', stderr: '' }; },
+        fetchImpl: async (url) => String(url) === 'https://downloads.invalid/uv.tar.gz'
+            ? { ok: true, arrayBuffer: async () => Buffer.from('tampered') } : fakeUvFetch(url) });
+    await assert.rejects(cache.prepareCodingAgent('vibe'), /uv release digest did not match/u);
+    assert.deepEqual(calls, []);
+});
+
+test('the Antigravity CLI comes from Google\'s release manifest, checked against its SHA-512, as bin/agy', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-agy-cache-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const installs = [];
+    const calls = [];
+    let fetchImpl = async (url) => fakeUvFetch(url) || { ok: false, status: 404 };
+    const make = (options = {}) => new ToolCache({ root, arch: 'x64', log: () => {}, ...options,
+        execFileImpl: async (command, args, execOptions) => {
+            calls.push({ command, args, env: execOptions?.env });
+            if (await fakeUvInstall(command, args, execOptions, installs)) return { stdout: '', stderr: '' };
+            return { stdout: '1.5.15', stderr: '' };
+        },
+        fetchImpl: (url) => fetchImpl(url) });
+    const agy = await make().prepareCodingAgent('agy');
+    assert.deepEqual(agy.versions, { agy: '1.5.15' });
+    assert.equal(agy.binPath, path.join(agy.path, 'bin'));
+    await fs.access(path.join(agy.path, 'bin', 'agy'));
+    assert.equal(await fs.stat(path.join(agy.path, 'bin', 'antigravity')).catch(() => null), null);
+    assert.equal(await fs.stat(path.join(agy.path, 'release.tar.gz')).catch(() => null), null, 'the archive is removed');
+    // Probed in staging before activation and again where it is used.
+    const probe = calls.find(call => call.args[0] === '--version' && call.command === path.join(agy.path, 'bin', 'agy'));
+    assert.ok(probe);
+    assert.equal(probe.env.AGY_CLI_DISABLE_AUTO_UPDATE, '1');
+    assert.deepEqual(installs, ['antigravity-cli']);
+    assert.equal((await make().prepareCodingAgent('agy')).path, agy.path, 'a stamped generation is reused');
+
+    // A pin the manifest does not offer falls back to the last generation only when that one is the pinned version.
+    await assert.rejects(make({ versionPins: { agy: '1.4.0' } }).prepareCodingAgent('agy'),
+        /manifest offers 1\.5\.15, not the pinned 1\.4\.0; no valid fallback cache: cached generation is not the pinned agy version 1\.4\.0/u);
+    assert.equal((await make({ versionPins: { agy: '1.5.15' } }).prepareCodingAgent('agy')).path, agy.path);
+
+    const fresh = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-agy-refused-'));
+    t.after(() => fs.rm(fresh, { recursive: true, force: true }));
+    const refuse = (manifest, archive = null) => new ToolCache({ root: fresh, arch: 'x64', log: () => {},
+        execFileImpl: async () => ({ stdout: '', stderr: '' }),
+        fetchImpl: async (url) => String(url).includes('antigravity-cli-auto-updater') ? { ok: true, json: async () => manifest }
+            : { ok: true, arrayBuffer: async () => archive || Buffer.from('tampered') } }).prepareCodingAgent('agy');
+    await assert.rejects(refuse({ version: '1.5.15', sha512: 'a'.repeat(128), url: 'https://example.com/cli.tar.gz' }), /does not reference a release archive on Google storage/u);
+    await assert.rejects(refuse({ version: '1.5.15', sha512: 'short', url: 'https://storage.googleapis.com/a/cli.tar.gz' }), /has no SHA-512 digest/u);
+    await assert.rejects(refuse({ version: '1.5.15', sha512: 'a'.repeat(128), url: 'https://storage.googleapis.com/a/cli.tar.gz' }), /digest did not match/u);
+    await assert.rejects(new ToolCache({ root: fresh, arch: 'ia32', log: () => {}, fetchImpl: async () => ({ ok: true }) }).prepareCodingAgent('agy'),
+        /does not support architecture ia32/u);
 });

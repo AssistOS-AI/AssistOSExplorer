@@ -41,8 +41,8 @@ test('the section is shown only to administrators', () => {
     assert.equal(showRobotAccess(refused), false);
     assert.equal(showRobotAccess(normalizeRobotTargets({ ok: false, code: 'ROBOTEAM_UNAVAILABLE' })), false);
     assert.equal(showRobotAccess(normalizeRobotTargets(null)), false);
-    assert.deepEqual(planAutomaticRobotSave({ targets: targets({ canAdmin: false }) }), { save: false, robotNames: [], message: '' });
-    assert.deepEqual(planAutomaticRobotSave({ targets: refused }), { save: false, robotNames: [], message: '' });
+    assert.deepEqual(planAutomaticRobotSave({ targets: targets({ canAdmin: false }) }), { save: false, robotIds: [], message: '' });
+    assert.deepEqual(planAutomaticRobotSave({ targets: refused }), { save: false, robotIds: [], message: '' });
 });
 
 test('every robot is listed with the default first; an administrator sign-in saves to the default robot', () => {
@@ -51,7 +51,7 @@ test('every robot is listed with the default first; an administrator sign-in sav
     assert.equal(describeRobotRow(list.robots[0], list).label, 'default (default)');
     assert.equal(describeRobotRow(list.robots[0], list).isDefault, true);
     assert.equal(describeRobotRow(list.robots[1], list).status, 'No git credentials');
-    assert.deepEqual(planAutomaticRobotSave({ targets: list }), { save: true, robotNames: ['default'], message: '' });
+    assert.deepEqual(planAutomaticRobotSave({ targets: list }), { save: true, robotIds: ['r1'], message: '' });
     assert.equal(planAutomaticRobotSave({ targets: normalizeRobotTargets({ ok: true, canAdmin: true, robots: [] }) }).save, false);
 });
 
@@ -70,7 +70,7 @@ test('sign-in never overwrites the default robot holding another user\'s credent
     const list = normalizeRobotTargets({ ok: true, canAdmin: true, userId: 'alice', robots: [{ id: 'r1', name: 'default', credentials: bobCredentials }] });
     const plan = planAutomaticRobotSave({ targets: list });
     assert.equal(plan.save, false);
-    assert.equal(plan.robotName, 'default');
+    assert.equal(plan.robotId, 'r1');
     assert.match(plan.message, /Not saved to robot default: it holds the GitHub credentials of bob-gh, saved by bob/);
     assert.match(plan.message, /Use Overwrite credentials/);
 });
@@ -82,7 +82,7 @@ test('the administrator\'s own credentials can be replaced and sign-in refreshes
     assert.equal(row.saveLabel, 'Replace credentials');
     assert.equal(row.canRemove, true);
     const own = normalizeRobotTargets({ ok: true, canAdmin: true, userId: 'alice', robots: [{ id: 'r1', name: 'default', credentials: aliceCredentials }] });
-    assert.deepEqual(planAutomaticRobotSave({ targets: own }).robotNames, ['default']);
+    assert.deepEqual(planAutomaticRobotSave({ targets: own }).robotIds, ['r1']);
 });
 
 test('Add credentials needs a stored GitHub credential; Remove needs credentials on the robot', () => {

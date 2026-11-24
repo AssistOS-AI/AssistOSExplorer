@@ -163,11 +163,12 @@ export class EditSkillsManifestModal {
         return normalizeState(raw);
     }
 
-    async refreshStateAfterMutation() {
-        const nextState = await this.readCurrentState();
-        this.state = mergeSkillRepositories(nextState, this.state);
+    // A mutation answers with the manifest state, so it is applied as is; reading the state again would start another
+    // tool process and list every repository again. Only an answer without that state is followed by a read.
+    async applyMutationState(result) {
+        const next = Array.isArray(result?.repositories) ? normalizeState(result) : await this.readCurrentState();
+        this.state = mergeSkillRepositories(next, this.state);
         this.manifestPath = this.state.manifestPath || this.manifestPath;
-
     }
 
     async loadState() {
@@ -378,7 +379,8 @@ export class EditSkillsManifestModal {
                 this.setStatus(result.message || 'The repository was cached but no skills were added.', 'info');
                 return;
             }
-            await this.refreshStateAfterMutation();
+            // The answer already holds the manifest state; reading it again would cost another tool process.
+            await this.applyMutationState(result);
             this.selectedRepository = this.state.repositories.find(repo => !previousNames.has(repo.name))?.name || this.selectedRepository;
             this.changed = true;
             if (this.urlInput) this.urlInput.value = '';
@@ -435,7 +437,7 @@ export class EditSkillsManifestModal {
                 folderPath: this.folderPath,
                 repoName
             });
-            await this.refreshStateAfterMutation();
+            await this.applyMutationState(result);
             this.changed = true;
             this.showExportStatus(result, `${repoName} removed from manifest.`);
         } catch (error) {

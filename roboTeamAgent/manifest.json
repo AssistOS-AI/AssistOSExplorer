@@ -1,5 +1,6 @@
 {
   "container": "docker.io/assistos/roboteam-agent:runtime",
+  "enableModes": ["global"],
   "about": "Manages robot conversations, tasks, workflows and Copilot through the RoboWork runtime.",
   "agent": "exec sh /code/scripts/startAgent.sh",
   "cli": "node /code/server/robot-cli.mjs",

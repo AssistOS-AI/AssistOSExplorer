@@ -74,3 +74,39 @@ test('a WebChat at the workspace root works in achilles-cli/<robot>; a project f
     }
     assert.notEqual(at(root, 'a/b'), at(root, 'a%2Fb'));
 });
+
+test('a WebChat at the workspace root works in achilles-cli/<robot id>, and the folder named after the robot moves there once', async t => {
+    const root = await fixture(t);
+    const realRoot = await fs.realpath(root);
+    const env = (id, name) => ({ ...process.env, PLOINKY_WORKSPACE_ROOT: root, ROBOTEAM_COPILOT_ROBOT_ID: id, ROBOTEAM_COPILOT_ROBOT_NAME: name });
+    const at = (id, name) => initializeCliOptions([`--dir=${root}`, '--sso-user=test'], { env: env(id, name) }).workingDir;
+    const legacy = path.join(realRoot, 'achilles-cli', 'Research%20%26%20Review');
+    await fs.mkdir(legacy, { recursive: true });
+    await fs.writeFile(path.join(legacy, 'note.txt'), 'kept');
+    const target = path.join(realRoot, 'achilles-cli', 'research-a1b2c3');
+    assert.equal(at('research-a1b2c3', 'Research & Review'), target);
+    assert.equal(await fs.readFile(path.join(target, 'note.txt'), 'utf8'), 'kept');
+    await assert.rejects(fs.stat(legacy), { code: 'ENOENT' });
+    // A rename keeps the folder; a name folder that appears later is left alone once the id folder exists.
+    await fs.mkdir(path.join(realRoot, 'achilles-cli', 'Renamed'));
+    assert.equal(at('research-a1b2c3', 'Renamed'), target);
+    assert.equal((await fs.stat(path.join(realRoot, 'achilles-cli', 'Renamed'))).isDirectory(), true);
+    assert.equal(await fs.readFile(path.join(target, 'note.txt'), 'utf8'), 'kept');
+});
+
+test('the default robot works in achilles-cli/default and takes over the folder the dashboard opened under its id', async t => {
+    const root = await fixture(t);
+    const realRoot = await fs.realpath(root);
+    const env = { ...process.env, PLOINKY_WORKSPACE_ROOT: root, ROBOTEAM_COPILOT_ROBOT_ID: 'default-a1b2c3', ROBOTEAM_COPILOT_ROBOT_NAME: 'default' };
+    const byId = path.join(realRoot, 'achilles-cli', 'default-a1b2c3');
+    const folder = path.join(realRoot, 'achilles-cli', 'default');
+    await fs.mkdir(byId, { recursive: true });
+    await fs.writeFile(path.join(byId, 'note.txt'), 'kept');
+    // WebChat may create the link's folder, still empty, before the copilot starts.
+    await fs.mkdir(folder);
+    const opened = initializeCliOptions([`--dir=${folder}`, '--sso-user=test'], { env }).workingDir;
+    assert.equal(opened, folder);
+    assert.equal(await fs.readFile(path.join(folder, 'note.txt'), 'utf8'), 'kept');
+    await assert.rejects(fs.stat(byId), { code: 'ENOENT' });
+    assert.equal(initializeCliOptions([`--dir=${root}`, '--sso-user=test'], { env }).workingDir, folder);
+});

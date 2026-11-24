@@ -36,7 +36,7 @@ const CONFIG_LIMIT = 1024 * 1024;
 const isRecord = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 // Without ALA the saved choice is read directly. An unsafe path or a file ALA would reject still fails, so a refused home never looks empty.
-async function savedCodingAgent(home, agentConfigPath, names) {
+async function savedConfig(home, agentConfigPath, names) {
     const file = await agentConfigPath(home);
     let config;
     try { config = JSON.parse(await fs.readFile(file, 'utf8')); }
@@ -51,7 +51,7 @@ async function savedCodingAgent(home, agentConfigPath, names) {
         && isRecord(efforts) && Object.entries(efforts).every(([name, effort]) => agents.includes(name) && typeof models[name] === 'string'
             && typeof effort === 'string' && /^[a-zA-Z0-9_-]+$/u.test(effort));
     if (!valid) throw new Error('Invalid ALA model configuration');
-    return config.codingAgent;
+    return config;
 }
 
 // Whether a directory, or the nearest part of it that exists, resolves inside the home. A login directory
@@ -82,18 +82,22 @@ export async function robotStatus(home, input = {}, { env, api = null, unavailab
     const configFile = await agentConfigPath(home);
     const configEntry = await fs.lstat(configFile).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
     if (configEntry && configEntry.size > CONFIG_LIMIT) throw new Error('Invalid ALA model configuration');
-    const configured = unavailable ? await savedCodingAgent(home, agentConfigPath, CODING_AGENT_NAMES) : (await api.loadConfig(await agentConfigPath(home))).codingAgent;
-    const activeAgent = enabled.includes(configured) ? configured : enabled[0];
-    if (unavailable) return { activeAgent, alaUnavailable: true,
+    const config = (unavailable ? await savedConfig(home, agentConfigPath, CODING_AGENT_NAMES) : await api.loadConfig(await agentConfigPath(home))) || {};
+    const activeAgent = enabled.includes(config.codingAgent) ? config.codingAgent : enabled[0];
+    // The model and effort the active agent runs with; null means the agent's own default.
+    const activeModel = isRecord(config.models) && typeof config.models[activeAgent] === 'string' ? config.models[activeAgent] : null;
+    const activeEffort = activeModel && isRecord(config.efforts) && typeof config.efforts[activeAgent] === 'string' ? config.efforts[activeAgent] : null;
+    const active = { activeAgent, activeModel, activeEffort };
+    if (unavailable) return { ...active, alaUnavailable: true,
         ...(input.includeLogins ? { logins: Object.fromEntries(CODING_AGENT_NAMES.map(name => [name, false])) } : {}) };
-    if (!input.includeLogins) return { activeAgent };
+    if (!input.includeLogins) return active;
     const homeReal = await fs.realpath(home);
     const logins = Object.fromEntries(await Promise.all(CODING_AGENT_NAMES.map(async name => {
         const files = api.codingAgentLoginFiles(name, { env });
         const contained = (await Promise.all(files.map(file => insideHome(path.dirname(file), homeReal)))).every(Boolean);
         return [name, contained && Boolean((await api.detectCodingAgentLogin(name, { env })).loggedIn)];
     })));
-    return { activeAgent, logins };
+    return { ...active, logins };
 }
 
 export async function homeOperation(operation, input, home = process.env.HOME) {

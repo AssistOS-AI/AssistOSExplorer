@@ -23,9 +23,9 @@ test('new robots default to OpenCode and persisted API configuration supports ev
     assert.deepEqual(robotCodingAgents(await store.get(robot.id)), ['claude']);
     await store.setCodingAgents(robot.id, ['omp']);
     assert.deepEqual(robotCodingAgents(await store.get(robot.id)), ['omp']);
-    await store.setCodingAgents(robot.id, ['codex', 'opencode', 'pi', 'omp', 'claude']);
-    assert.deepEqual(robotCodingAgents(await store.get(robot.id)), ['codex', 'opencode', 'pi', 'omp', 'claude']);
-    assert.deepEqual(robotCodingAgents({}), ['codex', 'opencode', 'pi', 'omp', 'claude']);
+    await store.setCodingAgents(robot.id, ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe', 'agy']);
+    assert.deepEqual(robotCodingAgents(await store.get(robot.id)), ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe', 'agy']);
+    assert.deepEqual(robotCodingAgents({}), ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe', 'agy']);
     for (const codingAgents of [[], ['unknown'], 'codex', null]) {
         await assert.rejects(store.setCodingAgents(robot.id, codingAgents), /codingAgents/);
     }
@@ -106,7 +106,7 @@ test('OMP is a terminal-only agent that keeps its login in the robot home and is
     const environment = await fs.readFile(path.join(home, '.roboteam-env.sh'), 'utf8');
     assert.match(environment, /^export OMP_DIR="\$HOME\/\.omp"$/m);
     assert.match(environment, /^export OMP_BIN='.*\/omp'$/m);
-    assert.match(environment, /^unset CODEX_BIN OPENCODE_BIN PI_BIN OMP_BIN CLAUDE_BIN$/m);
+    assert.match(environment, /^unset CODEX_BIN OPENCODE_BIN PI_BIN OMP_BIN CLAUDE_BIN VIBE_BIN AGY_BIN$/m);
     assert.equal(JSON.parse(await fs.readFile(path.join(home, '.ala', 'config.json'), 'utf8')).codingAgent, 'omp');
 
     // OMP and Bun are installed together into one prefix, and --version runs with that prefix first on PATH.
@@ -131,4 +131,45 @@ test('OMP is a terminal-only agent that keeps its login in the robot home and is
     assert.deepEqual(install.args.slice(install.args.indexOf('--prefix') + 2), ['@oh-my-pi/pi-coding-agent@19.0.1', 'bun@1.5.0']);
     const probe = calls.find(call => call.args[0] === '--version');
     assert.equal(probe.options.env.PATH.split(':')[0], path.join(path.dirname(probe.command)));
+});
+
+test('Mistral Vibe drives GUI tasks and keeps its login and sessions in the robot home', async t => {
+    assert.ok(GUI_CODING_AGENTS.includes('vibe'));
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-vibe-home-'));
+    t.after(() => fs.rm(home, { recursive: true, force: true }));
+    await prepareRobotShell(home, { codingAgents: ['vibe'] });
+    assert.equal((await fs.stat(path.join(home, '.vibe'))).isDirectory(), true);
+    const environment = await fs.readFile(path.join(home, '.roboteam-env.sh'), 'utf8');
+    assert.match(environment, /^export VIBE_HOME="\$HOME\/\.vibe"$/m);
+    // Without a keyring Vibe's sign-in stores the key in $VIBE_HOME/.env, where the login is detected.
+    assert.match(environment, /^export PYTHON_KEYRING_BACKEND=keyring\.backends\.fail\.Keyring$/m);
+    assert.match(environment, /^export VIBE_EXPERIMENTAL_ENABLE_MODEL_CATALOG=true$/m);
+    assert.match(environment, /^export VIBE_BIN='.*\/vibe'$/m);
+    assert.equal(JSON.parse(await fs.readFile(path.join(home, '.ala', 'config.json'), 'utf8')).codingAgent, 'vibe');
+    const plan = buildRobotRunArgs({ robot: { id: 'worker-abc123', name: 'worker', codingAgents: ['vibe'] },
+        mode: 'desktop', dataDir: home, publicBasePath: '/rt/', images: { desktop: 'desktop', browser: 'browser' },
+        timezone: 'UTC', cwd: '/workspace', toolsPath: '/tools', workspaceRoot: home, workspaceArgs: [],
+        shellTools: { path: '/cache/shell-generations/g', binPath: '/cache/shell-selections/shell/bin', agents: {} } });
+    assert.ok(plan.args.includes('VIBE_HOME=/home/worker-abc123/.vibe'));
+    assert.ok(plan.args.includes('PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring'));
+    assert.ok(plan.args.includes('VIBE_EXPERIMENTAL_ENABLE_MODEL_CATALOG=true'));
+});
+
+test('the Antigravity CLI keeps a file login in the robot home and drives GUI tasks', async t => {
+    assert.ok(GUI_CODING_AGENTS.includes('agy'));
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-agy-home-'));
+    t.after(() => fs.rm(home, { recursive: true, force: true }));
+    await prepareRobotShell(home, { codingAgents: ['agy'] });
+    const environment = await fs.readFile(path.join(home, '.roboteam-env.sh'), 'utf8');
+    // Over SSH agy stores its Google login in ~/.gemini/antigravity-cli/antigravity-oauth-token, where it is detected.
+    assert.match(environment, /^export SSH_TTY="\$\{SSH_TTY:-roboteam-agy-file-auth\}"$/m);
+    assert.match(environment, /^export AGY_CLI_DISABLE_AUTO_UPDATE=1$/m);
+    assert.match(environment, /^export AGY_BIN='.*\/agy'$/m);
+    assert.equal(JSON.parse(await fs.readFile(path.join(home, '.ala', 'config.json'), 'utf8')).codingAgent, 'agy');
+    const plan = buildRobotRunArgs({ robot: { id: 'worker-abc123', name: 'worker', codingAgents: ['agy'] },
+        mode: 'browser', dataDir: home, publicBasePath: '/rt/', images: { desktop: 'desktop', browser: 'browser' },
+        timezone: 'UTC', cwd: '/workspace', toolsPath: '/tools', workspaceRoot: home, workspaceArgs: [],
+        shellTools: { path: '/cache/shell-generations/g', binPath: '/cache/shell-selections/shell/bin', agents: {} } });
+    assert.ok(plan.args.includes('SSH_TTY=roboteam-agy-file-auth'));
+    assert.ok(plan.args.includes('AGY_CLI_DISABLE_AUTO_UPDATE=1'));
 });

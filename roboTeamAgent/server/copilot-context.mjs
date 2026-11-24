@@ -1,5 +1,5 @@
 import { requireWorkspaceRoot } from './workspace-root.mjs';
-import { RobotStore } from './robot-store.mjs';
+import { DEFAULT_ROBOT_NAME, RobotStore } from './robot-store.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { DATA_DIR } from './constants.mjs';
@@ -7,13 +7,18 @@ import { robotCodingAgents } from './coding-agents.mjs';
 import { RoboWorkClient } from './run-client.mjs';
 
 // CLI wrappers own registry/conversation state, never native homes or tools.
-export async function prepareCopilotContext(robotName = 'default', { holdUsage = false, seed,
+// `selector` is `{ id }`, which every service passes, or `{ name }` (also a bare string) for a person who names the
+// robot in a terminal; without one the default robot is used. The name is resolved once, here, and only the id is
+// kept: ROBOTEAM_COPILOT_ROBOT_NAME is a display label.
+export async function prepareCopilotContext(selector = {}, { holdUsage = false, seed,
     dataDir = DATA_DIR, alaCommand, roboWork = new RoboWorkClient() } = {}) {
+    const { id, name } = typeof selector === 'string' ? { name: selector } : (selector || {});
     const workspaceRoot = requireWorkspaceRoot();
     const store = new RobotStore({ dataDir, roboWork });
     await store.initialize();
-    const robot = await store.getByName(robotName);
-    if (!robot) throw new Error(`Robot not found: ${robotName}`);
+    const robot = id ? await store.get(id)
+        : !name || name === DEFAULT_ROBOT_NAME ? await store.getDefault() : await store.getByName(name);
+    if (!robot) throw new Error(`Robot not found: ${id || name || DEFAULT_ROBOT_NAME}`);
     const releaseUsage = holdUsage ? await store.acquireCliUsage(robot.id) : null;
     try {
         await roboWork.call('robot_ensure', { robotId: robot.id, name: robot.name, codingAgents: robotCodingAgents(robot),

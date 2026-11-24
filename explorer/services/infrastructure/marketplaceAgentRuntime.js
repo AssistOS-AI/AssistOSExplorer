@@ -26,18 +26,47 @@ function findAgent(agents, agentRef) {
     return null;
 }
 
-export async function ensureMarketplaceAgentRunning(agentRef, { signal } = {}) {
+// How long a panel waits for an enabled agent that is still starting, for example a no-wait dependency right after
+// `ploinky restart`, before it gives up without touching it.
+const STARTING_WAIT_MS = 90_000;
+const STARTING_POLL_MS = 2_000;
+
+function pause(milliseconds, signal) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, milliseconds);
+        signal?.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+    });
+}
+
+export async function ensureMarketplaceAgentRunning(agentRef, { signal, startingWaitMs = STARTING_WAIT_MS, startingPollMs = STARTING_POLL_MS } = {}) {
     const marketplace = await fetchMarketplaceSnapshot(signal);
     signal?.throwIfAborted();
     const agents = Array.isArray(marketplace?.agents) ? marketplace.agents : [];
-    const match = findAgent(agents, agentRef);
+    let match = findAgent(agents, agentRef);
     if (match?.running === true) {
         return match;
     }
 
+    // An enabled agent that is still starting is waited for and never enabled again. Enabling it again would replace
+    // its registry record while it starts, which fails its startup and loses the mode it was enabled in (an agent
+    // declared global would come back isolated, without the workspace).
+    const deadline = Date.now() + startingWaitMs;
+    while (match?.active === true && match.status === "starting" && Date.now() < deadline) {
+        await pause(startingPollMs, signal);
+        const refreshed = await fetchMarketplaceSnapshot(signal);
+        signal?.throwIfAborted();
+        match = findAgent(Array.isArray(refreshed?.agents) ? refreshed.agents : [], match.ref) || match;
+        if (match.running === true) return match;
+    }
+    if (match?.active === true && match.status === "starting") {
+        return match;
+    }
+
+    // A stopped or failed agent that is enabled restarts in the mode it is enabled in, never in the manifest default.
     const activation = await activateMarketplaceAgent({
         action: "enable_agent",
-        agentRef: match?.ref || String(agentRef || "").trim()
+        agentRef: match?.ref || String(agentRef || "").trim(),
+        ...(match?.active === true && match.enableMode ? { mode: match.enableMode } : {})
     }, { signal });
     signal?.throwIfAborted();
     const updated = activation.marketplace || await fetchMarketplaceSnapshot(signal);

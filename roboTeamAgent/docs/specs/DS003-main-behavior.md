@@ -5,7 +5,7 @@ summary: Defines workspace robots, concurrent CLI conversations, retained visibl
 
 ## Introduction
 
-RoboTeam lets workspace administrators maintain durable robots and lets internal workspace agents submit visible or non-GUI work by unique robot name. The robot keeps its account state and at most one graphical container while graphical tasks execute serially and independent CLI conversations run concurrently.
+RoboTeam lets workspace administrators maintain durable robots and lets internal workspace agents submit visible or non-GUI work by robot id. The robot keeps its account state and at most one graphical container while graphical tasks execute serially and independent CLI conversations run concurrently.
 
 ## Core Content
 
@@ -13,7 +13,7 @@ RoboTeam lets workspace administrators maintain durable robots and lets internal
 
 | Name | Explanation |
 | --- | --- |
-| Workspace robot administration | Administrators create and delete shared robot records, while internal workspace agents list and run them by a workspace-unique name; users save GitHub credentials into robots through gitAgent under ownership rules. |
+| Workspace robot administration | Administrators create, rename and delete shared robot records, while internal workspace agents list and run them by robot id; users save GitHub credentials into robots through gitAgent under ownership rules. |
 | Robot conversations | Every robot exposes the shared CLI/WebChat wrapper and retains independent conversations, cwd and native sessions; default is the Explorer copilot. |
 | Retained visible workstation | A Desktop or Browser container exposes the same Selkies session to ALA and a human, supports manual takeover with exact task continuation, and is reused or replaced according to mode and cwd. |
 | Graph authoring and execution | Generate and refine global task graphs, dispatch robot tasks by matching skillsets, coordinate sequential child workflows, and inspect durable run history and final responses. |
@@ -25,7 +25,7 @@ RoboTeam lets workspace administrators maintain durable robots and lets internal
 
 The dashboard must let an administrator add and remove skill repositories through each robot’s Manage skills dialog and delete an idle robot after confirmation. `robot_list` must return the robot description and available skillsets from each repository’s skillsets.md with names, descriptions, member skill names and internal selection IDs, not full skill instructions. Skillsets describe combinations for a type of task; registration alone must not activate them. See DS005 for authorization and import boundaries.
 
-An authenticated administrator uses `robot_create` and `robot_delete` to manage workspace-scoped [robots](wiki.html#definition-robot). `robot_list` lets an internal workspace agent discover the same shared catalog. Names must remain unique across the workspace, robots must not belong to individual users, and legacy `ownerUserId` metadata must not restrict access. Each robot owns persistent native account state. Execution mounts the robot home writable and uses it directly as GUI `/config` and ALA `--home`; RoboTeam prepares no per-project copy, so credentials and native sessions stay with the robot. Runtime, log and download directories remain robot-owned. Deletion must require the robot to have no active or queued work and no running container. The robot named `default` cannot be deleted.
+An authenticated administrator uses `robot_create` and `robot_delete` to manage workspace-scoped [robots](wiki.html#definition-robot). `robot_list` lets an internal workspace agent discover the same shared catalog. Every service addresses a robot by its id; the name is a display label that must remain unique across the workspace and that an administrator may change (`PATCH /api/robots/<id>/name`), except that the robot named `default` keeps its name and no other robot may take it. Robots must not belong to individual users, and legacy `ownerUserId` metadata must not restrict access. Each robot owns persistent native account state. Execution mounts the robot home writable and uses it directly as GUI `/config` and ALA `--home`; RoboTeam prepares no per-project copy, so credentials and native sessions stay with the robot. Runtime, log and download directories remain robot-owned. Deletion must require the robot to have no active or queued work and no running container. The robot named `default` cannot be deleted.
 
 Before HTTP readiness, RoboTeam startup must ensure that one ordinary robot has the exact case-sensitive name `default`. An existing matching robot must retain its ID, metadata and home unchanged; absence must use the normal creation/layout logic. The lookup and creation must serialize with ordinary registry mutations, including concurrent processes. Ambiguous or corrupt registry state must fail rather than create an alternate robot. No fixed ID, marker or special robot type is permitted; the name alone makes it permanent, so every deletion path refuses it. Only startup creates a missing default, never a task invocation.
 

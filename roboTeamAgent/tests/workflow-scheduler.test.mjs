@@ -13,7 +13,7 @@ async function fixture(t) {
     const runtimeManager = { resolveCwd: async folder => { if (!folder.startsWith(root)) throw new Error('Folder outside workspace'); return folder; },
         startTask: (robot, type, request) => { started.push(request); return { taskId: request.runtimeTaskId }; }, stopTask() {} };
     const service = new RoboFlowService({ databaseFile: path.join(root, 'roboflow.sqlite'), workspaceRoot: root,
-        robotStore: { list: async () => [robot], getByName: async () => robot }, runtimeManager,
+        robotStore: { list: async () => [robot], get: async () => robot, getDefault: async () => robot }, runtimeManager,
         skillsets: { repositoriesClient: { listRepositories: async () => [{ name: 'DocumentationSkills', source: root, origin: 'local' }] }, start: async (robot, input, enqueue) => enqueue(robot) },
         scheduleNow: () => now, schedulePollMs: 2147480000 });
     await service.initialize(); await service.presetReady; await service.createWorkflow(definition); service.scheduler.start();

@@ -1,4 +1,5 @@
 import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
+import { openRobotTerminal } from './terminal.js';
 
 export function hasRecommendedRepository(robot, recommendation) {
     return (robot.repositories || []).some(repo => !repo.builtin && repo.id === recommendation.name);
@@ -20,6 +21,7 @@ export function skillRepositoryLabel(repo) {
 }
 
 export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
+    let changed = false;
     const dialog = document.createElement('dialog');
     dialog.className = 'skills-dialog skills-manager-dialog';
     dialog.setAttribute('aria-labelledby', 'skills-dialog-title');
@@ -254,12 +256,14 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         render();
         try {
             const route = `api/robots/${robot.id}/skillsets`;
-            await api(method === 'DELETE' ? `${route}?name=${encodeURIComponent(body.name)}` : route,
+            const response = await api(method === 'DELETE' ? `${route}?name=${encodeURIComponent(body.name)}` : route,
                 method === 'DELETE' ? { method } : { method, body });
-            const result = await api('api/robots');
-            const updated = result.robots.find(item => item.id === robot.id);
+            // The change answers with the robot itself; reading every robot is only the fallback of an older server.
+            const updated = response?.robot?.id === robot.id ? response.robot
+                : (await api('api/robots')).robots.find(item => item.id === robot.id);
             if (!updated) throw new Error('Robot is no longer available.');
-            current = updated;
+            current = { ...current, ...updated };
+            changed = true;
             if (method === 'POST') {
                 form.reset();
                 const added = current.repositories?.find(repo => !idsBefore.has(repo.id));
@@ -267,7 +271,6 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
                 addController.complete();
             }
             setMessage(updating ? `Selection ${body.enabled ? 'enabled' : 'disabled'}.` : method === 'POST' ? 'Repository added.' : 'Repository removed. Selected skills from this source will be unavailable when tasks next start or resume.');
-            await onChanged();
         } catch (error) {
             setMessage(error.message, true);
         } finally {
@@ -300,7 +303,8 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         const toggle = dialog.querySelector('[data-robot-menu-toggle][aria-expanded="true"]');
         if (event.key === 'Escape' && toggle) { event.preventDefault(); event.stopPropagation(); closeMenus(); toggle.focus(); }
     });
-    const cleanup = () => { lifetime.abort(); if (addDialog.open) addDialog.close(); dialog.remove(); };
+    // The robot list behind the dialog is read again once, when the dialog closes after a change.
+    const cleanup = () => { lifetime.abort(); if (addDialog.open) addDialog.close(); dialog.remove(); if (changed) { changed = false; void onChanged(); } };
     const close = () => { dialog.close(); cleanup(); if (opener?.isConnected) opener.focus(); };
     dialog.querySelector('.close-skills').addEventListener('click', close);
     dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
@@ -329,7 +333,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
     return dialog;
 }
 
-const CODING_AGENT_LABELS = { codex: 'Codex', opencode: 'OpenCode', pi: 'Pi', omp: 'OMP', claude: 'Claude Code' };
+const CODING_AGENT_LABELS = { codex: 'Codex', opencode: 'OpenCode', pi: 'Pi', omp: 'OMP', claude: 'Claude Code', vibe: 'Mistral Vibe', agy: 'Antigravity CLI' };
 
 export function codingAgentLabel(names) {
     return names.map(name => CODING_AGENT_LABELS[name] || name).join(', ');
@@ -352,6 +356,8 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
                 <label><input type="radio" name="codingAgent" value="pi"> Pi</label>
                 <label><input type="radio" name="codingAgent" value="omp"> OMP</label>
                 <label><input type="radio" name="codingAgent" value="claude"> Claude Code</label>
+                <label><input type="radio" name="codingAgent" value="vibe"> Mistral Vibe</label>
+                <label><input type="radio" name="codingAgent" value="agy"> Antigravity CLI</label>
             </fieldset>
             <section class="coding-model-field" aria-label="Default model">
                 <label id="coding-model-label">Default model</label>
@@ -365,6 +371,11 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
                 </div>
             </section>
             <p class="coding-agent-warning" role="status" hidden>Pi and OMP are not compatible with Browser and Desktop executions.</p>
+            <div class="coding-agent-login" role="status" hidden>
+                <p class="coding-agent-login-text"></p>
+                <button type="button" class="button secondary coding-agent-login-open"></button>
+                <button type="button" class="button secondary coding-agent-login-check">Check again</button>
+            </div>
             <p class="coding-agent-status"></p>
             <p class="message" role="status" aria-live="polite"></p>
             <button class="button primary coding-agent-save" type="submit">Save</button>
@@ -378,7 +389,7 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
     const lifetime = new AbortController();
     const catalogs = new Map(), drafts = new Map();
     let saved = {}, savedEfforts = {}, defaults = {}, pendingModel = null, stage = 'models', ready = false, saving = false, request = null, activeIndex = -1;
-    const names = robot.codingAgents || ['codex', 'opencode', 'pi', 'omp', 'claude'];
+    const names = robot.codingAgents || ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe', 'agy'];
     const busy = robot.run.state !== 'stopped' || ['queued', 'starting', 'running', 'pausing'].includes(robot.run.task?.state);
     const agent = () => form.querySelector('input[name="codingAgent"]:checked')?.value;
     const selection = () => drafts.has(agent()) ? drafts.get(agent()) : { model: saved[agent()] || null, effort: savedEfforts[agent()] || null };
@@ -390,8 +401,41 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
         search.removeAttribute('aria-activedescendant'); list.removeAttribute('aria-activedescendant'); update();
     };
     const close = () => { lifetime.abort(); request?.abort(); dialog.close(); dialog.remove(); };
+    // A login is a credential the agent stored in the robot home, found the way `ala status` finds it. Robots receive no
+    // credential variables, so no stored login means the agent cannot run; a stored one may still have expired. OpenCode
+    // runs through Soul Gateway without a login. Only administrators receive logins, and only they can open a terminal.
+    const loginPanel = dialog.querySelector('.coding-agent-login'), loginOpen = dialog.querySelector('.coding-agent-login-open');
+    const loginCheck = dialog.querySelector('.coding-agent-login-check');
+    let logins = robot.codingAgentLogins || null, checking = false;
+    function updateLogin() {
+        const selected = agent(), label = CODING_AGENT_LABELS[selected] || selected;
+        const missing = Boolean(logins && selected && selected !== 'opencode' && logins[selected] !== true);
+        loginPanel.hidden = !missing;
+        if (!missing) return;
+        dialog.querySelector('.coding-agent-login-text').textContent = `${label} is not logged in on this robot. Open it in the robot terminal and sign in, then check again.`;
+        loginOpen.textContent = `Open ${label} to log in`;
+        loginOpen.disabled = loginCheck.disabled = checking || saving;
+    }
+    loginOpen.addEventListener('click', async () => {
+        const selected = agent();
+        loginOpen.disabled = true;
+        try { await openRobotTerminal(robot, api, { codingAgent: selected, label: CODING_AGENT_LABELS[selected] || selected }); }
+        catch (error) { message.textContent = error.message; message.className = 'message error'; }
+        finally { updateLogin(); }
+    });
+    loginCheck.addEventListener('click', async () => {
+        checking = true; updateLogin();
+        try {
+            const updated = (await api('api/robots', { signal: lifetime.signal })).robots?.find(item => item.id === robot.id);
+            if (updated?.codingAgentLogins) logins = updated.codingAgentLogins;
+            if (logins?.[agent()] === true) { message.textContent = `${CODING_AGENT_LABELS[agent()] || agent()} is logged in.`; message.className = 'message'; }
+        } catch (error) {
+            if (!lifetime.signal.aborted) { message.textContent = error.message; message.className = 'message error'; }
+        } finally { checking = false; if (!lifetime.signal.aborted) updateLogin(); }
+    });
     function update() {
         dialog.querySelector('.coding-agent-warning').hidden = !['pi', 'omp'].includes(agent());
+        updateLogin();
         const { model, effort } = selection();
         trigger.textContent = `${isDefault(model) ? 'Default model' : model} · ${effort || 'Default effort'}`;
         trigger.disabled = busy || saving || !ready || !agent();

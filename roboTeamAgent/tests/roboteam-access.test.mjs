@@ -205,8 +205,8 @@ function gatedRows(robotId) {
         ['POST', `/api/robots/${ABSENT}/skillsets`, { name: 'docs' }, 403, null, 403],
         ['DELETE', `/api/robots/${ABSENT}/skillsets?name=docs`, undefined, 403, null, 403],
         ['PATCH', `/api/robots/${ABSENT}/skillsets`, { name: 'docs' }, 403, null, 403],
-        ['POST', '/api/control', { robotName: ABSENT, operation: 'start-simple-task', task: 'authorization probe, never run' }, 404],
-        ['POST', '/api/control', { robotName: ABSENT, operation: 'robot-delete' }, 404],
+        ['POST', '/api/control', { robotId: ABSENT, operation: 'start-simple-task', task: 'authorization probe, never run' }, 404],
+        ['POST', '/api/control', { robotId: ABSENT, operation: 'robot-delete' }, 404],
         ['GET', run, undefined, 404],
         ['POST', run, { mode: 'browser' }, 404],
         ['DELETE', run, undefined, 404],
@@ -285,7 +285,7 @@ test('guests and role-less users are refused like selfRegistered, with the RoboF
     for (const actor of ['adminGuest', 'upperGuest', 'roleLess']) {
         refusal(await fixture.call('GET', '/', { user: PRINCIPALS[actor] }), ROBOTEAM, `${actor} /`);
         refusal(await fixture.call('GET', '/api/roboflow/workflows', { user: PRINCIPALS[actor] }), ROBOFLOW, `${actor} workflows`);
-        refusal(await fixture.call('POST', '/api/control', { user: PRINCIPALS[actor], body: { robotName: ABSENT, operation: 'task-status' } }), ROBOTEAM, `${actor} control`);
+        refusal(await fixture.call('POST', '/api/control', { user: PRINCIPALS[actor], body: { robotId: ABSENT, operation: 'task-status' } }), ROBOTEAM, `${actor} control`);
     }
 });
 
@@ -318,7 +318,7 @@ test('entitled users, administrators and internal callers reach the handler answ
     for (const [method, target, body] of [
         ['GET', `/api/robots/${ABSENT}/run`], ['POST', `/api/robots/${ABSENT}/run`, { mode: 'browser' }], ['DELETE', `/api/robots/${ABSENT}/run`],
         ['GET', `/robots/${ABSENT}/logs`], ['GET', `/api/robots/${ABSENT}/logs`],
-        ['POST', '/api/control', { robotName: ABSENT, operation: 'start-simple-task', task: 'authorization probe, never run' }],
+        ['POST', '/api/control', { robotId: ABSENT, operation: 'start-simple-task', task: 'authorization probe, never run' }],
     ]) {
         const response = await fixture.call(method, target, { user: PRINCIPALS.userA, body });
         assert.equal(response.status, 404, `${method} ${target}`);
@@ -333,7 +333,7 @@ test('unsigned headers are 401', async (t) => {
     const before = await snapshotEffects(fixture);
     for (const [method, target, body] of [
         ['GET', '/', undefined], ['GET', '/config.js', undefined], ['GET', '/styles.css', undefined], ['GET', '/api/summary', undefined],
-        ['POST', '/api/control', { robotName: ABSENT, operation: 'task-status' }], ['POST', '/api/robots', { name: 'Forged Robot' }],
+        ['POST', '/api/control', { robotId: ABSENT, operation: 'task-status' }], ['POST', '/api/robots', { name: 'Forged Robot' }],
         ['GET', '/api/roboflow/workflows', undefined], ['GET', `/api/robots/${ABSENT}/run`, undefined],
     ]) {
         for (const [name, headers] of [['no header', {}], ['plain header claiming admin and the capability', claims], ['garbage header', { 'x-ploinky-auth-info': '{not json' }]]) {
@@ -359,8 +359,8 @@ test('tampered body is 401', async (t) => {
     const fixture = await startFixture(t);
     const flow = await fixture.roboflow.startFlow({ workflowTypeId: 'example', objective: 'Tamper target' });
     const before = await snapshotEffects(fixture);
-    const control = JSON.stringify({ robotName: ABSENT, operation: 'task-status' });
-    const tampered = JSON.stringify({ robotName: ABSENT, operation: 'start-simple-task', task: 'tampered' });
+    const control = JSON.stringify({ robotId: ABSENT, operation: 'task-status' });
+    const tampered = JSON.stringify({ robotId: ABSENT, operation: 'start-simple-task', task: 'tampered' });
     for (const [target, signedBody, sentBody] of [
         ['/api/control', control, tampered],
         [`/api/roboflow/flows/${flow.id}/instances/${flow.instances[0].id}/message`, JSON.stringify({ prompt: 'signed' }), JSON.stringify({ prompt: 'tampered' })],
@@ -472,7 +472,7 @@ test('throwing verifier is 503', async (t) => {
     ].join('\n'));
     const restore = configureAgentEnv({ PLOINKY_AGENT_RUNTIME_ROOT: runtimeRoot });
     try {
-        const response = await fixture.call('POST', '/api/control', { user: PRINCIPALS.userA, body: { robotName: ABSENT, operation: 'task-status' } });
+        const response = await fixture.call('POST', '/api/control', { user: PRINCIPALS.userA, body: { robotId: ABSENT, operation: 'task-status' } });
         assert.equal(response.status, 503);
         assert.deepEqual(response.json, { ok: false, error: UNAVAILABLE });
         assert.equal(response.text.includes('invalid required token'), false, 'the helper message is not echoed');
@@ -500,7 +500,7 @@ test('single verification: the body is read once and the admin projection comes 
 
 test('internal callers keep the token path and their forwarded roles', async (t) => {
     const fixture = await startFixture(t);
-    const status = await fixture.call('POST', '/api/control', { headers: internalHeaders(['user']), body: { robotName: ABSENT, operation: 'task-status' } });
+    const status = await fixture.call('POST', '/api/control', { headers: internalHeaders(['user']), body: { robotId: ABSENT, operation: 'task-status' } });
     assert.equal(status.status, 404, 'a user-role internal call reaches the handler');
     const create = await fixture.call('POST', '/api/robots', { headers: internalHeaders(['user']), body: { name: 'Internal Robot' } });
     assert.equal(create.status, 403);

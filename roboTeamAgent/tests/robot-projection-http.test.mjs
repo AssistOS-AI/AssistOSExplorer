@@ -60,7 +60,6 @@ async function startFixture() {
     const robotStore = {
         list: async () => [...robots.values()],
         get: async (id) => robots.get(id) || null,
-        getByName: async (name) => [...robots.values()].find((robot) => robot.name === name) || null,
         create: async ({ name }) => { mutations.createRobot++; const robot = makeRobot('created-robot-d4e5f6', name); robots.set(robot.id, robot); return robot; },
         setCodingAgents: async (id, codingAgents) => { mutations.codingAgents++; robots.get(id).codingAgents = codingAgents; return robots.get(id); },
     };

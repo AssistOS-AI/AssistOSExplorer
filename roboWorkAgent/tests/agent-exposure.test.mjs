@@ -39,6 +39,30 @@ test('model listing prepares only the chosen coding agent and starts the listing
     assert.ok(!env.PATH.split(path.delimiter).some(entry => ['codex', 'pi', 'claude'].some(name => entry === `/tools/${name}/bin`)));
 });
 
+test('the Antigravity CLI model list is refused with a clear reason while the robot has no login', async t => {
+    const { paths, dataDir } = await workspace(t);
+    let launched = 0;
+    let logins = { agy: false };
+    let alaUnavailable = false;
+    const robots = new RobotManager({ paths, alaEntry: '/unused',
+        toolCache: { root: path.join(dataDir, 'tool-cache'), prepareCodingAgents: async names => prepared(names) },
+        soulGateway: { prepare: async () => {} }, homeOperation: async () => {},
+        readStatus: async () => ({ activeAgent: 'agy', logins, alaUnavailable }),
+        captureLaunch: async () => { launched++; return { stdout: '[{"id":"gemini-3.8-flash-low","efforts":[]}]' }; } });
+    robots.require = async id => ({ id, codingAgents: ['agy'] });
+    await fs.mkdir(paths.robot('robot-abc'), { recursive: true });
+    await assert.rejects(robots.models({ robotId: 'robot-abc', agent: 'agy' }),
+        error => error.statusCode === 409 && error.code === 'CODING_AGENT_NOT_LOGGED_IN'
+            && error.message === 'Antigravity CLI is not logged in on this robot. Log in to list its models.');
+    assert.equal(launched, 0, 'no discovery runs without a login');
+    logins = { agy: true };
+    assert.deepEqual((await robots.models({ robotId: 'robot-abc', agent: 'agy' })).models, [{ id: 'gemini-3.8-flash-low', efforts: [] }]);
+    // While ALA cannot report logins, the listing runs and reports its own result.
+    logins = { agy: false }; alaUnavailable = true;
+    await robots.models({ robotId: 'robot-abc', agent: 'agy' });
+    assert.equal(launched, 2);
+});
+
 test('a run gives ALA only the coding agents selected for the robot', async t => {
     const { paths, cwd } = await workspace(t);
     const prepareCalls = [];

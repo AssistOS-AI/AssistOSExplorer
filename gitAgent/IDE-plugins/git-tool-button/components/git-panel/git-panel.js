@@ -1247,17 +1247,17 @@ export class GitPanel {
     }
 
     // The token stays server-side; only the robot and the git identity shown in Authentication are sent.
-    saveRobotCredentials(robotName) {
+    saveRobotCredentials(robotId) {
         const remembered = getRememberedGitIdentity();
         return this.service.saveRobotCredentials({
-            robotName,
+            robotId,
             name: String(this.state.identityPrompt?.name || remembered.name || '').trim(),
             email: String(this.state.identityPrompt?.email || remembered.email || '').trim()
         });
     }
 
-    deleteRobotCredentials(robotName) {
-        return this.service.deleteRobotCredentials(robotName);
+    deleteRobotCredentials(robotId) {
+        return this.service.deleteRobotCredentials(robotId);
     }
 
     async saveRobotCredentialsAfterSignIn() {

@@ -330,14 +330,21 @@ export function createToolHandlers({
       || candidate.endsWith('.git');
   }
 
-  async function resolveSkillRepoInput(input, explicitName = '') {
+  // The repository listing of one operation, read from Ploinky on first use.
+  async function listingRepositories(repositoryListing) {
+    if (!repositoryListing) return (await repositoriesClient()).listRepositories();
+    repositoryListing.repositories ||= await (await repositoriesClient()).listRepositories();
+    return repositoryListing.repositories;
+  }
+
+  async function resolveSkillRepoInput(input, explicitName = '', repositoryListing = null) {
     const value = String(input || '').trim();
     if (!value) throw skillsManifestError('Repository URL or name is required.');
     // An exact registered repository name wins over the URL heuristics, so a
     // valid name such as `custom.git` resolves to its configured URL. URLs
     // always contain characters outside the name charset and skip this lookup.
     if (/^[a-zA-Z0-9_.-]+$/.test(value)) {
-      const exact = (await listKnownSkillRepositories()).find((repo) => repo.name === value);
+      const exact = (await listKnownSkillRepositories(await listingRepositories(repositoryListing))).find((repo) => repo.name === value);
       if (exact) {
         return {
           url: exact.url,
@@ -347,7 +354,7 @@ export function createToolHandlers({
       }
     }
     if (!looksLikeRepoUrl(value)) {
-      const skillRepos = await listKnownSkillRepositories();
+      const skillRepos = await listKnownSkillRepositories(await listingRepositories(repositoryListing));
       const known = skillRepos.find((repo) => repo.name === value || repo.name.toLowerCase() === value.toLowerCase() || repo.url === value || repo.skillSource?.source === value);
       if (!known) {
         throw skillsManifestError(`Unknown skill repository '${value}'. Use a git URL or a known repository name.`,
@@ -454,13 +461,15 @@ export function createToolHandlers({
     return repository.source;
   }
 
-  async function syncSkillsManifestInstall(folder, entries) {
+  // One skills-manifest operation reads the Ploinky repository listing once: every helper receives the same
+  // `repositoryListing`, which ensureSkillRepoCached fills on first use and updates after a preparation.
+  async function syncSkillsManifestInstall(folder, entries, repositoryListing = { repositories: null }) {
     const client = await repositoriesClient();
     const previous = await readSkillsManifestEntries(path.join(folder, skillsManifestFile));
     const ledger = await readRepositorySkillState(folder);
     const wanted = new Map();
     for (const entry of entries) {
-      await ensureSkillRepoCached(entry);
+      await ensureSkillRepoCached(entry, repositoryListing);
       for (const name of entry.skills) {
         if (wanted.has(name) && wanted.get(name) !== entry.name) throw skillsManifestError(`Duplicate selected skill: ${name}`);
         wanted.set(name, entry.name);
@@ -475,7 +484,7 @@ export function createToolHandlers({
       const selected = wanted.get(name);
       if (selected === entry.name && current === path.join(resolvedRepositorySources.get(entry.name), 'skills', name)) continue;
       if (!ownsRepositorySkillLink(ledger, name, destination)) {
-        const source = await ensureSkillRepoCached(entry);
+        const source = await ensureSkillRepoCached(entry, repositoryListing);
         if (current !== path.join(source, 'skills', name)) continue;
       }
       removed.push(destination);
@@ -538,9 +547,8 @@ export function createToolHandlers({
     return { installedSkills: outputs.filter((item) => item.installed).map((item) => item.name), skillOutputs: outputs, diagnostics };
   }
 
-  async function buildSkillsManifestState(folder, manifestPath, entries) {
+  async function buildSkillsManifestState(folder, manifestPath, entries, repositoryListing = { repositories: null }) {
     const repositories = [];
-    const repositoryListing = { repositories: null };
     for (const entry of entries) {
       let repoPath = path.join(reposCacheRoot, entry.name);
       let cacheError = '';
@@ -1302,12 +1310,13 @@ export function createToolHandlers({
   async function handleAddSkillsManifestRepo(args) {
     const data = parseArgs(AddSkillsManifestRepoArgsSchema, args, 'add_skills_manifest_repo');
     const { folder, manifestPath } = await skillsManifestPathForFolder(data.folderPath);
-    const resolved = await resolveSkillRepoInput(data.url, data.name);
+    const repositoryListing = { repositories: null };
+    const resolved = await resolveSkillRepoInput(data.url, data.name, repositoryListing);
     const url = resolved.url;
     const name = resolved.name;
     const branch = normalizeBranch(data.branch) || resolved.branch || null;
     const repoEntry = { url, name, branch, skills: [] };
-    await ensureSkillRepoCached(repoEntry);
+    await ensureSkillRepoCached(repoEntry, repositoryListing);
     const { skills: availableSkills, skillsets: definitions } = resolvedRepositoryCatalogs.get(name);
     if (!availableSkills.length) {
       return {
@@ -1324,10 +1333,10 @@ export function createToolHandlers({
     const nextEntries = existingIndex === -1
       ? [...entries, nextEntry]
       : entries.map((entry, index) => index === existingIndex ? nextEntry : entry);
-    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries, repositoryListing);
     await writeSkillsManifestEntries(manifestPath, nextEntries);
     return {
-      ...await buildSkillsManifestState(folder, manifestPath, nextEntries),
+      ...await buildSkillsManifestState(folder, manifestPath, nextEntries, repositoryListing),
       exportResult,
       ok: true,
       added: true,
@@ -1346,7 +1355,8 @@ export function createToolHandlers({
     if (index === -1) {
       throw skillsManifestError(`Repository '${repoName}' is not in the skills manifest.`);
     }
-    await ensureSkillRepoCached(entries[index]);
+    const repositoryListing = { repositories: null };
+    await ensureSkillRepoCached(entries[index], repositoryListing);
     const { skills: availableSkills, skillsets: definitions } = resolvedRepositoryCatalogs.get(entries[index].name);
     let members;
     if (definitions.length) {
@@ -1368,9 +1378,9 @@ export function createToolHandlers({
     const nextEntries = entries.map((entry, entryIndex) => entryIndex === index
       ? { ...entry, skills: Array.from(current).sort((left, right) => left.localeCompare(right)) }
       : entry);
-    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries, repositoryListing);
     await writeSkillsManifestEntries(manifestPath, nextEntries);
-    return { ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult };
+    return { ...await buildSkillsManifestState(folder, manifestPath, nextEntries, repositoryListing), exportResult };
   }
 
   async function handleRemoveSkillsManifestRepo(args) {
@@ -1382,9 +1392,10 @@ export function createToolHandlers({
     if (nextEntries.length === entries.length) {
       throw skillsManifestError(`Repository '${repoName}' is not in the skills manifest.`);
     }
-    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
+    const repositoryListing = { repositories: null };
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries, repositoryListing);
     await writeSkillsManifestEntries(manifestPath, nextEntries);
-    return { ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult };
+    return { ...await buildSkillsManifestState(folder, manifestPath, nextEntries, repositoryListing), exportResult };
   }
 
   function getInvocationIdentity() {

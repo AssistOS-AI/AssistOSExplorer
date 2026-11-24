@@ -79,8 +79,10 @@ export class LiveSkillCatalog {
             try {
                 if (set.unavailable) throw skillError(`repository ${set.name} is unavailable`);
                 const root = await fs.realpath(set.builtin ? copilotSkillsRoot : set.source);
-                if (!set.builtin && (!inside(scope, root) || inside(this.service.robotStore.dataDir, root))) {
-                    if (needed) throw skillError(`local skillset ${set.name} is outside launch scope or its original path changed`);
+                // A repository registered through Ploinky may sit anywhere in the workspace. The launch scope is the
+                // folder Ploinky was started from, often below the workspace root it found, so it never limits one.
+                if (!set.builtin && (!inside(workspace, root) || inside(this.service.robotStore.dataDir, root))) {
+                    if (needed) throw skillError(`local skillset ${set.name} is outside the workspace or its original path changed`);
                     continue;
                 }
                 const records = set.skills.filter(skill => skillIsActive(set, skill.name))

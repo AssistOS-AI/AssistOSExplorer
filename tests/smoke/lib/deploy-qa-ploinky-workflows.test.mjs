@@ -629,6 +629,143 @@ test('deploy: every installed repository except the private copy moves on its ow
     assert.equal(body.split(/\n\s+update_kept_repos\n/).length - 1, 1);
 });
 
+test('deploy: the link-install checkouts AdvancedLanguageAgent and DocumentationSkills are updated with the installed repositories, before the restart', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const start = body.indexOf('update_kept_repos() {');
+    const fn = body.slice(start, body.indexOf('\n          }\n', start));
+    // Ploinky cannot update them: they hold no agent folder, so `update repo` finds no installed repository.
+    assert.match(fn, /ploinky_locked update repo "\$repo"[\s\S]*run_in_box "\$LINK_INSTALL_PROGRAM" < \/dev\/null/);
+    assert.match(fn, /if ! run_in_box "\$LINK_INSTALL_PROGRAM" < \/dev\/null; then[\s\S]*exit 1/);
+    assert.ok(body.indexOf("LINK_INSTALL_PROGRAM='") < start);
+    assert.ok(start < body.indexOf('\n          update_kept_repos\n'));
+    assert.ok(body.indexOf('\n          update_kept_repos\n') < body.indexOf('ploinky_locked restart\n'));
+    assert.equal(body.split('run_in_box "$LINK_INSTALL_PROGRAM"').length - 1, 1);
+    const program = body.match(/LINK_INSTALL_PROGRAM='([^']*)'/)[1];
+    assert.match(program, /for name in AdvancedLanguageAgent DocumentationSkills; do/);
+    assert.match(program, /merge --quiet --ff-only/);
+    assert.doesNotMatch(program, /reset|checkout|stash|clean/);
+});
+
+test('deploy: the link-install program fast-forwards a clean checkout and leaves every other state untouched', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const program = body.match(/LINK_INSTALL_PROGRAM='([^']*)'/)[1];
+    assert.match(program, /^set -eu\n\s+export GIT_ALLOW_PROTOCOL=https\n/);
+    assert.match(program, /remote get-url origin\) \|\| \{ echo "\$name has no origin/);
+    assert.match(program, /fetch --quiet "\$url" /);
+    assert.doesNotMatch(program, /config --get|fetch --quiet origin/);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-link-install-'));
+    const names = ['AdvancedLanguageAgent', 'DocumentationSkills'];
+    const upstream = (name) => path.join(root, 'upstream', name);
+    const url = (name) => `https://github.com/AssistOS-AI/${name}.git`;
+    const git = (cwd, ...args) => {
+        const result = spawnSync('git', ['-c', 'user.email=t@example.test', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        return result.stdout.trim();
+    };
+    try {
+        // The seam: a PATH shim that rewrites only the URL a fetch is given, so `remote get-url` still reports the real
+        // URL and the program is the unchanged text. The shim lifts GIT_ALLOW_PROTOCOL only for this local transport.
+        const bin = path.join(root, 'bin');
+        const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+        fs.mkdirSync(bin);
+        fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh
+unset GIT_ALLOW_PROTOCOL
+fetching=0
+for arg in "$@"; do [ "$arg" = fetch ] && fetching=1; done
+if [ "$fetching" = 1 ]; then
+  count=$#
+  while [ "$count" -gt 0 ]; do
+    arg=$1; shift; count=$((count - 1))
+    case "$arg" in
+    ${names.map((name) => `"${url(name)}") set -- "$@" "${upstream(name)}" ;;`).join('\n    ')}
+    *) set -- "$@" "$arg" ;;
+    esac
+  done
+fi
+exec "${realGit}" "$@"
+`, { mode: 0o755 });
+        const workspace = path.join(root, 'workspace');
+        fs.mkdirSync(workspace);
+        const commit = (name, text) => {
+            fs.writeFileSync(path.join(upstream(name), 'file'), `${text}\n`);
+            git(upstream(name), 'add', 'file');
+            git(upstream(name), 'commit', '--quiet', '-m', text);
+        };
+        for (const name of names) {
+            fs.mkdirSync(upstream(name), { recursive: true });
+            git(upstream(name), 'init', '--quiet', '-b', 'trunk');
+            commit(name, 'one');
+        }
+        const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+        const run = () => spawnSync('sh', ['-c', program, 'sh'], { cwd: workspace, encoding: 'utf8', env, input: '' });
+        const checkout = (name) => path.join(workspace, name);
+        const text = (name) => fs.readFileSync(path.join(checkout(name), 'file'), 'utf8');
+        const head = (name) => git(checkout(name), 'rev-parse', 'HEAD');
+        const clone = (name) => {
+            git(workspace, 'clone', '--quiet', '--branch', 'trunk', upstream(name), name);
+            git(checkout(name), 'remote', 'set-url', 'origin', url(name));
+        };
+        const none = run();
+        assert.equal(none.status, 0, none.stderr);
+        assert.match(none.stdout, /AdvancedLanguageAgent is not at the workspace root; skipped\./);
+        assert.match(none.stdout, /DocumentationSkills is not at the workspace root; skipped\./);
+        for (const name of names) clone(name);
+        for (const name of names) commit(name, 'two');
+        const moved = run();
+        assert.equal(moved.status, 0, moved.stderr);
+        for (const name of names) assert.equal(text(name), 'two\n', `${name} fast-forwards`);
+        assert.match(moved.stdout, /AdvancedLanguageAgent [0-9a-f]+ on trunk\./);
+        assert.equal(run().status, 0, 'an equal checkout is a no-op');
+        // Each refusal leaves the checkout exactly as it was.
+        const refuses = (name, pattern, label) => {
+            const before = head(name);
+            const result = run();
+            assert.notEqual(result.status, 0, label);
+            assert.match(result.stderr, pattern, label);
+            assert.equal(head(name), before, `${label}: HEAD unchanged`);
+        };
+        const ala = 'AdvancedLanguageAgent';
+        const docs = 'DocumentationSkills';
+        commit(ala, 'three');
+        fs.writeFileSync(path.join(checkout(docs), 'file'), 'edited\n');
+        // The alphabetical order makes AdvancedLanguageAgent move before the refusal.
+        refuses(docs, /DocumentationSkills has uncommitted or untracked changes; left untouched/, 'dirty');
+        assert.equal(text(docs), 'edited\n');
+        assert.equal(text(ala), 'three\n', 'the checkout before the refused one still moved');
+        git(checkout(docs), 'checkout', '--quiet', 'file');
+        fs.writeFileSync(path.join(checkout(docs), 'stray'), 'x\n');
+        refuses(docs, /uncommitted or untracked changes/, 'untracked file');
+        fs.rmSync(path.join(checkout(docs), 'stray'));
+        git(checkout(docs), 'commit', '--quiet', '--allow-empty', '-m', 'local');
+        refuses(docs, /DocumentationSkills has commits that trunk lacks; left untouched/, 'diverged');
+        git(checkout(docs), 'reset', '--quiet', '--hard', 'HEAD~1');
+        git(checkout(docs), 'remote', 'set-url', 'origin', 'https://example.test/other.git');
+        refuses(docs, /DocumentationSkills has an unexpected origin; left untouched/, 'foreign origin');
+        git(checkout(docs), 'remote', 'remove', 'origin');
+        refuses(docs, /DocumentationSkills has no origin; left untouched/, 'missing origin');
+        git(checkout(docs), 'remote', 'add', 'origin', url(docs));
+        // A repo-local insteadOf makes `remote get-url` report the redirected URL, so it never matches.
+        git(checkout(docs), 'config', `url.${path.join(root, 'foreign')}.insteadOf`, url(docs));
+        refuses(docs, /DocumentationSkills has an unexpected origin; left untouched/, 'repo-local insteadOf');
+        git(checkout(docs), 'config', '--remove-section', `url.${path.join(root, 'foreign')}`);
+        git(checkout(docs), 'checkout', '--quiet', '--detach');
+        refuses(docs, /detached HEAD; left untouched/, 'detached HEAD');
+        git(checkout(docs), 'checkout', '--quiet', 'trunk');
+        // A checkout whose upstream branch is gone cannot be compared; that is a different message from a divergence.
+        git(checkout(docs), 'branch', '--quiet', 'gone');
+        git(checkout(docs), 'checkout', '--quiet', 'gone');
+        const missingRef = run();
+        assert.notEqual(missingRef.status, 0);
+        assert.doesNotMatch(missingRef.stderr, /commits that gone lacks/);
+        git(checkout(docs), 'checkout', '--quiet', 'trunk');
+        fs.renameSync(checkout(docs), path.join(root, 'docs-real'));
+        fs.symlinkSync(path.join(root, 'docs-real'), checkout(docs));
+        refuses(ala, /DocumentationSkills is a symlink; left untouched/, 'symlink');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 // Runs a slice of the deploy step with stubs for every command, so only its shell logic is proven. The status texts
 // are Ploinky's: `Ploinky Box: absent` from formatBoxStatus for no Box, and the in-Box status output, which has no
 // `Ploinky Box:` line, for a running initialized Box.

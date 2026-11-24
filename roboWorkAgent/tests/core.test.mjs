@@ -318,6 +318,11 @@ test('lightweight robot ensure completes on a cold cache without downloads and r
     assert.ok(sockets.every(directory => directory === paths.soul('aaa')));
     const shell = await fs.readFile(path.join(paths.home('aaa'), '.roboteam-env.sh'), 'utf8');
     assert.ok(shell.includes(path.join(paths.dataDir, 'tool-cache', 'shell-selections', 'shell', 'bin')));
+    // An agent's own npm self-update reaches the update shim, which comes first on PATH.
+    assert.ok(shell.includes('export PATH="$HOME/.roboteam/bin":'));
+    assert.ok(shell.includes("export PI_SELF_UPDATE_COMMAND='npm install -g {installSpec}'"));
+    const shim = await fs.stat(path.join(paths.home('aaa'), '.roboteam', 'bin', 'npm'));
+    assert.equal(shim.isFile() && (shim.mode & 0o777), 0o700);
     assert.equal((await fs.stat(path.join(paths.robot('aaa'), 'terminal'))).isDirectory(), true);
     const history = path.join(paths.robot('aaa'), 'terminal', '.bash_history');
     await fs.writeFile(history, 'old outer-shell history');
@@ -398,7 +403,7 @@ test('an unavailable ALA leaves the status listing answering with every login ab
     const robots = new RobotManager({ paths, toolCache: {}, soulGateway: {},
         homeOperation: async (id, operation, input) => homeOperation(operation, input, paths.home(id)) });
     await robots.write({ id: 'aaa', name: 'a', codingAgents: ['opencode', 'pi'] });
-    const logins = { codex: false, opencode: false, pi: false, omp: false, claude: false };
+    const logins = { codex: false, opencode: false, pi: false, omp: false, claude: false, vibe: false, agy: false };
     process.env.ROBOWORK_ALA_ENTRY = path.join(paths.dataDir, 'missing', 'bin', 'ala.mjs');
     for (let round = 0; round < 2; round++) {
         assert.deepEqual((await robots.status({ robotIds: ['aaa'], includeLogins: true })).robots,

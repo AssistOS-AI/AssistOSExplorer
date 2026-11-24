@@ -40,7 +40,8 @@ export function normalizeRobotTargets(payload) {
                     : { configured: false }
             };
         })
-        .filter((robot) => robot.name)
+        // Robots are addressed by id; the name is only shown.
+        .filter((robot) => robot.id)
         // The default robot leads the list; the rest keep RoboTeam's order.
         .sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
     return {
@@ -91,9 +92,11 @@ export function describeRobotRow(robot, targets, { connected = false } = {}) {
         saveLabel = 'Overwrite credentials';
     }
     if (credentials.configured && credentials.readable === false) status += '; can no longer be read, add them again';
+    const name = robot.name || robot.id;
     return {
-        name: robot.name,
-        label: robot.isDefault ? `${robot.name} (default)` : robot.name,
+        id: robot.id,
+        name,
+        label: robot.isDefault ? `${name} (default)` : name,
         isDefault: robot.isDefault,
         status,
         tone,
@@ -106,20 +109,20 @@ export function describeRobotRow(robot, targets, { connected = false } = {}) {
 // A fresh GitHub login or token save by an administrator also goes to the default robot when it is free or holds
 // that administrator's own credentials. Credentials someone else saved are replaced only through Overwrite credentials.
 export function planAutomaticRobotSave({ targets }) {
-    if (!showRobotAccess(targets)) return { save: false, robotNames: [], message: '' };
-    const robot = targets.robots.find((entry) => entry.name === DEFAULT_ROBOT_NAME) || targets.robots.find((entry) => entry.isDefault);
-    if (!robot) return { save: false, robotNames: [], message: '' };
+    if (!showRobotAccess(targets)) return { save: false, robotIds: [], message: '' };
+    const robot = targets.robots.find((entry) => entry.isDefault);
+    if (!robot) return { save: false, robotIds: [], message: '' };
     if (robot.credentials.configured && !ownedByUser(robot, targets)) {
         const login = robot.credentials.githubLogin || 'another GitHub account';
         return {
             save: false,
-            robotNames: [],
-            robotName: robot.name,
+            robotIds: [],
+            robotId: robot.id,
             tone: 'warning',
             message: `Not saved to robot ${robot.name}: it holds the GitHub credentials of ${login}, saved by ${savedByLabel(robot.credentials.savedBy)}. Use Overwrite credentials on the robot to replace them.`
         };
     }
-    return { save: true, robotNames: [robot.name], message: '' };
+    return { save: true, robotIds: [robot.id], message: '' };
 }
 
 export function describeRobotSaveResult(result, robotName) {

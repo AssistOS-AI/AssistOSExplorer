@@ -664,7 +664,8 @@ export function createRoboTeamServer(options) {
                     const view = publicRobot(robot, runtimeManager.status(robot.id), { privileged: listing.canAdmin, workspaceRoot: runtimeManager.workspaceRoot });
                     const status = statuses.get(robot.id);
                     const credentials = viewer ? await robotCredentialsView(robot, viewer) : null;
-                    return { ...view, codingAgent: status?.activeAgent || null,
+                    return { ...view, codingAgent: status?.activeAgent || null, codingModel: status?.activeModel || null,
+                        codingEffort: status?.activeEffort || null,
                         ...(listing.canAdmin ? { codingAgentLogins: status?.logins || {} } : {}),
                         ...(credentials ? { gitCredentials: credentials } : {}) };
                 }));
@@ -771,7 +772,7 @@ export function createRoboTeamServer(options) {
                 const body = await readJsonBody(req);
                 if (gitCredentialsOperation === 'targets') return sendJson(res, 200, await gitCredentials.targets(user));
                 if (gitCredentialsOperation === 'save') return sendJson(res, 200, await gitCredentials.save(user, body));
-                return sendJson(res, 200, await gitCredentials.removeByName(user, body.robotName));
+                return sendJson(res, 200, await gitCredentials.removeById(user, body.robotId));
             }
             // Dashboard removal: only the signed principal and signed administrator decision of this request count.
             const credentialsId = matchRobotPath(pathname, '/git-credentials');
@@ -841,6 +842,16 @@ export function createRoboTeamServer(options) {
                 await roboflow?.refreshCoverage();
                 return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), robotView(req)) });
             }
+            // The name is only a display label: every service addresses a robot by its id, so a rename changes
+            // nothing else. The default robot keeps its name (robotStore.rename refuses it).
+            const nameId = matchRobotPath(pathname, '/name');
+            if (nameId && req.method === 'PATCH') {
+                if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
+                if (!await robotStore.get(nameId)) return sendError(res, 404, 'robot not found');
+                const body = await readJsonBody(req);
+                const robot = await robotStore.rename(nameId, body.name);
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id), robotView(req)) });
+            }
             const skillsetsId = matchRobotPath(pathname, '/skillsets');
             if (skillsetsId && ['POST', 'DELETE', 'PATCH'].includes(req.method)) {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
@@ -848,14 +859,16 @@ export function createRoboTeamServer(options) {
                 if (req.method === 'POST') await skillsets.add(skillsetsId, body);
                 else if (req.method === 'PATCH') await skillsets.setSkillsetEnabled(skillsetsId, body);
                 else await skillsets.remove(skillsetsId, url.searchParams.get('name') ?? body.name);
-                await roboflow?.refreshCoverage();
-                return sendJson(res, 200, { ok: true });
+                // Workflow coverage is computed on every read, so nothing is refreshed here. The changed robot is
+                // returned, so the skills dialog never reloads every robot and its runtime status after one toggle.
+                const updated = await robotStore.get(skillsetsId);
+                return sendJson(res, 200, { ok: true, ...(updated ? { robot: publicRobot(updated, runtimeManager.status(updated.id),
+                    { privileged: true, workspaceRoot: runtimeManager.workspaceRoot }) } : {}) });
             }
             if (pathname === '/api/control' && req.method === 'POST') {
                 const body = await readJsonBody(req);
-                const robot = body.robotId
-                    ? await robotStore.get(body.robotId)
-                    : await robotStore.getByName(body.robotName);
+                if (!body.robotId) return sendError(res, 400, 'robotId is required');
+                const robot = new RegExp(`^${ROBOT_ID}$`).test(String(body.robotId)) ? await robotStore.get(body.robotId) : null;
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const operation = String(body.operation || '');
                 if (operation === 'robot-delete') {

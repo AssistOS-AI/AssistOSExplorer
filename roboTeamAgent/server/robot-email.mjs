@@ -1,5 +1,6 @@
 // A robot whose name is an email address owns that mailbox: the Robots tab's CSV import creates one
-// robot per address, named exactly by it. Robots cannot be renamed, so the address never changes.
+// robot per address, named exactly by it. The address is read from the name each time, so renaming the robot
+// changes or removes its address (the dashboard asks before such a rename).
 
 // Deliberately plain: one local part, one dotted domain, no spaces, quotes or angle brackets, so an
 // address can be placed in a robot's instructions as-is.

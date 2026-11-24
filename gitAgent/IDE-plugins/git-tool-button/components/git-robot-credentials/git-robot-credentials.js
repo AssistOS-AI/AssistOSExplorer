@@ -83,31 +83,32 @@ export class GitRobotCredentials {
         return this.state.targets;
     }
 
-    rowFor(robotName) {
-        const robot = this.state.targets.robots.find((entry) => entry.name === robotName);
+    rowFor(robotId) {
+        const robot = this.state.targets.robots.find((entry) => entry.id === robotId);
         return robot ? describeRobotRow(robot, this.state.targets, { connected: this.state.connected }) : null;
     }
 
-    // Link actions carry the robot name in data-robot.
+    // Link actions carry the robot id in data-robot; the name is only shown.
     async saveToRobot(target) {
-        const robotName = String(target?.dataset?.robot || '');
-        if (!this.rowFor(robotName)?.canSave || this.state.busy) return null;
-        const [outcome] = await this.runSave([robotName]);
+        const robotId = String(target?.dataset?.robot || '');
+        if (!this.rowFor(robotId)?.canSave || this.state.busy) return null;
+        const [outcome] = await this.runSave([robotId]);
         return outcome;
     }
 
     async removeFromRobot(target) {
-        const robotName = String(target?.dataset?.robot || '');
-        if (!this.rowFor(robotName)?.canRemove || this.state.busy) return null;
+        const robotId = String(target?.dataset?.robot || '');
+        const row = this.rowFor(robotId);
+        if (!row?.canRemove || this.state.busy) return null;
         const panel = this.getPanelPresenter();
         if (!panel?.deleteRobotCredentials) return null;
-        this.state.busy = { robot: robotName, kind: 'removing' };
-        delete this.state.results[robotName];
+        this.state.busy = { robot: robotId, kind: 'removing' };
+        delete this.state.results[robotId];
         this.project();
-        const result = await panel.deleteRobotCredentials(robotName).catch((error) => ({ ok: false, message: error?.message }));
-        const outcome = describeRobotRemoveResult(result, robotName);
+        const result = await panel.deleteRobotCredentials(robotId).catch((error) => ({ ok: false, message: error?.message }));
+        const outcome = describeRobotRemoveResult(result, row.name);
         this.state.busy = null;
-        this.state.results[robotName] = outcome;
+        this.state.results[robotId] = outcome;
         await this.loadTargets();
         return outcome;
     }
@@ -118,30 +119,31 @@ export class GitRobotCredentials {
         if (!this.state.loaded) await this.loadTargets();
         const plan = planAutomaticRobotSave({ targets: this.state.targets });
         if (!plan.save) {
-            if (plan.message && plan.robotName) {
-                this.state.results[plan.robotName] = { tone: plan.tone || 'warning', text: plan.message };
+            if (plan.message && plan.robotId) {
+                this.state.results[plan.robotId] = { tone: plan.tone || 'warning', text: plan.message };
                 this.project();
             }
             return { saved: false, message: plan.message };
         }
-        const outcomes = await this.runSave(plan.robotNames);
+        const outcomes = await this.runSave(plan.robotIds);
         return {
             saved: outcomes.length > 0 && outcomes.every((outcome) => outcome.tone === 'success'),
             message: combineRobotResults(outcomes)?.text || ''
         };
     }
 
-    async runSave(robotNames) {
+    async runSave(robotIds) {
         const panel = this.getPanelPresenter();
         if (!panel?.saveRobotCredentials) return [];
         const outcomes = [];
-        for (const robotName of robotNames) {
-            this.state.busy = { robot: robotName, kind: 'saving' };
-            delete this.state.results[robotName];
+        for (const robotId of robotIds) {
+            const robotName = this.rowFor(robotId)?.name || robotId;
+            this.state.busy = { robot: robotId, kind: 'saving' };
+            delete this.state.results[robotId];
             this.project();
-            const result = await panel.saveRobotCredentials(robotName).catch((error) => ({ ok: false, message: error?.message }));
+            const result = await panel.saveRobotCredentials(robotId).catch((error) => ({ ok: false, message: error?.message }));
             const outcome = describeRobotSaveResult(result, robotName);
-            this.state.results[robotName] = outcome;
+            this.state.results[robotId] = outcome;
             outcomes.push(outcome);
         }
         this.state.busy = null;
@@ -149,12 +151,12 @@ export class GitRobotCredentials {
         return outcomes;
     }
 
-    buildLink(action, robotName, label, busyLabel, isBusy, disabled) {
+    buildLink(action, robotId, label, busyLabel, isBusy, disabled) {
         const link = document.createElement('button');
         link.type = 'button';
         link.className = 'git-robot-credentials-link';
         link.dataset.localAction = action;
-        link.dataset.robot = robotName;
+        link.dataset.robot = robotId;
         link.textContent = isBusy ? busyLabel : label;
         link.disabled = disabled;
         link.setAttribute('aria-busy', isBusy ? 'true' : 'false');
@@ -177,15 +179,15 @@ export class GitRobotCredentials {
         item.append(name, status);
         const actions = document.createElement('div');
         actions.className = 'git-robot-credentials-item-actions';
-        const mine = busy?.robot === row.name;
+        const mine = busy?.robot === row.id;
         if (row.canSave) {
-            actions.append(this.buildLink('saveToRobot', row.name, row.saveLabel, 'Adding…', mine && busy.kind === 'saving', anyBusy));
+            actions.append(this.buildLink('saveToRobot', row.id, row.saveLabel, 'Adding…', mine && busy.kind === 'saving', anyBusy));
         }
         if (row.canRemove) {
-            actions.append(this.buildLink('removeFromRobot', row.name, 'Remove', 'Removing…', mine && busy.kind === 'removing', anyBusy));
+            actions.append(this.buildLink('removeFromRobot', row.id, 'Remove', 'Removing…', mine && busy.kind === 'removing', anyBusy));
         }
         if (actions.childElementCount) item.append(actions);
-        const result = this.state.results[row.name];
+        const result = this.state.results[row.id];
         if (result?.text) {
             const note = document.createElement('span');
             note.className = 'git-robot-credentials-item-result';

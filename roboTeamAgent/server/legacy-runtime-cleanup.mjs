@@ -1,12 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-// One-time removal of the nested Podman image store and tool cache RoboTeam kept in its own
-// data directory before RoboWork took over robot execution. Both are re-pullable or regenerable.
-// A marker in the data directory keeps this from running twice and is written only after both
-// paths are handled, so a failed removal is retried at the next start.
-export const LEGACY_RUNTIME_MARKER = 'roboteam-runtime-v1.cleaned';
-export const LEGACY_RUNTIME_PATHS = ['podman', 'tool-cache'];
+// One-time removal of the nested Podman image store, tool cache and npm cache RoboTeam kept in its own
+// data directory before RoboWork took over robot execution. All three are re-pullable or regenerable.
+// A marker in the data directory keeps this from running twice and is written only after every
+// path is handled, so a failed removal is retried at the next start. Version 2 added the npm cache,
+// so a data directory cleaned by version 1 is cleaned once more.
+export const LEGACY_RUNTIME_MARKER = 'roboteam-runtime-v2.cleaned';
+export const LEGACY_RUNTIME_PATHS = ['podman', 'tool-cache', '.npm'];
 
 async function removeDirectory(directory) {
     let stat;
