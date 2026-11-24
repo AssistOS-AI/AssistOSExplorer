@@ -95,17 +95,21 @@ may trigger tracked GitHub Actions workflows with `gh` and may use direct SSH,
 Ploinky CLI, container, registry, Cloudflare, DNS, or other remote operations
 needed to complete that selected task.
 
-- Supported tracked workflows are `deploy-explorer-qa.yml` (no
-  inputs; it selects a fresh install, an in-place update or a rebuild itself)
-  and `destroy-explorer-qa.yml` (one `delete_data` checkbox: unchecked keeps
-  the QA data, checked deletes it), plus `deploy-explorer-qa-ploinky.yml` and
-  `destroy-explorer-qa-ploinky.yml`, which drive the same target through Ploinky
-  commands with the differences that `docs/deploy-explorer-qa.md` lists, plus
-  `deploy-explorer-qa-bizanso.yml` and `deploy-explorer-qa-scriptahub.yml`
-  (no inputs), which update only that product inside the running Box
-  ("Product workflows" in `docs/deploy-explorer-qa.md`), plus
-  `cleanup-explorer-qa-images.yml` (no inputs), which removes images no
-  container uses ("Image cleanup" in `docs/deploy-explorer-qa.md`).
+- Supported tracked workflows are `deploy-explorer-qa-ploinky.yml` (a
+  `recreate_box` checkbox and a `reset_explorer_checkout` checkbox, which
+  hard-resets the kept AchillesIDE checkout to `main` in the first start of a
+  workspace with no Box) and `destroy-explorer-qa-ploinky.yml` (one
+  `delete_data` checkbox: unchecked keeps the QA data, checked deletes it),
+  which drive the Box through Ploinky commands with the properties that
+  `docs/deploy-explorer-qa.md` lists, plus `deploy-explorer-qa-bizanso.yml` and
+  `deploy-explorer-qa-scriptahub.yml` (no inputs), which update only that
+  product inside the running Box ("Product workflows" in
+  `docs/deploy-explorer-qa.md`), plus `cleanup-explorer-qa-images.yml` (no
+  inputs), which removes images no container uses ("Image cleanup" in
+  `docs/deploy-explorer-qa.md`). The earlier `deploy-explorer-qa.yml` and
+  `destroy-explorer-qa.yml`, which changed the host without Ploinky commands,
+  were removed on 2026-11-24 with their helper scripts so that one workflow
+  family owns the Box; the document says how to recover from them.
   Inspect the dispatched revision, inputs,
   exact target, ownership guards, secret prerequisites, and branch/fallback
   behavior before invocation.

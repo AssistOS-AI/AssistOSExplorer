@@ -1,8 +1,8 @@
 name: Deploy Explorer QA Box (Ploinky commands)
 
-# The same target as deploy-explorer-qa.yml, driven through Ploinky commands, with the differences listed in
-# docs/deploy-explorer-qa.md. The host work outside Ploinky is the bootstrap it cannot do for itself: the
-# pinned Node, the Ploinky checkout and the empty workspace directory.
+# The QA target driven through Ploinky commands, as docs/deploy-explorer-qa.md describes. The host work
+# outside Ploinky is the bootstrap it cannot do for itself: the pinned Node, the Ploinky checkout and the
+# empty workspace directory.
 
 on:
   workflow_dispatch:
@@ -806,11 +806,11 @@ jobs:
             echo "[qa] ERROR: the workspace path is not a real directory: $WORK_DIR"
             exit 1
           fi
-          # The older workflows park the router access policy and an install marker here, and only they
-          # restore them. Running over that state would silently lose the policy.
+          # The removed non-Ploinky workflows parked the router access policy and an install marker here, and only
+          # they restored them. Running over that state would silently lose the policy.
           STATE_DIR=/home/admin/.qa-deployment-state
           if [ -e "$STATE_DIR" ] && [ -n "$(ls -A "$STATE_DIR")" ]; then
-            echo "[qa] ERROR: $STATE_DIR holds state from deploy-explorer-qa.yml. Dispatch that workflow to finish it first."
+            echo "[qa] ERROR: $STATE_DIR holds state parked by the removed non-Ploinky QA workflows. No tracked workflow finishes it: restore that workflow from history through the reviewed change process first."
             exit 1
           fi
           for tool in git node curl podman flock; do
@@ -1198,12 +1198,12 @@ jobs:
           }
 
           if [ "${CLOUDFLARE_TUNNEL_CREATED:-}" = true ] && grep -qx 'QA_KEPT_PUBLICATION=true' "$BOOTSTRAP_LOG"; then
-            echo "::error::The dedicated tunnel was missing and a new one was created, but the workspace keeps a publication naming the old one. Dispatch destroy-explorer-qa-ploinky.yml with delete_data ticked, or use deploy-explorer-qa.yml."
+            echo "::error::The dedicated tunnel was missing and a new one was created, but the workspace keeps a publication naming the old one. Dispatch destroy-explorer-qa-ploinky.yml with delete_data ticked."
             exit 1
           fi
           if ! STATUS_OUTPUT="$(ploinky_read status)"; then
             printf '%s\n' "$STATUS_OUTPUT"
-            echo "::error::Status failed. A Box from deploy-explorer-qa.yml is refused from this checkout: dispatch destroy-explorer-qa-ploinky.yml with delete_data unchecked, then deploy again."
+            echo "::error::Status failed. A Box that this checkout refuses, such as one the removed non-Ploinky deploy workflow created: dispatch destroy-explorer-qa-ploinky.yml with delete_data unchecked, then deploy again."
             exit 1
           fi
           BOX_STATE=present
