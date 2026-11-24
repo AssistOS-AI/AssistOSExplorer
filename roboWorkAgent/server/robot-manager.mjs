@@ -20,6 +20,9 @@ async function realDirectory(directory) {
 
 const present = file => fs.lstat(file).then(() => true, error => { if (error.code !== 'ENOENT') throw error; return false; });
 
+// Coding agents whose model list comes from the signed-in account, with the name a refusal shows.
+const MODELS_NEED_LOGIN = Object.freeze({ agy: 'Antigravity CLI' });
+
 export class RobotManager {
     constructor({ paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch = capturePrivateLaunch, readStatus = null,
         gitCredentials = null, log = message => console.log(message) }) {
@@ -135,6 +138,14 @@ export class RobotManager {
         // The settings dialog lists models for a draft selection before it is saved (DS006), so any
         // known coding agent is accepted here; prepareCodingAgents installs the requested one.
         if (!CODING_AGENT_NAMES.includes(agent)) throw fail('INVALID_INPUT', 'Coding agent is unavailable');
+        // An agent whose catalog belongs to the signed-in account cannot list models without a login. The robot's stored
+        // login is read first, so the caller learns why instead of receiving a failed discovery.
+        if (MODELS_NEED_LOGIN[agent]) {
+            const status = await this.readStatus(id, { includeLogins: true });
+            if (!status.alaUnavailable && status.logins?.[agent] === false) {
+                throw fail('CODING_AGENT_NOT_LOGGED_IN', `${MODELS_NEED_LOGIN[agent]} is not logged in on this robot. Log in to list its models.`, 409);
+            }
+        }
         const workingDirectory = cwd !== undefined ? await this.paths.grant(cwd, 'cwd') : this.paths.home(id);
         const identity = cwd !== undefined ? await this.paths.identity(workingDirectory, 'cwd') : undefined;
         const tools = await this.toolCache.prepareCodingAgents([agent]);

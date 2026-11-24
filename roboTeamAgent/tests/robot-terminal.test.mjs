@@ -130,3 +130,23 @@ test('blocked popups do not allocate a terminal; navigation strips opener and re
     assert.equal(anchor.rel, 'noopener noreferrer');
     assert.equal(anchor.clicked, true);
 });
+
+test('a login opens the coding agent profile of the robot, not its shell', async () => {
+    const requests = [], discovered = [];
+    const anchor = { click() { this.clicked = true; } };
+    const popup = { opener: {}, document: { title: '', body: { appendChild() {} }, createElement: () => anchor } };
+    const agentProfile = `${ROBOT}.default.codex`;
+    await openRobotTerminal({ id: ROBOT, name: 'Analyst' }, null, {
+        windowRef: { open: () => popup }, codingAgent: 'codex', label: 'Codex',
+        prepare: async id => { requests.push(id); return { ok: true, id, label: 'Analyst', root: ROOT }; },
+        discover: async (...args) => { discovered.push(args); return { url: '/webtty/#launch=' + target.launch }; },
+    });
+    assert.deepEqual(requests, [agentProfile]);
+    assert.deepEqual(discovered, [[ROOT, agentProfile]]);
+    assert.equal(popup.document.title, 'Analyst Codex');
+    assert.equal(anchor.clicked, true);
+    await assert.rejects(openRobotTerminal({ id: ROBOT, name: 'Analyst' }, null, {
+        windowRef: { open: () => ({ opener: {}, document: { body: {} } }) }, codingAgent: '../x',
+        prepare: async () => assert.fail('must not prepare'),
+    }), /Unknown coding agent/);
+});

@@ -1,4 +1,5 @@
 import { initCreateRobotDialog, initRobotMenu } from './robot-controls.js';
+import { openRobotTerminal } from './terminal.js';
 
 export function hasRecommendedRepository(robot, recommendation) {
     return (robot.repositories || []).some(repo => !repo.builtin && repo.id === recommendation.name);
@@ -370,6 +371,11 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
                 </div>
             </section>
             <p class="coding-agent-warning" role="status" hidden>Pi and OMP are not compatible with Browser and Desktop executions.</p>
+            <div class="coding-agent-login" role="status" hidden>
+                <p class="coding-agent-login-text"></p>
+                <button type="button" class="button secondary coding-agent-login-open"></button>
+                <button type="button" class="button secondary coding-agent-login-check">Check again</button>
+            </div>
             <p class="coding-agent-status"></p>
             <p class="message" role="status" aria-live="polite"></p>
             <button class="button primary coding-agent-save" type="submit">Save</button>
@@ -395,8 +401,41 @@ export function openCodingAgentsDialog(robot, { api, onChanged }) {
         search.removeAttribute('aria-activedescendant'); list.removeAttribute('aria-activedescendant'); update();
     };
     const close = () => { lifetime.abort(); request?.abort(); dialog.close(); dialog.remove(); };
+    // A login is a credential the agent stored in the robot home, found the way `ala status` finds it. Robots receive no
+    // credential variables, so no stored login means the agent cannot run; a stored one may still have expired. OpenCode
+    // runs through Soul Gateway without a login. Only administrators receive logins, and only they can open a terminal.
+    const loginPanel = dialog.querySelector('.coding-agent-login'), loginOpen = dialog.querySelector('.coding-agent-login-open');
+    const loginCheck = dialog.querySelector('.coding-agent-login-check');
+    let logins = robot.codingAgentLogins || null, checking = false;
+    function updateLogin() {
+        const selected = agent(), label = CODING_AGENT_LABELS[selected] || selected;
+        const missing = Boolean(logins && selected && selected !== 'opencode' && logins[selected] !== true);
+        loginPanel.hidden = !missing;
+        if (!missing) return;
+        dialog.querySelector('.coding-agent-login-text').textContent = `${label} is not logged in on this robot. Open it in the robot terminal and sign in, then check again.`;
+        loginOpen.textContent = `Open ${label} to log in`;
+        loginOpen.disabled = loginCheck.disabled = checking || saving;
+    }
+    loginOpen.addEventListener('click', async () => {
+        const selected = agent();
+        loginOpen.disabled = true;
+        try { await openRobotTerminal(robot, api, { codingAgent: selected, label: CODING_AGENT_LABELS[selected] || selected }); }
+        catch (error) { message.textContent = error.message; message.className = 'message error'; }
+        finally { updateLogin(); }
+    });
+    loginCheck.addEventListener('click', async () => {
+        checking = true; updateLogin();
+        try {
+            const updated = (await api('api/robots', { signal: lifetime.signal })).robots?.find(item => item.id === robot.id);
+            if (updated?.codingAgentLogins) logins = updated.codingAgentLogins;
+            if (logins?.[agent()] === true) { message.textContent = `${CODING_AGENT_LABELS[agent()] || agent()} is logged in.`; message.className = 'message'; }
+        } catch (error) {
+            if (!lifetime.signal.aborted) { message.textContent = error.message; message.className = 'message error'; }
+        } finally { checking = false; if (!lifetime.signal.aborted) updateLogin(); }
+    });
     function update() {
         dialog.querySelector('.coding-agent-warning').hidden = !['pi', 'omp'].includes(agent());
+        updateLogin();
         const { model, effort } = selection();
         trigger.textContent = `${isDefault(model) ? 'Default model' : model} · ${effort || 'Default effort'}`;
         trigger.disabled = busy || saving || !ready || !agent();

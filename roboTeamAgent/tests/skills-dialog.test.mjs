@@ -98,3 +98,12 @@ test('the add popup preserves the selected view, contains errors, blocks duplica
     assert.match(css, /\.skills-add-dialog \{[^}]*max-height: min\(720px, calc\(100dvh - 48px\)\)/);
     assert.match(css, /\.skills-add-content \{[^}]*overflow: auto/);
 });
+
+test('the coding agent dialog flags an agent without a stored login and opens it in the robot terminal', () => {
+    // OpenCode runs through Soul Gateway, so only the other agents need a login; logins reach administrators only.
+    assert.match(source, /selected !== 'opencode' && logins\[selected\] !== true/);
+    assert.match(source, /let logins = robot\.codingAgentLogins \|\| null/);
+    assert.match(source, /openRobotTerminal\(robot, api, \{ codingAgent: selected,/);
+    assert.match(source, /class="button secondary coding-agent-login-check">Check again/);
+    assert.match(source, /updated\?\.codingAgentLogins\) logins = updated\.codingAgentLogins/);
+});
