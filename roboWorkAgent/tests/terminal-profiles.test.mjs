@@ -12,6 +12,9 @@ import { createTerminalProfiles, ensureTerminalStub, parseTerminalProfile, termi
 import { buildShellSandbox, buildTerminalLaunch, readTerminalDescriptor, shellArguments } from '../scripts/robot-shell.mjs';
 import { prepareRobotShell } from '../server/robot-shell.mjs';
 
+const { buildInteractiveCommand } = await import(pathToFileURL(path.join(
+    (await resolveAlaInstallation()).packageRoot, 'src/coding-agents/native-interactive.mjs')).href);
+
 async function prepareReady(api, profile) {
     for (let attempt = 0; attempt < 100; attempt++) {
         try { return await api.prepare(profile); } catch (error) { if (error.code !== 'TERMINAL_PREPARING') throw error; }
@@ -108,7 +111,7 @@ test('prepare confines home writes, records only protected metadata and deduplic
     assert.doesNotMatch(JSON.stringify(descriptor), /PLOINKY_|TOKEN|SECRET/u);
     const loaded = await readTerminalDescriptor(f.paths, PROFILE, f.stub, f.stub);
     assert.equal(loaded.descriptor.cwd, null);
-    await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, f.stub, f.paths.workspaceRoot), { code: 'CWD_REFUSED' });
+    assert.equal((await readTerminalDescriptor(f.paths, PROFILE, f.stub, f.paths.workspaceRoot)).descriptor.cwd, f.paths.workspaceRoot);
     await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, f.root, f.root));
     const saved = f.stub + '-saved';
     await fs.rename(f.stub, saved); await fs.mkdir(f.stub);
@@ -128,7 +131,7 @@ test('descriptor accepts only an exact owned stub identity through a canonical R
     assert.notEqual(await fs.realpath(alias), f.stub);
     const loaded = await readTerminalDescriptor(f.paths, PROFILE, alias, alias);
     assert.equal(loaded.descriptor.cwd, null);
-    await assert.rejects(readTerminalDescriptor(f.paths, PROFILE, alias, f.paths.workspaceRoot), { code: 'CWD_REFUSED' });
+    assert.equal((await readTerminalDescriptor(f.paths, PROFILE, alias, f.paths.workspaceRoot)).descriptor.cwd, f.paths.workspaceRoot);
     const project = path.join(f.paths.workspaceRoot, 'project');
     await fs.mkdir(project);
     const clicked = await readTerminalDescriptor(f.paths, PROFILE, alias, project);
@@ -548,8 +551,10 @@ test('a coding session launch prepares a new or resumed conversation of an enabl
     assert.equal((await f.api.launch({ robot: 'robot-a', codingAgent: 'opencode', directory: 'project', resume: null })).profile, 'robot-a.default.opencode');
     await assert.rejects(f.api.launch({ robot: 'robot-a', codingAgent: 'vim', directory: 'project', resume: null }), { code: 'UNKNOWN_CODING_AGENT', statusCode: 404 });
     await assert.rejects(f.api.launch({ robot: 'nobody', codingAgent: 'codex', directory: 'project', resume: null }), { code: 'UNKNOWN_ROBOT', statusCode: 404 });
-    // The folder is checked before anything is prepared: never the workspace root or its private state.
-    for (const directory of ['', '.data', 'missing']) {
+    // The root is admitted, while private state and missing folders remain refused.
+    assert.equal((await f.api.launch({ robot: 'robot-a', codingAgent: 'codex', directory: '', resume: null })).profile, 'robot-a.default.codex');
+    await f.api.sessionHistory({ robot: 'robot-a', codingAgent: 'codex', directory: '' });
+    for (const directory of [ '.data', 'missing']) {
         await assert.rejects(f.api.launch({ robot: 'robot-a', codingAgent: 'codex', directory, resume: null }), { code: 'CWD_REFUSED', statusCode: 409 });
     }
     // Without a robot name the robot named default is used.
@@ -605,17 +610,78 @@ test('a coding agent sandbox runs the agent through a login shell instead of an 
     const previous = process.env.ALA_SANDBOX_HOME;
     t.after(() => { if (previous === undefined) delete process.env.ALA_SANDBOX_HOME; else process.env.ALA_SANDBOX_HOME = previous; });
     let options;
-    await buildShellSandbox(descriptor, { loadSandbox: async () => ({ canMountPrivateProc: () => true,
+    await buildShellSandbox(descriptor, { loadSandbox: async () => ({ buildInteractiveCommand, canMountPrivateProc: () => true,
         buildSandboxArgs: input => { options = input; return ['--', input.binary, ...input.args]; } }) });
     const binary = path.join(descriptor.binPath, 'opencode');
-    assert.deepEqual(options.args.slice(-2), ['exec "$0" "$@"', binary]);
+    assert.equal(options.privateProc, true);
+    assert.equal(options.newSession, false);
+    assert.throws(() => shellArguments('/bin/sh', descriptor), { code: 'PROFILE_REFUSED' });
+    assert.deepEqual(options.args.slice(3), buildInteractiveCommand({ agent: 'opencode', binary }));
     assert.equal(options.args[1], '-c');
-    assert.deepEqual(shellArguments('/bin/sh', descriptor), ['-l', '-c', 'exec "$0" "$@"', binary]);
-    assert.deepEqual(shellArguments('/bin/sh', { ...descriptor, codingAgentArgs: ['--resume', 'abc-1'] }),
-        ['-l', '-c', 'exec "$0" "$@"', binary, '--resume', 'abc-1']);
+    assert.deepEqual(shellArguments('/bin/sh', descriptor, buildInteractiveCommand), ['-l', '-c', 'exec "$0" "$@"', ...buildInteractiveCommand({ agent: 'opencode', binary })]);
+    assert.deepEqual(shellArguments('/bin/sh', { ...descriptor, codingAgentArgs: ['--resume', 'abc-1'] }, buildInteractiveCommand),
+        ['-l', '-c', 'exec "$0" "$@"', ...buildInteractiveCommand({ agent: 'opencode', binary, args: ['--resume', 'abc-1'] })]);
     for (const codingAgentArgs of [['$(id)'], ['a b'], 'resume', Array(9).fill('x')]) {
         assert.throws(() => shellArguments('/bin/sh', { ...descriptor, codingAgentArgs }), { code: 'PROFILE_REFUSED' });
     }
     assert.deepEqual(shellArguments('/bin/bash', { ...descriptor, codingAgent: undefined }), ['--login', '-i']);
     assert.throws(() => shellArguments('/bin/bash', { ...descriptor, codingAgent: 'rm' }), { code: 'PROFILE_REFUSED' });
+});
+
+test('a coding terminal at the workspace root writes ordinary files while private state stays masked', async t => {
+    const f = await fixture(t);
+    const { packageRoot } = await resolveAlaInstallation();
+    const sandbox = await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/sandbox.mjs')).href);
+    const bwrap = sandbox.findBubblewrap();
+    if (!sandbox.canMountPrivateProc(bwrap)) { t.skip('Bubblewrap private proc is unavailable'); return; }
+    for (const name of ['.data', '.ploinky', '.ploinky-box', '.ploinky-box.old', '.roboteam']) {
+        await fs.mkdir(path.join(f.paths.workspaceRoot, name), { recursive: true });
+        await fs.writeFile(path.join(f.paths.workspaceRoot, name, 'private'), 'hidden');
+    }
+    await f.api.prepare('robot-a.default.pi');
+    const { descriptor } = await readTerminalDescriptor(f.paths, 'robot-a.default.pi', f.stub, f.paths.workspaceRoot);
+    descriptor.bwrap = bwrap;
+    await fs.mkdir(descriptor.binPath, { recursive: true });
+    await fs.writeFile(path.join(descriptor.binPath, 'pi'), `#!/bin/sh
+set -eu
+[ "$1" = --approve ]
+printf written > root-result
+for private in .data .ploinky .ploinky-box .ploinky-box.old .roboteam; do
+    [ ! -e "$private/private" ]
+    if touch "$private/new" 2>/dev/null; then exit 21; fi
+done
+[ ! -s .env ]
+`, { mode: 0o700 });
+    const previous = process.env.ALA_SANDBOX_HOME;
+    t.after(() => { if (previous === undefined) delete process.env.ALA_SANDBOX_HOME; else process.env.ALA_SANDBOX_HOME = previous; });
+    const launch = await buildShellSandbox(descriptor, { loadSandbox: async () => sandbox });
+    const child = spawnSync(launch.command, launch.args, { ...launch.options, encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe', ...launch.options.stdio.slice(3)] });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(await fs.readFile(path.join(f.paths.workspaceRoot, 'root-result'), 'utf8'), 'written');
+    assert.equal(await fs.readFile(path.join(f.paths.workspaceRoot, '.data/private'), 'utf8'), 'hidden');
+    await assert.rejects(buildShellSandbox({ ...descriptor, workspaceView: { root: null, masks: [], writableSubmounts: [] } },
+        { loadSandbox: async () => sandbox }), { code: 'WORKSPACE_UNAVAILABLE' });
+});
+
+test('an Environment root terminal has one pinned writable root mount and retains the private masks', async t => {
+    const f = await fixture(t);
+    const { EnvironmentManager } = await import('../server/environment.mjs');
+    const environment = new EnvironmentManager();
+    environment.prepare = async () => ({ image: 'fixture-image', imagePath: '/usr/bin:/bin' });
+    const root = f.paths.workspaceRoot;
+    const input = { environment: 'repo/agent', runId: 'root-terminal', robotId: 'robot-a', home: f.paths.home('robot-a'),
+        cwd: root, cwdIdentity: await f.paths.identity(root, 'cwd'), workspace: await f.paths.workspaceView('robot-a'),
+        toolCache: path.join(f.paths.dataDir, 'tool-cache'), ala: { source: '/fixture/ala', target: '/opt/ala', entry: '/opt/ala/bin/ala.mjs' },
+        bwrap: { source: '/fixture/bwrap', target: '/opt/bwrap' }, tty: true };
+    const launch = await environment.buildLaunch(input);
+    t.after(() => launch.release());
+    const volumes = launch.args.flatMap((value, i) => value === '--volume' ? [launch.args[i + 1]] : []);
+    const roots = volumes.filter(value => value.split(':')[1] === root);
+    assert.equal(roots.length, 1);
+    assert.ok(roots[0].startsWith(`/proc/${process.pid}/fd/`));
+    assert.ok(roots[0].endsWith(':rw'));
+    assert.ok(launch.args.includes(`${root}/.data:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`));
+    assert.ok(volumes.includes(`/dev/null:${root}/.env:ro`));
+    await assert.rejects(environment.buildLaunch({ ...input, tty: false }), /mask overlaps/);
 });
