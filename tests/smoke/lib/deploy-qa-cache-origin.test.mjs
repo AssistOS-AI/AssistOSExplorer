@@ -140,6 +140,12 @@ function shellGate(t, phase, response, fail = '') {
             local command="\${!#}" input=''
             [[ "$command" != *"\${EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN:-__unset__}"* ]] || return 91
             if printenv EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN >/dev/null; then return 92; fi
+            # The in-Box CLI refuses the active generation unless it is told the Box's physical
+            # Router host port, which plain podman exec does not inherit (QA publishes 8097).
+            if [[ "$command" == *' podman container exec '* && "$command" != *"--env 'PLOINKY_ROUTER_HOST_PORT=8097'"* ]]; then
+                echo 'active edge routing generation was compiled for a different physical Router host port' >&2
+                return 42
+            fi
             if [[ "$FAIL_AT" == *:* && "$command" == *"\${FAIL_AT%:*}"* ]]; then
                 return "\${FAIL_AT##*:}"
             fi

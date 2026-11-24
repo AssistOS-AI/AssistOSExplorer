@@ -68,11 +68,14 @@ esac
 
 # Address the inspected container by its immutable ID. A stopped or replaced Box
 # cannot receive a secret or cause the host launcher to create a different Box.
+# Plain podman exec does not inherit the Box's physical Router host port, which the
+# host launcher normally passes; without it the in-Box CLI assumes 8080 and refuses
+# the active generation compiled for QA's port. QA keeps the default media port.
 ploinky_locked() {
     # Normalize CLI refusals inside the container. Outer lock, Podman and SSH
     # failures keep their original statuses even when a CLI uses the same codes.
     local command='ploinky "$@" || exit '"$cli_refused"
-    "${ssh_qa[@]}" "$lock podman container exec -i --user podman --workdir '/home/admin/$WORKSPACE' --env 'PLOINKY_WORKSPACE_ROOT=/home/admin/$WORKSPACE' '$box_id' sh -c '$command' sh $*"
+    "${ssh_qa[@]}" "$lock podman container exec -i --user podman --workdir '/home/admin/$WORKSPACE' --env 'PLOINKY_WORKSPACE_ROOT=/home/admin/$WORKSPACE' --env 'PLOINKY_ROUTER_HOST_PORT=$ROUTER_PORT' '$box_id' sh -c '$command' sh $*"
 }
 if [[ "$feature" == legacy ]]; then
     echo '::warning::The QA Router omitted the CDN header on /docs. Skipping this purge and keeping R2 off.'
