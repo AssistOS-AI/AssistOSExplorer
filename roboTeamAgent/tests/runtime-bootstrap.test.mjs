@@ -169,19 +169,28 @@ test('manifest follows the operator-managed runtime channel', async () => {
     assert.equal(manifest.container, 'docker.io/assistos/roboteam-agent:runtime');
 });
 
-test('manifest declares the MCP startup budget', async () => {
+test('manifest readiness waits for the RoboTeam service, within the launcher startup budget', async () => {
     const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
 
+    // AgentServer answers MCP within a second; the service listens only after every robot is prepared through
+    // RoboWork, which took about 39 seconds on bizanso.com. Ploinky reports ready only once the service listens.
     assert.deepEqual(manifest.readiness, {
-        protocol: 'mcp',
-        timeoutSeconds: 45,
+        protocol: 'tcp',
+        port: Number(manifest.profiles.default.openPorts.find(entry => entry.startsWith('3001:')).split(':')[1]),
+        timeoutSeconds: 600,
     });
     assert.deepEqual(manifest.health.readiness, {
         interval: 1,
         timeout: 1,
-        failureThreshold: 45,
+        failureThreshold: 300,
         successThreshold: 1,
     });
+    // Ploinky waits failureThreshold * (interval + timeout) seconds: as long as the launcher waits for the service.
+    const launcher = await readFile(join(AGENT_ROOT, 'scripts/startAgent.sh'), 'utf8');
+    const launcherWait = Number(launcher.match(/ROBOTEAM_STARTUP_WAIT_SECONDS:-(\d+)/)[1]);
+    const { interval, timeout, failureThreshold } = manifest.health.readiness;
+    assert.equal(failureThreshold * (interval + timeout), launcherWait);
+    assert.equal(manifest.readiness.timeoutSeconds, launcherWait);
 });
 
 test('manifest requests the bounded nested Podman capability', async () => {
