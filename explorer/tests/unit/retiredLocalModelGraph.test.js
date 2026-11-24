@@ -37,8 +37,8 @@ function isRetiredLocalModel(ref) {
     return agent === RETIRED_AGENT || (parts.length === 2 && parts[0] === RETIRED_REPO && agent === RETIRED_AGENT);
 }
 
-// The walk itself lives in tests/smoke/lib/explorer-graph.mjs, shared with the
-// QA workflow tests that derive their counts from the same graph.
+// The walk itself lives in tests/smoke/lib/explorer-graph.mjs, which
+// tests/smoke/lib/explorer-graph.test.mjs tests on its own.
 function resolveExplorerGraph({ explorerRepo = repoRoot, ...options } = {}) {
     return resolveGraph({ explorerRepo, ...options, isRetired: isRetiredLocalModel });
 }
@@ -82,18 +82,6 @@ test('the recursive Explorer graph never enables the retired local model runtime
         'no legacy-agents runtime may be part of an Explorer deployment; an administrator installs that repository explicitly');
     assert.equal([...runtimes.keys()].some((key) => key.startsWith('webmeet/')), false, 'the WebMeet agents are installed but disabled by default');
     assert.equal([...runtimes.keys()].some((key) => key.endsWith(`/${RETIRED_AGENT}`)), false);
-});
-
-test('QA readiness constants match the recursive Explorer graph', (t) => {
-    const graph = resolveRealGraphOrSkip(t);
-    if (!graph) return;
-    const { runtimes } = graph;
-    const noWait = [...runtimes].filter(([, value]) => value.flags.has('no-wait')).map(([key]) => key);
-    const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/deploy-explorer-qa.yml'), 'utf8');
-    const tracked = workflow.match(/Tracked agents: (\d+)/g).map((value) => Number(value.split(': ')[1]));
-    const expectedNoWait = Number(workflow.match(/EXPECTED_NO_WAIT_AGENTS=(\d+)/)[1]);
-    assert.deepEqual([...new Set(tracked)], [runtimes.size], `graph runtimes: ${[...runtimes.keys()].join(', ')}`);
-    assert.equal(expectedNoWait, noWait.length, `graph no-wait agents: ${noWait.join(', ')}`);
 });
 
 test('with every known sibling checked out at its minimum revision, the real graph resolves without a skip', (t) => {

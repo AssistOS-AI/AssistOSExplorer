@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { REPO_ROOT, siblingPath } from '../../../tests/helpers/sibling-roots.mjs';
-import { EXPECTED_DEFAULT_GRAPH } from '../../../.github/scripts/rollback-explorer-qa.mjs';
 
 const EXPLORER_ALIAS = 'AchillesIDE';
 const ONLY_OFFICE_REPO = {
@@ -110,12 +109,15 @@ test('Explorer neither installs nor enables the legacy-agents repository', async
     for (const key of ['soplang-builder', 'tasks']) {
         assert.equal(Object.hasOwn(explorer.applicationPlugins || {}, key), false, `applicationPlugins must not list the legacy "${key}" plugin`);
     }
-    for (const relative of ['.github/workflows/deploy-explorer-qa.yml']) {
+    for (const relative of [
+        '.github/workflows/deploy-explorer-qa-ploinky.yml',
+        '.github/workflows/destroy-explorer-qa-ploinky.yml',
+        '.github/workflows/deploy-explorer-qa-bizanso.yml',
+        '.github/workflows/deploy-explorer-qa-scriptahub.yml',
+    ]) {
         const text = await fs.readFile(path.join(REPO_ROOT, relative), 'utf8');
         assert.equal(text.includes(LEGACY_REPO), false, `${relative} must not pin or verify the legacy-agents repository`);
     }
-    assert.deepEqual(EXPECTED_DEFAULT_GRAPH.filter((ref) => ref.startsWith(`${LEGACY_REPO}/`)), [],
-        'the QA rollback prediction must not expect a legacy-agents runtime');
 });
 
 test('WebMeet and Scribe share the local LiveKit runtime, Explorer has no LiveKit edge, and retired stack repositories are not installed', async () => {
@@ -151,4 +153,12 @@ test('Explorer enables the default robot owner from this repository without requ
     assert.deepEqual(enabled.filter((entry) => entry.split(/\s+/)[0] === 'roboTeamAgent'),
         ['roboTeamAgent global no-wait']);
     assert.equal(enabled.some((entry) => entry.split(/\s+/)[0] === 'AchillesCLI/achilles-cli'), false);
+});
+
+test('Explorer uses UserPersisto for sign-in, and UserPersisto enables its email dependency', async () => {
+    const explorer = await readManifest(identityOf('explorer'));
+    const userPersisto = await readManifest(`${EXPLORER_ALIAS}/userPersistoAgent`);
+    assert.equal(explorer.sso.providerAgent, 'userPersistoAgent');
+    assert.ok(explorer.enable.map(refOf).includes('userPersistoAgent'), 'Explorer must enable userPersistoAgent');
+    assert.ok(userPersisto.enable.map(refOf).includes('emailAgent'), 'userPersistoAgent must enable emailAgent');
 });
