@@ -213,9 +213,10 @@ test('product dispatch exposes only the Bizanso cache probe input and cannot cha
         const source = workflow(key);
         const dispatch = source.split('  workflow_dispatch:\n')[1].split('\nconcurrency:')[0];
         const inputs = [...dispatch.matchAll(/^ {6}(\w+):$/gm)].map(match => match[1]);
-        assert.deepEqual(inputs, key === 'bizanso' ? ['force_cache_probe_failure'] : []);
+        // Only the Bizanso product workflow has a cache, so only it also carries the default-off D19 approval input.
+        assert.deepEqual(inputs, key === 'bizanso' ? ['force_cache_probe_failure', 'create_cache_rules'] : []);
         const references = [...source.matchAll(/\$\{\{\s*inputs\.(\w+)/g)].map(match => match[1]);
-        assert.deepEqual(references, inputs);
+        assert.deepEqual([...new Set(references)].sort(), [...inputs].sort());
         assert.doesNotMatch(source, /edge set|cfd_tunnel|dns_records|CLOUDFLARE_(?:API|TUNNEL)/, key);
         if (key === 'scriptahub') assert.doesNotMatch(source, /CLOUDFLARE|Cloudflare/, key);
         assert.doesNotMatch(source, /ploinky_locked\s+(?:start|destroy|uninstall|install|add repo|enable agent|--port|reinstall|update)/, key);

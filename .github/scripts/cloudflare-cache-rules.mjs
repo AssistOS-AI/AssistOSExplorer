@@ -19,7 +19,7 @@ function requireState(ok, message) {
     if (!ok) throw new Error(message);
 }
 
-const usage = 'usage: cloudflare-cache-rules.mjs check|--check|ensure-r1|r2-off|r2-on --token-env NAME [--if-present | --activation-receipt FILE]';
+const usage = 'usage: cloudflare-cache-rules.mjs check|--check|ensure-r1|r2-off|r2-on --token-env NAME [--if-present | --activation-receipt FILE] [--existing-only]';
 
 function configuration([operation, ...args], env) {
     if (operation === '--check') operation = 'check';
@@ -29,6 +29,7 @@ function configuration([operation, ...args], env) {
             'token-env': { type: 'string', multiple: true },
             'if-present': { type: 'boolean', multiple: true },
             'activation-receipt': { type: 'string', multiple: true },
+            'existing-only': { type: 'boolean', multiple: true },
         } }));
     } catch { throw new Error(usage); }
     requireState(['check', 'ensure-r1', 'r2-off', 'r2-on'].includes(operation)
@@ -36,9 +37,14 @@ function configuration([operation, ...args], env) {
     const tokenName = values['token-env']?.[0];
     const ifPresent = values['if-present']?.[0];
     const receipt = values['activation-receipt']?.[0];
+    const existingOnly = values['existing-only']?.[0] === true;
     requireState(typeof tokenName === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenName)
         && (!ifPresent || operation === 'r2-off')
-        && (receipt === undefined || (receipt && !ifPresent && ['r2-off', 'r2-on'].includes(operation))), usage);
+        && (receipt === undefined || (receipt && !ifPresent && ['r2-off', 'r2-on'].includes(operation)))
+        // The first creation of the owned rules needs approval (D19), so this option never
+        // combines with a recovery or a disable that cannot create.
+        && (!existingOnly || operation === 'ensure-r1' || operation === 'r2-on'
+            || (operation === 'r2-off' && !ifPresent && receipt === undefined)), usage);
 
     const { PUBLIC_HOST: host, CLOUDFLARE_ZONE_ID: zone, CLOUDFLARE_CACHE_R1_REF: r1, CLOUDFLARE_CACHE_R2_REF: r2 } = env;
     requireState(typeof zone === 'string' && hexId.test(zone) && typeof host === 'string' && dnsName.test(host),
@@ -48,7 +54,7 @@ function configuration([operation, ...args], env) {
     const token = Object.hasOwn(env, tokenName) && env[tokenName];
     requireState(typeof token === 'string' && token.length > 0 && token.length <= 512
         && !/[\s\x00-\x1f\x7f]/.test(token) && !token.startsWith('cfk_'), 'Missing or invalid scoped runner token');
-    return { operation, ifPresent, receipt, zone, host, r1, r2, token };
+    return { operation, ifPresent, receipt, existingOnly, zone, host, r1, r2, token };
 }
 
 function ruleDefinitions({ host, r1, r2 }) {
@@ -196,13 +202,16 @@ async function inventory(request, target, descriptions) {
     const rules = entry?.rules ?? [];
     const r1 = rules.find(rule => rule.ref === target.r1);
     const r2 = rules.find(rule => rule.ref === target.r2);
-    requireState(rules.length + Number(!r1) + Number(!r2) <= 10, 'Insufficient Free-plan cache rule capacity');
+    // With --existing-only and neither owned rule present nothing is written, so neither the
+    // capacity nor a foreign rule can refuse; run() then reports the absence without a write.
+    const noWrite = target.existingOnly && !r1 && !r2;
+    requireState(noWrite || rules.length + Number(!r1) + Number(!r2) <= 10, 'Insufficient Free-plan cache rule capacity');
     const foreign = rules.filter(rule => rule !== r1 && rule !== r2);
     for (const rule of rules) {
         if (foreign.includes(rule)) {
             // Disabling the owned R2 is always safe, so only r2-off may proceed beside a
             // foreign rule, and only while that rule claims no owned description.
-            requireState(target.operation === 'r2-off', 'Foreign rule in the request cache phase');
+            requireState(noWrite || target.operation === 'r2-off', 'Foreign rule in the request cache phase');
             requireState(!descriptions.has(rule.description), 'Ambiguous ownership of cache rule');
             continue;
         }
@@ -294,6 +303,12 @@ export async function run(argv, { env = process.env, fetchImpl = globalThis.fetc
     const read = () => inventory(request, target, descriptions);
     let state = await read();
     let changed = false;
+    if (target.existingOnly && !state.r1 && !state.r2) {
+        // Decided from the one inventory read above: a missing entrypoint or absent refs mean the
+        // first creation, which Daniel approves per zone (D19). Nothing is written, no receipt is made.
+        log(`${host} ${target.r1}=absent ${target.r2}=absent; first creation needs approval (D19); nothing written`);
+        return 'absent';
+    }
 
     async function write(key, expected, payload) {
         const before = state;

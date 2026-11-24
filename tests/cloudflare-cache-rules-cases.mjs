@@ -29,7 +29,7 @@ export function registerCacheRulesTests(run, scriptUrl) {
     const check = (name, callback) => test(`shared cache rules - ${name}`, callback);
     check('the local reconciler matches the canonical SHA-256', () => {
         assert.equal(createHash('sha256').update(readFileSync(scriptUrl)).digest('hex'),
-            '852c0909b36800e1471675ff95154467d14187ea1502c4d0fc075c10767cf887',
+            'e5f94c8f848db0ece4e999381abf1e3f19ef9145fc53f174de772fd9437ef3a9',
             "The other repository's reconciler copy must change too. Update both copies and their SHA-256 pins together.");
     });
 
@@ -500,5 +500,85 @@ export function registerCacheRulesTests(run, scriptUrl) {
         await rejects(api, api.invoke('r2-off', ...flags));
         assert.equal(api.owned(r2).enabled, true);
         assert.deepEqual(api.writes(), []);
+    });
+
+    check('--existing-only writes nothing and creates no receipt while neither owned rule exists (D19)', async t => {
+        const directory = mkdtempSync(fileURLToPath(new URL('../.cache-rule-receipt-test-', import.meta.url)));
+        t.after(() => rmSync(directory, { recursive: true, force: true }));
+        const path = join(directory, 'activation.json');
+        const capacity = Array.from({ length: 10 }, (_, index) => foreign(30 + index));
+        for (const [label, rules] of [['no entrypoint', null], ['foreign rules only', [foreign(30), foreign(31)]],
+            ['a full entrypoint of foreign rules', capacity]]) {
+            for (const [operation, flags] of [['ensure-r1', []], ['r2-off', []], ['r2-on', []],
+                ['r2-on', ['--activation-receipt', path]]]) {
+                const api = fixture(run);
+                if (rules) api.state.request = entry(requestPhase, structuredClone(rules));
+                const message = `${label} ${operation} ${flags.join(' ')}`;
+                assert.equal(await api.invoke(operation, '--existing-only', ...flags), 'absent', message);
+                assert.ok(api.state.calls.length > 0 && api.state.calls.every(call => call.method === 'GET'), message);
+                assert.deepEqual(api.writes(), [], message);
+                assert.deepEqual(api.state.request?.rules ?? null, rules, message);
+                assert.deepEqual(api.state.logs, [`${host} ${r1}=absent ${r2}=absent; first creation needs approval (D19); nothing written`], message);
+                assert.equal(existsSync(path), false, message);
+            }
+        }
+        const api = fixture(run);
+        api.state.request = entry(requestPhase, [{ ...foreign(30), description: `Bypass credentialed requests to ${host}` }]);
+        for (const operation of ['ensure-r1', 'r2-off', 'r2-on']) {
+            await rejects(api, api.invoke(operation, '--existing-only'), operation, /Ambiguous ownership/);
+        }
+        assert.deepEqual(api.writes(), []);
+    });
+
+    check('--existing-only keeps maintaining a rule once either owned rule exists', async () => {
+        const plain = fixture(run);
+        await plain.invoke('ensure-r1');
+        assert.equal(await plain.invoke('r2-off'), 'applied');
+        const guarded = fixture(run);
+        await guarded.invoke('ensure-r1');
+        guarded.state.calls.length = 0;
+        assert.equal(await guarded.invoke('r2-off', '--existing-only'), 'applied');
+        assert.equal(guarded.owned(r2).enabled, false);
+        assert.deepEqual(guarded.state.request, plain.state.request);
+        assert.equal(guarded.writes().length, 1);
+
+        const repair = await prepared(run);
+        repair.state.request.rules = repair.state.request.rules.filter(rule => rule.ref !== r1);
+        assert.equal(await repair.invoke('ensure-r1', '--existing-only'), 'applied');
+        assert.deepEqual(repair.state.request.rules.map(rule => rule.ref), [r2, r1]);
+        assert.equal(repair.owned(r1).enabled, true);
+        assert.equal(repair.writes().length, 1);
+
+        const enable = await prepared(run);
+        assert.equal(await enable.invoke('r2-on', '--existing-only'), 'applied');
+        assert.deepEqual(enable.writes(), [toggle(enable, true)]);
+    });
+
+    check('--existing-only is refused before any request outside ensure-r1, r2-off and r2-on', async () => {
+        const api = fixture(run);
+        const base = ['--token-env', tokenEnv];
+        for (const invalid of [['check', ...base, '--existing-only'], ['--check', ...base, '--existing-only'],
+            ['r2-off', ...base, '--if-present', '--existing-only'],
+            ['r2-off', ...base, '--activation-receipt', 'receipt', '--existing-only'],
+            ['ensure-r1', ...base, '--if-present', '--existing-only'],
+            ['ensure-r1', ...base, '--activation-receipt', 'receipt', '--existing-only'],
+            ['ensure-r1', ...base, '--existing-only', '--existing-only'],
+            ['ensure-r1', ...base, '--existing-only=true'], ['r2-on', ...base, '--if-present', '--existing-only']]) {
+            await rejects(api, api.argv(invalid), invalid.join(' '));
+        }
+        assert.deepEqual(api.state.calls, []);
+    });
+
+    check('a failing read with --existing-only throws and writes nothing', async () => {
+        for (const failing of [requestPhase, responsePhase]) {
+            for (const operation of ['ensure-r1', 'r2-off', 'r2-on']) {
+                const api = fixture(run);
+                api.state.before = call => call.path === inventoryPath(failing)
+                    && Response.json({ success: false, result: null, errors: [{ code: 7003 }] }, { status: 500 });
+                await rejects(api, api.invoke(operation, '--existing-only'), `${failing} ${operation}`, /rejected GET/);
+                assert.deepEqual(api.writes(), []);
+                assert.deepEqual(api.state.logs, []);
+            }
+        }
     });
 }

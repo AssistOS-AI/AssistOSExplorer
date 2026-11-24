@@ -22,6 +22,11 @@ on:
         required: false
         default: false
         type: boolean
+      create_cache_rules:
+        description: 'D19 first creation: create this host''s two cache rules if both are missing. Tick only with Daniel''s approval for this zone.'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-explorer-qa
@@ -335,11 +340,17 @@ jobs:
       - name: Disable QA page caching
         id: cache_off
         env:
+          CREATE_CACHE_RULES: ${{ inputs.create_cache_rules }}
           EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
         run: |
           set -euo pipefail
-          node .github/scripts/cloudflare-cache-rules.mjs ensure-r1 --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN
-          node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN
+          case "$CREATE_CACHE_RULES" in
+            true) cache_flags=() ;;
+            false) cache_flags=(--existing-only) ;;
+            *) echo "::error::create_cache_rules must be true or false"; exit 1 ;;
+          esac
+          node .github/scripts/cloudflare-cache-rules.mjs ensure-r1 --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"}
+          node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"}
 
       - name: Prepare SSH key
         env:
@@ -1853,8 +1864,16 @@ jobs:
         id: cache_on
         if: ${{ success() && steps.cache_probe.outputs.verified == 'true' }}
         env:
+          CREATE_CACHE_RULES: ${{ inputs.create_cache_rules }}
           EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
-        run: node .github/scripts/cloudflare-cache-rules.mjs r2-on --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+        run: |
+          set -euo pipefail
+          case "$CREATE_CACHE_RULES" in
+            true) cache_flags=() ;;
+            false) cache_flags=(--existing-only) ;;
+            *) echo "::error::create_cache_rules must be true or false"; exit 1 ;;
+          esac
+          node .github/scripts/cloudflare-cache-rules.mjs r2-on --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"} --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
 
       - name: Disable QA page caching after a failed initial guard
         if: ${{ always() && (steps.cache_off.outcome == 'failure' || steps.cache_off.outcome == 'cancelled') }}

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
@@ -7,6 +8,14 @@ const rules = 'node .github/scripts/cloudflare-cache-rules.mjs ';
 const tokenName = 'EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN';
 const ruleCommand = operation => rules + operation + ' --token-env ' + tokenName;
 const receipt = ' --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"';
+// D19: the first creation of the rules needs the approval input, so the flags default to --existing-only.
+const approval = [
+    'case "$CREATE_CACHE_RULES" in', '  true) cache_flags=() ;;', '  false) cache_flags=(--existing-only) ;;',
+    '  *) echo "::error::create_cache_rules must be true or false"; exit 1 ;;', 'esac',
+].join('\n');
+const dedent = text => text.replace(/^ {10}/gm, '');
+const flags = '${cache_flags[@]+"${cache_flags[@]}"}';
+const guardCommand = operation => ruleCommand(operation) + ' ' + flags;
 const preRouter = 'bash "$GITHUB_WORKSPACE/.github/scripts/qa-cache-router.sh" pre';
 const postRouter = 'bash "$GITHUB_WORKSPACE/.github/scripts/qa-cache-router.sh" post';
 const deploys = [
@@ -85,7 +94,10 @@ for (const [name, deployName, healthNames] of deploys) {
         }
         assert.deepEqual(steps.slice(steps.indexOf(on) + 1), off.slice(1), 'activation must follow every ordinary step');
         assertRecovery(off[1], [off[0]], ruleCommand('r2-off') + ' --if-present');
-        assert.equal(on.run, ruleCommand('r2-on') + receipt);
+        assert.equal(dedent(on.run), `set -euo pipefail\n${approval}\n${ruleCommand('r2-on')} ${flags}${receipt}`);
+        assert.equal(dedent(r1.run), `set -euo pipefail\n${approval}\n${guardCommand('ensure-r1')}\n${guardCommand('r2-off')}`);
+        for (const step of [r1, on]) assert.equal(step.block.match(/^ {10}CREATE_CACHE_RULES: .+$/m)[0].trim(), 'CREATE_CACHE_RULES: ${{ inputs.create_cache_rules }}');
+        assert.deepEqual(steps.filter(step => step.block.includes('inputs.create_cache_rules')).map(step => step.name), [r1.name, on.name]);
         assert.equal(off[2].condition, "${{ always() && steps.cache_on.outcome == 'cancelled' }}");
         assert.equal(off[2].run, ruleCommand('r2-off') + receipt);
     });
@@ -100,6 +112,34 @@ for (const [name, deployName, healthNames] of deploys) {
         assert.match(declaration[1], /^        type: boolean$/m);
         assert.match(declaration[1], /^        default: false$/m);
         assert.deepEqual(steps.filter(step => step.block.includes(`inputs.${input[1]}`)), [post]);
+    });
+
+    test(`${name} declares a default-off create_cache_rules input and runs the guard with --existing-only unless it is exactly true`, () => {
+        const { header, steps } = readWorkflow(name);
+        const declaration = header.match(/^      create_cache_rules:\n((?: {8}[^\n]+\n)+)/m);
+        assert.ok(declaration, 'D19 input declared');
+        assert.match(declaration[1], /^        type: boolean$/m);
+        assert.match(declaration[1], /^        default: false$/m);
+        assert.match(declaration[1], /D19 first creation/);
+        for (const step of [steps.find(item => item.run.includes(rules + 'ensure-r1')), steps.find(item => item.run.includes(rules + 'r2-on'))]) {
+            // Run the real script body with a fake node: only the exact value true may create rules.
+            const fakeNode = 'node() { shift; echo "$*"; }';
+            const call = value => spawnSync('bash', ['-c', fakeNode + '\n' + dedent(step.run)], { encoding: 'utf8', env: {
+                PATH: process.env.PATH, RUNNER_TEMP: '/runner', GITHUB_RUN_ID: '7', GITHUB_RUN_ATTEMPT: '1',
+                ...(value === undefined ? {} : { CREATE_CACHE_RULES: value }) } });
+            const lines = value => call(value).stdout.trim().split('\n').filter(Boolean);
+            for (const value of ['true', 'false']) {
+                const output = lines(value);
+                assert.equal(call(value).status, 0, value);
+                assert.ok(output.length >= 1);
+                for (const line of output) assert.equal(line.includes('--existing-only'), value === 'false', `${value}: ${line}`);
+            }
+            for (const value of [undefined, '', 'TRUE', 'yes', '1', 'false ']) {
+                const result = call(value);
+                assert.equal(result.status, 1, String(value));
+                assert.ok(!result.stdout.includes('r2-') && !result.stdout.includes('ensure-r1'), 'no reconciler call');
+            }
+        }
     });
 
     test(`${name} gives credentials only to their dedicated runner commands`, () => {
@@ -125,8 +165,8 @@ for (const [name, deployName, healthNames] of deploys) {
                     ]);
                 } else if (secret === tokenName) {
                     for (const line of run.split('\n').map(line => line.trim()).filter(line => line.includes(tokenName) || line.includes(rules))) {
-                        assert.ok([ruleCommand('ensure-r1'), ruleCommand('r2-off'), ruleCommand('r2-off') + ' --if-present',
-                            ruleCommand('r2-on') + receipt, ruleCommand('r2-off') + receipt].includes(line),
+                        assert.ok([guardCommand('ensure-r1'), guardCommand('r2-off'), ruleCommand('r2-off') + ' --if-present',
+                            ruleCommand('r2-on') + ' ' + flags + receipt, ruleCommand('r2-off') + receipt].includes(line),
                             'only a literal variable name may reach the runner command');
                     }
                 } else {
