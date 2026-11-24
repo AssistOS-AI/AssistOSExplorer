@@ -4,10 +4,18 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { chromium } from '@playwright/test';
 
-test('WebMeet opens through the Explorer toolbar before using its framed dashboard', { timeout: 30_000 }, async () => {
+// Like WebMeet's room loader, the fixture document is marked loading while a
+// startup request is held open, renders the dashboard and installs its close
+// hook only afterwards, and issues one more request right after it reports
+// ready (the dashboard's first MCP call fetches its mutation proof then).
+// Leaving it early aborts one of those requests.
+const STARTUP_REQUEST_DELAY_MS = 300;
+
+test('WebMeet opens through the Explorer toolbar before using its framed dashboard', { timeout: 120_000 }, async () => {
     let running = false;
     let authenticatedUsername = 'owner';
     const requests = [];
+    const completedSlowRequests = [];
     const modalSource = (await readFile(new URL('../../../explorer/web-components/modals/expanded-modal/expanded-modal.js', import.meta.url), 'utf8'))
         .replace(/from "[^"]+"/g, 'from "/fixture-deps.mjs"');
     const server = http.createServer((request, response) => {
@@ -26,21 +34,33 @@ test('WebMeet opens through the Explorer toolbar before using its framed dashboa
                     relayBreadcrumbSelectEvent = null, syncBreadcrumbSelects = null, hasFocusedBreadcrumbField = null,
                     probeAgentRuntimeMcp = null, probeAgentRuntimeRouteStability = null,
                     probeAgentRuntimeTargetAndMcp = null, probeAgentRuntimeTarget = null,
-                    waitForAgentRuntimeAvailability = null, readMarketplaceAgent = null;`);
+                    waitForAgentRuntimeAvailability = null, readMarketplaceAgent = null,
+                    waitForComponentReady = null;`);
         } else if (url.pathname === '/activate') {
             running = true;
             response.end('ready');
+        } else if (url.pathname === '/webmeetAgent/startup.json' || url.pathname === '/webmeetAgent/after-ready.json') {
+            setTimeout(() => {
+                response.setHeader('content-type', 'application/json');
+                response.end('{}', () => completedSlowRequests.push(url.pathname));
+            }, STARTUP_REQUEST_DELAY_MS);
         } else if (url.pathname === '/webmeetAgent/roomLoader.html') {
             response.setHeader('content-type', 'text/html');
             response.end(running
-                ? `<div class="webmeet-dashboard"><button id="webmeetCreateRoomButton">Create room</button><input id="webmeetChatInput"><div id="webmeetChatList"><div class="webmeet-feed-item"></div></div><div class="webmeet-compose"><button data-local-action="sendChat" onclick="document.querySelector('.webmeet-feed-item').textContent=document.querySelector('#webmeetChatInput').value">Send</button></div></div>
+                ? `<html data-app-loading="true"><body><main id="page_content"></main>
                     <script>
                     window.__beforeExpandedModalClose = () => !parent.sessionStorage.getItem('refuseClose');
-                    window.__onExpandedModalClose = async () => {
-                        parent.closeEvents.push('cleanup-start');
-                        await new Promise(resolve => setTimeout(resolve, 75));
-                        parent.closeEvents.push('cleanup-finished');
-                    };</script>`
+                    (async () => {
+                        await (await fetch('/webmeetAgent/startup.json')).json();
+                        document.querySelector('#page_content').innerHTML = \`<div class="webmeet-dashboard"><button id="webmeetCreateRoomButton">Create room</button><input id="webmeetChatInput"><div id="webmeetChatList"><div class="webmeet-feed-item"></div></div><div class="webmeet-compose"><button data-local-action="sendChat" onclick="document.querySelector('.webmeet-feed-item').textContent=document.querySelector('#webmeetChatInput').value">Send</button></div></div>\`;
+                        window.__onExpandedModalClose = async () => {
+                            parent.closeEvents.push('cleanup-start');
+                            await new Promise(resolve => setTimeout(resolve, 75));
+                            parent.closeEvents.push('cleanup-finished');
+                        };
+                        document.documentElement.setAttribute('data-app-loading', 'false');
+                        requestAnimationFrame(() => { void fetch('/webmeetAgent/after-ready.json'); });
+                    })();</script></body></html>`
                 : '<h1>Runtime disabled</h1>');
         } else {
             response.setHeader('content-type', 'text/html');
@@ -86,10 +106,21 @@ test('WebMeet opens through the Explorer toolbar before using its framed dashboa
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const baseURL = `http://127.0.0.1:${server.address().port}`;
     process.env.SMOKE_BASE_URL = baseURL;
-    process.env.SMOKE_NAVIGATION_TIMEOUT_MS = '1500';
+    // Each settle covers the held startup request, the post-ready request and the quiet window.
+    process.env.SMOKE_NAVIGATION_TIMEOUT_MS = '5000';
     process.env.SMOKE_EXPECT_TIMEOUT_MS = '1500';
+    const heldRequests = () => requests.filter((pathname) => /^\/webmeetAgent\/(?:startup|after-ready)\.json$/.test(pathname)).length;
+    // Every held request the browser sent must be answered in full; a cut one never completes.
+    const waitForHeldRequests = async () => {
+        const deadline = Date.now() + 5_000;
+        while (completedSlowRequests.length < heldRequests() && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        assert.equal(completedSlowRequests.length, heldRequests(), 'every held WebMeet request completes; none is cut by leaving early');
+    };
     let browser;
     try {
+        const { waitForWebMeetSettled } = await import('./webmeet-settle.mjs');
         const { openWebMeet, webMeetSurface, sendWebMeetChat, expectChatEntry, openStandaloneWebMeet, trySignInToWebMeet, rtcCandidateEvidence } = await import('./webmeet.mjs');
         browser = await chromium.launch();
         const page = await browser.newPage({ baseURL });
@@ -136,6 +167,9 @@ test('WebMeet opens through the Explorer toolbar before using its framed dashboa
         assert.deepEqual(await page.evaluate(() => window.closeEvents), ['mounted'], 'refused close preserves the panel without invoking cleanup');
         await page.evaluate(() => sessionStorage.removeItem('refuseClose'));
         await openWebMeet(page, { username: 'owner' }, { requireConfiguredPrincipal: true });
+        // The test itself removes this frame, so it first settles it like the helpers do.
+        await waitForWebMeetSettled(page, webMeetSurface(page), { label: 'the fixture panel the test removes' });
+        await waitForHeldRequests();
         await page.locator('expanded-modal iframe').evaluate((frame) => frame.remove());
         assert.throws(() => webMeetSurface(page), /frame is detached/);
         await openStandaloneWebMeet(page, { roomId: 'fixture-room' });
@@ -149,6 +183,8 @@ test('WebMeet opens through the Explorer toolbar before using its framed dashboa
             'mounted', 'cleanup-start', 'cleanup-finished', 'dialog-closed', 'mounted',
         ]);
         assert.deepEqual(browserErrors, [], 'fixture navigation must not suppress browser errors or failed requests');
+        await waitForHeldRequests();
+        assert.ok(completedSlowRequests.includes('/webmeetAgent/after-ready.json'), 'the fixture exercised the post-ready request');
     } finally {
         await browser?.close();
         server.closeAllConnections();
