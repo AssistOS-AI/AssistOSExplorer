@@ -799,6 +799,9 @@ test('a tool call while the service is not listening reports a typed unavailable
     const reset = new TypeError('fetch failed', { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) });
     await assert.rejects(invoke(grant(), 'robot_status', { env, fetchImpl: async () => { throw reset; } }),
         { code: 'SERVICE_UNAVAILABLE', statusCode: 503 });
+    // A service that stops while its answer is read is reported the same way.
+    await assert.rejects(invoke(grant(), 'robot_status', { env, fetchImpl: async () => ({ ok: true, json: async () => { throw reset; } }) }),
+        { code: 'SERVICE_UNAVAILABLE', statusCode: 503 });
     // A slow service is not a down one: the timeout keeps its own error.
     const slow = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
     await assert.rejects(invoke(grant(), 'robot_status', { env, fetchImpl: async () => { throw slow; } }), error => error === slow);

@@ -19,18 +19,18 @@ export async function invoke(payload, operation, { fetchImpl = fetch, env = proc
     if ((payload.tool || payload.toolName || payload.name) && (payload.tool || payload.toolName || payload.name) !== operation) throw fail('INVALID_INPUT', 'Tool identity mismatch');
     const token = env.ROBOWORK_INTERNAL_TOKEN;
     if (!token) throw fail('SERVICE_UNAVAILABLE', 'RoboWork service is unavailable', 503);
-    let response;
+    let response, result;
     try {
         response = await fetchImpl(`http://127.0.0.1:${Number(env.ROBOWORK_SERVICE_PORT || 3001)}/internal/${operation}`, {
             method: 'POST', headers: { 'content-type': 'application/json', 'x-robowork-internal-token': token },
             body: JSON.stringify(payload.input || payload.arguments || {}), signal: AbortSignal.timeout(operation === 'robot_models' ? 95000 : 180000),
         });
+        result = await response.json();
     } catch (error) {
         // Typed, so a caller can tell a starting or stopping RoboWork from a refused request.
         if (serviceDown(error)) throw fail('SERVICE_UNAVAILABLE', 'RoboWork service is unavailable', 503);
         throw error;
     }
-    const result = await response.json();
     if (!response.ok) throw fail(result.code || 'SERVICE_ERROR', result.error || 'RoboWork request failed', response.status);
     return result;
 }
