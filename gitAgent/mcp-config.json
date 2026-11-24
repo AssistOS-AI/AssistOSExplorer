@@ -891,9 +891,10 @@
       "command": "tools/git_tool.sh",
       "cwd": "workspace",
       "inputSchema": {
-        "robotName": {
+        "robotId": {
           "type": "string",
-          "optional": false
+          "optional": false,
+          "description": "The robot id from git_robot_credentials_targets; a robot name is only a display label."
         },
         "name": {
           "type": "string",
@@ -933,9 +934,10 @@
       "command": "tools/git_tool.sh",
       "cwd": "workspace",
       "inputSchema": {
-        "robotName": {
+        "robotId": {
           "type": "string",
-          "optional": false
+          "optional": false,
+          "description": "The robot id from git_robot_credentials_targets; a robot name is only a display label."
         }
       },
       "delegations": [

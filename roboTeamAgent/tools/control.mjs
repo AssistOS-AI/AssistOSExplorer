@@ -182,7 +182,7 @@ async function runTaskUntilTerminal({ operation, input, user }) {
     while (!terminating) {
         const statusResult = await request('/api/control', {
             method: 'POST',
-            body: { operation: 'task-status', robotId: started.robotId, robotName: input.robotName, taskId: robotTaskId },
+            body: { operation: 'task-status', robotId: started.robotId, taskId: robotTaskId },
             user,
         });
         const task = statusResult.task;
@@ -245,8 +245,8 @@ async function main() {
         }
         // Only the documented fields are forwarded; the token is never written to output or logs.
         const body = operation === 'git-credentials-save'
-            ? { robotName: input.robotName, token: input.token, githubLogin: input.githubLogin, name: input.name, email: input.email }
-            : operation === 'git-credentials-delete' ? { robotName: input.robotName } : {};
+            ? { robotId: input.robotId, token: input.token, githubLogin: input.githubLogin, name: input.name, email: input.email }
+            : operation === 'git-credentials-delete' ? { robotId: input.robotId } : {};
         result = await request(`/api/git-credentials/${GIT_CREDENTIALS_OPERATIONS[operation]}`, { method: 'POST', body, user: delegated, timeoutMs: 55000 });
     }
     else if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, codingAgents: input.codingAgents }, user });

@@ -61,7 +61,7 @@ The certified local Router transport advertises buffered chat only. The service 
 
 ### Local skill scope
 
-Trusted local-skill launch scope is carried from Ploinky as a canonical path inside the existing workspace grant and persisted per conversation. It is discovery metadata, not a new filesystem grant. Saved scope cannot be widened by resolving a retargeted alias; selected source trees are validated and mounted through ALA's existing read-only catalog delivery. Multiple bounded CLI scopes may share one already-authorized Box.
+Trusted local-skill launch scope is carried from Ploinky as a canonical path inside the existing workspace grant and persisted per conversation. It is discovery metadata, not a new filesystem grant, and it never limits which registered skill repositories a robot may use: Ploinky may be started from a folder below the workspace root it selects, so a repository registered through Ploinky is accepted anywhere inside the workspace, and refused only outside it or inside RoboTeam's data directory. Saved scope cannot be widened by resolving a retargeted alias; selected source trees are validated and mounted through ALA's existing read-only catalog delivery. Multiple bounded CLI scopes may share one already-authorized Box.
 
 ### Conversation skill settings
 

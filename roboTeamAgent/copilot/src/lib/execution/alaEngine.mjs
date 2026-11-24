@@ -19,7 +19,7 @@ import { codingAgentLabel } from '../webchat/webchatProgressState.mjs';
 import { createLiveTurn } from '../liveSessions/liveTurn.mjs';
 import { captureRunProducer } from './runProducer.mjs';
 
-const BACKENDS = ['codex', 'opencode', 'pi', 'omp', 'claude'];
+const BACKENDS = ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe', 'agy'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
 const MAX_OUTPUT = 16 * 1024 * 1024;
 
@@ -46,7 +46,7 @@ function validateNativeSession(session, home, cwd) {
         throw new Error('ALA native session backend/continuation mismatch; the existing conversation has not been replaced.');
     }
     const requiredFields = native.agent === 'codex' ? ['threadId']
-        : native.agent === 'pi' ? ['sessionId', 'sessionFile'] : ['sessionId'];
+        : native.agent === 'pi' ? ['sessionId', 'sessionFile'] : native.agent === 'agy' ? ['conversationId'] : ['sessionId'];
     if (requiredFields.some((field) => typeof native.continuation[field] !== 'string' || !native.continuation[field].trim())) {
         throw new Error('ALA native continuation is corrupt; restore it or create a new conversation.');
     }
@@ -61,6 +61,16 @@ function interrupted() {
 function liveTitle(text) {
     const first = String(text || '').trim().split(/\r?\n/u)[0].trim();
     return first ? `Copilot · ${first.length > 120 ? `${first.slice(0, 119)}…` : first}` : 'Copilot turn';
+}
+
+// ALA reports its own failure on lines that start with `ala: `; they carry the coding agent's error and the reason it
+// states. The error names only those lines, while every diagnostic line, launch messages included, stays in the run's
+// log as a diagnostic event. Without such a line all diagnostics are kept, as before.
+export function alaFailureText(code, diagnostics = '') {
+    const lines = String(diagnostics).split('\n').map(value => value.trim()).filter(Boolean);
+    const own = lines.filter(value => value.startsWith('ala: ')).map(value => value.slice(5).trim()).filter(Boolean);
+    if (own.length) return `ALA execution failed (${code}): ${own.join('\n')}`;
+    return `ALA execution failed (${code}).${lines.length ? `\n${lines.join('\n')}` : ''}`;
 }
 
 export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settings = workspaceSettings,
@@ -125,7 +135,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             // unsupported optional task override must leave robot defaults intact.
         }
         if (!backend || !isInstalled(backend)) {
-            throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN, PI_BIN, OMP_BIN or CLAUDE_BIN and authenticate it in the dedicated ALA home.`);
+            throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN, PI_BIN, OMP_BIN, CLAUDE_BIN, VIBE_BIN or AGY_BIN and authenticate it in the dedicated ALA home.`);
         }
         return { cwd, home, workspaceRoot, session, resume: Boolean(resumeBackend), backend,
             requestedBackend: resumeBackend ? null : requestedBackend, models, efforts, permissionMode, agents, robotId, env: envSnapshot };
@@ -203,8 +213,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const config = await configuration(sessionId, env);
             await selectTaskEffort(config, controller.signal);
             const { cwd, home, backend, api, permissionMode } = config;
-            // Pi and OMP have no native ask mode. Reject before transcript or native state creation.
-            if ((backend === 'pi' || backend === 'omp') && permissionMode === 'ask-for-approval') {
+            // Pi, OMP, Mistral Vibe and the Antigravity CLI have no native ask mode. Reject before transcript or native state creation.
+            if (['pi', 'omp', 'vibe', 'agy'].includes(backend) && permissionMode === 'ask-for-approval') {
                 throw new Error(`${codingAgentLabel(backend)} does not support ask-for-approval; select full-access or use Codex, OpenCode or Claude Code.`);
             }
             const snapshot = await skillCatalog.refresh(sessionId, { execution: true, cwd });
@@ -529,7 +539,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         if (protocolError) throw protocolError;
         if (outcome.code === 130) throw interrupted();
         if (outcome.signal === 'SERVICE_RESTART') throw interrupted();
-        if (outcome.code !== 0) throw Object.assign(new Error(`ALA execution failed (${outcome.code ?? outcome.signal}).${diagnostics.trim() ? `\n${diagnostics.trim()}` : ''}`), { exitCode: outcome.code });
+        if (outcome.code !== 0) throw Object.assign(new Error(alaFailureText(outcome.code ?? outcome.signal, diagnostics)), { exitCode: outcome.code });
         if (!selected || finalText === null || !stdout.trim() || stdout.trimEnd() !== finalText.trimEnd()) {
             throw new Error('ALA completed without a valid matching native final result.');
         }

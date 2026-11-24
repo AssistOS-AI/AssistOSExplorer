@@ -189,11 +189,12 @@ function fail(code, extra = {}) {
 // Controlled Google Identity Services: records initialize/renderButton and
 // lets a test fire Google's credential callback itself.
 function fakeGis({ fail = false } = {}) {
-    const state = { loads: 0, inits: [], renders: 0, callback: null, pagehide: null, pageshow: null };
+    const state = { loads: 0, inits: [], renders: 0, buttonOptions: [], callback: null, pagehide: null, pageshow: null };
     const sdk = {
         initialize(options) { state.inits.push(options); state.callback = options.callback; },
-        renderButton(container) {
+        renderButton(container, options) {
             state.renders += 1;
+            state.buttonOptions.push(options);
             const node = new Element('button');
             node.setAttribute('class', 'gsi-test-button');
             node.textContent = 'Sign in with Google';
@@ -320,6 +321,9 @@ test('the start screen renders Google\'s own button with the server nonce and re
     assert.equal(google.state.loads, 1);
     assert.deepEqual(google.state.inits.map((options) => [options.client_id, options.nonce, options.ux_mode, options.auto_select, options.use_fedcm_for_button]),
         [['client-id', 'nonce-aaaaaa', 'popup', false, false]]);
+    // A large button would be personalized as "Sign in as <name>"; medium keeps the plain label.
+    assert.deepEqual(google.state.buttonOptions.map(({ type, theme, size, text }) => [type, theme, size, text]),
+        [['standard', 'outline', 'medium', 'signin_with']]);
     assert.equal(root.querySelector('.google-signin').textContent, 'Sign in with Google');
     await submitEmail(root);
     assert.equal(h1(root).textContent, 'Enter your password');

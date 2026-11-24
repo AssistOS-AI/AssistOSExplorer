@@ -4,9 +4,10 @@ import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { DATA_DIR, TOOL_REFRESH_INTERVAL_MS, BROWSER_IMAGE, DESKTOP_IMAGE } from './constants.mjs';
+import { DATA_DIR, TOOL_REFRESH_INTERVAL_MS, TOOL_FALLBACK_RETRY_MS, BROWSER_IMAGE, DESKTOP_IMAGE } from './constants.mjs';
 import { OPENCODE_PLUGIN_PACKAGE, openCodePluginState } from './opencode-plugin-seed.mjs';
 import { RUNTIME_BUNDLE_FILES } from './runtime-bundle.mjs';
+import { collectToolCache } from './tool-cache-gc.mjs';
 
 const execFileAsync = promisify(execFile);
 const CACHE_SCHEMA = 'roboteam-tool-cache-v1';
@@ -26,7 +27,25 @@ const CODING_AGENT_PACKAGES = Object.freeze({
     omp: Object.freeze({ packageName: '@oh-my-pi/pi-coding-agent', executable: 'omp',
         companions: Object.freeze([Object.freeze({ packageName: 'bun', executable: 'bun' })]) }),
     claude: Object.freeze({ packageName: '@anthropic-ai/claude-code', executable: 'claude' }),
+    // Mistral Vibe is a Python program published on PyPI. uv installs it with a managed CPython into its own
+    // virtual environment inside the generation; see _prepareUvAgent.
+    vibe: Object.freeze({ packageName: 'mistral-vibe', executable: 'vibe', installer: 'uv' }),
+    // Google's Antigravity CLI is a native binary published through its updater's release manifest; see
+    // _prepareManifestAgent.
+    agy: Object.freeze({ packageName: 'antigravity-cli', executable: 'agy', installer: 'agy-manifest' }),
 });
+const AGY_MANIFEST_BASE_URL = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests';
+// A virtual environment records absolute paths (its interpreter, script headers), so a uv generation is installed at
+// its final path under an exclusive lock instead of being renamed from staging. A lock older than this is abandoned.
+const IN_PLACE_LOCK_STALE_MS = 30 * 60 * 1000;
+const UV_PYTHON = '3.12';
+// The bundles startup collection looks into; the OpenCode plugin templates are collected through their own rule.
+const COLLECTED_BUNDLES = Object.freeze([...Object.keys(CODING_AGENT_PACKAGES), 'desktop', 'browser', 'bwrap', 'ala']);
+
+// Every host npm command gets its own throwaway cache, so nothing accumulates in the shared HOME cache.
+function npmCacheArgs(directory) {
+    return ['--cache', path.join(directory, 'cache'), '--update-notifier=false'];
+}
 
 const PIN_VARIABLES = Object.freeze(Object.fromEntries(
     Object.keys(CODING_AGENT_PACKAGES).map((name) => [name, `ROBOTEAM_${name.toUpperCase()}_VERSION`]),
@@ -96,6 +115,7 @@ export class ToolCache {
         this.root = path.resolve(options.root || path.join(options.dataDir || DATA_DIR, 'tool-cache'));
         this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
         this.npmCommand = options.npmCommand || '/usr/local/bin/npm';
+        this.tarCommand = options.tarCommand || '/usr/bin/tar';
         this.images = {
             desktop: options.desktopImage || DESKTOP_IMAGE,
             browser: options.browserImage || BROWSER_IMAGE,
@@ -105,6 +125,7 @@ export class ToolCache {
         this.arch = options.arch || process.arch;
         this.log = options.log || ((message) => console.log(message));
         this.refreshIntervalMs = Math.max(60000, Number(options.refreshIntervalMs) || TOOL_REFRESH_INTERVAL_MS);
+        this.fallbackRetryMs = Math.max(1000, Number(options.fallbackRetryMs) || TOOL_FALLBACK_RETRY_MS);
         this.now = options.now || Date.now;
         if (options.versionPins) {
             for (const name of Object.keys(options.versionPins)) {
@@ -120,6 +141,20 @@ export class ToolCache {
 
     prepareCodex() {
         return this.prepareCodingAgent('codex');
+    }
+
+    // Removes superseded generations once at startup, before the service listens and before any preparation starts
+    // (RoboWork's `main.mjs` calls it after leftover runs and GUI containers are gone). Resolves after the renames into
+    // `<root>/.trash`; the returned `cleanup()` deletes the trash and `legacyNpmCache` and is meant to run in the
+    // background. Neither the pass nor the cleanup ever rejects.
+    async collectGarbage({ terminalStateDir = null, legacyNpmCache = null } = {}) {
+        try {
+            return await collectToolCache({ root: this.root, bundles: COLLECTED_BUNDLES, pluginBundle: PLUGIN_TEMPLATE_BUNDLE,
+                cacheSchema: CACHE_SCHEMA, terminalStateDir, legacyNpmCache, now: this.now(), leftoverMs: IN_PLACE_LOCK_STALE_MS, log: this.log });
+        } catch (error) {
+            this.log(`[tool-cache] garbage collection skipped: ${error?.code || error?.message}`);
+            return { cleanup: async () => {} };
+        }
     }
 
     async warmup() {
@@ -138,11 +173,12 @@ export class ToolCache {
         return results;
     }
 
-    prepareShellTools(names = Object.keys(CODING_AGENT_PACKAGES)) {
+    // `maxAgeMs` asks for a recheck when the last one is older, for a session that should start the current release.
+    prepareShellTools(names = Object.keys(CODING_AGENT_PACKAGES), { maxAgeMs } = {}) {
         const selected = [...new Set(names)].sort();
         const shellName = selected.length === Object.keys(CODING_AGENT_PACKAGES).length ? 'shell' : `shell-${selected.join('-')}`;
         return this._once(shellName, async () => {
-            const agents = await this.prepareCodingAgents(selected);
+            const agents = await this.prepareCodingAgents(selected, { maxAgeMs });
             const generation = generationName(Object.fromEntries(Object.entries(agents).map(([name, value]) => [name, value.path])));
             const directory = path.join(this.root, 'shell-generations', generation);
             await fs.mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
@@ -229,14 +265,14 @@ export class ToolCache {
         }
     }
 
-    prepareCodingAgent(name) {
+    prepareCodingAgent(name, { maxAgeMs } = {}) {
         if (!Object.hasOwn(CODING_AGENT_PACKAGES, name)) throw new Error(`unsupported coding agent: ${name}`);
-        return this._once(name, () => this._prepareCodingAgent(name));
+        return this._once(name, () => this._prepareCodingAgent(name), maxAgeMs);
     }
 
-    async prepareCodingAgents(names = Object.keys(CODING_AGENT_PACKAGES)) {
+    async prepareCodingAgents(names = Object.keys(CODING_AGENT_PACKAGES), { maxAgeMs } = {}) {
         const uniqueNames = [...new Set(names)];
-        const prepared = await Promise.all(uniqueNames.map((name) => this.prepareCodingAgent(name)));
+        const prepared = await Promise.all(uniqueNames.map((name) => this.prepareCodingAgent(name, { maxAgeMs })));
         return Object.fromEntries(uniqueNames.map((name, index) => [name, prepared[index]]));
     }
 
@@ -294,9 +330,9 @@ export class ToolCache {
             this.log(`[tool-cache] preparing ${OPENCODE_PLUGIN_PACKAGE} ${plan.version}`);
             await fs.writeFile(path.join(staging, 'package.json'),
                 `${JSON.stringify({ dependencies: { [OPENCODE_PLUGIN_PACKAGE]: plan.version } }, null, 2)}\n`, { mode: 0o600 });
-            await this.execFileImpl(this.npmCommand, [...PLUGIN_TEMPLATE_NPM_ARGS, '--prefix', staging], {
+            await this._withNpmCache(cacheArgs => this.execFileImpl(this.npmCommand, [...PLUGIN_TEMPLATE_NPM_ARGS, ...cacheArgs, '--prefix', staging], {
                 timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, env: this.processEnv,
-            });
+            }));
             const state = await openCodePluginState(staging, plan.version);
             if (!state.current) throw new Error(`prepared ${OPENCODE_PLUGIN_PACKAGE} is not exactly ${plan.version}`);
             await fs.writeFile(path.join(staging, 'stamp.json'), `${JSON.stringify({
@@ -318,13 +354,18 @@ export class ToolCache {
         return this._once(mode, () => (mode === 'desktop' ? this._prepareDesktop() : this._prepareBrowser()));
     }
 
-    _once(key, operation) {
+    // Coalesces concurrent preparations and reuses a finished one while it is fresh: for the refresh interval, for
+    // the shorter `maxAgeMs` a caller asks for, and only for the fallback retry delay when the result is a fallback
+    // (a shell view counts as one when any of its agents fell back), so an unreachable registry is retried soon.
+    _once(key, operation, maxAgeMs = this.refreshIntervalMs) {
         const existing = this.inflight.get(key);
-        if (existing && (existing.pending || this.now() - existing.checkedAt < this.refreshIntervalMs)) return existing.promise;
-        const entry = { promise: null, pending: true, checkedAt: 0 };
+        if (existing && (existing.pending || this.now() - existing.checkedAt < Math.min(maxAgeMs, existing.lifetimeMs))) return existing.promise;
+        const entry = { promise: null, pending: true, checkedAt: 0, lifetimeMs: this.refreshIntervalMs };
         entry.promise = Promise.resolve().then(operation).then((result) => {
             entry.pending = false;
             entry.checkedAt = this.now();
+            const fellBack = result?.fallback || Object.values(result?.agents || {}).some(agent => agent?.fallback);
+            if (fellBack) entry.lifetimeMs = this.fallbackRetryMs;
             return result;
         });
         this.inflight.set(key, entry);
@@ -332,12 +373,23 @@ export class ToolCache {
         return entry.promise;
     }
 
+    // Runs a host npm command with a throwaway cache below the tool cache, removed afterwards whatever the outcome.
+    async _withNpmCache(operation) {
+        await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
+        const directory = await fs.mkdtemp(path.join(this.root, '.npm-'));
+        try {
+            return await operation(npmCacheArgs(directory));
+        } finally {
+            await fs.rm(directory, { recursive: true, force: true }).catch(error => this.log(`[tool-cache] could not remove a throwaway npm cache: ${error?.code || error?.message}`));
+        }
+    }
+
     async _npmVersion(packageName) {
-        const result = await this.execFileImpl(this.npmCommand, ['view', `${packageName}@latest`, 'version', '--json'], {
+        const result = await this._withNpmCache(cacheArgs => this.execFileImpl(this.npmCommand, ['view', `${packageName}@latest`, 'version', '--json', ...cacheArgs], {
             timeout: 30000,
             maxBuffer: 1024 * 1024,
             env: this.processEnv,
-        });
+        }));
         let value;
         try { value = JSON.parse(result.stdout); } catch { value = result.stdout; }
         if (Array.isArray(value)) value = value.at(-1);
@@ -365,14 +417,100 @@ export class ToolCache {
     }
 
     // `packageName` may instead be a list of exact `name@version` specifications installed together.
+    async _pypiVersion(packageName) {
+        if (typeof this.fetchImpl !== 'function') throw new Error('fetch is unavailable');
+        const response = await this.fetchImpl(`https://pypi.org/pypi/${encodeURIComponent(packageName)}/json`, {
+            headers: { accept: 'application/json', 'user-agent': 'RoboTeamAgent' },
+        });
+        if (!response.ok) throw new Error(`${packageName} release lookup failed with HTTP ${response.status}`);
+        const value = await response.json();
+        return safeVersion(value?.info?.version, packageName);
+    }
+
+    async _uvRelease() {
+        if (typeof this.fetchImpl !== 'function') throw new Error('fetch is unavailable');
+        const response = await this.fetchImpl('https://api.github.com/repos/astral-sh/uv/releases/latest', {
+            headers: { accept: 'application/vnd.github+json', 'user-agent': 'RoboTeamAgent' },
+        });
+        if (!response.ok) throw new Error(`uv release lookup failed with HTTP ${response.status}`);
+        const release = await response.json();
+        const target = this.arch === 'x64' ? 'x86_64' : this.arch === 'arm64' ? 'aarch64' : null;
+        if (!target) throw new Error(`uv does not support architecture ${this.arch}`);
+        const assetName = `uv-${target}-unknown-linux-gnu.tar.gz`;
+        const asset = release.assets?.find((candidate) => candidate?.name === assetName);
+        if (!asset?.browser_download_url) throw new Error(`uv release has no ${assetName} asset`);
+        if (!/^sha256:[0-9a-f]{64}$/u.test(String(asset.digest || ''))) throw new Error(`uv release asset ${assetName} has no SHA-256 digest`);
+        return { version: safeVersion(release.tag_name, 'uv'), assetName, url: asset.browser_download_url, digest: asset.digest };
+    }
+
+    // Downloads the uv release archive, checks its upstream digest, and unpacks the static uv binary into `directory`.
+    async _downloadUv(directory, release) {
+        const response = await this.fetchImpl(release.url, { headers: { 'user-agent': 'RoboTeamAgent' } });
+        if (!response.ok) throw new Error(`uv download failed with HTTP ${response.status}`);
+        const content = Buffer.from(await response.arrayBuffer());
+        const digest = `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`;
+        if (digest !== release.digest) throw new Error('uv release digest did not match the downloaded asset');
+        await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+        const archive = path.join(directory, release.assetName);
+        await fs.writeFile(archive, content, { mode: 0o600 });
+        await this.execFileImpl(this.tarCommand, ['--no-same-owner', '--strip-components=1', '-xzf', archive, '-C', directory],
+            { timeout: 120000, maxBuffer: 1024 * 1024, env: this.processEnv });
+        await fs.rm(archive, { force: true });
+        const uv = path.join(directory, 'uv');
+        if (!(await isExecutable(uv))) throw new Error('uv archive has no uv executable');
+        return uv;
+    }
+
+    // The latest Antigravity CLI release: { version, url, sha512 } from Google's manifest for this architecture. Only
+    // an HTTPS archive on Google's release storage is accepted.
+    async _agyRelease() {
+        if (typeof this.fetchImpl !== 'function') throw new Error('fetch is unavailable');
+        const platform = this.arch === 'x64' ? 'linux_amd64' : this.arch === 'arm64' ? 'linux_arm64' : null;
+        if (!platform) throw new Error(`Antigravity CLI does not support architecture ${this.arch}`);
+        const response = await this.fetchImpl(`${AGY_MANIFEST_BASE_URL}/${platform}.json`, {
+            headers: { accept: 'application/json', 'user-agent': 'RoboTeamAgent' },
+        });
+        if (!response.ok) throw new Error(`Antigravity CLI release lookup failed with HTTP ${response.status}`);
+        const manifest = await response.json();
+        let url;
+        try { url = new URL(manifest?.url); } catch { throw new Error('Antigravity CLI manifest has no valid release URL'); }
+        if (url.protocol !== 'https:' || url.hostname !== 'storage.googleapis.com' || !url.pathname.endsWith('.tar.gz')) {
+            throw new Error('Antigravity CLI manifest does not reference a release archive on Google storage');
+        }
+        if (!/^[0-9a-f]{128}$/u.test(String(manifest?.sha512 || ''))) throw new Error('Antigravity CLI manifest has no SHA-512 digest');
+        return { version: safeVersion(manifest.version, 'Antigravity CLI'), url: url.href, sha512: manifest.sha512 };
+    }
+
+    // Downloads the release archive, checks its SHA-512 digest, and unpacks its `antigravity` executable as bin/agy.
+    async _downloadAgy(directory, release) {
+        const response = await this.fetchImpl(release.url, { headers: { 'user-agent': 'RoboTeamAgent' } });
+        if (!response.ok) throw new Error(`Antigravity CLI download failed with HTTP ${response.status}`);
+        const content = Buffer.from(await response.arrayBuffer());
+        if (crypto.createHash('sha512').update(content).digest('hex') !== release.sha512) {
+            throw new Error('Antigravity CLI release digest did not match the downloaded archive');
+        }
+        const bin = path.join(directory, 'bin');
+        await fs.mkdir(bin, { recursive: true, mode: 0o755 });
+        const archive = path.join(directory, 'release.tar.gz');
+        await fs.writeFile(archive, content, { mode: 0o600 });
+        try {
+            await this.execFileImpl(this.tarCommand, ['--no-same-owner', '-xzf', archive, '-C', bin, 'antigravity'],
+                { timeout: 120000, maxBuffer: 1024 * 1024, env: this.processEnv });
+        } finally {
+            await fs.rm(archive, { force: true });
+        }
+        await fs.rename(path.join(bin, 'antigravity'), path.join(bin, 'agy'));
+        await fs.chmod(path.join(bin, 'agy'), 0o755);
+    }
+
     async _npmInstallHost(directory, packageName, version, { global = false } = {}) {
         const args = [NPM_INSTALL_ARGS[0], ...(global ? ['--global'] : []), ...NPM_INSTALL_ARGS.slice(1)];
         const specifications = Array.isArray(packageName) ? packageName : [`${packageName}@${version}`];
-        await this.execFileImpl(this.npmCommand, [...args, '--prefix', directory, ...specifications], {
+        await this._withNpmCache(cacheArgs => this.execFileImpl(this.npmCommand, [...args, ...cacheArgs, '--prefix', directory, ...specifications], {
             timeout: 10 * 60 * 1000,
             maxBuffer: 8 * 1024 * 1024,
             env: this.processEnv,
-        });
+        }));
     }
 
     async _npmInstallContainer(directory, image, packageName, version) {
@@ -408,8 +546,76 @@ export class ToolCache {
         ], { timeout: 60000, maxBuffer: 4 * 1024 * 1024, env: process.env });
     }
 
+    // A uv agent: the generation holds bin/<executable> (uv's link), tools/<package> (its virtual environment) and
+    // python/ (the managed CPython it was created from). uv itself is used for the installation only.
+    async _prepareUvAgent(name) {
+        const definition = CODING_AGENT_PACKAGES[name];
+        return this._prepare(name, async () => {
+            const [version, uv] = await Promise.all([
+                this.versionPins[name] ?? this._pypiVersion(definition.packageName),
+                this._uvRelease(),
+            ]);
+            const versions = { [name]: version, uv: uv.version };
+            return {
+                identity: { package: definition.packageName, version, installer: 'uv', uv: uv.version, python: UV_PYTHON, arch: this.arch },
+                versions,
+                inPlace: true,
+                install: async (directory) => {
+                    const work = path.join(directory, '.uv');
+                    try {
+                        const uvBinary = await this._downloadUv(work, uv);
+                        await this.execFileImpl(uvBinary, ['tool', 'install', '--no-config', '--python', UV_PYTHON,
+                            `${definition.packageName}==${version}`], {
+                            timeout: 15 * 60 * 1000,
+                            maxBuffer: 8 * 1024 * 1024,
+                            env: { ...this.processEnv, UV_TOOL_DIR: path.join(directory, 'tools'), UV_TOOL_BIN_DIR: path.join(directory, 'bin'),
+                                UV_PYTHON_INSTALL_DIR: path.join(directory, 'python'), UV_CACHE_DIR: path.join(work, 'cache'),
+                                UV_PYTHON_PREFERENCE: 'only-managed', UV_NO_PROGRESS: '1' },
+                        });
+                    } finally {
+                        await fs.rm(work, { recursive: true, force: true });
+                    }
+                },
+                validate: async (directory) => {
+                    const executable = path.join(directory, 'bin', definition.executable);
+                    if (!(await isExecutable(executable))) throw new Error(`prepared ${name} executable is missing`);
+                    await this.execFileImpl(executable, ['--version'], { timeout: 60000, maxBuffer: 1024 * 1024, env: this.processEnv });
+                },
+                result: (directory) => ({ path: directory, binPath: path.join(directory, 'bin'), versions }),
+            };
+        });
+    }
+
+    // The manifest names only the latest release. A pin is honoured by installing only when the manifest offers that
+    // exact version; otherwise preparation fails and falls back to a stamped generation of the pinned version.
+    async _prepareManifestAgent(name) {
+        const definition = CODING_AGENT_PACKAGES[name];
+        return this._prepare(name, async () => {
+            const release = await this._agyRelease();
+            const pin = this.versionPins[name];
+            if (pin !== undefined && pin !== release.version) {
+                throw new Error(`the Antigravity CLI manifest offers ${release.version}, not the pinned ${pin}`);
+            }
+            const versions = { [name]: release.version };
+            return {
+                identity: { package: definition.packageName, version: release.version, sha512: release.sha512, arch: this.arch },
+                versions,
+                install: (directory) => this._downloadAgy(directory, release),
+                validate: async (directory) => {
+                    const executable = path.join(directory, 'bin', definition.executable);
+                    if (!(await isExecutable(executable))) throw new Error(`prepared ${name} executable is missing`);
+                    await this.execFileImpl(executable, ['--version'], { timeout: 60000, maxBuffer: 1024 * 1024,
+                        env: { ...this.processEnv, AGY_CLI_DISABLE_AUTO_UPDATE: '1' } });
+                },
+                result: (directory) => ({ path: directory, binPath: path.join(directory, 'bin'), versions }),
+            };
+        });
+    }
+
     async _prepareCodingAgent(name) {
         const definition = CODING_AGENT_PACKAGES[name];
+        if (definition.installer === 'uv') return this._prepareUvAgent(name);
+        if (definition.installer === 'agy-manifest') return this._prepareManifestAgent(name);
         const companions = definition.companions || [];
         return this._prepare(name, async () => {
             const version = this.versionPins[name] ?? await this._npmVersion(definition.packageName);
@@ -493,7 +699,9 @@ export class ToolCache {
         const target = path.join(generationsRoot, generation);
         try {
             await fs.mkdir(generationsRoot, { recursive: true, mode: 0o700 });
-            if (!(await this._generationIsUsable(target, plan.validate))) {
+            if (!(await this._generationIsUsable(target, plan.validate)) && plan.inPlace) {
+                await this._installInPlace(name, target, generation, plan);
+            } else if (!(await this._generationIsUsable(target, plan.validate))) {
                 const stagingRoot = path.join(bundleRoot, 'staging');
                 const staging = path.join(stagingRoot, crypto.randomUUID());
                 await fs.mkdir(staging, { recursive: true, mode: 0o700 });
@@ -523,6 +731,38 @@ export class ToolCache {
             return plan.result(target);
         } catch (error) {
             return this._fallback(name, error);
+        }
+    }
+
+    async _installInPlace(name, target, generation, plan) {
+        const lock = `${target}.lock`;
+        let handle;
+        try {
+            handle = await fs.open(lock, 'wx', 0o600);
+        } catch (error) {
+            if (error?.code !== 'EEXIST') throw error;
+            const stat = await fs.stat(lock).catch(() => null);
+            if (stat && this.now() - stat.mtimeMs < IN_PLACE_LOCK_STALE_MS) throw new Error(`${name} preparation is already in progress`);
+            await fs.rm(lock, { force: true });
+            handle = await fs.open(lock, 'wx', 0o600);
+        }
+        try {
+            // A generation without a stamp is an interrupted installation and is started again.
+            await fs.rm(target, { recursive: true, force: true });
+            await fs.mkdir(target, { recursive: true, mode: 0o700 });
+            this.log(`[tool-cache] preparing ${name} ${Object.values(plan.versions).join(', ')}`);
+            await plan.install(target);
+            await plan.validate(target);
+            await fs.writeFile(path.join(target, 'stamp.json'), `${JSON.stringify({
+                schema: CACHE_SCHEMA, name, generation, identity: plan.identity, versions: plan.versions,
+                preparedAt: new Date().toISOString(), ...(plan.metadata?.() || {}),
+            }, null, 2)}\n`, { mode: 0o600 });
+        } catch (error) {
+            await fs.rm(target, { recursive: true, force: true });
+            throw error;
+        } finally {
+            await handle.close();
+            await fs.rm(lock, { force: true });
         }
     }
 
@@ -586,4 +826,4 @@ export class ToolCache {
     }
 }
 
-export const toolCacheInternals = { CACHE_SCHEMA, CODING_AGENT_PACKAGES, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, PLUGIN_TEMPLATE_NPM_ARGS, TOOL_MOUNT_PATH, codingAgentVersionPins, generationName, safeVersion, toolProcessEnv };
+export const toolCacheInternals = { CACHE_SCHEMA, CODING_AGENT_PACKAGES, IN_PLACE_LOCK_STALE_MS, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, PLUGIN_TEMPLATE_NPM_ARGS, TOOL_MOUNT_PATH, codingAgentVersionPins, generationName, npmCacheArgs, safeVersion, toolProcessEnv };

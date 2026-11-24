@@ -59,6 +59,19 @@ export function getApplicationPluginsForSlot(slot, { contributionType = null } =
         : [];
 }
 
+// Keep the primary launchers visible; the remaining toolbar tools share the existing Tools menu.
+const PRIMARY_TOOLBAR_PLUGIN_KEYS = new Set(['webmeetAgent/webmeet', 'explorer/help', 'bizanso/bizanso', 'scriptahubAgent/scriptahub', 'explorer/live-sessions']);
+
+export function getToolbarPluginLayout(toolbarPlugins, dropdownPlugins, mobile = isMobileToolbarLayout()) {
+    const primaryPlugins = mobile ? [] : toolbarPlugins.filter(plugin => PRIMARY_TOOLBAR_PLUGIN_KEYS.has(getPluginKey(plugin)));
+    const primaryKeys = new Set(primaryPlugins.map(getPluginKey));
+    return {
+        visibleToolbarPlugins: primaryPlugins,
+        visibleToolbarDropdownPlugins: sortRuntimePluginEntries(mergeUniquePlugins(toolbarPlugins, dropdownPlugins)
+            .filter(plugin => !primaryKeys.has(getPluginKey(plugin)))),
+    };
+}
+
 function encodeContext(context) {
     try {
         return encodeURIComponent(JSON.stringify(context || {}));
@@ -368,11 +381,7 @@ function stageApplicationPluginPlaceholders(fileExp) {
     const toolbarDropdownPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbarPluginsDropdown, {
         contributionType: MOUNT_CONTRIBUTION_TYPE
     });
-    const useMobileToolbar = isMobileToolbarLayout();
-    const visibleToolbarPlugins = useMobileToolbar ? [] : toolbarPlugins;
-    const visibleToolbarDropdownPlugins = useMobileToolbar
-        ? mergeUniquePlugins(toolbarPlugins, toolbarDropdownPlugins)
-        : toolbarDropdownPlugins;
+    const { visibleToolbarPlugins, visibleToolbarDropdownPlugins } = getToolbarPluginLayout(toolbarPlugins, toolbarDropdownPlugins);
     const rightBarPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.rightBar, {
         contributionType: MOUNT_CONTRIBUTION_TYPE
     });
@@ -662,11 +671,7 @@ async function performRenderApplicationPluginSlots(fileExp) {
     const accountMenuContainer = fileExp.element.querySelector('#fileExpAccountMenuPlugins');
     const toolbarPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbar, { contributionType: MOUNT_CONTRIBUTION_TYPE });
     const toolbarPluginsDropdownPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbarPluginsDropdown, { contributionType: MOUNT_CONTRIBUTION_TYPE });
-    const useMobileToolbar = isMobileToolbarLayout();
-    const visibleToolbarPlugins = useMobileToolbar ? [] : toolbarPlugins;
-    const visibleToolbarDropdownPlugins = useMobileToolbar
-        ? mergeUniquePlugins(toolbarPlugins, toolbarPluginsDropdownPlugins)
-        : toolbarPluginsDropdownPlugins;
+    const { visibleToolbarPlugins, visibleToolbarDropdownPlugins } = getToolbarPluginLayout(toolbarPlugins, toolbarPluginsDropdownPlugins);
     const rightBarPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.rightBar, { contributionType: MOUNT_CONTRIBUTION_TYPE });
     const internalPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.internal, { contributionType: MOUNT_CONTRIBUTION_TYPE });
     const globalPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.global, { contributionType: MOUNT_CONTRIBUTION_TYPE });
@@ -688,8 +693,7 @@ async function performRenderApplicationPluginSlots(fileExp) {
 
     updateLoadedToolbarPluginContexts(toolbarContainer, visibleToolbarPlugins, toolbarContext);
     // Slots are independent: one slot's failure must not keep another from mounting.
-    // The toolbar slot stays on demand, except for plugins that opted in with mountOnStart. On the mobile layout the
-    // toolbar plugins already mount through the dropdown slot below.
+    // Direct toolbar launchers stay on demand, except for plugins that opted in with mountOnStart.
     const mountOnStartToolbar = visibleToolbarPlugins.filter((entry) => entry?.mountOnStart === true);
     const slotResults = await Promise.allSettled([
         ...mountOnStartToolbar.map((entry) => mountToolbarPluginOnStart(toolbarContainer, visibleToolbarPlugins, entry, toolbarContext)),

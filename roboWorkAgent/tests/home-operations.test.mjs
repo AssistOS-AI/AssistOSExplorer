@@ -58,7 +58,7 @@ test('the in-service status reads only the robot home: no server credential and 
     await fs.mkdir(home);
     const status = () => robotStatus(home, { includeLogins: true, codingAgents: ['opencode'] }, { env: nativeEnvironment({ PATH: '/usr/bin:/bin' }, home) });
     // The server's own provider key is not a robot login.
-    assert.deepEqual((await status()).logins, { codex: false, opencode: false, pi: false, omp: false, claude: false });
+    assert.deepEqual((await status()).logins, { codex: false, opencode: false, pi: false, omp: false, claude: false, vibe: false, agy: false });
     // Another home's login reached through a linked parent directory is not this robot's.
     await fs.symlink(path.join(other, '.local'), path.join(home, '.local'));
     assert.equal((await status()).logins.opencode, false);
@@ -66,5 +66,24 @@ test('the in-service status reads only the robot home: no server credential and 
     await fs.rm(path.join(home, '.local'));
     await fs.mkdir(path.join(home, '.local', 'share', 'opencode'), { recursive: true });
     await fs.writeFile(path.join(home, '.local', 'share', 'opencode', 'auth.json'), auth);
-    assert.deepEqual(await status(), { activeAgent: 'opencode', logins: { codex: false, opencode: true, pi: false, omp: false, claude: false } });
+    assert.deepEqual(await status(), { activeAgent: 'opencode', activeModel: null, activeEffort: null, logins: { codex: false, opencode: true, pi: false, omp: false, claude: false, vibe: false, agy: false } });
+});
+
+test('the status reports the model and effort the active agent runs with, from the robot home config', async t => {
+    const { robotStatus } = await import('../server/home-op.mjs');
+    const { agentConfigPath } = await import('../server/agent-model-config.mjs');
+    const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'rw-status-model-')));
+    t.after(() => fs.rm(home, { recursive: true, force: true }));
+    const file = await agentConfigPath(home);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify({ codingAgent: 'claude', models: { claude: 'opus' }, efforts: { claude: 'high' } }));
+    for (const unavailable of [false, true]) {
+        const status = await robotStatus(home, { codingAgents: ['claude', 'codex'] }, { env: { PATH: '/usr/bin:/bin', HOME: home }, unavailable });
+        assert.equal(status.activeAgent, 'claude');
+        assert.equal(status.activeModel, 'opus');
+        assert.equal(status.activeEffort, 'high');
+    }
+    // An agent without a chosen model runs with its own default.
+    const other = await robotStatus(home, { codingAgents: ['codex'] }, { env: { PATH: '/usr/bin:/bin', HOME: home }, unavailable: true });
+    assert.deepEqual([other.activeAgent, other.activeModel, other.activeEffort], ['codex', null, null]);
 });

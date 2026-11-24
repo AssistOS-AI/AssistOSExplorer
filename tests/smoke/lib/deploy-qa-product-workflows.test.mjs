@@ -135,7 +135,7 @@ for (const key of KEYS) {
         assert.match(source, /timeout-minutes: (?:90|150)\n/);
     });
 
-    test(`${key}: refuses to run over the older workflows' parked state and never creates the workspace`, () => {
+    test(`${key}: refuses to run over the removed workflows' parked state and never creates the workspace`, () => {
         const source = workflow(key);
         assert.match(source, /STATE_DIR=\/home\/admin\/\.qa-deployment-state\n/);
         assert.match(source, /if \[ -e "\$STATE_DIR" \] && \[ -n "\$\(ls -A "\$STATE_DIR"\)" \]; then/);
@@ -1935,7 +1935,7 @@ test('preflight: it checks the host and reads the Ploinky checkout without creat
         const refusals = {
             'the workspace is missing': [({ home }) => fs.rmSync(path.join(home, 'explorerQaWorkspace'), { recursive: true }), /the workspace is not an existing real directory/],
             'the workspace is a symlink': [({ home }) => { fs.rmSync(path.join(home, 'explorerQaWorkspace'), { recursive: true }); fs.mkdirSync(path.join(home, 'elsewhere')); fs.symlinkSync(path.join(home, 'elsewhere'), path.join(home, 'explorerQaWorkspace')); }, /the workspace is not an existing real directory/],
-            'the older workflows parked state': [({ home }) => { fs.mkdirSync(path.join(home, '.qa-deployment-state')); fs.writeFileSync(path.join(home, '.qa-deployment-state/policy'), 'x'); }, /holds state from deploy-explorer-qa\.yml/],
+            'the removed workflows parked state': [({ home }) => { fs.mkdirSync(path.join(home, '.qa-deployment-state')); fs.writeFileSync(path.join(home, '.qa-deployment-state/policy'), 'x'); }, /holds state parked by the removed non-Ploinky QA workflows\. No tracked workflow finishes it/],
             'the Ploinky checkout is missing': [({ checkout }) => fs.rmSync(checkout, { recursive: true }), /the Ploinky checkout is missing or a symlink/],
             'the Ploinky checkout is a symlink': [({ checkout, tools }) => { fs.renameSync(checkout, path.join(tools, 'real')); fs.symlinkSync(path.join(tools, 'real'), checkout); }, /the Ploinky checkout is missing or a symlink/],
             'the Ploinky checkout has another origin': [({ checkout }) => vcs(checkout, 'remote', 'set-url', 'origin', 'https://example.test/x.git'), /unexpected Ploinky checkout origin/],

@@ -123,3 +123,48 @@ test('async activation refetches inventory after terminal success and preserves 
     assert.equal(agent.running, false);
     assert.equal(agent.status, 'starting');
 });
+
+function withFetch(t, handler) {
+    const previousFetch = globalThis.fetch;
+    const previousLocation = globalThis.location;
+    t.after(() => { globalThis.fetch = previousFetch; globalThis.location = previousLocation; });
+    globalThis.location = { origin: 'http://localhost:8080' };
+    const calls = [];
+    globalThis.fetch = async (url, options = {}) => { calls.push({ url: String(url), options }); return handler(String(url), options, calls); };
+    return calls;
+}
+
+test('an enabled agent that is still starting is waited for and never enabled again', async t => {
+    let snapshots = 0;
+    const calls = withFetch(t, (url, options) => {
+        if (options.method === 'POST') return Response.json({ ok: false }, { status: 500 });
+        snapshots++;
+        const running = snapshots >= 3;
+        return Response.json({ ok: true, marketplace: { agents: [{ ref: 'AchillesIDE/roboTeamAgent', name: 'roboTeamAgent', active: true,
+            enableMode: 'global', status: running ? 'running' : 'starting', running }] } });
+    });
+    const agent = await ensureMarketplaceAgentRunning('roboTeamAgent', { startingPollMs: 1 });
+    assert.equal(agent.running, true);
+    assert.equal(snapshots, 3);
+    assert.equal(calls.filter((call) => call.options.method === 'POST').length, 0, 'a starting agent is not re-enabled');
+});
+
+test('an agent still starting after the wait is left alone', async t => {
+    const calls = withFetch(t, () => Response.json({ ok: true, marketplace: { agents: [{ ref: 'AchillesIDE/roboTeamAgent',
+        name: 'roboTeamAgent', active: true, enableMode: 'global', status: 'starting', running: false }] } }));
+    const agent = await ensureMarketplaceAgentRunning('roboTeamAgent', { startingWaitMs: 5, startingPollMs: 1 });
+    assert.equal(agent.status, 'starting');
+    assert.equal(calls.filter((call) => call.options.method === 'POST').length, 0);
+});
+
+test('a stopped enabled agent restarts in the mode it is enabled in', async t => {
+    const calls = withFetch(t, (url, options) => {
+        if (url === '/auth/token') return Response.json({ ok: true, adminControl: { origin: 'http://localhost:8080', csrfToken: 'csrf-1' } });
+        const running = options.method === 'POST';
+        return Response.json({ ok: true, marketplace: { agents: [{ ref: 'AchillesIDE/roboTeamAgent', name: 'roboTeamAgent', active: true,
+            enableMode: 'global', status: running ? 'running' : 'stopped', running }] } });
+    });
+    await ensureMarketplaceAgentRunning('roboTeamAgent');
+    const post = calls.find((call) => call.options.method === 'POST');
+    assert.deepEqual(JSON.parse(post.options.body), { action: 'enable_agent', agentRef: 'AchillesIDE/roboTeamAgent', mode: 'global' });
+});

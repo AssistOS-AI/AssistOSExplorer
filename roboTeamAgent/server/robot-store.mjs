@@ -13,6 +13,13 @@ export function defaultRobotProtectedError() {
     return Object.assign(new Error('the default robot cannot be deleted'), { code: 'ROBOT_PROTECTED', statusCode: 409 });
 }
 
+// A robot is identified by its id everywhere; its name is a display label that can change. The default robot is the
+// exception that proves it: it is the one robot found by its name, so that name never changes and no other robot
+// can take it.
+function renameRefused(message, code) {
+    return Object.assign(new Error(message), { code, statusCode: 409 });
+}
+
 function normalizeName(value) {
     const name = String(value || '').trim();
     if (!name) throw new Error('robot name is required');
@@ -223,9 +230,15 @@ export class RobotStore {
         return robot && (await this._view([robot]))[0];
     }
 
+    // Only for a person who names a robot (the terminal `--robot <name>` option); services pass the id.
     async getByName(name) {
         const normalizedName = normalizeName(name);
         const robot = (await this._allRobots()).find((item) => item.name === normalizedName);
+        return robot ? (await this._view([robot]))[0] : null;
+    }
+
+    async getDefault() {
+        const robot = (await this._allRobots()).find((item) => item.name === DEFAULT_ROBOT_NAME);
         return robot ? (await this._view([robot]))[0] : null;
     }
 
@@ -277,6 +290,21 @@ export class RobotStore {
         await this._writeMetadata(robotRoot, metadata);
         await this.roboWork.call('robot_ensure', { robotId, name: normalizedName, codingAgents: selectedAgents, seed: false });
         return metadata;
+    }
+
+    async rename(robotId, name) {
+        const normalizedName = normalizeName(name);
+        return this.withRobot(robotId, async (robot, save) => {
+            if (robot.name === DEFAULT_ROBOT_NAME) throw renameRefused('the default robot cannot be renamed', 'ROBOT_PROTECTED');
+            if (normalizedName === robot.name) return (await this._view([robot]))[0];
+            if (normalizedName === DEFAULT_ROBOT_NAME) throw renameRefused('the name default is reserved for the default robot', 'ROBOT_NAME_RESERVED');
+            if ((await this._allRobots({ strict: true })).some((other) => other.id !== robot.id && other.name === normalizedName)) {
+                throw renameRefused('robot name already exists', 'ROBOT_NAME_TAKEN');
+            }
+            const renamed = { ...robot, name: normalizedName };
+            await save(renamed);
+            return (await this._view([renamed]))[0];
+        });
     }
 
     async setCodingAgents(robotId, codingAgents, { model, effort } = {}) {

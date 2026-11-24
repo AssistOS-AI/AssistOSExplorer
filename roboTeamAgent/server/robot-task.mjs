@@ -22,7 +22,8 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
     let input;
     let releaseUsage;
     try {
-        const context = await prepareCopilotContext(options['--robot'], { ...contextOptions, prepareTools: false, holdUsage: true });
+        const context = await prepareCopilotContext(options['--robot-id'] ? { id: options['--robot-id'] } : { name: options['--robot'] },
+            { ...contextOptions, prepareTools: false, holdUsage: true });
         setRobotContext(context);
         releaseUsage = context.releaseUsage;
         const skillSelection = process.env.ROBOTEAM_TASK_SKILL_SELECTION

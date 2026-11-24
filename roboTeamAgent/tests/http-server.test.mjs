@@ -136,6 +136,10 @@ test('skillset mutations are admin-only, including rejection of internal agents'
             body: JSON.stringify({ name: 'docs', source: '/workspace/docs' }),
         });
         assert.equal(response.status, 200);
+        // The changed robot comes back with its repositories, so the dialog does not read every robot again.
+        const changed = await response.json();
+        assert.equal(changed.robot.id, robot.id);
+        assert.ok(Array.isArray(changed.robot.repositories));
     }
     assert.equal(calls.length, 3);
     const removeUrl = `${fixture.baseUrl}/api/robots/${robot.id}/skillsets?name=repo-4d529e42-fad0-43b7-b357-95029c882355`;
@@ -165,7 +169,7 @@ test('task starts validate allowed policy intent and ignore caller-supplied snap
     const start = (extra) => fetch(`${fixture.baseUrl}/api/control`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-roboteam-internal-token': 'test-token' },
-        body: JSON.stringify({ operation: 'start-simple-task', robotName: robot.name,
+        body: JSON.stringify({ operation: 'start-simple-task', robotId: robot.id,
             cwd: fixture.workspaceRoot, task: 'Review', ...extra }),
     });
     const rejected = await start({ skillSets: 'not-allowed' });
@@ -194,7 +198,7 @@ test('internal MCP control calls require only the generated service token', asyn
         const control = await fetch(`${fixture.baseUrl}/api/control`, {
             method: 'POST',
             headers: { 'content-type': 'application/json', 'x-roboteam-internal-token': 'test-token' },
-            body: JSON.stringify({ operation: 'task-status', robotName: 'missing-robot' }),
+            body: JSON.stringify({ operation: 'task-status', robotId: 'missing-robot' }),
         });
         assert.notEqual(control.status, 401, 'other internal operations keep the service-token path');
         assert.notEqual(control.status, 403, 'other internal operations keep the service-token path');
@@ -212,16 +216,17 @@ test('robot deletion requires an administrator role', async () => {
             body: JSON.stringify({ name: 'Disposable' }),
         });
         assert.equal(created.status, 201);
+        const disposableId = (await created.json()).robot.id;
         const denied = await fetch(`${fixture.baseUrl}/api/control`, {
             method: 'POST',
             headers: { 'content-type': 'application/json', 'x-ploinky-auth-info': authHeader('user-a') },
-            body: JSON.stringify({ operation: 'robot-delete', robotName: 'Disposable' }),
+            body: JSON.stringify({ operation: 'robot-delete', robotId: disposableId }),
         });
         assert.equal(denied.status, 403);
         const deleted = await fetch(`${fixture.baseUrl}/api/control`, {
             method: 'POST',
             headers: { 'content-type': 'application/json', 'x-ploinky-auth-info': authHeader('admin-a', ['admin']) },
-            body: JSON.stringify({ operation: 'robot-delete', robotName: 'Disposable' }),
+            body: JSON.stringify({ operation: 'robot-delete', robotId: disposableId }),
         });
         assert.equal(deleted.status, 200);
     } finally {

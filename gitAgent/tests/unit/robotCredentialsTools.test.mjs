@@ -116,8 +116,8 @@ test('guests cannot list, save or remove robot credentials', async () => {
     const guest = userAuthInfo({ user: { id: 'guest-1', username: 'guest', roles: ['guest'] } });
     const factory = async () => { throw new Error('should not be called'); };
     assert.equal((await listRobotCredentialTargets({ authInfo: guest, createAgentClient: factory })).code, 'GIT_SIGN_IN_REQUIRED');
-    assert.equal((await saveRobotCredentials({ authInfo: guest, robotName: 'default', createAgentClient: factory })).code, 'GIT_SIGN_IN_REQUIRED');
-    assert.equal((await deleteRobotCredentials({ authInfo: guest, robotName: 'default', createAgentClient: factory })).code, 'GIT_SIGN_IN_REQUIRED');
+    assert.equal((await saveRobotCredentials({ authInfo: guest, robotId: 'r1', createAgentClient: factory })).code, 'GIT_SIGN_IN_REQUIRED');
+    assert.equal((await deleteRobotCredentials({ authInfo: guest, robotId: 'r1', createAgentClient: factory })).code, 'GIT_SIGN_IN_REQUIRED');
 });
 
 test('save reads the token from DPU, sends it only to RoboTeam and never returns it', async () => {
@@ -133,7 +133,7 @@ test('save reads the token from DPU, sends it only to RoboTeam and never returns
     const result = await saveRobotCredentials({
         authInfo: userAuthInfo(),
         workspaceRoot: '/workspace',
-        robotName: 'default',
+        robotId: 'r1',
         name: 'Alice Doe',
         email: 'alice@example.com',
         createAgentClient: factory,
@@ -149,7 +149,7 @@ test('save reads the token from DPU, sends it only to RoboTeam and never returns
     assert.equal(calls[0].tool, 'robot_git_credentials_save');
     assert.equal(calls[0].options.userDelegationToken, 'roboteam-delegation');
     assert.deepEqual(calls[0].args, {
-        robotName: 'default', token: TOKEN, githubLogin: 'alice-gh', name: 'Alice Doe', email: 'alice@example.com'
+        robotId: 'r1', token: TOKEN, githubLogin: 'alice-gh', name: 'Alice Doe', email: 'alice@example.com'
     });
     assert.equal(result.ok, true);
     assert.deepEqual(result.robot, { id: 'r1', name: 'default', isDefault: true });
@@ -162,7 +162,7 @@ test('save uses the GitHub profile of a manual token and the profile name/email 
     const { factory, calls } = fakeAgentClient(() => jsonResult({ ok: true, robot: { id: 'r1', name: 'default' }, metadata: {} }));
     const result = await saveRobotCredentials({
         authInfo: userAuthInfo(),
-        robotName: 'default',
+        robotId: 'r1',
         createAgentClient: factory,
         readStoredToken: async () => TOKEN,
         getConnectionUser: async () => ({ source: 'token', user: { login: '', name: '', email: '' } }),
@@ -181,18 +181,18 @@ test('save uses the GitHub profile of a manual token and the profile name/email 
 test('save refuses without a stored token or a confirmed GitHub login, before calling RoboTeam', async () => {
     const factory = async () => { throw new Error('should not be called'); };
     const missing = await saveRobotCredentials({
-        authInfo: userAuthInfo(), robotName: 'default', createAgentClient: factory, readStoredToken: async () => ''
+        authInfo: userAuthInfo(), robotId: 'r1', createAgentClient: factory, readStoredToken: async () => ''
     });
     assert.equal(missing.code, 'GIT_TOKEN_MISSING');
 
     const unreadable = await saveRobotCredentials({
-        authInfo: userAuthInfo(), robotName: 'default', createAgentClient: factory,
+        authInfo: userAuthInfo(), robotId: 'r1', createAgentClient: factory,
         readStoredToken: async () => { throw new Error('secret-store-client: missing DPU user delegation for GitHub token secret.'); }
     });
     assert.equal(unreadable.code, 'GIT_TOKEN_MISSING');
 
     const unknownLogin = await saveRobotCredentials({
-        authInfo: userAuthInfo(), robotName: 'default', createAgentClient: factory,
+        authInfo: userAuthInfo(), robotId: 'r1', createAgentClient: factory,
         readStoredToken: async () => TOKEN,
         getConnectionUser: async () => null,
         fetchProfile: async () => { throw new Error('Bad credentials'); }
@@ -212,7 +212,7 @@ test('ROBOT_CREDENTIALS_OCCUPIED is returned as a structured result in every Rob
     for (const respond of shapes) {
         const { factory } = fakeAgentClient(respond);
         const result = await saveRobotCredentials({
-            authInfo: userAuthInfo(), robotName: 'default', createAgentClient: factory,
+            authInfo: userAuthInfo(), robotId: 'r1', createAgentClient: factory,
             readStoredToken: async () => TOKEN,
             getConnectionUser: async () => ({ source: 'github', user: { login: 'alice-gh' } })
         });
@@ -225,7 +225,7 @@ test('ROBOT_CREDENTIALS_OCCUPIED is returned as a structured result in every Rob
 test('a RoboTeam error that echoes the token is redacted', async () => {
     const { factory } = fakeAgentClient(() => jsonResult({ ok: false, code: 'ROBOT_CREDENTIALS_INVALID', error: `token ${TOKEN} is invalid` }));
     const result = await saveRobotCredentials({
-        authInfo: userAuthInfo(), robotName: 'default', createAgentClient: factory,
+        authInfo: userAuthInfo(), robotId: 'r1', createAgentClient: factory,
         readStoredToken: async () => TOKEN,
         getConnectionUser: async () => ({ source: 'github', user: { login: 'alice-gh' } })
     });
@@ -236,13 +236,13 @@ test('a RoboTeam error that echoes the token is redacted', async () => {
 
 test('delete proxies robot_git_credentials_delete and maps forbidden and not-found errors', async () => {
     const { factory, calls } = fakeAgentClient(() => jsonResult({ ok: true, robot: { id: 'r2', name: 'builder' }, deleted: true }));
-    const deleted = await deleteRobotCredentials({ authInfo: userAuthInfo(), robotName: 'builder', createAgentClient: factory });
+    const deleted = await deleteRobotCredentials({ authInfo: userAuthInfo(), robotId: 'r2', createAgentClient: factory });
     assert.equal(calls[0].tool, 'robot_git_credentials_delete');
-    assert.deepEqual(calls[0].args, { robotName: 'builder' });
+    assert.deepEqual(calls[0].args, { robotId: 'r2' });
     assert.deepEqual(deleted, { ok: true, robot: { id: 'r2', name: 'builder', isDefault: false }, deleted: true });
 
     const forbidden = await deleteRobotCredentials({
-        authInfo: userAuthInfo(), robotName: 'builder',
+        authInfo: userAuthInfo(), robotId: 'r2',
         createAgentClient: fakeAgentClient(() => jsonResult({ ok: false, code: 'ROBOT_CREDENTIALS_FORBIDDEN', error: 'Only bob or an administrator can remove the git credentials of robot builder.' })).factory
     });
     assert.equal(forbidden.code, 'ROBOT_CREDENTIALS_FORBIDDEN');
@@ -276,7 +276,7 @@ test('mcp-config declares the robot credential tools with scoped delegations', a
             assert.equal(dpu, undefined);
         }
     }
-    assert.equal(byName.get('git_robot_credentials_save').inputSchema.robotName.optional, false);
+    assert.equal(byName.get('git_robot_credentials_save').inputSchema.robotId.optional, false);
     assert.equal(byName.get('git_robot_credentials_save').inputSchema.token, undefined);
 });
 

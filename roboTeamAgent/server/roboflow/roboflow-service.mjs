@@ -347,7 +347,7 @@ export class RoboFlowService {
         const started = new Map();
         for (const instance of active) if (instance.runtimeTaskId) {
             this.bindings.delete(instance.runtimeTaskId);
-            const robot = await this.robotStore.getByName(instance.robotName);
+            const robot = await this.robotStore.get(instance.robotId);
             if (robot) {
                 const runtime = this.runtimeManager.taskStatus?.(robot.id, instance.runtimeTaskId);
                 if (runtime?.startedAt) started.set(instance.id, runtime.startedAt);
@@ -391,7 +391,7 @@ export class RoboFlowService {
             const results = await Promise.allSettled(children.map(child => this.terminateFlow(child)));
             for (const visit of flow.instances) if (visit.runtimeTaskId && !['completed', 'failed'].includes(visit.state)) {
                 this.bindings.delete(visit.runtimeTaskId);
-                const robot = await this.robotStore.getByName(visit.robotName);
+                const robot = await this.robotStore.get(visit.robotId);
                 if (robot) results.push(await Promise.resolve().then(() => this.runtimeManager.stopTask(
                     robot, EXECUTION_TASK_TYPES[visit.executionType], visit.runtimeTaskId))
                     .then(value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason })));
@@ -437,7 +437,7 @@ export class RoboFlowService {
             throw Object.assign(invalid('only a running phase accepts a live prompt; continue it instead'), { liveOutcome: 'run_ended' });
         }
         const message = textField(prompt, 'prompt', 32768, true);
-        const robot = await this.robotStore.getByName(instance.robotName);
+        const robot = await this.robotStore.get(instance.robotId);
         if (!robot) throw new Error('Robot is unavailable');
         const delivery = await this.runtimeManager.sendTaskMessage(robot, instance.runtimeTaskId, message);
         await this.store.writeOutput(id, instanceId, `\n${message.split(/\r?\n/).map(line => `you> ${line}`).join('\n')}\n\n`);
@@ -469,7 +469,7 @@ export class RoboFlowService {
             await this._dispatch(id, instanceId, message);
             return this.getFlow(id);
         }
-        const robot = await this.robotStore.getByName(instance.robotName);
+        const robot = await this.robotStore.get(instance.robotId);
         if (!robot) throw new Error('Robot is unavailable');
         const previous = { runtimeTaskId: instance.runtimeTaskId, state: instance.state, error: instance.error, endedAt: instance.endedAt };
         const runtimeTaskId = crypto.randomUUID();
@@ -670,7 +670,7 @@ export class RoboFlowService {
     async generateWorkflow(input, { signal } = {}) {
         const description = textField(input.description, 'description', 32768, true);
         const catalog = await this.catalog();
-        const robot = await this.robotStore.getByName('default');
+        const robot = await this.robotStore.getDefault();
         if (!robot) throw new Error('Default robot is unavailable');
         const cwd = await this.generationCwd(input.folder);
         const runtimeTaskId = crypto.randomUUID();
@@ -695,7 +695,7 @@ export class RoboFlowService {
     async startGeneration(input) {
         const description = textField(input.description, 'description', 32768, true);
         const catalog = await this.catalog();
-        const robot = await this.robotStore.getByName('default');
+        const robot = await this.robotStore.getDefault();
         if (!robot) throw new Error('Default robot is unavailable');
         const cwd = await this.generationCwd(input.folder);
         const record = { id: crypto.randomUUID(), runtimeTaskId: crypto.randomUUID(), robotId: robot.id,

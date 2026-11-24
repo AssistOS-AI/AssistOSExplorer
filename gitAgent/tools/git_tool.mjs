@@ -319,8 +319,8 @@ function normalizeArgs(toolName, args) {
       return input;
     case 'git_robot_credentials_save':
     case 'git_robot_credentials_delete':
-      if (!input.robotName || typeof input.robotName !== 'string') {
-        throw new Error(`${toolName} requires a "robotName" string.`);
+      if (!input.robotId || typeof input.robotId !== 'string') {
+        throw new Error(`${toolName} requires a "robotId" string.`);
       }
       input.name = typeof input.name === 'string' ? input.name : '';
       input.email = typeof input.email === 'string' ? input.email : '';
@@ -424,13 +424,13 @@ async function main() {
         writeJson(await saveRobotCredentials({
           authInfo,
           workspaceRoot,
-          robotName: payload.robotName,
+          robotId: payload.robotId,
           name: payload.name,
           email: payload.email
         }));
         return;
       case 'git_robot_credentials_delete':
-        writeJson(await deleteRobotCredentials({ authInfo, robotName: payload.robotName }));
+        writeJson(await deleteRobotCredentials({ authInfo, robotId: payload.robotId }));
         return;
       case 'git_info':
         result = await gitService.gitInfo(payload);

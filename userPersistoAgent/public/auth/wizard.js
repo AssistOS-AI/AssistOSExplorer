@@ -436,7 +436,8 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
                 if (renderedWidth === width && mount.container.hasChildNodes?.()) return;
                 renderedWidth = width;
                 mount.container.replaceChildren();
-                sdk.renderButton(mount.container, { type: 'standard', theme: 'outline', size: 'large', text: 'signin_with', width });
+                // Google personalizes a large button ("Sign in as <name>"); medium always shows "Sign in with Google".
+                sdk.renderButton(mount.container, { type: 'standard', theme: 'outline', size: 'medium', text: 'signin_with', width });
             };
             render();
             if (typeof ResizeObserver === 'function') {

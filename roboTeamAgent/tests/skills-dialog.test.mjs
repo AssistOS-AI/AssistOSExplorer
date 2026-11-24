@@ -59,8 +59,12 @@ test('administrator mutations retain the existing API and built-in sources canno
 test('mutations preserve selection, open the newly added source and leave required skill reads view-only', () => {
     assert.match(manager, /selectedId = added\.id; view = 'repository'/);
     assert.match(manager, /if \(!repos\.some\(repo => repo\.id === selectedId\)\) selectedId = repos\[0\]\?\.id/);
-    assert.match(manager, /const updated = result\.robots\.find/);
-    assert.ok(manager.indexOf('if (!updated) throw') < manager.indexOf('current = updated'));
+    // A toggle uses the robot the change answers with and never reloads every robot or the page behind the dialog.
+    assert.match(manager, /response\?\.robot\?\.id === robot\.id \? response\.robot/);
+    assert.ok(manager.indexOf('if (!updated) throw') < manager.indexOf('current = { ...current, ...updated }'));
+    const mutation = manager.slice(manager.indexOf('async function mutate('), manager.indexOf('const cleanup = '));
+    assert.doesNotMatch(mutation.slice(0, mutation.indexOf('finally')), /onChanged\(/);
+    assert.match(manager, /if \(changed\) \{ changed = false; void onChanged\(\); \}/);
     assert.match(manager, /const scrollTop = contentPane\.scrollTop/);
     assert.match(manager, /contentPane\.scrollTop = scrollTop/);
     assert.match(manager, /target\?\.focus\(\{ preventScroll: true \}\)/);
@@ -93,4 +97,13 @@ test('the add popup preserves the selected view, contains errors, blocks duplica
     assert.match(manager, /addDialog\.addEventListener\('close', \(\) => addTrigger\.setAttribute\('aria-expanded', 'false'\)\)/);
     assert.match(css, /\.skills-add-dialog \{[^}]*max-height: min\(720px, calc\(100dvh - 48px\)\)/);
     assert.match(css, /\.skills-add-content \{[^}]*overflow: auto/);
+});
+
+test('the coding agent dialog flags an agent without a stored login and opens it in the robot terminal', () => {
+    // OpenCode runs through Soul Gateway, so only the other agents need a login; logins reach administrators only.
+    assert.match(source, /selected !== 'opencode' && logins\[selected\] !== true/);
+    assert.match(source, /let logins = robot\.codingAgentLogins \|\| null/);
+    assert.match(source, /openRobotTerminal\(robot, api, \{ codingAgent: selected,/);
+    assert.match(source, /class="button secondary coding-agent-login-check">Check again/);
+    assert.match(source, /updated\?\.codingAgentLogins\) logins = updated\.codingAgentLogins/);
 });

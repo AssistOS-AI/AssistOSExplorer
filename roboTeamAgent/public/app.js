@@ -165,13 +165,43 @@ async function stopRobot(robot, button) {
     }
 }
 
-// Git credentials a robot holds: GitHub login, saving workspace user and date only; the token never reaches the page.
+// Git credentials a robot holds: the GitHub account stays on the card; who saved them and when are in the details.
+// The token never reaches the page.
 function gitCredentialsLabel(credentials) {
-    const savedAt = credentials.savedAt ? new Date(credentials.savedAt) : null;
-    const date = savedAt && !Number.isNaN(savedAt.getTime()) ? ` · ${savedAt.toLocaleDateString()}` : '';
-    const saver = credentials.savedBy?.username || credentials.savedBy?.id || 'unknown user';
-    const label = `GitHub: ${credentials.githubLogin || 'unknown account'} · saved by ${saver}${date}`;
+    const label = `GitHub: ${credentials.githubLogin || 'unknown account'}`;
     return credentials.readable === false ? `${label} (unreadable; save them again)` : label;
+}
+
+function gitCredentialsDetails(credentials) {
+    if (credentials?.configured !== true) return 'GitHub: no credentials';
+    const savedAt = credentials.savedAt ? new Date(credentials.savedAt) : null;
+    const date = savedAt && !Number.isNaN(savedAt.getTime()) ? ` on ${savedAt.toLocaleString()}` : '';
+    const saver = credentials.savedBy?.username || credentials.savedBy?.id || 'unknown user';
+    return `GitHub: ${credentials.githubLogin || 'unknown account'}, saved by ${saver}${date}`;
+}
+
+// The active coding agent with the model and effort it runs with; an agent without a chosen model uses its own default.
+function showRobotCodingSettings(card, robot, codingAgents) {
+    const agent = robot.codingAgent || codingAgents[0];
+    card.querySelector('.robot-agent-chip').textContent = codingAgentLabel([agent]);
+    // null is the agent's own default; a missing field is a service that does not report the model yet.
+    const model = card.querySelector('.robot-model-chip');
+    model.hidden = robot.codingModel === undefined;
+    model.textContent = robot.codingModel || 'default model';
+    model.classList.toggle('muted', !robot.codingModel);
+    const effort = card.querySelector('.robot-effort-chip');
+    effort.hidden = !robot.codingEffort;
+    effort.textContent = robot.codingEffort ? `effort: ${robot.codingEffort}` : '';
+}
+
+// The robot's id and the less frequent details, shown when the pointer or focus is on the info icon.
+function showRobotDetails(card, robot, codingAgents) {
+    const lines = [`ID: ${robot.id}`];
+    if (codingAgents.length > 1) lines.push(`Enabled coding agents: ${codingAgentLabel(codingAgents)}`);
+    if (robot.gitCredentials) lines.push(gitCredentialsDetails(robot.gitCredentials));
+    const details = card.querySelector('.robot-details');
+    details.querySelector('.robot-details-tip').textContent = lines.join('\n');
+    details.setAttribute('aria-label', `Details of ${robot.name}: ${lines.join('; ')}`);
 }
 
 function showRobotGitCredentials(card, robot) {
@@ -223,6 +253,77 @@ robotLoginFilter.addEventListener('change', () => updateRobotFilters({ login: ro
 robotAgentFilter.addEventListener('change', () => updateRobotFilters({ agent: robotAgentFilter.value }));
 document.querySelector('#robotFilterClear').addEventListener('click', () => updateRobotFilters({ query: '', login: '', agent: '' }));
 
+// Mirrors server/robot-email.mjs: a robot whose name is an email address uses it as its mailbox in Browser and
+// Desktop tasks, so renaming such a robot also changes the address it presents.
+const EMAIL_NAME = /^[^\s@]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/u;
+
+const renameDialog = document.querySelector('#renameRobotDialog');
+const renameForm = document.querySelector('#renameRobotForm');
+const renameInput = renameForm.querySelector('input[name="name"]');
+const renameNote = document.querySelector('#renameRobotNote');
+const renameMessage = document.querySelector('#renameRobotMessage');
+let renameTarget = null;
+let renameBusy = false;
+
+// The note appears while the old or the typed name is an email address, so the person sees the mailbox effect before
+// renaming, without a second confirmation.
+function updateRenameNote() {
+    const name = renameInput.value.trim();
+    const changesAddress = renameTarget && name && name !== renameTarget.name
+        && (EMAIL_NAME.test(renameTarget.name) || EMAIL_NAME.test(name));
+    renameNote.hidden = !changesAddress;
+    if (!changesAddress) return;
+    renameNote.textContent = `A robot whose name is an email address uses it as its own mailbox in Browser and Desktop tasks. After the rename it `
+        + `${EMAIL_NAME.test(name) ? `presents itself as ${name}` : 'no longer has an email address'}, even if its Chromium is still signed in to `
+        + `${EMAIL_NAME.test(renameTarget.name) ? renameTarget.name : 'another mailbox'}.`;
+}
+
+function closeRenameDialog() {
+    if (renameBusy || !renameDialog.open) return;
+    renameDialog.close();
+    renameTarget?.button.focus();
+    renameTarget = null;
+}
+
+function renameRobot(robot, button) {
+    renameTarget = { id: robot.id, name: robot.name, button };
+    renameInput.value = robot.name;
+    renameMessage.textContent = '';
+    renameMessage.className = 'message';
+    updateRenameNote();
+    renameDialog.showModal();
+    renameInput.select();
+}
+
+renameInput.addEventListener('input', updateRenameNote);
+document.querySelector('#renameRobotClose').addEventListener('click', closeRenameDialog);
+document.querySelector('#renameRobotCancel').addEventListener('click', closeRenameDialog);
+renameDialog.addEventListener('cancel', event => { event.preventDefault(); closeRenameDialog(); });
+renameForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!renameTarget || renameBusy) return;
+    const name = renameInput.value.trim();
+    if (name === renameTarget.name) return closeRenameDialog();
+    renameBusy = true;
+    renameDialog.setAttribute('aria-busy', 'true');
+    for (const control of renameForm.querySelectorAll('button, input')) control.disabled = true;
+    try {
+        await api(`api/robots/${encodeURIComponent(renameTarget.id)}/name`, { method: 'PATCH', body: { name } });
+        formMessage.textContent = `Robot ${renameTarget.name} renamed to ${name}.`;
+        formMessage.className = 'message success';
+        renameBusy = false;
+        closeRenameDialog();
+        await loadRobots();
+    } catch (error) {
+        renameMessage.textContent = error.message;
+        renameMessage.className = 'message error';
+    } finally {
+        renameBusy = false;
+        renameDialog.setAttribute('aria-busy', 'false');
+        for (const control of renameForm.querySelectorAll('button, input')) control.disabled = false;
+    }
+});
+
 function renderRobots(robots, canAdmin = false, total = robots.length) {
     robotsList.replaceChildren();
     robotCount.textContent = `${total} ${total === 1 ? 'robot' : 'robots'}`;
@@ -246,10 +347,17 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
             finally { terminalButton.disabled = false; }
         });
         card.querySelector('.open-chat').addEventListener('click', () => {
-            const params = new URLSearchParams({ agent: routeKey, robot: robot.name, 'workspace-dir': `achilles-cli/${robot.id}`, 'forward-envelope': '1' });
+            // robot-id selects the robot; robot is only the label WebChat shows.
+            // The default robot, whose name never changes, keeps achilles-cli/default, the folder Explorer opens too.
+            const params = new URLSearchParams({ agent: routeKey, 'robot-id': robot.id, robot: robot.name,
+                'workspace-dir': `achilles-cli/${robot.name === 'default' ? 'default' : robot.id}`, 'forward-envelope': '1' });
             window.open(`/webchat?${params}`, '_blank', 'noopener');
         });
         card.querySelector('.manage-skills').addEventListener('click', () => openSkillsDialog(robot, { api, onChanged: loadRobots, canAdmin }));
+        const renameButton = card.querySelector('.rename-robot');
+        // The default robot keeps its name; the server refuses its rename as well.
+        renameButton.hidden = !(canAdmin && robot.name !== 'default');
+        renameButton.addEventListener('click', () => renameRobot(robot, renameButton));
         const deleteButton = card.querySelector('.delete-robot');
         // The default robot is permanent; the server refuses its deletion as well.
         const deletable = canAdmin && robot.name !== 'default';
@@ -268,10 +376,10 @@ function renderRobots(robots, canAdmin = false, total = robots.length) {
         });
         card.querySelector('.avatar').textContent = initials(robot.name);
         card.querySelector('h3').textContent = robot.name;
-        card.querySelector('.robot-id').textContent = robot.id;
-        const codingAgents = robot.codingAgents || ['codex', 'opencode', 'pi', 'omp', 'claude'];
+        const codingAgents = robot.codingAgents || ['codex', 'opencode', 'pi', 'omp', 'claude', 'vibe', 'agy'];
         const agentLine = card.querySelector('.active-coding-agent');
-        agentLine.textContent = `Coding agent: ${codingAgentLabel(codingAgents)}`;
+        showRobotCodingSettings(card, robot, codingAgents);
+        showRobotDetails(card, robot, codingAgents);
         const logins = loginSummary(robot);
         if (logins) {
             const marker = document.createElement('span');

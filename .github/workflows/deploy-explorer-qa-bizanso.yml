@@ -186,11 +186,11 @@ jobs:
             echo "[qa] ERROR: the workspace is not an existing real directory: $WORK_DIR"
             exit 1
           fi
-          # The older workflows park the router access policy and an install marker here, and only they
-          # restore them. Running over that state would silently lose the policy.
+          # The removed non-Ploinky workflows parked the router access policy and an install marker here, and only
+          # they restored them. Running over that state would silently lose the policy.
           STATE_DIR=/home/admin/.qa-deployment-state
           if [ -e "$STATE_DIR" ] && [ -n "$(ls -A "$STATE_DIR")" ]; then
-            echo "[qa] ERROR: $STATE_DIR holds state from deploy-explorer-qa.yml. Dispatch that workflow to finish it first."
+            echo "[qa] ERROR: $STATE_DIR holds state parked by the removed non-Ploinky QA workflows. No tracked workflow finishes it: restore that workflow from history through the reviewed change process first."
             exit 1
           fi
           for tool in git node curl podman flock; do
@@ -1186,7 +1186,7 @@ jobs:
             echo "- Image: \`${BIZANSO_IMAGE:-not-resolved}\`"
             echo "- Restart scope and result: the \`restart scope\` and \`restart result\` lines of the deploy step"
             echo "- A whole-workspace restart interrupts in-flight robot work on QA"
-            echo "- Concurrency: any dispatch in the group \`deploy-explorer-qa\` (the full QA deploys, both destroys, the ScriptaHub workflow) cancels a queued, not running, run of the same group"
+            echo "- Concurrency: any dispatch in the group \`deploy-explorer-qa\` (the Ploinky-command deploy, its destroy, the ScriptaHub workflow, the image cleanup) cancels a queued, not running, run of the same group"
             echo "- Bizanso: \`${PUBLIC_URL}/base-agent-additional-server/bizanso/8787/\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
