@@ -45,7 +45,7 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
         || descriptor.stub.dev !== stat.dev || descriptor.stub.ino !== stat.ino
         || selectedStat.dev !== stat.dev || selectedStat.ino !== stat.ino) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
     const directory = await fs.realpath(cwd);
-    descriptor.cwd = directory === stub || directory === selectedHome ? null : await paths.interactiveCwd(directory);
+    descriptor.cwd = directory === stub || directory === selectedHome ? null : await paths.interactiveCwd(directory, { allowWorkspaceRoot: true });
     descriptor.cwdIdentity = descriptor.cwd ? await paths.identity(descriptor.cwd, 'cwd') : null;
     // The service computes the view once. A terminal inside a container cannot: its `.env` is already a character device.
     descriptor.workspaceView = await paths.workspaceView(id);
@@ -54,7 +54,7 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
 
 // A coding agent profile replaces the interactive shell with that agent. A login shell still runs first, so the agent
 // gets the same robot profile (`.roboteam-env.sh`) as the agent typed in the robot shell.
-export function shellArguments(shell, descriptor) {
+export function shellArguments(shell, descriptor, buildInteractiveCommand) {
     const login = shell.endsWith('/bash') ? '--login' : '-l';
     if (!descriptor.codingAgent) return shell.endsWith('/bash') ? ['--login', '-i'] : ['-i'];
     if (!CODING_AGENT_NAMES.includes(descriptor.codingAgent)) throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
@@ -63,7 +63,10 @@ export function shellArguments(shell, descriptor) {
     if (!Array.isArray(args) || args.length > 8 || args.some(arg => typeof arg !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(arg))) {
         throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable');
     }
-    return [login, '-c', 'exec "$0" "$@"', path.join(descriptor.binPath, descriptor.codingAgent), ...args];
+    if (typeof buildInteractiveCommand !== 'function') throw fail('PROFILE_REFUSED', 'ALA interactive launcher is unavailable');
+    const command = buildInteractiveCommand({ agent: descriptor.codingAgent,
+        binary: path.join(descriptor.binPath, descriptor.codingAgent), args });
+    return [login, '-c', 'exec "$0" "$@"', ...command];
 }
 
 export async function buildShellSandbox(descriptor, { loadSandbox = async entry => import(pathToFileURL(path.join(path.dirname(path.dirname(entry)), 'src/coding-agents/sandbox.mjs')).href) } = {}) {
@@ -78,7 +81,10 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
     const shell = await fs.access('/bin/bash', fs.constants.X_OK).then(() => '/bin/bash', () => '/bin/sh');
     // The workspace is read-only at its canonical path with its private entries masked. In a container Podman has made the
     // masks, and ALA could not name a character device again, so the sandbox inside receives the root and `.roboteam` only.
-    const shown = alaWorkspaceOptions(descriptor.workspaceView, { cwd: descriptor.cwd, environment: Boolean(descriptor.innerEnvironment) });
+    if (descriptor.cwd === descriptor.workspaceRoot && descriptor.workspaceView?.root !== descriptor.cwd) {
+        throw fail('WORKSPACE_UNAVAILABLE', 'The workspace root cannot be safely masked');
+    }
+    const shown = alaWorkspaceOptions(descriptor.workspaceView, { cwd: descriptor.cwd, environment: Boolean(descriptor.innerEnvironment), allowWorkspaceRoot: true });
     const folders = [...shown.folders, { source: descriptor.cacheRoot, target: descriptor.cacheRoot },
         { source: descriptor.innerEnvironment ? '/workspace/roboteam-soul' : path.join(descriptor.robotsDir, descriptor.id, 'run/soul'),
             target: '/workspace/roboteam-soul' }];
@@ -87,7 +93,7 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
     const pin = descriptor.cwd ? api.pinDirectory(descriptor.cwd, descriptor.cwdIdentity) : null;
     if (descriptor.cwd) await fs.mkdir(path.join(descriptor.cwd, '.roboteam'), { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
     const args = api.buildSandboxArgs({ workspace: descriptor.cwd || home, workspaceTarget: cwd, ...(pin ? { workspaceFd: pin.fd } : {}), ignoredPaths: shown.ignoredPaths,
-        binary: shell, args: shellArguments(shell, descriptor), env, bwrap,
+        binary: shell, args: shellArguments(shell, descriptor, api.buildInteractiveCommand), env, bwrap,
         privateProc: true, home, folders, chdir: cwd, newSession: false });
     // Tool paths are service-selected. Every parent credential and environment value is discarded.
     const boundary = args.indexOf('--');
@@ -165,7 +171,7 @@ export async function main() {
         process.exitCode = await run(launch, { inner });
     } catch (error) {
         process.stderr.write(error?.code === 'CWD_REFUSED'
-            ? 'A robot terminal cannot open here. Open it in a project folder below the workspace root, or in the robot home.\n'
+            ? 'A robot terminal cannot open here. Open it in the workspace root, a non-private project folder, or the robot home.\n'
             : 'Robot terminal could not start safely. Close this tab and retry.\n');
         process.exitCode = 124;
     } finally {

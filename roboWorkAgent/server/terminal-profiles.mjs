@@ -142,10 +142,10 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
     // The same check the robot terminal makes once it starts, answered before anything opens.
     async function requireWorkingFolder(directory) {
         try {
-            await paths.interactiveCwd(directory ? path.join(paths.workspaceRoot, ...directory.split('/')) : paths.workspaceRoot);
+            await paths.interactiveCwd(directory ? path.join(paths.workspaceRoot, ...directory.split('/')) : paths.workspaceRoot, { allowWorkspaceRoot: true });
         } catch (error) {
             throw fail('CWD_REFUSED', `A robot cannot open in ${directory || 'the workspace root'} (${error.message}). `
-                + 'Run the command from a project folder inside the workspace, for example `cd <project>`.', 409);
+                + 'Choose the workspace root or a non-private folder inside the workspace.', 409);
         }
     }
 

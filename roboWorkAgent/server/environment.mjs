@@ -198,7 +198,7 @@ export class EnvironmentManager {
         }
         // The workspace is mounted before the folders, so the working folder is mounted over it. Podman applies `ro` to the top
         // mount only: the writable submounts of the root and the masks are named here.
-        launch.push(...podmanWorkspaceArguments(workspace, { cwd: directory === homeTarget ? undefined : directory }));
+        launch.push(...podmanWorkspaceArguments(workspace, { cwd: directory === homeTarget ? undefined : directory, allowWorkspaceRoot: tty }));
         // A folder a robot can write is mounted through a descriptor checked against its grant.
         const granted = [...(cwd ? [{ source: directory, target: directory, readOnly: false, identity: cwdIdentity }] : []), ...folders];
         const pins = [];

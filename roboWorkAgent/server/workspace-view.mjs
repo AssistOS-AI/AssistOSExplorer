@@ -144,9 +144,10 @@ function assertView(view) {
     }
 }
 
-// A mask that holds the working folder, or lies inside it, would hide it or be covered by it.
-function assertClear(view, cwd) {
-    if (cwd && view.masks.some(entry => overlaps(entry.path, cwd))) throw unavailable('A workspace mask overlaps the working folder');
+// Root terminals keep descendant masks over their writable cwd. Other callers still reject any overlap.
+function assertClear(view, cwd, allowWorkspaceRoot = false) {
+    const terminalRoot = allowWorkspaceRoot && cwd === view.root;
+    if (cwd && view.masks.some(entry => terminalRoot ? within(entry.path, cwd) : overlaps(entry.path, cwd))) throw unavailable('A workspace mask overlaps the working folder');
 }
 
 // OpenCode reads every `.opencode` from its cwd up to the root and stops with an error when it cannot write the `.gitignore`
@@ -176,27 +177,28 @@ function shadowedOpencode(view, cwd) {
 
 // Arguments for ALA, native or inside an Environment. A native run masks through ALA. An Environment container already
 // carries its masks and shadows from Podman, where a character device cannot be named again as an ignored path.
-export function alaWorkspaceOptions(view, { cwd, home, environment = false } = {}) {
-    assertView(view); assertClear(view, cwd);
+export function alaWorkspaceOptions(view, { cwd, home, environment = false, allowWorkspaceRoot = false } = {}) {
+    assertView(view); assertClear(view, cwd, allowWorkspaceRoot);
     // The folder's private project data holds records RoboTeam reads back; it comes first, as it always has. The robot home
     // has none to mask.
     const ignoredPaths = cwd && cwd !== home ? [path.join(cwd, '.roboteam')] : [];
     if (!environment) ignoredPaths.push(...view.masks.map(entry => entry.path));
     const shadows = environment ? [] : shadowedOpencode(view, cwd).map(target => ({ source: OPENCODE_SHADOW, target, expose: true }));
-    return { folders: view.root ? [{ source: view.root }, ...shadows] : [], ignoredPaths };
+    return { folders: view.root && cwd !== view.root ? [{ source: view.root }, ...shadows] : [], ignoredPaths };
 }
 
 // Podman arguments for a container that holds the view. `ro` covers only the top mount there, so every writable submount of
 // the root is mounted read-only again; the masks are empty read-only mounts, and the working folder is mounted after them.
-export function podmanWorkspaceArguments(view, { cwd, volumeFlag = '--volume' } = {}) {
-    assertView(view); assertClear(view, cwd);
+export function podmanWorkspaceArguments(view, { cwd, volumeFlag = '--volume', allowWorkspaceRoot = false } = {}) {
+    assertView(view); assertClear(view, cwd, allowWorkspaceRoot);
     const named = value => {
         if (/[:,\n\r\0]/u.test(value)) throw unavailable('A workspace path cannot be passed to a container');
         return value;
     };
     const { root } = view;
     if (!root) return [];
-    const args = [volumeFlag, `${named(root)}:${root}:ro,rbind`];
+    // A root terminal supplies its single writable root mount through the pinned cwd descriptor.
+    const args = allowWorkspaceRoot && cwd === root ? [] : [volumeFlag, `${named(root)}:${root}:ro,rbind`];
     for (const submount of view.writableSubmounts) {
         if (cwd && within(cwd, submount)) continue;
         args.push(volumeFlag, `${named(submount)}:${submount}:ro`);
