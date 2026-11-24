@@ -66,6 +66,7 @@ jobs:
           SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
           BIZANSO_DEPLOY_KEY: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}
           PROMOTIONSCOUT_DEPLOY_KEY: ${{ secrets.EXPLORER_QA_PROMOTIONSCOUT_DEPLOY_KEY }}
+          CSVMAIL_DEPLOY_KEY: ${{ secrets.EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
@@ -81,6 +82,10 @@ jobs:
           fi
           if [ -z "${PROMOTIONSCOUT_DEPLOY_KEY:-}" ]; then
             echo "::error::Missing required repository secret EXPLORER_QA_PROMOTIONSCOUT_DEPLOY_KEY"
+            exit 1
+          fi
+          if [ -z "${CSVMAIL_DEPLOY_KEY:-}" ]; then
+            echo "::error::Missing required repository secret EXPLORER_QA_CSVMAIL_DEPLOY_KEY"
             exit 1
           fi
           if [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
@@ -420,6 +425,33 @@ jobs:
           path: .qa-promotionscout-source
           persist-credentials: false
           fetch-depth: 0
+
+      # Same rule: the key stays on the runner. Only the agent folder is copied into the Box later, so the shared
+      # campaign data the repository also tracks under data/ never reaches the QA host.
+      - name: Check out simpleCSVMailSend
+        uses: actions/checkout@v4
+        with:
+          repository: Axiologic/simpleCSVMailSend
+          ssh-key: ${{ secrets.EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}
+          path: .qa-csvmail-source
+          persist-credentials: false
+
+      # No SSH here: a source without the agent folder is refused before anything on the host changes.
+      - name: Resolve the CSV Mail source
+        run: |
+          set -euo pipefail
+          SOURCE="$GITHUB_WORKSPACE/.qa-csvmail-source"
+          COMMIT="$(git -C "$SOURCE" rev-parse HEAD)"
+          if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The simpleCSVMailSend checkout has no 40-hex HEAD commit"
+            exit 1
+          fi
+          if ! git -C "$SOURCE" cat-file -e "$COMMIT:csvMailAgent/manifest.json"; then
+            echo "::error::simpleCSVMailSend@$COMMIT has no csvMailAgent/manifest.json. Nothing was changed."
+            exit 1
+          fi
+          printf 'CSVMAIL_COMMIT=%s\n' "$COMMIT" >> "$GITHUB_ENV"
+          echo "[deploy-qa] simpleCSVMailSend resolved at $COMMIT."
 
       - name: Bootstrap the host and deploy through Ploinky commands
         env:
@@ -1155,7 +1187,7 @@ jobs:
                 echo "::error::Unexpected repository name in the listing."
                 exit 1
               fi
-              if [ "$repo" != bizanso ] && [ "$repo" != PromotionScoutV2 ]; then
+              if [ "$repo" != bizanso ] && [ "$repo" != PromotionScoutV2 ] && [ "$repo" != simpleCSVMailSend ]; then
                 ploinky_locked update repo "$repo"
               fi
             done
@@ -1248,7 +1280,7 @@ jobs:
             printf '%s' "$QA_USERPERSISTO_GOOGLE_CLIENT_ID" | ploinky_locked var USERPERSISTO_GOOGLE_CLIENT_ID --stdin
           fi
 
-          # Bizanso, PromotionScoutV2 and ScriptaHub live at the workspace root, where RoboTeam finds their flows and Ploinky prefers
+          # Bizanso, PromotionScoutV2, ScriptaHub and simpleCSVMailSend live at the workspace root, where RoboTeam finds their flows and Ploinky prefers
           # them. No Ploinky command places a repository there, so these steps run inside the Box, and never Git on
           # the host. A repository still in its earlier managed location is uninstalled first, which also disables
           # its agent and keeps its data; finding it in both places is left to an operator.
@@ -1257,7 +1289,7 @@ jobs:
             "${SSH[@]}" "exec flock -n -E 75 --close '$LOCK' podman container exec -i --user podman --workdir '$WORK_DIR' --env 'PLOINKY_WORKSPACE_ROOT=$WORK_DIR' ploinky-box-explorerqaworkspace-7a31ab7775eb sh -c '$1' sh"
           }
           MANAGED_PROGRAM='set -eu
-          for name in bizanso PromotionScoutV2 ScriptaHubAgent; do
+          for name in bizanso PromotionScoutV2 ScriptaHubAgent simpleCSVMailSend; do
             if [ -e ".ploinky/repos/$name" ]; then
               if [ -e "$name" ]; then echo "$name is both managed and at the workspace root" >&2; exit 1; fi
               echo "$name"
@@ -1319,15 +1351,32 @@ jobs:
           url=https://github.com/Axiologic/ScriptaHubAgent.git
           if [ ! -e ScriptaHubAgent ]; then git clone --quiet "$url" ScriptaHubAgent; fi
           test "$(git -C ScriptaHubAgent remote get-url origin)" = "$url"'
+          # simpleCSVMailSend is private too and is placed like Bizanso, as a copy with no Git metadata: CSV Mail keeps
+          # its sync clone in its own data directory and never reads Git in its code. Only csvMailAgent/ arrives, so
+          # the campaign data the repository tracks under data/ stays off the host. Its stage directory is separate,
+          # so Bizanso keeps its predecessor, and a tree without the agent manifest leaves the live copy in place.
+          CSVMAIL_PLACE_PROGRAM='set -eu
+          stage=$PWD/.ploinky/.qa-csvmail-copy
+          mkdir -p "$stage"
+          for stale in "$stage"/*; do
+            if [ -e "$stale" ] || [ -L "$stale" ]; then rm -rf -- "$stale"; fi
+          done
+          incoming=$(mktemp -d "$stage/incoming.XXXXXX")
+          tar -xf - -C "$incoming"
+          test "$(ls -A "$incoming")" = csvMailAgent
+          test -f "$incoming/csvMailAgent/manifest.json"
+          if [ -e simpleCSVMailSend ] || [ -L simpleCSVMailSend ]; then mv simpleCSVMailSend "$stage/previous"; fi
+          mv "$incoming" simpleCSVMailSend'
           # A plain assignment, because a failed command in a `for` list would not stop the run.
           MANAGED_LOCATIONS="$(run_in_box "$MANAGED_PROGRAM" < /dev/null)"
           for repo in $MANAGED_LOCATIONS; do
             case "$repo" in
-              bizanso|PromotionScoutV2|ScriptaHubAgent) ploinky_locked uninstall repo "$repo" ;;
+              bizanso|PromotionScoutV2|ScriptaHubAgent|simpleCSVMailSend) ploinky_locked uninstall repo "$repo" ;;
               *) echo "::error::Unexpected repository in the managed location check."; exit 1 ;;
             esac
           done
           git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive --format=tar HEAD | run_in_box "$COPY_PROGRAM"
+          git -C "$GITHUB_WORKSPACE/.qa-csvmail-source" archive --format=tar "$CSVMAIL_COMMIT" csvMailAgent | run_in_box "$CSVMAIL_PLACE_PROGRAM"
           PROMOTIONSCOUT_SOURCE="$GITHUB_WORKSPACE/.qa-promotionscout-source"
           PROMOTIONSCOUT_BRANCH="$(git -C "$PROMOTIONSCOUT_SOURCE" symbolic-ref --short HEAD)"
           git -C "$PROMOTIONSCOUT_SOURCE" bundle create - "refs/heads/$PROMOTIONSCOUT_BRANCH" | run_in_box "$BUNDLE_PROGRAM"
@@ -1335,13 +1384,19 @@ jobs:
           # END QA workspace repositories
           printf '%s' "$PUBLIC_URL/base-agent-additional-server/bizanso/8787" | ploinky_locked var BIZANSO_PUBLIC_LINK_BASE --stdin
 
-          # Bizanso, PromotionScoutV2 and ScriptaHub sit beside the Explorer graph, so they join the awaited runtimes only from here:
+          # Bizanso, PromotionScoutV2, ScriptaHub and CSV Mail sit beside the Explorer graph, so they join the awaited runtimes only from here:
           # a first start cannot wait for agents it has not been asked to run. `add repo` registers the checkouts
           # placed above. Enabling issues a new instance identity, so only a missing runtime is enabled.
+          # Bizanso lists CSV Mail among the agents it enables, but a start of the Explorer graph never reads that
+          # list, so CSV Mail is registered and enabled here, before Bizanso, as the Bizanso production deploy does.
+          ploinky_locked add repo https://github.com/Axiologic/simpleCSVMailSend.git simpleCSVMailSend
           ploinky_locked add repo https://github.com/Axiologic/bizanso.git bizanso
           ploinky_locked add repo https://github.com/AssistOS-AI/PromotionScoutV2.git PromotionScoutV2
           ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent
           ENABLED_STATES="$(ploinky_read status | sed 's/\x1b\[[0-9;]*m//g' | runtime_states)"
+          if ! grep -q '^csvMailAgent ' <<< "$ENABLED_STATES"; then
+            ploinky_locked enable agent simpleCSVMailSend/csvMailAgent
+          fi
           if ! grep -q '^bizanso ' <<< "$ENABLED_STATES"; then
             ploinky_locked enable agent bizanso/bizanso
           fi
@@ -1352,6 +1407,9 @@ jobs:
             ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent
           fi
           GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"
+          # A line of its own: the line above is shared byte for byte with the product workflows, which never place
+          # or enable CSV Mail.
+          GRAPH_RUNTIMES="$GRAPH_RUNTIMES csvMailAgent"
 
           # BEGIN QA ScriptaHub images
           # Both images are pinned to registry indexes resolved on the runner. The generic RoboTeam tag may
@@ -1583,6 +1641,27 @@ jobs:
             done
           done
 
+      # CSV Mail accepts only signed-in users, so without a session the Router answers its route with a redirect to
+      # the sign-in page. An unknown route answers 404 instead, so the redirect proves that the route is published.
+      # The runtime itself is proven by the awaited `csvMailAgent running` state of the deploy step.
+      - name: Verify CSV Mail
+        run: |
+          set -euo pipefail
+          route='/base-agent-additional-server/csvMailAgent/3100/'
+          expected="/auth/login?returnTo=%2Fbase-agent-additional-server%2FcsvMailAgent%2F3100%2F"
+          for attempt in $(seq 1 60); do
+            reply="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code} %header{location}' "${PUBLIC_URL%/}$route" || true)"
+            if [ "$reply" = "302 $expected" ]; then
+              echo "[deploy-qa] $route is published and asks for sign-in."
+              break
+            fi
+            if [ "$attempt" = '60' ]; then
+              echo "::error::$route was not published behind sign-in; last reply: ${reply:-none}"
+              exit 1
+            fi
+            sleep 5
+          done
+
       - name: Verify dedicated connector and protected Cloudflare topology
         if: always()
         env:
@@ -1703,6 +1782,7 @@ jobs:
             echo "- Public URL: \`${PUBLIC_URL}\`"
             echo "- Bizanso: \`${PUBLIC_URL}/base-agent-additional-server/bizanso/8787/\`"
             echo "- ScriptaHub: \`${PUBLIC_URL}/base-agent-additional-server/scriptahubAgent/3002/\`"
+            echo "- CSV Mail: \`${PUBLIC_URL}/base-agent-additional-server/csvMailAgent/3100/\` from simpleCSVMailSend \`${CSVMAIL_COMMIT:-not-resolved}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup

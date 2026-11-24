@@ -117,16 +117,20 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         '# BEGIN QA workspace repositories',
         'ploinky_locked uninstall repo "$repo"',
         '| run_in_box "$COPY_PROGRAM"',
+        '| run_in_box "$CSVMAIL_PLACE_PROGRAM"',
         '| run_in_box "$BUNDLE_PROGRAM"',
         'run_in_box "$CLONE_PROGRAM"',
         'ploinky_locked var BIZANSO_PUBLIC_LINK_BASE --stdin',
+        'ploinky_locked add repo https://github.com/Axiologic/simpleCSVMailSend.git simpleCSVMailSend',
         'ploinky_locked add repo https://github.com/Axiologic/bizanso.git bizanso',
         'ploinky_locked add repo https://github.com/AssistOS-AI/PromotionScoutV2.git PromotionScoutV2',
         'ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent',
+        'ploinky_locked enable agent simpleCSVMailSend/csvMailAgent',
         'ploinky_locked enable agent bizanso/bizanso',
         'ploinky_locked enable agent PromotionScoutV2/promotionScout',
         'ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent',
         'GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"',
+        'GRAPH_RUNTIMES="$GRAPH_RUNTIMES csvMailAgent"',
         'podman pull -q "$agent"',
         'podman pull -q "$robot"',
         'podman tag "$robot" docker.io/assistos/roboteam-agent:runtime',
@@ -152,8 +156,8 @@ test('deploy: the added agents are enabled only when missing and are awaited onl
     const graph = body.match(/GRAPH_RUNTIMES='([^']*)'/);
     assert.ok(graph);
     // The first start waits for this list before these agents have been enabled.
-    assert.doesNotMatch(graph[1], /bizanso|promotionScout|scriptahubAgent/);
-    for (const [runtime, agent] of [['bizanso', 'bizanso/bizanso'], ['promotionScout', 'PromotionScoutV2/promotionScout'], ['scriptahubAgent', 'ScriptaHubAgent/scriptahubAgent']]) {
+    assert.doesNotMatch(graph[1], /bizanso|promotionScout|scriptahubAgent|csvMailAgent/);
+    for (const [runtime, agent] of [['csvMailAgent', 'simpleCSVMailSend/csvMailAgent'], ['bizanso', 'bizanso/bizanso'], ['promotionScout', 'PromotionScoutV2/promotionScout'], ['scriptahubAgent', 'ScriptaHubAgent/scriptahubAgent']]) {
         assert.ok(body.includes(`if ! grep -q '^${runtime} ' <<< "$ENABLED_STATES"; then\n            ploinky_locked enable agent ${agent}\n          fi\n`), runtime);
     }
     assert.ok(deploy.indexOf('- name: Verify public URL') < deploy.indexOf('- name: Verify Bizanso and ScriptaHub'));
@@ -165,6 +169,51 @@ test('deploy: the added agents are enabled only when missing and are awaited onl
     // promotionScout declares MCP readiness and no web surface, so its proof is the awaited runtime state alone.
     assert.doesNotMatch(verify, /promotionScout/);
     assert.match(body, /GRAPH_RUNTIMES="\$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"\n[\s\S]*ploinky_locked restart\n\s+wait_ready/);
+    // CSV Mail is awaited from its own line, so the line shared with the product workflows stays as it is.
+    assert.equal(body.split('GRAPH_RUNTIMES="$GRAPH_RUNTIMES csvMailAgent"\n').length - 1, 1);
+    assert.match(body, /GRAPH_RUNTIMES="\$GRAPH_RUNTIMES csvMailAgent"\n[\s\S]*ploinky_locked restart\n\s+wait_ready/);
+    for (const name of ['deploy-explorer-qa-bizanso.yml', 'deploy-explorer-qa-scriptahub.yml']) {
+        assert.doesNotMatch(read(name), /csvMailAgent|simpleCSVMailSend/, name);
+    }
+});
+
+test('deploy: CSV Mail passes only when its route is published behind sign-in, after the Bizanso check', (t) => {
+    assert.ok(deploy.indexOf('- name: Verify Bizanso and ScriptaHub') < deploy.indexOf('- name: Verify CSV Mail'));
+    assert.ok(deploy.indexOf('- name: Verify CSV Mail') < deploy.indexOf('- name: Verify dedicated connector and protected Cloudflare topology'));
+    const verify = step(deploy, 'Verify CSV Mail');
+    assert.doesNotMatch(verify, /\n {8}if: /, 'it runs only after a successful deploy');
+    const script = runBlocks(verify)[0];
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-csvmail-verify-'));
+    t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const run = (replies) => {
+        // Each call prints the next reply; the last one repeats.
+        fs.writeFileSync(path.join(bin, 'replies'), replies.join('\n') + '\n');
+        fs.writeFileSync(path.join(bin, 'count'), '0');
+        fs.writeFileSync(path.join(bin, 'curl'), `#!/bin/bash
+echo "$*" >> "${bin}/args"
+n=$(( $(cat "${bin}/count") + 1 )); echo "$n" > "${bin}/count"
+total=$(wc -l < "${bin}/replies")
+[ "$n" -le "$total" ] || n=$total
+sed -n "\${n}p" "${bin}/replies" | tr -d '\\n'
+`, { mode: 0o755 });
+        const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PUBLIC_URL: 'https://explorer-qa.axiologic.dev' } });
+        return { ...result, calls: Number(fs.readFileSync(path.join(bin, 'count'), 'utf8')) };
+    };
+    const signIn = '302 /auth/login?returnTo=%2Fbase-agent-additional-server%2FcsvMailAgent%2F3100%2F';
+    const passed = run(['404 ', '502 ', signIn]);
+    assert.equal(passed.status, 0, passed.stdout + passed.stderr);
+    assert.equal(passed.calls, 3);
+    assert.match(fs.readFileSync(path.join(bin, 'args'), 'utf8'), /https:\/\/explorer-qa\.axiologic\.dev\/base-agent-additional-server\/csvMailAgent\/3100\/\n/);
+    // An unpublished route, a page served without sign-in, or a redirect elsewhere never passes.
+    for (const reply of ['404 ', '200 ', '302 /auth/login?returnTo=%2F', '302 https://elsewhere.test/auth/login?returnTo=%2Fbase-agent-additional-server%2FcsvMailAgent%2F3100%2F']) {
+        const failed = run([reply]);
+        assert.equal(failed.status, 1, reply);
+        assert.equal(failed.calls, 60, reply);
+        assert.match(failed.stdout, /::error::\/base-agent-additional-server\/csvMailAgent\/3100\/ was not published behind sign-in; last reply: /, reply);
+    }
+    const summary = step(deploy, 'Create summary');
+    assert.match(summary, /CSV Mail: .*csvMailAgent\/3100\/.*\$\{CSVMAIL_COMMIT:-not-resolved\}/);
 });
 
 test('deploy: the retiring second agent is not enabled, awaited, required or probed by any QA deploy workflow', () => {
@@ -432,6 +481,66 @@ test('deploy: the Bizanso key stays on the runner and reaches only its checkout'
     assert.doesNotMatch(destroy, /BIZANSO/);
 });
 
+test('deploy: the CSV Mail key stays on the runner and reaches only its checkout', () => {
+    const uses = deploy.split('\n').filter((line) => line.includes('EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}'));
+    assert.deepEqual(uses.map((line) => line.trim()), [
+        'CSVMAIL_DEPLOY_KEY: ${{ secrets.EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}',
+        'ssh-key: ${{ secrets.EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}',
+    ]);
+    assert.match(step(deploy, 'Validate GitHub configuration'), /Missing required repository secret EXPLORER_QA_CSVMAIL_DEPLOY_KEY/);
+    const checkout = step(deploy, 'Check out simpleCSVMailSend');
+    for (const line of ['repository: Axiologic/simpleCSVMailSend', 'path: .qa-csvmail-source', 'persist-credentials: false']) {
+        assert.ok(checkout.includes(line), line);
+    }
+    assert.ok(deploy.indexOf('- name: Check out simpleCSVMailSend') < deploy.indexOf('- name: Resolve the CSV Mail source'));
+    assert.ok(deploy.indexOf('- name: Resolve the CSV Mail source') < deploy.indexOf('- name: Bootstrap the host and deploy through Ploinky commands'));
+    assert.doesNotMatch(step(deploy, 'Bootstrap the host and deploy through Ploinky commands'), /CSVMAIL_DEPLOY_KEY/);
+    assert.doesNotMatch(destroy, /CSVMAIL|csvMail/);
+});
+
+// A throwaway Git repository standing in for the simpleCSVMailSend checkout.
+function csvMailSource(root, { agent = true } = {}) {
+    const source = path.join(root, '.qa-csvmail-source');
+    const git = (...args) => {
+        const result = spawnSync('git', ['-C', source, ...args], { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        return result.stdout.trim();
+    };
+    fs.mkdirSync(path.join(source, 'data/projects/default'), { recursive: true });
+    fs.writeFileSync(path.join(source, 'data/projects/default/activity.json'), '{"recipients":["someone@example.test"]}\n');
+    fs.writeFileSync(path.join(source, 'README.md'), 'CSV Mail\n');
+    if (agent) {
+        fs.mkdirSync(path.join(source, 'csvMailAgent/src'), { recursive: true });
+        fs.writeFileSync(path.join(source, 'csvMailAgent/manifest.json'), '{"name":"csvMailAgent"}\n');
+        fs.writeFileSync(path.join(source, 'csvMailAgent/src/ploinky.mjs'), '// agent\n');
+    }
+    git('init', '--quiet');
+    git('add', '-A');
+    git('-c', 'user.name=QA', '-c', 'user.email=qa@example.test', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '-m', 'fixture');
+    return { source, commit: git('rev-parse', 'HEAD') };
+}
+
+test('deploy: the CSV Mail source is resolved on the runner and refused without the agent manifest', (t) => {
+    const script = runBlocks(step(deploy, 'Resolve the CSV Mail source'))[0];
+    assert.doesNotMatch(script, /\bssh\b|SSH\[|run_in_box|ploinky/);
+    const resolve = (options) => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-csvmail-resolve-'));
+        t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+        const { commit } = csvMailSource(root, options);
+        const env = path.join(root, 'github-env');
+        fs.writeFileSync(env, '');
+        const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, GITHUB_WORKSPACE: root, GITHUB_ENV: env } });
+        return { ...result, commit, env: fs.readFileSync(env, 'utf8') };
+    };
+    const resolved = resolve();
+    assert.equal(resolved.status, 0, resolved.stdout + resolved.stderr);
+    assert.equal(resolved.env, `CSVMAIL_COMMIT=${resolved.commit}\n`);
+    const refused = resolve({ agent: false });
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stdout, /::error::simpleCSVMailSend@[0-9a-f]{40} has no csvMailAgent\/manifest\.json\. Nothing was changed\./);
+    assert.equal(refused.env, '');
+});
+
 function workspaceRepositoriesBlock() {
     return step(deploy, 'Bootstrap the host and deploy through Ploinky commands').match(WORKSPACE_REPOSITORIES_BLOCK)[0];
 }
@@ -477,6 +586,61 @@ test('deploy: the private copy replaces the workspace-root repository and keeps 
     }
 });
 
+test('deploy: CSV Mail arrives as its agent folder alone, in a stage of its own, and keeps one predecessor', (t) => {
+    const block = workspaceRepositoriesBlock();
+    const program = block.match(/CSVMAIL_PLACE_PROGRAM='([^']*)'/)[1];
+    // The runner streams only csvMailAgent/ of the resolved commit, never the data/ the repository tracks.
+    const archive = 'git -C "$GITHUB_WORKSPACE/.qa-csvmail-source" archive --format=tar "$CSVMAIL_COMMIT" csvMailAgent | run_in_box "$CSVMAIL_PLACE_PROGRAM"\n';
+    assert.equal(block.split(archive).length - 1, 1);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-csvmail-place-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const workspace = path.join(root, 'workspace');
+    fs.mkdirSync(path.join(workspace, '.ploinky/.qa-private-copy/previous'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.ploinky/.qa-private-copy/previous/bizanso-file'), 'x');
+    const place = (input) => spawnSync('sh', ['-c', program, 'sh'], { cwd: workspace, input });
+    const repo = path.join(workspace, 'simpleCSVMailSend');
+    const previous = path.join(workspace, '.ploinky/.qa-csvmail-copy/previous');
+    // The archive line itself, run against a real checkout that also tracks data/.
+    const { commit } = csvMailSource(root);
+    const runner = spawnSync('bash', ['-c', `set -euo pipefail\nrun_in_box() { sh -c "$1" sh; }\ncd '${workspace}'\n${archive}`], {
+        encoding: 'utf8', env: { ...process.env, GITHUB_WORKSPACE: root, CSVMAIL_COMMIT: commit, CSVMAIL_PLACE_PROGRAM: program },
+    });
+    assert.equal(runner.status, 0, runner.stderr);
+    assert.deepEqual(fs.readdirSync(repo), ['csvMailAgent']);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/manifest.json')));
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/src/ploinky.mjs')));
+    assert.ok(!fs.existsSync(path.join(repo, 'data')) && !fs.existsSync(path.join(repo, '.git')));
+    const tarOf = (files) => {
+        const source = fs.mkdtempSync(path.join(root, 'source-'));
+        for (const [file, text] of Object.entries(files)) {
+            fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
+            fs.writeFileSync(path.join(source, file), text);
+        }
+        const result = spawnSync('tar', ['-cf', '-', '-C', source, ...Object.keys(files).map((file) => file.split('/')[0]).filter((v, i, a) => a.indexOf(v) === i)]);
+        assert.equal(result.status, 0);
+        return result.stdout;
+    };
+    assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/two': 'x' })).status, 0);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/two')));
+    assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/src/ploinky.mjs')));
+    assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/three': 'x' })).status, 0);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')) && !fs.existsSync(path.join(repo, 'csvMailAgent/two')));
+    assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/two')));
+    assert.deepEqual(fs.readdirSync(path.dirname(previous)), ['previous']);
+    // Each refusal leaves the live copy in place: data or Git metadata beside the agent, no manifest, nothing at all.
+    for (const [name, input] of [
+        ['data beside the agent', tarOf({ 'csvMailAgent/manifest.json': '{}', 'data/activity.json': '{}' })],
+        ['Git metadata beside the agent', tarOf({ 'csvMailAgent/manifest.json': '{}', '.git/HEAD': 'ref' })],
+        ['no agent manifest', tarOf({ 'csvMailAgent/other': 'x' })],
+        ['an empty input', ''],
+    ]) {
+        assert.notEqual(place(input).status, 0, name);
+        assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')), name);
+    }
+    // The Bizanso predecessor in its own stage is never touched.
+    assert.ok(fs.existsSync(path.join(workspace, '.ploinky/.qa-private-copy/previous/bizanso-file')));
+});
+
 test('deploy: only a repository solely in its managed location is uninstalled', () => {
     const block = workspaceRepositoriesBlock();
     const program = block.match(/MANAGED_PROGRAM='([^']*)'/)[1];
@@ -497,6 +661,10 @@ test('deploy: only a repository solely in its managed location is uninstalled', 
         fs.rmSync(path.join(workspace, 'PromotionScoutV2'), { recursive: true });
         fs.mkdirSync(path.join(workspace, '.ploinky/repos/PromotionScoutV2'), { recursive: true });
         assert.equal(run().stdout, 'bizanso\nPromotionScoutV2\n');
+        fs.mkdirSync(path.join(workspace, '.ploinky/repos/simpleCSVMailSend'), { recursive: true });
+        assert.equal(run().stdout, 'bizanso\nPromotionScoutV2\nsimpleCSVMailSend\n');
+        fs.mkdirSync(path.join(workspace, 'simpleCSVMailSend'));
+        assert.notEqual(run().status, 0, 'CSV Mail in both locations stops the run too');
     } finally {
         fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -510,7 +678,7 @@ test('deploy: a failed managed location check stops the run before anything move
 run_in_box() { case "$1" in MANAGED) ${stub} ;; *) cat > /dev/null; echo "box:$1" ;; esac; }
 ploinky_locked() { echo "ploinky:$*"; }
 git() { case "$*" in *symbolic-ref*) echo main ;; *) echo archive ;; esac; }
-MANAGED_PROGRAM=MANAGED COPY_PROGRAM=COPY BUNDLE_PROGRAM=BUNDLE CLONE_PROGRAM=CLONE GITHUB_WORKSPACE=/w
+MANAGED_PROGRAM=MANAGED COPY_PROGRAM=COPY CSVMAIL_PLACE_PROGRAM=CSVMAIL BUNDLE_PROGRAM=BUNDLE CLONE_PROGRAM=CLONE GITHUB_WORKSPACE=/w CSVMAIL_COMMIT=${'c'.repeat(40)}
 ${block.slice(start, end)}`], { encoding: 'utf8' });
     const refused = run('echo bizanso; exit 1');
     assert.notEqual(refused.status, 0, refused.stdout);
@@ -518,8 +686,9 @@ ${block.slice(start, end)}`], { encoding: 'utf8' });
     const unexpected = run('echo other');
     assert.notEqual(unexpected.status, 0);
     assert.doesNotMatch(unexpected.stdout, /ploinky:|box:/);
-    assert.equal(run('echo bizanso').stdout, 'ploinky:uninstall repo bizanso\nbox:COPY\nbox:BUNDLE\nbox:CLONE\n');
-    assert.equal(run('true').stdout, 'box:COPY\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('echo bizanso').stdout, 'ploinky:uninstall repo bizanso\nbox:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('echo simpleCSVMailSend').stdout, 'ploinky:uninstall repo simpleCSVMailSend\nbox:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('true').stdout, 'box:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
 });
 
 test('deploy: ScriptaHub is a workspace-root checkout of the exact public source', () => {
@@ -621,7 +790,8 @@ test('deploy: every installed repository except the private copy moves on its ow
     const result = spawnSync('bash', ['-c', `${definition}\n}\ninstalled_repos`], { input: sample, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, 'AchillesIDE\nbizanso\n');
-    assert.match(body, /if \[ "\$repo" != bizanso \] && \[ "\$repo" != PromotionScoutV2 \]; then\n\s+ploinky_locked update repo "\$repo"\n/);
+    // The Box holds no credential for the private sources, and the two copies have no Git metadata at all.
+    assert.match(body, /if \[ "\$repo" != bizanso \] && \[ "\$repo" != PromotionScoutV2 \] && \[ "\$repo" != simpleCSVMailSend \]; then\n\s+ploinky_locked update repo "\$repo"\n/);
     assert.doesNotMatch(body, /ploinky_locked update\n/);
     // The loop lives only in update_kept_repos, called once, after the workspace repositories are placed.
     assert.equal(body.split('ploinky_locked update repo').length - 1, 1);
