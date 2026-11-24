@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,8 +11,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const read = (name) => fs.readFileSync(path.join(ROOT, '.github/workflows', name), 'utf8');
 const deploy = read('deploy-explorer-qa-ploinky.yml');
 const destroy = read('destroy-explorer-qa-ploinky.yml');
-const legacyDeploy = read('deploy-explorer-qa.yml');
-const legacyDestroy = read('destroy-explorer-qa.yml');
 
 const WORKSPACE_REPOSITORIES_BLOCK = /# BEGIN QA workspace repositories[\s\S]*# END QA workspace repositories/;
 const IMAGE_PRUNE_BLOCK = /# BEGIN QA image cleanup[\s\S]*# END QA image cleanup/;
@@ -53,7 +52,7 @@ for (const [name, source] of [['deploy', deploy], ['destroy', destroy]]) {
         }
     });
 
-    test(`${name}: targets the pinned QA identity and shares the older workflows' serialization`, () => {
+    test(`${name}: targets the pinned QA identity and shares the other QA workflows' serialization`, () => {
         for (const line of [
             "SSH_USER: 'admin'",
             "SSH_HOST: '45.136.70.141'",
@@ -68,7 +67,7 @@ for (const [name, source] of [['deploy', deploy], ['destroy', destroy]]) {
         }
     });
 
-    test(`${name}: refuses to run over the older workflows' parked state`, () => {
+    test(`${name}: refuses to run over the removed workflows' parked state`, () => {
         assert.match(source, /STATE_DIR=\/home\/admin\/\.qa-deployment-state\n/);
         assert.match(source, /if \[ -e "\$STATE_DIR" \] && \[ -n "\$\(ls -A "\$STATE_DIR"\)" \]; then/);
     });
@@ -875,14 +874,501 @@ test('destroy: maps delete_data to exactly the two Ploinky forms before the Clou
     assert.match(step(destroy, 'Delete the dedicated Cloudflare publication'), /if: success\(\) && inputs\.delete_data\n/);
 });
 
-test('the runner-side Cloudflare and public checks stay identical to the older workflows', () => {
-    for (const name of ['Verify public URL', 'Verify dedicated connector and protected Cloudflare topology']) {
-        assert.equal(step(deploy, name), step(legacyDeploy, name), name);
+// The steps below ran under the removed non-Ploinky workflows too, and their behavioural cases are kept here against
+// the text these workflows hold. Only the workflow they read changed; the assertions are the ones of those cases.
+const NODE_HEREDOC = (script) => script.match(/<<'NODE'[^\n]*\n([\s\S]*?)\nNODE(?:\n|$)/)?.[1];
+const cloudflareScript = () => {
+    const found = NODE_HEREDOC(runBlocks(step(destroy, 'Delete the dedicated Cloudflare publication'))[0]);
+    assert.ok(found, 'the Cloudflare step has an embedded program');
+    return found;
+};
+
+test('destroy: the Cloudflare deletion runs on the runner after the Box is destroyed and refuses the protected tunnel', () => {
+    const cloudflare = step(destroy, 'Delete the dedicated Cloudflare publication');
+    assert.ok(destroy.indexOf('- name: Destroy the Box through') < destroy.indexOf('- name: Delete the dedicated Cloudflare publication'));
+    assert.match(cloudflare, /\n {8}if: success\(\) && inputs\.delete_data\n/);
+    assert.doesNotMatch(runBlocks(cloudflare)[0], /\bssh\b|\bscp\b|flock/);
+    assert.match(cloudflare, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.EXPLORER_QA_CLOUDFLARE_API_TOKEN \}\}/);
+    const script = cloudflareScript();
+    assert.match(script, /if \(protectedTunnelId !== '091c4096-d1c8-4dbc-bb12-0c6357431d96'\)/);
+    assert.match(script, /if \(tunnelId === protectedTunnelId\) \{\n {2}throw new Error\('refusing to delete the protected shared Cloudflare tunnel'\);/);
+    const guard = script.indexOf('tunnelId === protectedTunnelId');
+    assert.ok(guard > script.indexOf('/^[a-f0-9-]{36}$/.test(tunnelId)'));
+    assert.ok(guard < script.indexOf('request(`/accounts/${accountId}/cfd_tunnel/${tunnelId}`)'), 'the guard precedes any request that uses the tunnel id');
+    const dns = script.indexOf("request(`/zones/${zoneId}/dns_records/${records[0].id}`, { method: 'DELETE' })");
+    const connections = script.indexOf('/cfd_tunnel/${tunnelId}/connections');
+    const tunnel = script.indexOf("request(`/accounts/${accountId}/cfd_tunnel/${tunnelId}`, { method: 'DELETE' })");
+    assert.ok(dns > 0 && dns < connections && connections < tunnel, 'DNS is deleted before the tunnel');
+    assert.match(script, /Exact Explorer QA Cloudflare publication was already absent/);
+    assert.match(script, /Exact Explorer QA Cloudflare publication deletion verified/);
+    assert.match(step(destroy, 'Cleanup'), /if: always\(\)/);
+});
+
+const FETCH_STUB = (statePath, logPath) => `import fs from 'node:fs';
+const state = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, 'utf8'));
+const log = entry => fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(entry) + '\\n');
+const json = (result, status = 200) => new Response(JSON.stringify({ success: status === 200, result, errors: [] }), { status });
+globalThis.fetch = async (url, init = {}) => {
+    const { pathname, search } = new URL(url);
+    const method = init.method || 'GET';
+    const route = pathname.replace('/client/v4', '');
+    log({ method, route });
+    const tunnelId = state.tunnels[0]?.id;
+    if (method === 'GET' && /\\/cfd_tunnel$/.test(route)) return json(state.tunnelDeleted ? [] : state.tunnels);
+    if (method === 'GET' && /\\/dns_records$/.test(route)) return json(state.dnsDeleted ? [] : state.records);
+    if (method === 'GET' && /\\/cfd_tunnel\\/[^/]+\\/configurations$/.test(route)) return json({ config: { ingress: state.ingress } });
+    if (method === 'GET' && /\\/cfd_tunnel\\/[^/]+$/.test(route)) return json({ id: tunnelId, name: state.tunnels[0].name, deleted_at: null });
+    if (method === 'DELETE' && /\\/dns_records\\//.test(route)) { state.dnsDeleted = true; return json({}); }
+    if (method === 'DELETE' && /\\/connections$/.test(route)) return json({});
+    if (method === 'DELETE' && /\\/cfd_tunnel\\/[^/]+$/.test(route)) {
+        if (!state.dnsDeleted && state.records.length) return json({}, 400);
+        state.tunnelDeleted = true; return json({});
     }
-    assert.equal(
-        step(destroy, 'Delete the dedicated Cloudflare publication').replace(' && inputs.delete_data', ''),
-        step(legacyDestroy, 'Delete the dedicated Cloudflare publication'),
+    return json(null, 404);
+};
+`;
+
+const PROTECTED_TUNNEL = '091c4096-d1c8-4dbc-bb12-0c6357431d96';
+const TUNNEL_ID = '12345678-1234-1234-1234-123456789abc';
+const dedicatedTunnel = (id = TUNNEL_ID) => ({ id, name: 'explorer-qa', deleted_at: null });
+const dedicatedRecord = (id = TUNNEL_ID) => ({
+    id: 'c'.repeat(32), name: 'explorer-qa.axiologic.dev', type: 'CNAME', content: `${id}.cfargotunnel.com`, proxied: true,
+});
+const OWN_INGRESS = [{ hostname: 'explorer-qa.axiologic.dev', service: 'http://127.0.0.1:8080' }, { service: 'http_status:404' }];
+
+function runCloudflare(t, state, env = {}) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-destroy-cloudflare-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const statePath = path.join(root, 'state.json');
+    const logPath = path.join(root, 'requests.jsonl');
+    fs.writeFileSync(statePath, JSON.stringify({ ingress: OWN_INGRESS, ...state }));
+    const preload = path.join(root, 'fetch.mjs');
+    fs.writeFileSync(preload, FETCH_STUB(statePath, logPath));
+    const result = spawnSync(process.execPath, ['--import', preload, '--input-type=module'], {
+        input: cloudflareScript(),
+        encoding: 'utf8',
+        timeout: 30000,
+        env: {
+            PATH: process.env.PATH,
+            CLOUDFLARE_API_TOKEN: 'scoped-token',
+            CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32),
+            CLOUDFLARE_ZONE_ID: 'b'.repeat(32),
+            CLOUDFLARE_TUNNEL_NAME: 'explorer-qa',
+            PUBLIC_HOST: 'explorer-qa.axiologic.dev',
+            CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: PROTECTED_TUNNEL,
+            ...env,
+        },
+    });
+    const requests = fs.existsSync(logPath)
+        ? fs.readFileSync(logPath, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+        : [];
+    return { result, requests, deletes: requests.filter(request => request.method === 'DELETE').map(request => request.route.replace(/^\/(?:accounts|zones)\/[a-f0-9]+\//, '')) };
+}
+
+test('Cloudflare deletion removes DNS, then the connections, then the tunnel, and verifies', t => {
+    const run = runCloudflare(t, { tunnels: [dedicatedTunnel()], records: [dedicatedRecord()] });
+    assert.equal(run.result.status, 0, run.result.stderr + run.result.stdout);
+    assert.deepEqual(run.deletes, [`dns_records/${'c'.repeat(32)}`, `cfd_tunnel/${TUNNEL_ID}/connections`, `cfd_tunnel/${TUNNEL_ID}`]);
+    assert.match(run.result.stdout, /deletion verified/);
+});
+
+test('Cloudflare deletion is idempotent when the publication is already absent', t => {
+    const run = runCloudflare(t, { tunnels: [], records: [] });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assert.match(run.result.stdout, /already absent/);
+    assert.deepEqual(run.deletes, []);
+    const tunnelOnly = runCloudflare(t, { tunnels: [dedicatedTunnel()], records: [] });
+    assert.equal(tunnelOnly.result.status, 0, tunnelOnly.result.stderr);
+    assert.deepEqual(tunnelOnly.deletes, [`cfd_tunnel/${TUNNEL_ID}/connections`, `cfd_tunnel/${TUNNEL_ID}`]);
+});
+
+test('Cloudflare deletion refuses the protected shared tunnel before any detail request or deletion', t => {
+    const run = runCloudflare(t, { tunnels: [dedicatedTunnel(PROTECTED_TUNNEL)], records: [dedicatedRecord(PROTECTED_TUNNEL)] });
+    assert.notEqual(run.result.status, 0);
+    assert.match(run.result.stderr, /refusing to delete the protected shared Cloudflare tunnel/);
+    assert.deepEqual(run.deletes, []);
+    assert.equal(run.requests.every(request => request.method === 'GET' && /(?:cfd_tunnel|dns_records)$/.test(request.route)), true, 'only the two inventory listings ran');
+});
+
+test('Cloudflare deletion refuses a moved protected-tunnel pin, ambiguous inventory and foreign DNS or routes', t => {
+    const pinMoved = runCloudflare(t, { tunnels: [dedicatedTunnel()], records: [dedicatedRecord()] }, { CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: TUNNEL_ID });
+    assert.notEqual(pinMoved.result.status, 0);
+    assert.deepEqual(pinMoved.requests, [], 'the pin is checked before any request');
+    const cases = {
+        'two tunnels': { tunnels: [dedicatedTunnel(), dedicatedTunnel('87654321-1234-1234-1234-123456789abc')], records: [] },
+        'DNS without a tunnel': { tunnels: [], records: [dedicatedRecord()] },
+        'DNS pointing elsewhere': { tunnels: [dedicatedTunnel()], records: [dedicatedRecord(PROTECTED_TUNNEL)] },
+        'unproxied DNS': { tunnels: [dedicatedTunnel()], records: [{ ...dedicatedRecord(), proxied: false }] },
+        'unrelated route': { tunnels: [dedicatedTunnel()], records: [], ingress: [{ hostname: 'other.example', service: 'http://127.0.0.1:1' }, { service: 'http_status:404' }] },
+        'wrong tunnel name': { tunnels: [{ ...dedicatedTunnel(), name: 'proxies' }], records: [] },
+    };
+    for (const [label, state] of Object.entries(cases)) {
+        const run = runCloudflare(t, state);
+        assert.notEqual(run.result.status, 0, label);
+        assert.deepEqual(run.deletes, [], `${label}: nothing is deleted`);
+    }
+    const wrongIdentity = runCloudflare(t, { tunnels: [], records: [] }, { PUBLIC_HOST: 'proxies.axiologic.dev' });
+    assert.notEqual(wrongIdentity.result.status, 0);
+    assert.deepEqual(wrongIdentity.requests, []);
+});
+
+test('destroy: the pinned identity and the shared-tunnel pin are fixed before the host is touched', () => {
+    const validate = runBlocks(step(destroy, 'Validate GitHub configuration'))[0];
+    assert.match(validate, /\[ "\$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" != '091c4096-d1c8-4dbc-bb12-0c6357431d96' \]/);
+    assert.match(validate, /case "\$\{DELETE_DATA:-\}" in\n {2}true\|false\) ;;/);
+    assert.equal(destroy.match(/ssh-keyscan/g)?.length, 1, 'destroy host key must be scanned only in pinned preflight');
+    assert.ok(
+        destroy.indexOf('SSH_ED25519_FINGERPRINT') < destroy.indexOf('- name: Destroy the Box through Ploinky commands'),
+        'destroy target fingerprint must be established before remote mutation',
     );
+    assert.match(destroy, /install -m 600 "\$RUNNER_TEMP\/explorer_qa_known_hosts"/);
+    assert.match(destroy, /CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: '091c4096-d1c8-4dbc-bb12-0c6357431d96'/);
+    assert.doesNotMatch(destroy, /EXPLORER_QA_CLOUDFLARE_TUNNEL_(?:TOKEN|ID)/);
+    assert.doesNotMatch(destroy, /vars\.EXPLORER_QA_(?:SSH_USER|SSH_HOST|WORKSPACE)/);
+});
+
+test('deploy: the public URL check always runs after a successful step and the topology check runs even after a failure', () => {
+    assert.doesNotMatch(step(deploy, 'Verify public URL'), /^ {8}if:/m);
+    assert.match(step(deploy, 'Verify dedicated connector and protected Cloudflare topology'), /^ {8}if: always\(\)$/m);
+});
+
+function runValidate(t, env = {}) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-destroy-validate-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.mkdirSync(path.join(root, 'tmp'));
+    fs.writeFileSync(path.join(bin, 'ssh-keyscan'), `#!/bin/bash\necho scanned >> '${path.join(root, 'scan.log')}'\necho '45.136.70.141 ssh-ed25519 AAAA'\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'ssh-keygen'), '#!/bin/bash\necho "256 SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA 45.136.70.141 (ED25519)"\n', { mode: 0o755 });
+    const result = spawnSync('bash', ['-c', runBlocks(step(destroy, 'Validate GitHub configuration'))[0]], {
+        encoding: 'utf8',
+        env: {
+            PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+            RUNNER_TEMP: path.join(root, 'tmp'),
+            SSH_KEY: 'key',
+            SSH_USER: 'admin',
+            SSH_HOST: '45.136.70.141',
+            WORKSPACE: 'explorerQaWorkspace',
+            SOUL_GATEWAY_WORKSPACE: 'soulGateway',
+            SSH_ED25519_FINGERPRINT: 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA',
+            CLOUDFLARE_API_TOKEN: 'scoped-token',
+            CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32),
+            CLOUDFLARE_ZONE_ID: 'b'.repeat(32),
+            CLOUDFLARE_TUNNEL_NAME: 'explorer-qa',
+            CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: PROTECTED_TUNNEL,
+            PUBLIC_HOST: 'explorer-qa.axiologic.dev',
+            ROUTER_PORT: '8097',
+            DELETE_DATA: 'false',
+            ...env,
+        },
+    });
+    return { result, scanned: fs.existsSync(path.join(root, 'scan.log')) };
+}
+
+test('destroy: validation accepts both delete_data values and rejects other values, a moved shared-tunnel pin and a Global API Key', t => {
+    for (const value of ['true', 'false']) {
+        const run = runValidate(t, { DELETE_DATA: value });
+        assert.equal(run.result.status, 0, run.result.stderr + run.result.stdout);
+        assert.equal(run.scanned, true);
+    }
+    for (const env of [
+        { DELETE_DATA: 'maybe' },
+        { DELETE_DATA: '' },
+        { CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: 'f'.repeat(8) + PROTECTED_TUNNEL.slice(8) },
+        { CLOUDFLARE_API_TOKEN: 'cfk_global' },
+        { WORKSPACE: 'soulGateway' },
+        { SSH_HOST: '203.0.113.9' },
+    ]) {
+        const run = runValidate(t, env);
+        assert.notEqual(run.result.status, 0, JSON.stringify(env));
+        assert.equal(run.scanned, false, `${JSON.stringify(env)} must fail before the host key is scanned`);
+    }
+});
+
+test('deploy: the dedicated tunnel provisioning is fail-closed and preserves the shared tunnel', () => {
+    for (const required of [
+        "CLOUDFLARE_TUNNEL_CREATED='true'",
+        "if (created === 'true' && (ingress.length > 1 || records.length !== 0))",
+        'named.length !== 1 || named[0]?.id !== selectedId',
+        "ingress[0]?.service !== 'http://127.0.0.1:8080'",
+        'records[0]?.content !== expectedTarget',
+        'config?.config?.ingress ?? config?.ingress ?? []',
+        'cleanup_local_files() {',
+        'trap cleanup_local_files EXIT',
+        'echo "::add-mask::$CLOUDFLARE_TUNNEL_TOKEN"',
+        'publication/explorer-qa-api',
+        'publication/explorer-qa-tunnel',
+        'beforeJson !== afterJson',
+        'digest(after) !== process.env.PROTECTED_CLOUDFLARE_DIGEST',
+        'result.filter((record) => record?.name !== publicHost)',
+        'records.filter((record) => record?.name !== process.env.PUBLIC_HOST)',
+        'dedicated Explorer QA connector has no active Cloudflare connection',
+    ]) {
+        assert.equal(deploy.includes(required), true, `missing dedicated tunnel invariant: ${required}`);
+    }
+    assert.doesNotMatch(deploy, /EXPLORER_QA_CLOUDFLARE_TUNNEL_TOKEN/);
+    assert.doesNotMatch(deploy, /cfd_tunnel\/091c4096-d1c8-4dbc-bb12-0c6357431d96(?:\/token|\"\s*,\s*\{\s*method:\s*['\"](?:PUT|POST|DELETE))/);
+    assert.equal(
+        deploy.match(/config\?\.config\?\.ingress \?\? config\?\.ingress \?\? \[\]/g)?.length,
+        2,
+        'both existing-tunnel inventories must normalize Cloudflare missing configuration to empty ingress',
+    );
+});
+
+test('deploy: the dedicated tunnel validator rejects malformed, shared, ambiguous, and wrong-DNS fixtures', () => {
+    const source = deploy;
+    const marker = 'const [listPath, detailPath, configPath, dnsPath, selectedId, created]';
+    const markerIndex = source.indexOf(marker);
+    assert.ok(markerIndex > 0, 'dedicated tunnel validator marker must exist');
+    const heredocStart = source.lastIndexOf("<<'NODE'\n", markerIndex);
+    const scriptStart = heredocStart + "<<'NODE'\n".length;
+    const scriptEnd = source.indexOf('\n          NODE', markerIndex);
+    assert.ok(heredocStart > 0 && scriptEnd > scriptStart, 'dedicated tunnel validator heredoc must close');
+    const script = source.slice(scriptStart, scriptEnd).replace(/^          /gm, '');
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'explorer-qa-tunnel-validator-'));
+    const selectedId = '11111111-2222-4333-8444-555555555555';
+    const accountId = 'a'.repeat(32);
+    const hostname = 'explorer-qa.axiologic.dev';
+    const response = (result) => ({ success: true, result });
+    const run = ({
+        named = [{ id: selectedId, name: 'explorer-qa' }],
+        detail = { id: selectedId, name: 'explorer-qa', deleted_at: null, account_tag: accountId },
+        ingress = [],
+        dns = [],
+        created = 'false',
+    } = {}) => {
+        const documents = [response(named), response(detail), response({ config: { ingress } }), response(dns)];
+        const files = documents.map((document, index) => {
+            const file = path.join(temporary, `${index}.json`);
+            fs.writeFileSync(file, JSON.stringify(document));
+            return file;
+        });
+        return spawnSync(
+            process.execPath,
+            ['--input-type=module', '-', ...files, selectedId, created],
+            {
+                encoding: 'utf8',
+                env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId, PUBLIC_HOST: hostname },
+                input: script,
+            },
+        );
+    };
+    try {
+        assert.equal(run({ created: 'true' }).status, 0, 'a newly created empty dedicated tunnel is accepted');
+        assert.notEqual(run({ created: 'maybe' }).status, 0, 'the creation marker must be a literal boolean');
+        assert.notEqual(run({
+            created: 'true',
+            ingress: [
+                { hostname, service: 'http://127.0.0.1:8080' },
+                { service: 'http_status:404' },
+            ],
+        }).status, 0, 'a newly created tunnel must not already carry routes');
+        assert.notEqual(run({ named: [] }).status, 0, 'the created or reused tunnel must be listed before token retrieval');
+        assert.equal(
+            run({ ingress: null }).status,
+            0,
+            'existing selected tunnel with no configuration object may have empty ingress',
+        );
+        assert.notEqual(run({ ingress: { unexpected: true } }).status, 0);
+        assert.equal(run({
+            ingress: [
+                { hostname, service: 'http://127.0.0.1:8080' },
+                { service: 'http_status:404' },
+            ],
+            dns: [{
+                id: 'dns_1',
+                type: 'CNAME',
+                name: hostname,
+                content: `${selectedId}.cfargotunnel.com`,
+                proxied: true,
+            }],
+        }).status, 0, 'exact reusable dedicated tunnel must pass');
+        assert.notEqual(run({ named: [{ id: selectedId }, { id: 'other' }] }).status, 0);
+        assert.notEqual(run({ detail: { id: selectedId, name: 'explorer-qa', account_tag: 'b'.repeat(32) } }).status, 0);
+        assert.notEqual(run({
+            ingress: [
+                { hostname: 'unrelated.example.test', service: 'http://127.0.0.1:8080' },
+                { service: 'http_status:404' },
+            ],
+        }).status, 0);
+        assert.notEqual(run({
+            dns: [{ type: 'CNAME', name: hostname, content: 'wrong.cfargotunnel.com', proxied: true }],
+        }).status, 0);
+        assert.notEqual(run({ created: 'true', dns: [{ type: 'CNAME' }] }).status, 0);
+    } finally {
+        fs.rmSync(temporary, { recursive: true, force: true });
+    }
+});
+
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const publicUrl = 'https://explorer-qa.axiologic.dev';
+const userPersistoService = '/base-agent-additional-server/userPersistoAgent/7000/service';
+const issuer = `${publicUrl}${userPersistoService}/oidc`;
+function publicVerificationBlock() {
+    const match = deploy.match(/\/\/ BEGIN QA public email-first verification\n([\s\S]*?)\/\/ END QA public email-first verification/);
+    assert.ok(match, 'the public verification block');
+    return match[1].replace(/^ {10}/gm, '');
+}
+
+async function verifyPublic(overrides = {}) {
+    const login = `${publicUrl}${userPersistoService}/auth/?requestId=request&state=state`;
+    const responses = {
+        [login]: '<main id="auth_content"></main><script type="module" src="main.js"></script>',
+        [`${publicUrl}${userPersistoService}/auth/setup`]: { ok: true, setupComplete: false, registration: true, methods: { password: true, emailCode: true } },
+        [`${issuer}/.well-known/openid-configuration`]: {
+            issuer, code_challenge_methods_supported: ['S256'], authorization_endpoint: `${issuer}/auth`,
+            token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/jwks`, userinfo_endpoint: `${issuer}/me`,
+        },
+        ...overrides.responses,
+    };
+    const requests = [];
+    const logs = [];
+    await new AsyncFunction('body', 'headers', 'mismatchBody', 'mismatchHeaders', 'fetch', 'process', 'console', publicVerificationBlock())(
+        overrides.body ?? `Continue with Single Sign-On<script>window.location.replace(${JSON.stringify(login)})</script>`,
+        overrides.headers ?? 'cf-ray: test', { ok: false, error: 'auth_route_context_mismatch' }, 'cf-ray: test',
+        async (url, options) => {
+            requests.push(url);
+            assert.equal(options.redirect, 'error');
+            assert.equal(options.method, undefined, 'verification must never submit sign-in or registration');
+            assert(Object.hasOwn(responses, url));
+            return { ok: true, headers: new Map([['cf-ray', 'test']]), text: async () => responses[url], json: async () => responses[url] };
+        },
+        { exit: () => { throw new Error('verification rejected'); } },
+        { log: (label, details) => logs.push({ label, details: JSON.parse(details) }) },
+    );
+    return { requests, logs };
+}
+
+test('deploy: the public verification checks the SSO wizard and OIDC metadata without claiming an unclaimed installation', async () => {
+    const result = await verifyPublic();
+    assert.equal(result.requests.length, 3);
+    assert.deepEqual(result.logs[0].details.methods, { password: true, emailCode: true, passkey: false, totp: false, google: false });
+    await assert.rejects(verifyPublic({ body: '<form data-auth-login-form><input type="password"></form>' }), /rejected/);
+    // Current Routers redirect with 303 and no page body.
+    const login = `${publicUrl}${userPersistoService}/auth/?requestId=request&state=state`;
+    const redirected = await verifyPublic({ body: '', headers: `HTTP/2 303\r\nLocation: ${login}\r\ncf-ray: test\r\n` });
+    assert.equal(redirected.requests[0], login);
+    await assert.rejects(verifyPublic({ body: '', headers: 'HTTP/2 303\r\nLocation: https://other.example/auth/?state=x&requestId=y\r\ncf-ray: test\r\n' }), /rejected/);
+    await assert.rejects(verifyPublic({ body: '', headers: 'HTTP/2 303\r\ncf-ray: test\r\n' }), /rejected/);
+    await assert.rejects(verifyPublic({ body: 'Continue with Single Sign-On<script>window.location.replace("https://other.example/auth/?state=x&requestId=y")</script>' }), /rejected/);
+    await assert.rejects(verifyPublic({ responses: {
+        [`${issuer}/.well-known/openid-configuration`]: { issuer: 'https://other.example' },
+    } }), /rejected/);
+});
+
+test('the default Explorer graph the QA deploy waits for includes UserPersisto and its email dependency', () => {
+    const explorer = JSON.parse(fs.readFileSync(path.join(ROOT, 'explorer/manifest.json'), 'utf8'));
+    const provider = JSON.parse(fs.readFileSync(path.join(ROOT, 'userPersistoAgent/manifest.json'), 'utf8'));
+    assert.equal(explorer.sso.providerAgent, 'userPersistoAgent');
+    // An enable entry is a spec string or an object carrying the spec and its profile.
+    const enabled = manifest => manifest.enable.map(entry => String(typeof entry === 'string' ? entry : entry.agent).split(/\s+/)[0]);
+    assert.ok(enabled(explorer).includes('userPersistoAgent'));
+    assert.ok(enabled(provider).includes('emailAgent'));
+});
+
+test('the four QA workflows neither provision nor inspect the retired local model runtime, nor manage retired stack repositories', () => {
+    const retiredRepositoryPattern = new RegExp(`\\b(?:${['basic', ['webmeet', 'Infra'].join('')].join('|')})\\b`);
+    for (const name of ['deploy-explorer-qa-ploinky.yml', 'destroy-explorer-qa-ploinky.yml', 'deploy-explorer-qa-bizanso.yml', 'deploy-explorer-qa-scriptahub.yml']) {
+        const source = read(name);
+        assert.doesNotMatch(source, retiredRepositoryPattern, `${name} must not manage a retired stack repository`);
+        assert.doesNotMatch(source, /DEFAULT_LOCAL_LLM/, `${name} must not define or forward a local model image`);
+        assert.doesNotMatch(source, /default-local-llm/i, `${name} must not pull, start, or inspect the retired local model agent`);
+        assert.doesNotMatch(source, /default local LLM image/i, `${name} must not inspect a local model image`);
+    }
+});
+
+// The isolated Node runtime block is the same text in the Ploinky deploy and both product workflows
+// (deploy-qa-product-workflows.test.mjs pins it byte for byte); the Ploinky destroy has none. These cases run it from the deploy.
+const NODE_SECTION = deploy.match(/# BEGIN QA isolated Node runtime\n([\s\S]*?)# END QA isolated Node runtime/)[1].replace(/^ {10}/gm, '');
+const NODE_SHA = '14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647';
+const NODE_DIST = 'node-v24.19.0-linux-x64';
+
+// The extracted deployment block intentionally uses GNU utilities. Resolve their g-prefixed macOS installations too,
+// but never replace a deadline or checksum operation with a no-op fixture command.
+const gnuTools = Object.fromEntries(['timeout', 'mv', 'sha256sum'].map(name => {
+    for (const binary of [name, `g${name}`]) {
+        for (const directory of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+            const executable = path.join(directory, binary);
+            const result = spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: 2000 });
+            if (result.status === 0 && /GNU coreutils/.test(result.stdout || '')) return [name, executable];
+        }
+    }
+    return [name, null];
+}));
+const missingGnuTools = Object.entries(gnuTools).filter(([, executable]) => !executable).map(([name]) => name);
+const runtimeOptions = missingGnuTools.length
+    ? { skip: `Requires GNU ${missingGnuTools.join(', ')}; run these workflow behavior tests on Linux or with GNU coreutils on PATH.` }
+    : {};
+
+function nodeFixture(t) {
+    const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-node-runtime-')));
+    t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+    const root = path.join(folder, 'tools');
+    const shims = path.join(folder, 'shims');
+    const archiveRoot = path.join(folder, 'archive');
+    const archive = path.join(folder, 'node.tar.xz');
+    fs.mkdirSync(shims);
+    for (const [name, executable] of Object.entries(gnuTools)) fs.symlinkSync(executable, path.join(shims, name));
+    fs.mkdirSync(path.join(archiveRoot, NODE_DIST, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(archiveRoot, NODE_DIST, 'bin/node'), '#!/bin/sh\nif [ "$1" = --version ]; then echo v24.19.0; else exec "$QA_REAL_NODE" "$@"; fi\n', { mode: 0o755 });
+    assert.equal(spawnSync('tar', ['-cJf', archive, '-C', archiveRoot, NODE_DIST]).status, 0);
+    fs.writeFileSync(path.join(shims, 'uname'), '#!/bin/sh\necho x86_64\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(shims, 'curl'), '#!/bin/sh\nfor argument do destination="$argument"; done\necho fetch >> "$QA_FETCH_LOG"\ncp "$QA_FIXTURE_ARCHIVE" "$destination"\n', { mode: 0o755 });
+    const checksum = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
+    const source = 'set -euo pipefail\n' + NODE_SECTION.replaceAll('/home/admin/.qa-deployment-tools', root).replaceAll(NODE_SHA, checksum);
+    const run = (script = source) => spawnSync('bash', ['-c', script], {
+        encoding: 'utf8', timeout: 10000,
+        env: { ...process.env, PATH: `${shims}:${path.dirname(process.execPath)}:${process.env.PATH}`,
+            QA_REAL_NODE: process.execPath, QA_FIXTURE_ARCHIVE: archive, QA_FETCH_LOG: path.join(folder, 'fetches') },
+    });
+    return { folder, root, source, run, node: path.join(root, NODE_DIST, 'bin/node'), archive: path.join(root, `${NODE_DIST}.tar.xz`) };
+}
+
+test('QA scoped Node installs a verified archive and reuses the exact validated binary', runtimeOptions, t => {
+    const f = nodeFixture(t);
+    const installed = f.run();
+    assert.equal(installed.status, 0, installed.stderr);
+    assert.equal(fs.statSync(f.root).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(f.archive).mode & 0o777, 0o600);
+    const inode = fs.statSync(f.node).ino;
+    const reused = f.run();
+    assert.equal(reused.status, 0, reused.stderr);
+    assert.equal(fs.statSync(f.node).ino, inode);
+    assert.equal(fs.readFileSync(path.join(f.folder, 'fetches'), 'utf8'), 'fetch\n');
+    assert.equal(fs.readdirSync(f.root).some(name => name.startsWith('.node-install-')), false);
+});
+
+test('QA scoped Node refuses a tampered cached binary before executing it', runtimeOptions, t => {
+    const f = nodeFixture(t);
+    assert.equal(f.run().status, 0);
+    const marker = path.join(f.folder, 'executed');
+    fs.writeFileSync(f.node, `#!/bin/sh\ntouch '${marker}'\necho v24.19.0\n`);
+    const result = f.run();
+    assert.notEqual(result.status, 0);
+    assert.equal(fs.existsSync(marker), false);
+    assert.equal(fs.readdirSync(f.root).some(name => name.startsWith('.node-install-')), false);
+});
+
+test('QA scoped Node refuses checksum mismatch and unsafe tool roots without publishing a runtime', runtimeOptions, t => {
+    const f = nodeFixture(t);
+    const badChecksum = f.source.replace(/QA_NODE_SHA=[a-f0-9]{64}/, `QA_NODE_SHA=${'0'.repeat(64)}`);
+    assert.notEqual(f.run(badChecksum).status, 0);
+    assert.equal(fs.existsSync(f.node), false);
+    assert.equal(fs.existsSync(f.archive), false);
+    fs.rmSync(f.root, { recursive: true });
+    fs.symlinkSync(path.join(f.folder, 'archive'), f.root);
+    assert.notEqual(f.run().status, 0);
+    assert.equal(fs.existsSync(path.join(f.folder, 'archive', `${NODE_DIST}.tar.xz`)), false);
+});
+
+test('QA Node pinning is the pinned archive, never replaces the shared host installation, and is installed once', () => {
+    assert.match(NODE_SECTION, /https:\/\/nodejs\.org\/dist\/v24\.19\.0\//);
+    assert.ok(NODE_SECTION.includes(NODE_SHA));
+    assert.ok(NODE_SECTION.includes('01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc'));
+    assert.match(NODE_SECTION, /export PATH="\$QA_NODE_HOME\/bin:\$PATH"/);
+    assert.match(NODE_SECTION, /cmp -s/);
+    assert.doesNotMatch(NODE_SECTION, /sudo|apt-get|\/usr\/bin\/node|\/usr\/local\/bin\/node/);
+    assert.equal(deploy.match(/# BEGIN QA isolated Node runtime/g).length, 1, 'the QA Node is installed once');
 });
 
 test('deploy: the image prune removes only listed, validated IDs with `podman image rm` and never forces', () => {
