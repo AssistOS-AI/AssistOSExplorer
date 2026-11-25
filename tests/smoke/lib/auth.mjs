@@ -10,7 +10,7 @@ import {
   hasPageDiagnostics,
   recordPageNavigationFailure,
 } from './fixtures.mjs';
-import { beginAuthNavigationDiagnostics } from './auth-navigation-diagnostics.mjs';
+import { GOOGLE_SIGN_IN_SCRIPT_URL, beginAuthNavigationDiagnostics } from './auth-navigation-diagnostics.mjs';
 import { smokeConfig } from './config.mjs';
 import { getWithoutKeepAlive } from './api-probe.mjs';
 import {
@@ -202,8 +202,9 @@ async function signUpThroughUserPersisto(page, content, { binding, email, passwo
 // and Next, then the account password, or Try another way to an email code or
 // an enrolled authenticator. An unknown email signs up instead. The account
 // password is the configured one, or the run password for accounts this run
-// signs up.
-export async function signInThroughUserPersisto(page, account, { codeCommandRunner, totpClock } = {}) {
+// signs up. `leftEmailScreen` runs once the wizard shows the screen after the
+// email one.
+export async function signInThroughUserPersisto(page, account, { codeCommandRunner, totpClock, leftEmailScreen } = {}) {
   const timeout = smokeConfig.timeouts.navigation;
   const expectedOrigin = new URL(smokeConfig.baseURL).origin;
   await page.locator('#auth_content').locator('h1').first().waitFor({ state: 'visible', timeout });
@@ -223,6 +224,7 @@ export async function signInThroughUserPersisto(page, account, { codeCommandRunn
     timeoutMs: timeout,
     allowSignup: true,
   });
+  await leftEmailScreen?.();
   if (state === 'signup') {
     await signUpThroughUserPersisto(page, content, { binding, email, password, timeout, codeCommandRunner });
     return;
@@ -368,6 +370,45 @@ export async function hasAuthenticatedSession(request) {
   return Boolean(response?.ok());
 }
 
+// Google renders its button on the wizard's email screen in a child frame,
+// and the wizard removes that frame when it shows the next screen. The removal
+// aborts whatever the frame still has in flight (its document, its fonts) and
+// the log ping Google sends while the frame unloads, so a sign-in that leaves
+// the email screen after Google rendered its button fails the strict
+// browser-error check. A sign-in therefore holds the wizard's request for
+// Google's script until the wizard has left the email screen and then passes
+// it on unchanged. The script then loads on a screen that renders no button.
+// When Google does not answer, the request stays pending until the handoff
+// navigation, the one abort a password sign-in may prove. Nothing waits for
+// Google, and a held request is never aborted. The exact address is the only
+// one intercepted, and the route is removed only when the sign-in ends: a
+// route removed while its request is still being passed on would continue
+// that request past any later handler.
+async function holdGoogleSignInScript(page) {
+  let open;
+  const released = new Promise((resolve) => { open = resolve; });
+  const passing = new Set();
+  const handler = (route) => {
+    // A request the navigation already cancelled cannot be passed on.
+    const passed = released.then(() => route.fallback()).catch(() => {});
+    passing.add(passed);
+    return passed;
+  };
+  await page.route(GOOGLE_SIGN_IN_SCRIPT_URL, handler);
+  // Passes every held request on, and every later one at once. Never throws.
+  const release = async () => {
+    open();
+    await Promise.all(passing);
+  };
+  return {
+    release,
+    async dispose() {
+      await release();
+      await page.unroute(GOOGLE_SIGN_IN_SCRIPT_URL, handler).catch(() => {});
+    },
+  };
+}
+
 export async function signIn(
   page,
   account = smokeConfig.primaryUser,
@@ -382,6 +423,7 @@ export async function signIn(
   let checkpointOpen = Boolean(checkpoint);
   let failed = false;
   let stage = 'session-check';
+  let googleScript = null;
   try {
     const sessionOk = await hasAuthenticatedSession(page.request);
     stage = sessionOk ? 'authenticated-navigation' : 'login-navigation';
@@ -392,6 +434,7 @@ export async function signIn(
         agent: smokeConfig.authAgent,
         returnTo,
       });
+      googleScript = await holdGoogleSignInScript(page);
       await page.goto(`/auth/login?${params.toString()}`, { waitUntil: 'load' });
     }
 
@@ -412,6 +455,7 @@ export async function signIn(
     }
     if (loginUrl.pathname === '/auth/login'
       && await loginForm(page).isVisible().catch(() => false)) {
+      await googleScript?.release();
       const binding = await bindAuthenticationDocument(page, {
         expectedOrigin: smokeOrigin,
         pathname: '/auth/login',
@@ -430,8 +474,9 @@ export async function signIn(
       if (checkpoint && account.signInMethod === 'password') {
         await navigation.bindWizardDocument({ expectedOrigin: smokeOrigin, pathname: USERPERSISTO_LOGIN_PATH });
       }
-      await signInThroughUserPersisto(page, account, { totpClock });
+      await signInThroughUserPersisto(page, account, { totpClock, leftEmailScreen: () => googleScript?.release() });
     }
+    await googleScript?.release();
 
     stage = 'final-load';
     await page.waitForLoadState('load');
@@ -461,6 +506,7 @@ export async function signIn(
     recordPageNavigationFailure(page, navigation.failure(error, stage));
     throw error;
   } finally {
+    await googleScript?.dispose();
     try {
       if (checkpointOpen) closePageDiagnosticsCheckpoint(page, checkpoint);
     } catch (closeError) {
