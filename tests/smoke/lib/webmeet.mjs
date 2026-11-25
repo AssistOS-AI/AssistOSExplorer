@@ -7,8 +7,46 @@ import { screenRuntimeEvidenceProvesUdpMux } from './screen-runtime-evidence.mjs
 import { findSecretLeaks } from './security.mjs';
 import { evaluateGuestPresence } from './webmeet-public-room.mjs';
 import { explorerUrl } from './explorer.mjs';
+import { isWebMeetRoomLoaderUrl, trackWebMeetRequests, waitForWebMeetSettled } from './webmeet-settle.mjs';
 
 const webMeetFrames = new WeakMap();
+const WEBMEET_PANEL_FRAME = 'iframe.expanded-modal-frame[title="WebMeet"]';
+
+// Explorer WebMeet panels that hold a WebMeet frame. A panel whose runtime
+// start failed shows its error without ever mounting one, and has no WebMeet
+// document to settle.
+function webMeetPanels(page) {
+    return page.locator(`expanded-modal:has(${WEBMEET_PANEL_FRAME})`);
+}
+
+async function settleWebMeetPanel(page, panel, label) {
+    const frameElement = panel.locator(WEBMEET_PANEL_FRAME);
+    await expect(frameElement, `${label} must mount its frame`).toHaveCount(1, { timeout: smokeConfig.timeouts.navigation });
+    const handle = await frameElement.elementHandle();
+    try {
+        const frame = await handle.contentFrame();
+        expect(frame, `${label} must hold its frame`).not.toBeNull();
+        await waitForWebMeetSettled(page, frame, { label });
+    } finally {
+        await handle.dispose();
+    }
+}
+
+// Leaving a WebMeet document (closing its panel or navigating the page away)
+// aborts its in-flight requests, so every WebMeet document of the page is
+// first brought to its idle point: the standalone page itself, or each WebMeet
+// panel of the Explorer shell, adopted by these helpers or not.
+async function settleWebMeetBeforeLeaving(page) {
+    if (isWebMeetRoomLoaderUrl(page.url())) {
+        await waitForWebMeetSettled(page, page.mainFrame(), { label: 'the standalone WebMeet page' });
+        return;
+    }
+    const panels = webMeetPanels(page);
+    const count = await panels.count();
+    for (let index = 0; index < count; index += 1) {
+        await settleWebMeetPanel(page, panels.nth(index), 'the open WebMeet panel');
+    }
+}
 
 // DOM and RTC probes run in WebMeet; browser ownership and diagnostics stay on Page.
 export function webMeetSurface(page) {
@@ -41,6 +79,10 @@ async function openWebMeetToolbar(page) {
         await expect(existingPanel).toHaveCount(1, { timeout: smokeConfig.timeouts.navigation });
     }
     if (await existingPanel.count()) {
+        // The restored panel starts loading WebMeet (and may rejoin its room).
+        // Closing it before that settles aborts its requests, and closes it
+        // before the dashboard has installed its close hook.
+        await settleWebMeetPanel(page, existingPanel, 'the restored WebMeet panel');
         await existingPanel.locator('#expandedModalClose').click({
             timeout: smokeConfig.timeouts.navigation,
         });
@@ -76,6 +118,7 @@ export async function expectWebMeetReady(page, { expectCreateRoom = true } = {})
 }
 
 async function prepareWebMeetPage(page) {
+  trackWebMeetRequests(page);
   if (smokeConfig.flags.webmeetMedia) {
     await page.addInitScript(() => {
       globalThis.WEBMEET_MEDIA_DEBUG = true;
@@ -84,6 +127,7 @@ async function prepareWebMeetPage(page) {
 }
 
 export async function trySignInToWebMeet(page, account = smokeConfig.primaryUser) {
+  await settleWebMeetBeforeLeaving(page);
   webMeetFrames.delete(page);
   await prepareWebMeetPage(page);
   const signedIn = await trySignIn(page, account, explorerUrl());
@@ -93,6 +137,7 @@ export async function trySignInToWebMeet(page, account = smokeConfig.primaryUser
 
 export async function openWebMeet(page, account = smokeConfig.primaryUser, options = {}) {
   const { expectCreateRoom = true, requireConfiguredPrincipal = false } = options;
+  await settleWebMeetBeforeLeaving(page);
   webMeetFrames.delete(page);
   await prepareWebMeetPage(page);
   const principal = await signIn(page, account, explorerUrl(), { requireConfiguredPrincipal });
@@ -102,7 +147,9 @@ export async function openWebMeet(page, account = smokeConfig.primaryUser, optio
 }
 
 export async function openStandaloneWebMeet(page, { roomId = '', url = '' } = {}) {
+  await settleWebMeetBeforeLeaving(page);
   webMeetFrames.delete(page);
+  trackWebMeetRequests(page);
   // `url` is a complete room link exactly as it was shared; it is opened verbatim.
   const target = url || (() => {
     const path = new URL('/webmeetAgent/roomLoader.html', smokeConfig.baseURL);
