@@ -16,6 +16,25 @@ const PREFIX = '/base-agent-additional-server/userPersistoAgent/7000';
 const WIZARD = `${PREFIX}/service/auth/`;
 const GIS = 'https://accounts.google.com/gsi/client';
 const userPersisto = (relative) => new URL(`../../../userPersistoAgent/${relative}`, import.meta.url).href;
+// A stand-in for Google's script and rendered button, served by browser routes so nothing reaches Google. As with the real
+// one, the button is a cross-site child frame that loads two Google Sans fonts and sends a log ping while it unloads; the
+// addresses are those of the 2026-11-24 evidence.
+const GOOGLE_BUTTON = 'https://accounts.google.com/gsi/button';
+const GOOGLE_FONTS = [
+    'https://fonts.gstatic.com/s/googlesans/v62/4UaRrENHsxJlGDuGo1OIlJfC6l_24rlCK1Yo_Iq2vgCI.woff2',
+    'https://fonts.gstatic.com/s/googlesans/v62/4UaRrENHsxJlGDuGo1OIlJfC6l_24rlCK1Yo_Iq2sACIlsw.woff2',
+];
+const GOOGLE_LOG = 'https://play.google.com/log?format=json&hasfast=true&authuser=0';
+const FAKE_GOOGLE_SCRIPT = `window.google = { accounts: { id: { initialize() {}, cancel() {}, renderButton(container, options) {
+    const frame = document.createElement('iframe');
+    frame.title = 'Sign in with Google Button';
+    frame.src = ${JSON.stringify(GOOGLE_BUTTON)} + '?size=' + encodeURIComponent(options?.size || '');
+    container.append(frame);
+} } } };`;
+const FAKE_GOOGLE_BUTTON = `<!doctype html><button type="button">Sign in with Google</button><script>
+addEventListener('pagehide', () => navigator.sendBeacon(${JSON.stringify(GOOGLE_LOG)}, '[]'));
+for (const url of ${JSON.stringify(GOOGLE_FONTS)}) new FontFace('Google Sans', 'url(' + url + ')').load().catch(() => {});
+</script>`;
 
 test('a password sign-in retires Google before navigating and only a proven script abort is acknowledged', { timeout: 180_000 }, async (t) => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-navigation-cancellation-'));
@@ -33,6 +52,8 @@ test('a password sign-in retires Google before navigating and only a proven scri
     let sinkMode = 'hold';
     let destinationScript = '';
     let loggedOutScript = '';
+    // When set, the wizard's email Next (discover) is answered only after this resolves, so the email screen stays up.
+    let discoverGate = null;
     const parents = new Map();
     const sessions = new Map();
     const heldResponses = new Set();
@@ -106,6 +127,8 @@ test('a password sign-in retires Google before navigating and only a proven scri
             const chunks = [];
             for await (const chunk of req) chunks.push(chunk);
             const body = Buffer.concat(chunks);
+            const discover = url.pathname === `${WIZARD}discover`;
+            if (discover && discoverGate) await discoverGate();
             const cleanup = url.pathname === `${WIZARD}google/cancel`;
             if (cleanup) {
                 record('cancel-received', { keys: Object.keys(JSON.parse(body.toString() || '{}')).sort(), sameOrigin: req.headers.origin === baseURL });
@@ -135,6 +158,7 @@ test('a password sign-in retires Google before navigating and only a proven scri
                         res.writeHead(response.statusCode, response.headers);
                         res.end(payload);
                         if (cleanup) record('cancel-delivered');
+                        if (discover) record('discover-delivered');
                     };
                     if (cleanup && cleanupMode === 'delay') setTimeout(deliver, 800);
                     else deliver();
@@ -165,11 +189,44 @@ test('a password sign-in retires Google before navigating and only a proven scri
         browser = await chromium.launch({ args: [`--host-resolver-rules=MAP accounts.google.com 127.0.0.1:${sink.address().port},MAP * ~NOTFOUND,EXCLUDE 127.0.0.1`] });
 
         const statusOf = async (handle) => (await (await getStore()).select('googleAuthTransaction')).objects.find((row) => row.stateHash === handle)?.status;
-        async function run({ diagnostics: attach = true, auxiliaryCdp = false, signInAccount = account } = {}) {
+        // Serves the stand-in Google for one context. `fonts-pending` leaves the button's fonts unanswered, `idle` answers
+        // everything, and `document-pending` leaves the button frame's own document unanswered.
+        const googleFont = fs.readFileSync(new URL('google-sans-medium.ttf', userPersisto('public/auth/')));
+        async function serveFakeGoogle(context, mode) {
+            await context.route(GIS, (route) => {
+                record('fake-script-delivered');
+                return route.fulfill({ status: 200, contentType: 'text/javascript', body: FAKE_GOOGLE_SCRIPT });
+            });
+            await context.route(`${GOOGLE_BUTTON}?*`, (route) => {
+                record('fake-button-requested');
+                if (mode === 'document-pending') return undefined;
+                return route.fulfill({ status: 200, contentType: 'text/html', body: FAKE_GOOGLE_BUTTON });
+            });
+            await context.route('https://fonts.gstatic.com/**', (route) => {
+                record('fake-font-requested');
+                if (mode === 'fonts-pending') return undefined;
+                return route.fulfill({ status: 200, contentType: 'font/ttf', body: googleFont });
+            });
+            await context.route('https://play.google.com/**', (route) => {
+                record('fake-log-requested');
+                return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+            });
+        }
+        // Keeps the email screen up until Google's button reached the stage under test, or for long enough that it would
+        // have: the stand-in answers at once, so an unheld script renders the button within milliseconds.
+        const leaveEmailScreenAfter = (mode) => async () => {
+            const stage = mode === 'document-pending' ? 'fake-button-requested' : 'fake-font-requested';
+            const deadline = Date.now() + 1500;
+            while (!events.some((event) => event.kind === stage) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+            await new Promise((resolve) => setTimeout(resolve, mode === 'idle' ? 300 : 50));
+        };
+        async function run({ diagnostics: attach = true, auxiliaryCdp = false, signInAccount = account, fakeGoogle = '', beforeSignIn = null } = {}) {
             events = [];
             const artifacts = fs.mkdtempSync(path.join(scratch, 'artifacts-'));
             const context = await browser.newContext({ baseURL });
+            if (fakeGoogle) await serveFakeGoogle(context, fakeGoogle);
             const page = await context.newPage();
+            page.on('frameattached', () => record('frame-attached'));
             const observed = [];
             for (const kind of ['request', 'requestfinished', 'requestfailed']) {
                 page.on(kind, (request) => {
@@ -189,6 +246,7 @@ test('a password sign-in retires Google before navigating and only a proven scri
             let principal;
             let error;
             try {
+                await beforeSignIn?.(page);
                 principal = await signIn(page, signInAccount, '/destination', { requireConfiguredPrincipal: true });
             } catch (failure) {
                 error = failure;
@@ -340,6 +398,56 @@ test('a password sign-in retires Google before navigating and only a proven scri
                 assert.equal(result.principal.canonicalUsername, email);
                 assert.deepEqual(cleanupFailures(result), []);
                 assert.equal(await statusOf(result.handle), 'cancelled');
+            } finally {
+                await result.close();
+            }
+        });
+
+        // Google's button lives in a child frame of the email screen, and the wizard removes that frame when it shows the
+        // next screen: whatever the frame still has in flight is aborted, and so is the log ping it sends while unloading.
+        // The sign-in holds Google's script until the wizard has left the email screen, so no button is rendered there and
+        // nothing of it is aborted, however long the email screen stays up.
+        for (const mode of ['fonts-pending', 'idle', 'document-pending']) {
+            await t.test(`leaving the email screen aborts nothing of Google's button (${mode})`, async () => {
+                discoverGate = leaveEmailScreenAfter(mode);
+                let result;
+                try {
+                    result = await run({ fakeGoogle: mode });
+                    assert.equal(result.error, undefined, result.error?.message);
+                    assert.equal(result.principal.canonicalUsername, email);
+                    assert.deepEqual(result.diagnostics.actionableEvents(), []);
+                    assert.doesNotThrow(() => assertPageDiagnosticsClean(result.page));
+                    // Not a vacuous pass: the stand-in served the script, but only once the email screen was gone.
+                    assert.ok(at(result, 'fake-script-delivered') > at(result, 'discover-delivered'),
+                        'Google\'s script is delivered only after the wizard was answered to leave the email screen');
+                    assert.deepEqual(result.events.filter(({ kind }) => kind === 'frame-attached'), [], 'no Google button frame was ever attached');
+                    assert.deepEqual(result.events.filter(({ kind }) => /^fake-(button|font|log)-requested$/.test(kind)).map(({ kind }) => kind), [],
+                        'nothing of the button was requested');
+                    assert.equal(await statusOf(result.handle), 'cancelled', 'the Google transaction is still retired before the handoff');
+                } finally {
+                    discoverGate = null;
+                    await result?.close();
+                }
+            });
+        }
+
+        await t.test('a Google button already rendered when the sign-in starts keeps its teardown actionable', async () => {
+            const result = await run({ fakeGoogle: 'fonts-pending', beforeSignIn: async (page) => {
+                // An earlier wizard on the same page, left showing Google's button with its fonts in flight.
+                await page.goto('/auth/login?returnTo=%2Fdestination', { waitUntil: 'load' });
+                const deadline = Date.now() + 10_000;
+                while (!events.some(({ kind }) => kind === 'fake-font-requested') && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+                assert.ok(events.some(({ kind }) => kind === 'fake-font-requested'), 'the earlier wizard rendered Google\'s button');
+            } });
+            try {
+                assert.equal(result.error, undefined, result.error?.message);
+                const aborted = result.diagnostics.actionableEvents()
+                    .filter(({ kind, failure }) => kind === 'requestfailed' && failure === 'net::ERR_ABORTED')
+                    .map(({ method, url }) => `${method} ${url}`);
+                for (const font of GOOGLE_FONTS) assert.ok(aborted.includes(`GET ${font}`), `the font abort stays actionable (${aborted.join(', ')})`);
+                assert.ok(aborted.includes(`POST ${GOOGLE_LOG}`), `the log ping abort stays actionable (${aborted.join(', ')})`);
+                assert.deepEqual(proofs(result.diagnostics), []);
+                assert.throws(() => assertPageDiagnosticsClean(result.page), /browser console, page, or network errors/);
             } finally {
                 await result.close();
             }

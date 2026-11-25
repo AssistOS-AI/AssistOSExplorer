@@ -857,6 +857,23 @@ exception is still the one reported. Cleanup POST failures, Google HTTP, TLS or
 network errors, unrelated requests, console errors and page errors are never
 acknowledged.
 
+Google renders its button on the wizard's email screen in a cross-site child
+frame (`https://accounts.google.com/gsi/button`), and the wizard removes that
+frame when it shows the next screen. The removal aborts whatever the frame still
+has in flight (its document or its Google Sans fonts) and the
+`play.google.com/log` ping it sends while unloading. A sign-in that left the
+email screen after Google had rendered its button therefore failed the strict
+check with unacknowledged aborts; this happened once on 2026-11-24. No wait
+helps, because the ping is sent whenever the frame is removed. `signIn` instead
+holds the wizard's request for the exact script address with a Playwright route
+until the wizard has left the email screen, then passes it on unchanged. The
+script then loads on a screen that renders no button. When Google does not
+answer, the request stays pending and becomes the proven navigation abort
+described above. Nothing waits for Google, the held request is never aborted,
+and no rule acknowledges a request from Google's button frame. As a
+consequence, a sign-in through `signIn` that completes never renders Google's
+button, whatever its method.
+
 Before following a password handoff, the wizard retires its Google transaction
 through `google/cancel` and waits a bounded time for that request, so a clean
 sign-in has no failed cleanup request. A cleanup that fails, is refused or times
@@ -864,6 +881,11 @@ out releases the valid sign-in but remains a strict diagnostics failure. The
 actual-service Chromium regression is
 `node --test lib/auth-navigation-cancellation.test.mjs`; it never contacts
 Google, because Google's address resolves to a local socket that never answers.
+Its button subtests serve a stand-in script, button frame, fonts and log
+endpoint through browser routes. They keep the email screen up until the button
+frame has requested its document or fonts, or for long enough that it would
+have. A button already rendered when the sign-in starts must still produce
+actionable aborts.
 
 ## Ploinky Core WebTTY Release Gate
 
