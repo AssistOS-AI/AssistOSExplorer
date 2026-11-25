@@ -247,7 +247,9 @@ export class RobotStore {
         return withRegistryMutation(this.robotsDir, async () => {
             const matches = (await this._allRobots({ strict: true })).filter((robot) => robot.name === DEFAULT_ROBOT_NAME);
             if (matches.length > 1) throw new Error('robot registry contains more than one robot named default');
-            return matches[0] || this._create({ name: DEFAULT_ROBOT_NAME });
+            // RoboWork repeats deferred robot preparation after its OpenCode migration, but it cannot create a robot it
+            // was never told about, so this creation waits for the migration; the RoboWork client bounds the wait.
+            return matches[0] || this._create({ name: DEFAULT_ROBOT_NAME }, { waitForMigration: true });
         });
     }
 
@@ -256,7 +258,7 @@ export class RobotStore {
         return withRegistryMutation(this.robotsDir, () => this._create({ name, codingAgents }));
     }
 
-    async _create({ name, codingAgents }) {
+    async _create({ name, codingAgents }, { waitForMigration = false } = {}) {
         const selectedAgents = normalizeCodingAgents(codingAgents);
         const normalizedName = normalizeName(name);
         await this.initialize();
@@ -288,7 +290,8 @@ export class RobotStore {
             updatedAt: now,
         };
         await this._writeMetadata(robotRoot, metadata);
-        await this.roboWork.call('robot_ensure', { robotId, name: normalizedName, codingAgents: selectedAgents, seed: false });
+        await this.roboWork.call('robot_ensure', { robotId, name: normalizedName, codingAgents: selectedAgents, seed: false },
+            { waitForMigration });
         return metadata;
     }
 
