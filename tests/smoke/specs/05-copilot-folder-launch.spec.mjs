@@ -268,12 +268,16 @@ test.describe('Copilot launch from Explorer', () => {
         observedPage.off('console', captureConsoleError);
         observedPage.off('pageerror', capturePageError);
       }
-      await copilotPage?.close().catch(() => {});
-      await waitForStableEdge(page);
-      await deleteDirectoryIfPresent(page, directoryPath);
-      if (traceStarted) {
-        traceStarted = false;
-        await stopAndAttachRedactedTrace(page.context(), testInfo, 'copilot-421');
+      // Cleanup stays inside the trace, and a failed cleanup must not discard the trace of the failure itself.
+      try {
+        await copilotPage?.close().catch(() => {});
+        await waitForStableEdge(page);
+        await deleteDirectoryIfPresent(page, directoryPath);
+      } finally {
+        if (traceStarted) {
+          traceStarted = false;
+          await stopAndAttachRedactedTrace(page.context(), testInfo, 'copilot-421');
+        }
       }
     }
   });
