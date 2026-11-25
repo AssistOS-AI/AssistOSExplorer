@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,7 +23,7 @@ async function fixture(t, options = {}) {
             ...(['browser', 'desktop'].includes(type) ? { sessionUrl: `/api/robots/${robot.id}/session/` } : {}) }; },
         stopTask(robot, type, id) { stopped.push(id); },
         sendTaskMessage(robot, taskId, prompt) { messages.push({ robot, taskId, prompt }); return { delivery: 'sent' }; },
-        resumeTask(robot, taskId, prompt, options = {}) { resumed.push({ robot, taskId, prompt }); return { taskId: options.runtimeTaskId, state: 'queued' }; },
+        resumeTask(robot, taskId, prompt, options = {}) { resumed.push({ robot, taskId, prompt, nextTaskId: options.runtimeTaskId }); return { taskId: options.runtimeTaskId, state: 'queued' }; },
         guiBusy: options.guiBusy || (() => false) };
     const service = new RoboFlowService({ robotStore, runtimeManager, skillsets: { repositoriesClient: { listRepositories: async () => [{ name: 'DocumentationSkills', source: root, origin: 'local' }] }, start: async (robot, input, enqueue) => enqueue(robot) }, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), random: () => .99,
         discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }), ...options });
@@ -31,11 +32,73 @@ async function fixture(t, options = {}) {
     await service.presetReady;
     t.after(async () => { await service.close(); await fs.rm(root, { recursive: true, force: true }); });
     async function finish(index, result = 'Done', state = 'completed') {
-        service.onRuntimeTaskEvent({ kind: 'terminal', taskId: started[index].taskId, result, state });
+        const taskId = typeof index === 'number' ? started[index].taskId : index;
+        service.onRuntimeTaskEvent({ kind: 'terminal', taskId, result, state });
         while (service.chains.size) await Promise.allSettled(service.chains.values());
     }
     return { service, robots, started, stopped, messages, resumed, root, finish };
 }
+
+test('required evidence gates linear and final phases per attempt', async t => {
+    const f = await fixture(t);
+    const gated = id => task(id, { requiresCompletionEvidence: true, effort: 'high' });
+    await f.service.createWorkflow({ ...graph(), tasks: [gated('a'), gated('b')], edges: [edge('a', 'b')] });
+    const run = () => f.service.startFlow({ workflowTypeId: 'example', folder: f.root, objective: 'Work' });
+    const writeReceipt = async (index, step, outputs = []) => {
+        const completionId = typeof index === 'number' ? f.started[index].taskId : index;
+        const file = 'artifact.json', bytes = JSON.stringify({context: 'x'.repeat(128*1024)});
+        await fs.writeFile(path.join(f.root, file), bytes);
+        await fs.mkdir(path.join(f.root, '.workflow-completion'), { recursive: true });
+        await fs.writeFile(path.join(f.root, '.workflow-completion', completionId + '.json'), JSON.stringify({
+            step, completionId, artifact: { path: file, sha256: createHash('sha256').update(bytes).digest('hex') }, outputs,
+        }));
+    };
+    const incomplete = await run();
+    assert.equal(f.started[0].request.workflowCompletionStep, 'a');
+    assert.equal(f.started[0].request.effort, 'high');
+    await f.service.store.update(incomplete.id, flow => { flow.instances[0].startedAt = new Date().toISOString(); });
+    await f.finish(0, humanReport('The work is unfinished'));
+    const continuing = await f.service.getFlow(incomplete.id);
+    const resumed = f.resumed[0].nextTaskId;
+    assert.equal(continuing.instances.length, 1);
+    assert.equal(continuing.instances[0].state, 'running');
+    assert.equal(continuing.instances[0].runtimeTaskId, resumed);
+    assert.match(f.resumed[0].prompt, /missing completion receipt/);
+    await writeReceipt(resumed, 'a');
+    await f.finish(resumed);
+    assert.equal((await f.service.getFlow(incomplete.id)).instances.length, 2);
+    const output = 'summary.html', verifiedBytes = 'Summary';
+    await fs.writeFile(path.join(f.root, output), verifiedBytes);
+    await writeReceipt(1, 'b', [{ path: output, size: verifiedBytes.length,
+        sha256: createHash('sha256').update(verifiedBytes).digest('hex') }]);
+    await fs.writeFile(path.join(f.root, output), 'Changed');
+    await f.service.store.update(incomplete.id, flow => { flow.instances[1].startedAt = new Date().toISOString(); });
+    await f.finish(1);
+    assert.match(f.resumed[1].prompt, /changed after verification/);
+    await f.finish(f.resumed[1].nextTaskId);
+    await f.finish(f.resumed[2].nextTaskId);
+    const paused = await f.service.getFlow(incomplete.id);
+    assert.equal(paused.status, 'paused');
+    assert.equal(paused.instances.length, 2);
+    assert.match(paused.instances[1].error, /missing completion receipt/);
+});
+
+test('a verified completion route advances without a routing decision in the model response', async t => {
+    const f = await fixture(t);
+    const definition = graph();
+    definition.tasks[0].requiresCompletionEvidence = true;
+    await f.service.createWorkflow(definition);
+    const flow = await f.service.startFlow({ workflowTypeId: definition.id, folder: f.root, objective: 'Work' });
+    const completionId = f.started[0].taskId;
+    await fs.writeFile(path.join(f.root, 'artifact.json'), '{}');
+    await fs.mkdir(path.join(f.root, '.workflow-completion'));
+    await fs.writeFile(path.join(f.root, '.workflow-completion', completionId + '.json'), JSON.stringify({
+        step: 'a', completionId, nextEdgeId: 'a-c',
+        artifact: { path: 'artifact.json', sha256: createHash('sha256').update('{}').digest('hex') },
+    }));
+    await f.finish(0, humanReport('Saved the required work'));
+    assert.deepEqual((await f.service.getFlow(flow.id)).instances.map(instance => instance.taskId), ['a', 'c']);
+});
 
 test('flow observers see committed phase changes even when overall status is unchanged, but never failed transactions', async t => {
     const f = await fixture(t);

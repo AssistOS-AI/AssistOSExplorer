@@ -25,6 +25,7 @@ const IMPLEMENTED = [
     'userpersisto_totp_setup_start',
     'userpersisto_totp_setup_verify',
     'userpersisto_credits_balance',
+    'credits_apply',
     'userpersisto_credits_ledger',
     'userpersisto_credits_grant',
     'userpersisto_credits_refund',
@@ -183,20 +184,30 @@ test('enrollment tools reject authentication methods that the effective policy d
     }
 });
 
-test('ScriptaHub points only accept the service identity, replay debits and refund a verified spend once', async () => {
-    const user = await createUser({ email: 'scriptahub-points@x.com', displayName: 'Points', roles: ['user'] });
-    const agent = { agentId: process.env.USERPERSISTO_SCRIPTAHUB_AGENT_ID || 'agent:ScriptaHubAgent/scriptahubAgent' };
-    const request = { userId: user.id, requestId: '186b7230-6611-4d5a-a21e-8137c1aaf69e', attempt: 1, amount: 4, kind: 'edition' };
-    const call = (operation, fields = {}, context = agent) => runTool('userpersisto_scriptahub_points_apply', { ...request, operation, ...fields }, context);
-    await assert.rejects(()=>call('debit',{}, {actorUserId:user.id}), /ScriptaHub agent access/);
+test('service credits isolate agent references and replay grants, debits and matching refunds', async () => {
+    await ensureSeedData();
+    const user = await createUser({ email: 'service-credits@x.com', displayName: 'Points', roles: ['user'] });
+    const agent = { agentId: 'agent:Example/service', agentDependency: true };
+    const otherAgent = { agentId: 'agent:Other/service', agentDependency: true };
+    const request = { userId: user.id, referenceId: 'order:'.padEnd(300, 'a'), amount: 4, reason: 'Example order' };
+    const call = (operation, fields = {}, context = agent) => runTool('credits_apply', { ...request, operation, ...fields }, context);
+    await assert.rejects(() => call('debit', {}, { actorUserId: user.id }), { statusCode: 403 });
+    await assert.rejects(() => call('debit', {}, { agentId: 'agent:Unknown/service' }), { statusCode: 403 });
+    await assert.rejects(() => call('grant', { referenceId: ' ' }), { statusCode: 400 });
     assert.deepEqual(await call('debit'), {insufficient:true,missing:4});
     await assert.rejects(()=>call('refund'), /matching debit/);
-    await call('reward',{kind:'book-proposal',amount:10});
-    assert.equal((await call('reward',{kind:'book-proposal',amount:10})).balance,10);
+    const award = { referenceId: 'award:'.padEnd(300, 'a'), amount: 10, reason: 'Example award', expiresAt: '2099-01-01T00:00:00Z' };
+    await call('grant', award);
+    assert.equal((await call('grant', award)).balance, 10);
     assert.equal((await call('debit')).balance,6);
+    await assert.rejects(() => call('refund', {}, otherAgent), /matching debit/);
+    assert.deepEqual(await call('inspect-expiry', { referenceId: award.referenceId }, otherAgent), { remaining: 0 });
     assert.equal((await call('debit')).balance,6);
+    assert.deepEqual(await call('inspect-expiry', { referenceId: award.referenceId }), { remaining: 6 });
     assert.equal((await call('refund')).balance,10);
     assert.equal((await call('refund')).balance,10);
+    assert.deepEqual(await call('inspect-expiry', { referenceId: award.referenceId }), { remaining: 10 });
+    assert.equal((await call('grant', award, otherAgent)).balance, 20);
 });
 
 

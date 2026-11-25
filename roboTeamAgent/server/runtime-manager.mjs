@@ -16,6 +16,7 @@ import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs'
 import { robotCodingAgents } from './coding-agents.mjs';
 import { RoboWorkClient } from './run-client.mjs';
 import { readRegularFile } from './skill-files.mjs';
+import { completionInstruction } from './roboflow/phase-completion.mjs';
 
 const GUI_MODES = new Set(['desktop', 'browser']);
 const ALA_FAILURE_DETAIL_LIMIT = 4096;
@@ -535,9 +536,12 @@ export class RuntimeManager {
             child.stdin?.on('error', () => {});
             // The task prompt is the first control record. The copilot engine adds
             // the caller's system instructions when it opens the native session.
+            const completion = completionInstruction(task.request.workflowCompletionStep, task.taskId);
+            // A resumed native session can retain its original system instructions.
+            const prompt = [task.request.task, task.request.resumeSession ? completion : ''].filter(Boolean).join('\n\n');
             const systemPrompt = [task.type === 'desktop' ? DESKTOP_TASK_INSTRUCTIONS : '', emailAddress ? emailInstructions(emailAddress) : '',
-                task.request.systemPrompt].filter(Boolean).join('\n\n');
-            child.stdin?.write(`${JSON.stringify({ type: 'prompt', prompt: task.request.task,
+                task.request.systemPrompt, task.request.resumeSession ? '' : completion].filter(Boolean).join('\n\n');
+            child.stdin?.write(`${JSON.stringify({ type: 'prompt', prompt,
                 ...(systemPrompt ? { systemPrompt } : {}) })}\n`);
             const resultDecoder = new StringDecoder('utf8');
             let resultBytes = 0;

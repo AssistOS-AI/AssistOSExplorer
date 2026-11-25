@@ -107,6 +107,7 @@ Router --> Explorer[Explorer Live Sessions]
 Registry -.->|control: message or stop| IPC
 IPC -.-> Copilot</pre><figcaption><em>Live Sessions sources, the private IPC socket and the authenticated listing</em></figcaption></figure>
 <h2>Workflow coordination</h2><p><code>server/roboflow/subflows.mjs</code> owns catalog filtering, plan validation, child creation and the join for <a href="wiki.html#definition-run-workflows">Run workflows</a>. The service serializes transitions per run. SQLite commits child graph snapshots and parent references together. Child status changes trigger parent reconciliation; the coordinator consumes no robot slot. The <a href="wiki.html#definition-workflow-creator">task that allows sub-flows</a> supplies the plan and continuation edge through its final response.</p>
+<p>When a phase requires completion evidence, RoboFlow verifies the receipt for its current attempt. The runtime includes the new attempt ID in each continuation turn so the robot can validate saved outputs and record completion for that attempt.</p>
 <figure class="diagram"><pre class="mermaid">flowchart TB
     C[Creator: robot and ALA] -->|Ordinary edge|T[Next ordinary task]
     C -->|Child plan and continuation edge|R[Run workflows: RoboFlow]
