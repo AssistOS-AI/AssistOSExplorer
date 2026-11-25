@@ -72,6 +72,14 @@ export function getToolbarPluginLayout(toolbarPlugins, dropdownPlugins, mobile =
     };
 }
 
+function getVisibleToolbarPluginLayout() {
+    const options = { contributionType: MOUNT_CONTRIBUTION_TYPE };
+    return getToolbarPluginLayout(
+        getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbar, options),
+        getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbarPluginsDropdown, options),
+    );
+}
+
 function encodeContext(context) {
     try {
         return encodeURIComponent(JSON.stringify(context || {}));
@@ -375,13 +383,7 @@ function stageApplicationPluginPlaceholders(fileExp) {
     const toolbarPluginsDropdownContainer = fileExp?.element?.querySelector?.('#fileExpToolbarPluginsDropdown');
     const rightBarContainer = fileExp?.element?.querySelector?.('#fileExpPluginBar');
     const accountMenuContainer = fileExp?.element?.querySelector?.('#fileExpAccountMenuPlugins');
-    const toolbarPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbar, {
-        contributionType: MOUNT_CONTRIBUTION_TYPE
-    });
-    const toolbarDropdownPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbarPluginsDropdown, {
-        contributionType: MOUNT_CONTRIBUTION_TYPE
-    });
-    const { visibleToolbarPlugins, visibleToolbarDropdownPlugins } = getToolbarPluginLayout(toolbarPlugins, toolbarDropdownPlugins);
+    const { visibleToolbarPlugins, visibleToolbarDropdownPlugins } = getVisibleToolbarPluginLayout();
     const rightBarPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.rightBar, {
         contributionType: MOUNT_CONTRIBUTION_TYPE
     });
@@ -536,10 +538,8 @@ async function loadToolbarPluginOnDemand(fileExp, trigger) {
     if (!key || trigger.getAttribute('aria-busy') === 'true') return;
     const toolbarContainer = fileExp?.element?.querySelector?.('#fileExpToolbarPlugins');
     if (!toolbarContainer?.contains?.(trigger)) return;
-    const plugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbar, {
-        contributionType: MOUNT_CONTRIBUTION_TYPE
-    });
-    const plugin = plugins.find((entry) => getPluginKey(entry) === key);
+    const { visibleToolbarPlugins } = getVisibleToolbarPluginLayout();
+    const plugin = visibleToolbarPlugins.find((entry) => getPluginKey(entry) === key);
     if (!plugin) return;
 
     const opening = openToolbarPluginWithFeedback(trigger, () => openPluginToolbarModal(plugin));
@@ -568,7 +568,9 @@ async function loadToolbarPluginOnDemand(fileExp, trigger) {
                 currentFsPath,
                 workspaceFsRoot
             });
-            await mountSlot(toolbarContainer, APP_PLUGIN_SLOTS.toolbar, plugins, context, {
+            const currentToolbar = getVisibleToolbarPluginLayout().visibleToolbarPlugins;
+            if (!currentToolbar.some(entry => getPluginKey(entry) === key)) return;
+            await mountSlot(toolbarContainer, APP_PLUGIN_SLOTS.toolbar, currentToolbar, context, {
                 onlyKey: key,
                 componentsReady: true,
                 background: Boolean(plugin.toolbarModal),
@@ -625,9 +627,7 @@ function bindLazyToolbarPluginActions(fileExp, toolbarContainer) {
         if (button.hasAttribute('data-app-plugin-trigger')) return;
         const mount = button.closest('[data-app-plugin-key]');
         const key = mount?.getAttribute('data-app-plugin-key');
-        const plugin = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbar, {
-            contributionType: MOUNT_CONTRIBUTION_TYPE
-        }).find(entry => getPluginKey(entry) === key);
+        const plugin = getVisibleToolbarPluginLayout().visibleToolbarPlugins.find(entry => getPluginKey(entry) === key);
         if (!plugin?.toolbarModal) return;
         openToolbarPluginWithFeedback(button, () => openPluginToolbarModal(plugin));
     }, true);
@@ -669,9 +669,7 @@ async function performRenderApplicationPluginSlots(fileExp) {
     const internalContainer = fileExp.element.querySelector('#fileExpInternalPlugins');
     const globalContainer = fileExp.element.querySelector('#fileExpGlobalPlugins');
     const accountMenuContainer = fileExp.element.querySelector('#fileExpAccountMenuPlugins');
-    const toolbarPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbar, { contributionType: MOUNT_CONTRIBUTION_TYPE });
-    const toolbarPluginsDropdownPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbarPluginsDropdown, { contributionType: MOUNT_CONTRIBUTION_TYPE });
-    const { visibleToolbarPlugins, visibleToolbarDropdownPlugins } = getToolbarPluginLayout(toolbarPlugins, toolbarPluginsDropdownPlugins);
+    const { visibleToolbarPlugins, visibleToolbarDropdownPlugins } = getVisibleToolbarPluginLayout();
     const rightBarPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.rightBar, { contributionType: MOUNT_CONTRIBUTION_TYPE });
     const internalPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.internal, { contributionType: MOUNT_CONTRIBUTION_TYPE });
     const globalPlugins = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.global, { contributionType: MOUNT_CONTRIBUTION_TYPE });
