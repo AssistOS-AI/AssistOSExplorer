@@ -40,6 +40,13 @@ function renderedRefs(modal) {
     return elements(modal.agentsEl).map(row => row.dataset.marketplaceAgentRef).filter(Boolean);
 }
 
+function repositoryNotes(modal) {
+    return Object.fromEntries(elements(modal.repositoriesEl).filter(row => row.dataset.marketplaceRepoName).map(row => {
+        const note = row.querySelector('.marketplace-meta');
+        return [row.dataset.marketplaceRepoName, note.hidden ? '' : note.textContent];
+    }));
+}
+
 function renderedRepos(modal, tab) {
     const className = tab === 'agents' ? 'marketplace-repo-title' : 'marketplace-title';
     return elements(tab === 'agents' ? modal.agentsEl : modal.repositoriesEl)
@@ -176,7 +183,7 @@ test('Marketplace renders only visible repositories and agents in both tabs and 
 
 test('Marketplace search cannot restore hidden groups or entries, while allowed matches remain searchable', async (t) => {
     const modal = await createModal(t);
-    for (const query of [...hiddenRepositoryNames, 'alias-', 'custom-skills', 'mixed-source', 'hidden-skill', 'worker']) {
+    for (const query of [...hiddenRepositoryNames, 'alias-', 'custom-skills', 'hidden-skill', 'worker']) {
         modal.state.agentSearchQuery = query;
         modal.renderAgents();
         assert.ok(renderedRefs(modal).every(ref => visibleAgentRefs.includes(ref)), query);
@@ -204,29 +211,38 @@ test('Marketplace load, agent polling and repository refresh apply the same visi
     assert.deepEqual(renderedRefs(modal), visibleAgentRefs);
     await modal.refreshAgentStatuses();
     assert.deepEqual(renderedRefs(modal), visibleAgentRefs, 'agent polling keeps the same policy');
-    catalog.repositories.find(repo => repo.name === 'proxies').kind = 'mixed';
+    catalog.repositories.find(repo => repo.name === 'proxies').kind = 'skills';
     modal.mergeMarketplaceSnapshot({ repositories: structuredClone(catalog.repositories) });
     assert.ok(!renderedRefs(modal).includes('proxies/worker'));
     assert.ok(!renderedRepos(modal, 'repos').includes('proxies'), 'repository refresh updates the Repos tab');
     assert.ok(renderedRefs(modal).includes('AchillesCLI/worker'));
+    catalog.repositories.find(repo => repo.name === 'AchillesCLI').kind = 'mixed';
+    modal.mergeMarketplaceSnapshot({ repositories: structuredClone(catalog.repositories) });
+    assert.ok(renderedRefs(modal).includes('AchillesCLI/worker'), 'an agent repository that gains skills stays listed');
+    assert.ok(renderedRepos(modal, 'repos').includes('AchillesCLI'));
 });
 
-test('ScriptaHub is the one mixed source that stays listed, also under an alias', async (t) => {
+test('Mixed sources are listed as agent repositories, also under an alias, unless a named or skill-source exclusion matches', async (t) => {
     const url = 'git@github.com:Axiologic/ScriptaHubAgent.git';
     const repositories = [
         {name: 'ScriptaHubAgent', url, kind: 'mixed'},
         {name: 'books', url, kind: 'mixed'},
         {name: 'bizanso', url: 'https://github.com/Axiologic/bizanso.git', kind: 'mixed'},
+        {name: 'copilot-agents', kind: 'mixed'},
+        {name: 'docs-local', url: 'https://github.com/AssistOS-AI/DocumentationSkills.git', kind: 'mixed'},
+        {name: 'shared-skills', url: 'https://example.test/team/shared.git', kind: 'skills'},
+        {name: 'shared-local', url: 'git@example.test:team/shared.git', kind: 'mixed'},
     ];
-    const agents = ['ScriptaHubAgent', 'books', 'bizanso'].map(repo => ({
+    const agents = repositories.map(({name: repo}) => ({
         ref: `${repo}/worker`, repo, name: 'worker', active: true,
     }));
     const catalog = getVisibleMarketplaceCatalog({repositories, agents});
     assert.deepEqual(catalog.repositories.map(repo => [repo.name, repo.kind, repo.activeAgentsCount]), [
         ['ScriptaHubAgent', 'agents', 1],
         ['books', 'agents', 1],
+        ['bizanso', 'agents', 1],
     ]);
-    assert.deepEqual(catalog.agents.map(agent => agent.ref), ['ScriptaHubAgent/worker', 'books/worker']);
+    assert.deepEqual(catalog.agents.map(agent => agent.ref), ['ScriptaHubAgent/worker', 'books/worker', 'bizanso/worker']);
     assert.equal(repositories[0].kind, 'mixed', 'the router catalog is not modified');
 
     const modal = await createModal(t);
@@ -234,10 +250,35 @@ test('ScriptaHub is the one mixed source that stays listed, also under an alias'
         ? {agents: structuredClone(agents), enabledAgents: []}
         : {repositories: structuredClone(repositories)});
     await modal.loadMarketplace();
-    assert.ok(renderedRefs(modal).includes('ScriptaHubAgent/worker'));
-    assert.ok(!renderedRefs(modal).includes('bizanso/worker'));
-    assert.ok(renderedRepos(modal, 'repos').includes('ScriptaHubAgent'));
-    assert.ok(!renderedRepos(modal, 'repos').includes('bizanso'));
+    assert.deepEqual(renderedRefs(modal), ['ScriptaHubAgent/worker', 'books/worker', 'bizanso/worker']);
+    assert.deepEqual(renderedRepos(modal, 'repos'), ['ScriptaHubAgent', 'books', 'bizanso']);
+});
+
+test('Uninstall notes say what happens to the skills of an installed mixed repository', async (t) => {
+    const repositories = [
+        {name: 'managed-mixed', kind: 'mixed', installed: true, url: 'https://example.test/managed-mixed.git'},
+        {name: 'bizanso', displayName: './bizanso', workspacePath: './bizanso', kind: 'mixed', installed: true},
+        {name: 'remote-mixed', kind: 'mixed', installed: false, url: 'https://example.test/remote-mixed.git'},
+        {name: 'plain-agents', kind: 'agents', installed: true},
+    ];
+    const agents = repositories.map(({name: repo}) => ({ref: `${repo}/worker`, repo, name: 'worker', active: false}));
+    const modal = await createModal(t);
+    modal.fetchMarketplaceHalf = async resource => (resource === 'agents'
+        ? {agents: structuredClone(agents), enabledAgents: [{repoName: 'managed-mixed', agentName: 'worker', type: 'agent'}]}
+        : {repositories: structuredClone(repositories)});
+    await modal.loadMarketplace();
+    assert.deepEqual(repositoryNotes(modal), {
+        'managed-mixed': '1 enabled agent will be removed if this repo is uninstalled. Uninstalling also deletes the skills in this repo.',
+        bizanso: 'Uninstalling keeps its files, including its skills, in ./bizanso.',
+        'remote-mixed': '',
+        'plain-agents': '',
+    });
+
+    const rows = [...modal.repositoriesEl.children];
+    repositories[3].kind = 'mixed';
+    modal.mergeMarketplaceSnapshot({repositories: structuredClone(repositories)});
+    assert.deepEqual(modal.repositoriesEl.children, rows, 'gaining skills updates the note in place');
+    assert.equal(repositoryNotes(modal)['plain-agents'], 'Uninstalling also deletes the skills in this repo.');
 });
 
 test('Marketplace catalog updates retain visible rows and never add hidden startups', async (t) => {

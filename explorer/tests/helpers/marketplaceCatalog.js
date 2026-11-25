@@ -58,7 +58,7 @@ export function marketplaceCatalog() {
     };
 }
 
-export const visibleRepositoryNames = ['AchillesIDE', 'AchillesCLI', 'proxies', 'skill-tools', 'basic-tools', 'resources'];
+export const visibleRepositoryNames = ['mixed-source', 'AchillesIDE', 'AchillesCLI', 'proxies', 'skill-tools', 'basic-tools', 'resources'];
 export const visibleAgentRefs = [
     ...visibleRepositoryNames.map(name => `${name}/worker`), 'AllowedOrphan/worker', 'Standalone',
 ];
