@@ -410,8 +410,9 @@ test('a password sign-in retires Google before navigating and only a proven scri
         for (const mode of ['fonts-pending', 'idle', 'document-pending']) {
             await t.test(`leaving the email screen aborts nothing of Google's button (${mode})`, async () => {
                 discoverGate = leaveEmailScreenAfter(mode);
-                const result = await run({ fakeGoogle: mode });
+                let result;
                 try {
+                    result = await run({ fakeGoogle: mode });
                     assert.equal(result.error, undefined, result.error?.message);
                     assert.equal(result.principal.canonicalUsername, email);
                     assert.deepEqual(result.diagnostics.actionableEvents(), []);
@@ -425,7 +426,7 @@ test('a password sign-in retires Google before navigating and only a proven scri
                     assert.equal(await statusOf(result.handle), 'cancelled', 'the Google transaction is still retired before the handoff');
                 } finally {
                     discoverGate = null;
-                    await result.close();
+                    await result?.close();
                 }
             });
         }

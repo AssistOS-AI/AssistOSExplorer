@@ -869,8 +869,8 @@ script then loads on a screen that renders no button. When Google does not
 answer, the request stays pending and becomes the proven navigation abort
 described above. Nothing waits for Google, the held request is never aborted,
 and no rule acknowledges a request from Google's button frame. As a
-consequence, no sign-in through `signIn` renders Google's button any more,
-whatever its method.
+consequence, a sign-in through `signIn` that completes never renders Google's
+button, whatever its method.
 
 Before following a password handoff, the wizard retires its Google transaction
 through `google/cancel` and waits a bounded time for that request, so a clean
