@@ -22,10 +22,10 @@ const migrationFailed = () => refusal('OPENCODE_MIGRATION_FAILED',
 async function startupStore(t, answer) {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-migration-'));
     t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
-    const calls = [], waits = [];
-    const roboWork = new RoboWorkClient({ startupRetry: true, wait: async ms => { waits.push(ms); },
+    const calls = [], waits = [], log = [];
+    const roboWork = new RoboWorkClient({ startupRetry: true, wait: async ms => { waits.push(ms); }, log: message => log.push(message),
         createClient: async () => ({ callTool: async (tool, input) => { calls.push({ tool, input }); return answer(calls.length); } }) });
-    return { store: new RobotStore({ dataDir, roboWork }), roboWork, calls, waits };
+    return { store: new RobotStore({ dataDir, roboWork }), roboWork, calls, waits, log };
 }
 
 async function startupPreparation(robotStore, runtimeManager, roboWork, log) {
@@ -78,6 +78,9 @@ test('RoboTeam waits for its direct RoboWork dependency while Explorer keeps the
     assert.equal(explorer.enable.some(entry => typeof entry === 'string' && entry.split(' ')[0] === 'roboWorkAgent'), false);
     const main = await fs.readFile(new URL('../server/main.mjs', import.meta.url), 'utf8');
     assert.match(main, /new RoboWorkClient\(\{\s*startupRetry:\s*true/);
+    // The default robot's migration wait exists only while the startup client still retries.
+    assert.ok(main.indexOf('await robotStore.ensureDefaultRobot()') > main.indexOf('new RoboWorkClient({ startupRetry: true'));
+    assert.ok(main.indexOf('await robotStore.ensureDefaultRobot()') < main.indexOf('roboWork.finishStartup()'));
     assert.ok(main.indexOf('await runtimeManager.initialize()') < main.indexOf('await roboflow.initialize()'));
     assert.ok(main.indexOf('roboWork.finishStartup()') > main.indexOf('await runtimeManager.initialize()'));
     assert.ok(main.indexOf('roboWork.finishStartup()') < main.indexOf('await roboflow.initialize()'));
@@ -142,17 +145,20 @@ test('auth, tool and unrelated HTTP failures fail immediately without startup re
 });
 
 test('startup creation of the default robot waits while RoboWork migrates OpenCode homes, then succeeds', async t => {
-    const { store, calls, waits } = await startupStore(t, call => call <= 2 ? migrating() : {});
+    const { store, calls, waits, log } = await startupStore(t, call => call <= 2 ? migrating() : {});
     const robot = await store.ensureDefaultRobot();
     assert.equal(robot.name, 'default');
     assert.deepEqual(calls.map(call => call.tool), ['robot_ensure', 'robot_ensure', 'robot_ensure']);
     assert.ok(calls.every(call => call.input.robotId === robot.id && call.input.seed === false));
     assert.deepEqual(waits, [1000, 2000]);
     assert.deepEqual(await store.getDefault(), robot);
+    assert.deepEqual(log, ['[roboTeamAgent] robot_ensure waits while RoboWork upgrades robot homes to OpenCode V2',
+        '[roboTeamAgent] robot_ensure succeeded after RoboWork\'s OpenCode V2 migration']);
 });
 
 test('a migration that never finishes fails startup once, after one bounded wait every startup call shares', async t => {
-    const { store, roboWork, calls, waits } = await startupStore(t, () => migrating());
+    const { store, roboWork, calls, waits, log } = await startupStore(t, () => migrating());
+    t.after(() => assert.equal(log.length, 1));
     await assert.rejects(store.ensureDefaultRobot(), error => error.code === 'OPENCODE_MIGRATING' && error.statusCode === 503
         && /still upgrading robot homes to OpenCode V2.*waited 300 seconds during startup/u.test(error.message));
     assert.equal(waits.reduce((sum, ms) => sum + ms, 0), 300000);
@@ -173,9 +179,10 @@ test('a failed OpenCode migration is never retried', async t => {
 });
 
 test('only startup creation of the default robot waits for the migration', async t => {
-    const { store, roboWork, calls, waits } = await startupStore(t, () => migrating());
+    const { store, roboWork, calls, waits, log } = await startupStore(t, () => migrating());
+    t.after(() => assert.deepEqual(log, []));
     const original = { code: 'OPENCODE_MIGRATING', statusCode: 503, message: 'Robot homes are being upgraded to OpenCode V2. Retry shortly.' };
-    // Per-robot preparation is repeated by RoboWork after its migration, so it fails at once as before.
+    // RoboWork repeats preparation after its migration for every robot it knows, so per-robot preparation fails at once as before.
     await assert.rejects(roboWork.call('robot_ensure', { robotId: 'robot-a', seed: false }), original);
     await assert.rejects(store.create({ name: 'Analyst' }), original);
     assert.equal(calls.length, 2);

@@ -43,11 +43,13 @@ function toolFailure(result) {
 }
 
 export class RoboWorkClient {
-    constructor({ createClient = null, agentName = 'roboWorkAgent', startupRetry = false, wait = delay } = {}) {
+    constructor({ createClient = null, agentName = 'roboWorkAgent', startupRetry = false, wait = delay,
+        log = message => console.log(message) } = {}) {
         this.createClient = createClient;
         this.agentName = agentName;
         this.startupRetry = startupRetry;
         this.wait = wait;
+        this.log = log;
         this.migrationWaitMs = 0;
     }
 
@@ -71,12 +73,16 @@ export class RoboWorkClient {
                     code: 'ROBOWORK_UNAVAILABLE', statusCode: 503, retryable: true,
                 });
             }
-            if (!result?.isError && result?.ok !== false) return result;
+            if (!result?.isError && result?.ok !== false) {
+                if (migrating) this.log(`[roboTeamAgent] ${tool} succeeded after RoboWork's OpenCode V2 migration`);
+                return result;
+            }
             const failure = { ...toolFailure(result), ...result };
             // A migration still in progress is waited for; OPENCODE_MIGRATION_FAILED needs an operator and fails at once.
             if (failure.code === 'OPENCODE_MIGRATING' && waitForMigration && this.startupRetry) {
                 const remaining = STARTUP_MIGRATION_WAIT_MS - this.migrationWaitMs;
                 if (remaining > 0) {
+                    if (!migrating) this.log(`[roboTeamAgent] ${tool} waits while RoboWork upgrades robot homes to OpenCode V2`);
                     const ms = Math.min(remaining, STARTUP_MIGRATION_DELAYS_MS[Math.min(migrating++, STARTUP_MIGRATION_DELAYS_MS.length - 1)]);
                     this.migrationWaitMs += ms;
                     await this.wait(ms);
