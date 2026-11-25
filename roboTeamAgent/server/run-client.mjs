@@ -6,6 +6,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
 const STARTUP_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 2000];
+// RoboWork answers robot home operations with OPENCODE_MIGRATING while its own startup upgrades homes to OpenCode V2;
+// a fresh deployment, with no homes yet, spent about 40 seconds there preparing OpenCode. Only startup calls that cannot
+// be deferred wait, and they share one budget that stays well inside the 600 seconds startAgent.sh gives the service by
+// default, so a migration that does not finish is reported by this client rather than by the shell's timeout.
+const STARTUP_MIGRATION_WAIT_MS = 300000;
+const STARTUP_MIGRATION_DELAYS_MS = [1000, 2000, 4000, 5000];
 const CONNECTION_ERRORS = new Set(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT',
     'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET']);
 
@@ -42,36 +48,47 @@ export class RoboWorkClient {
         this.agentName = agentName;
         this.startupRetry = startupRetry;
         this.wait = wait;
+        this.migrationWaitMs = 0;
     }
 
     finishStartup() { this.startupRetry = false; }
 
-    async call(tool, input = {}, { timeoutMs = 120000 } = {}) {
+    // waitForMigration applies only before finishStartup().
+    async call(tool, input = {}, { timeoutMs = 120000, waitForMigration = false } = {}) {
         const create = this.createClient || await loadAgentClient();
-        let result;
-        for (let attempt = 0; ; attempt++) {
+        for (let attempt = 0, migrating = 0; ;) {
+            let result;
             try {
                 const client = await create(this.agentName);
                 result = await client.callTool(tool, input, { timeoutMs });
-                break;
             } catch (error) {
                 if (!unavailable(error)) throw error;
                 if (this.startupRetry && attempt < STARTUP_RETRY_DELAYS_MS.length) {
-                    await this.wait(STARTUP_RETRY_DELAYS_MS[attempt]);
+                    await this.wait(STARTUP_RETRY_DELAYS_MS[attempt++]);
                     continue;
                 }
                 throw Object.assign(new Error('RoboWork is temporarily unavailable; retry this request.', { cause: error }), {
                     code: 'ROBOWORK_UNAVAILABLE', statusCode: 503, retryable: true,
                 });
             }
-        }
-        if (result?.isError || result?.ok === false) {
+            if (!result?.isError && result?.ok !== false) return result;
             const failure = { ...toolFailure(result), ...result };
+            // A migration still in progress is waited for; OPENCODE_MIGRATION_FAILED needs an operator and fails at once.
+            if (failure.code === 'OPENCODE_MIGRATING' && waitForMigration && this.startupRetry) {
+                const remaining = STARTUP_MIGRATION_WAIT_MS - this.migrationWaitMs;
+                if (remaining > 0) {
+                    const ms = Math.min(remaining, STARTUP_MIGRATION_DELAYS_MS[Math.min(migrating++, STARTUP_MIGRATION_DELAYS_MS.length - 1)]);
+                    this.migrationWaitMs += ms;
+                    await this.wait(ms);
+                    continue;
+                }
+                throw Object.assign(new Error('RoboWork was still upgrading robot homes to OpenCode V2 after RoboTeam '
+                    + `waited ${STARTUP_MIGRATION_WAIT_MS / 1000} seconds during startup`), { code: 'OPENCODE_MIGRATING', statusCode: 503 });
+            }
             throw Object.assign(new Error(failure.message || failure.error || 'RoboWork request failed'), {
                 code: failure.code || 'ROBOWORK_FAILED', statusCode: failure.statusCode || 502,
             });
         }
-        return result;
     }
 }
 
