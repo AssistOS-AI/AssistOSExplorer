@@ -160,7 +160,7 @@ test('persisted flow interruption scan waits for the first successful run snapsh
 test('the robot list survives one robot RoboWork does not know, and a store refusal reaches the delete caller', async t => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'list-unknown-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const paths = new RobotPaths({ dataDir: path.join(root, 'data'), workspaceRoot: root });
+    const paths = new RobotPaths({ dataDir: path.join(root, 'data'), robotsDir: path.join(root, 'robots'), workspaceRoot: root });
     await fs.mkdir(paths.robot('robot-known'), { recursive: true });
     await fs.writeFile(path.join(paths.robot('robot-known'), 'label'), JSON.stringify({ id: 'robot-known', name: 'known', codingAgents: [] }));
     const roboWorkRobots = new RobotManager({ paths, readStatus: async () => ({ activeAgent: 'codex' }) });

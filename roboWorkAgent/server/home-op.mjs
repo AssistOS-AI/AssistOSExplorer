@@ -20,13 +20,20 @@ export function createHomeOperations({ paths, alaEntry, toolCache, execFileImpl 
             try { await fs.access(root); args.push('--ro-bind', root, root); } catch { /* Optional system root. */ }
         }
         args.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/home',
+            '--ro-bind', process.execPath, process.execPath,
             '--bind', paths.home(id), target, '--ro-bind', codeRoot, '/code', '--ro-bind', alaRoot, '/opt/ala',
             '--ro-bind', toolCache.root, toolCache.root);
+        if (operation === 'opencode_migrate') {
+            const expected = path.join(paths.dataDir, 'server-state', 'migrations', 'opencode-v2-1', id);
+            if (input.migrationBackup !== expected) throw new Error('Invalid migration backup path');
+            args.push('--bind', expected, '/migration');
+        }
         for (const [key, value] of Object.entries(env)) args.push('--setenv', key, value);
         args.push('--setenv', 'ROBOWORK_HELPER', '1', '--setenv', 'ROBOWORK_ALA_ENTRY', '/opt/ala/bin/ala.mjs',
             '--chdir', target, '--', process.execPath, '/code/server/home-op.mjs', operation, JSON.stringify(input));
         try {
-            const result = await execFileImpl(bwrap, args, { env, timeout: 90000, maxBuffer: 8 * 1024 * 1024 });
+            const result = await execFileImpl(bwrap, args, { env,
+                timeout: operation === 'opencode_migrate' ? 15 * 60 * 1000 : 90000, maxBuffer: 8 * 1024 * 1024 });
             return JSON.parse(result.stdout);
         } catch (error) { throw fail('HOME_OPERATION_FAILED', 'Robot home operation failed', 500); }
     };
@@ -101,6 +108,10 @@ export async function robotStatus(home, input = {}, { env, api = null, unavailab
 }
 
 export async function homeOperation(operation, input, home = process.env.HOME) {
+    if (operation === 'opencode_migrate') {
+        const { migrateOpenCodeHome } = await import('./opencode-home-migration.mjs');
+        return migrateOpenCodeHome({ home, backup: '/migration', binary: input.binary, template: input.template });
+    }
     if (operation === 'delete') {
         for (const entry of await fs.readdir(home)) await fs.rm(path.join(home, entry), { recursive: true, force: true });
         return { ok: true };

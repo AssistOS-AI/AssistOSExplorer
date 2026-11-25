@@ -138,7 +138,10 @@ export async function openCodeVersionOf(binary) {
     for (let depth = 0; depth < 4; depth++, directory = path.dirname(directory)) {
         try {
             const metadata = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
-            if (typeof metadata.name === 'string' && metadata.name.startsWith('opencode-') && typeof metadata.version === 'string') return metadata.version;
+            if (typeof metadata.name === 'string'
+                && (metadata.name.startsWith('opencode-') || metadata.name === '@opencode/cli'
+                    || metadata.name.startsWith('@opencode/cli-'))
+                && typeof metadata.version === 'string') return metadata.version;
         } catch (error) {
             if (error.code !== 'ENOENT') return null;
         }
