@@ -69,7 +69,7 @@ Each graph visit creates a distinct task instance and runtime task id. A cycle A
 
 ### Phase control
 
-For phases that require completion evidence, RoboFlow checks the receipt for the current runtime attempt before advancing. A continuation sends the new attempt ID in the new turn and can reuse the saved phase outputs after validating them.
+For phases that require completion evidence, RoboFlow checks the receipt for the current runtime attempt before advancing. A continuation sends the new attempt ID and can reuse validated phase outputs. An early response stays in the phase log. A phase helper can save an attempt-bound progress record with a count of completed units. A higher count resets the consecutive attempts without progress. Only verified completion permits a final result and graph advancement.
 
 Every phase owns its ALA session and can be driven from the flow page independently of graph traversal. A running phase accepts a live prompt, which is appended to its log as a user line and sent to the agent without changing the graph. A paused, completed or failed phase can be continued with a prompt: RoboFlow resumes that phase's exact saved ALA session, and on completion the run continues from the same node, so continuing phase B of A -> B -> C still proceeds to C. Pausing a phase pauses the whole run.
 

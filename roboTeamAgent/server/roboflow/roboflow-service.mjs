@@ -13,7 +13,7 @@ import { WorkflowScheduler } from './workflow-scheduler.mjs';
 import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator, resolveWorkflowObjective, assertRunnable } from './graph.mjs';
 import { coverage, matchRobot, robotSelections, discoverWorkflowSkillsets } from './skill-matching.mjs';
 import { parseRoute, parseWorkflowResponse, workflowResponseContext } from './result-parser.mjs';
-import { verifyPhaseCompletion } from './phase-completion.mjs';
+import { readPhaseProgress, verifyPhaseCompletion } from './phase-completion.mjs';
 import { generationPrompt, routingPrompt, buildWorkflowTaskPrompt, creatorPrompt } from '../../copilot/src/lib/prompts.mjs';
 import { presetGraph, readPresets } from './workflow-presets.mjs';
 import { requiredDocumentationRepository } from '../required-skills.mjs';
@@ -517,15 +517,17 @@ export class RoboFlowService {
         if (flow.humanInput?.status === 'pending' || (terminal(flow.status) && !binding.manual)) return;
         if (event.state === 'paused') return this._fail(flow.id, event.error || `Task ${instance.taskId} paused`, 'paused');
         if (event.state !== 'completed' || event.error) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, 'failed');
-        await this.store.writeOutput(flow.id, instance.id, event.result || '', 'result');
         const node = flow.graph.tasks.find(task => task.id === instance.taskId);
         let completion;
         try {
             completion = await verifyPhaseCompletion(flow.folder, node, instance.runtimeTaskId);
         } catch (error) {
             if (error.code !== 'phase_evidence_incomplete') throw error;
-            return this._continueIncompletePhase(flow.id, instance, error.message);
+            if (event.result) await this.store.writeOutput(flow.id, instance.id, event.result, 'log');
+            const progress = await readPhaseProgress(flow.folder, node.id, instance.runtimeTaskId);
+            return this._continueIncompletePhase(flow.id, instance, error.message, progress);
         }
+        await this.store.writeOutput(flow.id, instance.id, event.result || '', 'result');
         const outgoing = flow.graph.edges.filter(edge => edge.sourceTaskId === instance.taskId);
         const plan = node.creator ? await this.subflows.plan(flow, instance, event.result) : null;
         const verifiedEdge = completion?.nextEdgeId === undefined ? null : outgoing.find(edge => edge.id === completion.nextEdgeId);
@@ -533,15 +535,17 @@ export class RoboFlowService {
         const edge = plan?.edge || verifiedEdge || (outgoing.length > 1 ? parseRoute(event.result, flow.graph, instance.taskId).edge : outgoing[0]);
         await this._advance(flow.id, instance.id, edge, plan);
     }
-    async _continueIncompletePhase(id, instance, reason) {
-        const attempts = instance.completionContinuations || 0;
+    async _continueIncompletePhase(id, instance, reason, progress) {
+        const advanced = progress > (instance.completionProgress || 0);
+        const attempts = advanced ? 0 : instance.completionContinuations || 0;
         const canContinue = attempts < 2;
         await this.store.update(id, current => {
             const visit = current.instances.find(item => item.id === instance.id);
             visit.state = 'paused';
             visit.endedAt = new Date().toISOString();
             visit.error = reason;
-            if (canContinue) visit.completionContinuations = attempts + 1;
+            if (advanced) visit.completionProgress = progress;
+            if (canContinue) visit.completionContinuations = advanced ? 0 : attempts + 1;
             this._derive(current);
         });
         if (canContinue) {

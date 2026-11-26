@@ -83,6 +83,34 @@ test('required evidence gates linear and final phases per attempt', async t => {
     assert.match(paused.instances[1].error, /missing completion receipt/);
 });
 
+test('early replies stay in the log and a phase keeps advancing while it saves progress', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow({ ...graph(), tasks: [task('a', { requiresCompletionEvidence: true })], edges: [] });
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', folder: f.root, objective: 'Work' });
+    const evidenceDirectory = path.join(f.root, '.workflow-completion');
+    await fs.mkdir(evidenceDirectory);
+    let attempt = f.started[0].taskId;
+    for (const completedUnits of [3, 32, 66, 80]) {
+        await fs.writeFile(path.join(evidenceDirectory, attempt + '.progress.json'),
+            JSON.stringify({ step: 'a', completionId: attempt, completedUnits }));
+        await f.finish(attempt, humanReport('Work is still pending'));
+        const current = await f.service.store.get(flow.id);
+        assert.equal(current.status, 'running');
+        assert.equal(current.instances[0].completionProgress, completedUnits);
+        assert.equal(current.instances[0].latestResult, undefined);
+        attempt = current.instances[0].runtimeTaskId;
+    }
+    await fs.writeFile(path.join(f.root, 'artifact.json'), '{}');
+    await fs.writeFile(path.join(evidenceDirectory, attempt + '.json'), JSON.stringify({
+        step: 'a', completionId: attempt,
+        artifact: { path: 'artifact.json', sha256: createHash('sha256').update('{}').digest('hex') },
+    }));
+    await f.finish(attempt, humanReport('Finished'));
+    const finished = await f.service.getFlow(flow.id);
+    assert.equal(finished.status, 'completed');
+    assert.equal(await f.service.store.readOutput(flow.id, finished.instances[0].id, 'result'), humanReport('Finished'));
+});
+
 test('a verified completion route advances without a routing decision in the model response', async t => {
     const f = await fixture(t);
     const definition = graph();
