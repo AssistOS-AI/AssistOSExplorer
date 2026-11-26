@@ -18,7 +18,7 @@ on:
         default: false
         type: boolean
       reset_explorer_checkout:
-        description: 'Hard-reset the kept AchillesIDE checkout to main in the first start (discards its local changes). Only when no Box exists, for a kept checkout that the current Ploinky refuses.'
+        description: 'Reset the kept AchillesIDE checkout to main in the first start after the unpublished-source check passes. Only when no Box exists, for a kept checkout that the current Ploinky refuses.'
         required: false
         default: false
         type: boolean
@@ -534,6 +534,7 @@ jobs:
           repository: Axiologic/bizanso
           ssh-key: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}
           path: .qa-bizanso-source
+          fetch-depth: 0
           persist-credentials: false
 
       # Same rule: the key stays on the runner. The full history is fetched because it is bundled for the Box.
@@ -554,6 +555,7 @@ jobs:
           repository: Axiologic/simpleCSVMailSend
           ssh-key: ${{ secrets.EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}
           path: .qa-csvmail-source
+          fetch-depth: 0
           persist-credentials: false
 
       # No SSH here: a source without the agent folder is refused before anything on the host changes.
@@ -572,6 +574,25 @@ jobs:
           fi
           printf 'CSVMAIL_COMMIT=%s\n' "$COMMIT" >> "$GITHUB_ENV"
           echo "[deploy-qa] simpleCSVMailSend resolved at $COMMIT."
+
+      - name: Test the unpublished-source check
+        run: node --test tests/smoke/lib/qa-unpublished-acceptance.test.mjs tests/smoke/lib/qa-predeploy.test.mjs tests/smoke/lib/qa-copy-manifest.test.mjs tests/smoke/lib/qa-source-inventory.test.mjs tests/smoke/lib/qa-publication.test.mjs
+
+      - name: Check for unpublished QA sources
+        id: source_check
+        env:
+          EXPLORER_QA_LAST_BIZANSO_COMMIT: ${{ vars.EXPLORER_QA_LAST_BIZANSO_COMMIT }}
+          EXPLORER_QA_LAST_CSVMAIL_COMMIT: ${{ vars.EXPLORER_QA_LAST_CSVMAIL_COMMIT }}
+          RESET_EXPLORER_CHECKOUT: ${{ inputs.reset_explorer_checkout }}
+        run: node .github/scripts/qaPredeploy.mjs check full
+
+      - name: Retain the blocked source report
+        if: ${{ failure() && steps.source_check.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qa-unpublished-report
+          path: ${{ runner.temp }}/qa-unpublished-report.md
+          retention-days: 7
 
       - name: Bootstrap the host and deploy through Ploinky commands
         env:
@@ -1550,8 +1571,12 @@ jobs:
               *) echo "::error::Unexpected repository in the managed location check."; exit 1 ;;
             esac
           done
+          node .github/scripts/qaPredeploy.mjs prepare bizanso
           git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive --format=tar HEAD | run_in_box "$COPY_PROGRAM"
+          node .github/scripts/qaPredeploy.mjs installed bizanso
+          node .github/scripts/qaPredeploy.mjs prepare simpleCSVMailSend
           git -C "$GITHUB_WORKSPACE/.qa-csvmail-source" archive --format=tar "$CSVMAIL_COMMIT" csvMailAgent | run_in_box "$CSVMAIL_PLACE_PROGRAM"
+          node .github/scripts/qaPredeploy.mjs installed simpleCSVMailSend
           PROMOTIONSCOUT_SOURCE="$GITHUB_WORKSPACE/.qa-promotionscout-source"
           PROMOTIONSCOUT_BRANCH="$(git -C "$PROMOTIONSCOUT_SOURCE" symbolic-ref --short HEAD)"
           git -C "$PROMOTIONSCOUT_SOURCE" bundle create - "refs/heads/$PROMOTIONSCOUT_BRANCH" | run_in_box "$BUNDLE_PROGRAM"

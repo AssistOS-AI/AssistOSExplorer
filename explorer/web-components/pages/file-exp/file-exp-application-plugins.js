@@ -1,3 +1,4 @@
+import { normalizePanelPath } from '../../../shared/ui/plugin-panel-navigation.js';
 import { openToolbarPluginWithFeedback, isToolbarPluginOpening } from "../../../shared/ui/toolbar-plugin-feedback.js";
 const APP_PLUGIN_SLOTS = Object.freeze({
     toolbar: 'file-exp:toolbar',
@@ -192,9 +193,7 @@ function updateMountedPluginElement(pluginElement, plugin, context) {
             pluginLabel: label,
             pluginTooltip: tooltip,
             pluginIcon: typeof plugin?.icon === 'string' ? plugin.icon : '',
-            pluginToolbarModal: plugin?.toolbarModal && typeof plugin.toolbarModal === 'object' && !Array.isArray(plugin.toolbarModal)
-                ? plugin.toolbarModal
-                : null
+            pluginToolbarModal: getPluginToolbarModalDescriptor(plugin)
         });
     }
 }
@@ -230,13 +229,31 @@ function getPluginPresentation(plugin) {
     return { label, tooltip };
 }
 
-function openPluginToolbarModal(plugin) {
+export function getPluginToolbarModalDescriptor(plugin) {
     const descriptor = plugin?.toolbarModal;
-    if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
-        return;
-    }
-    const { label } = getPluginPresentation(plugin);
-    return openExpandedModal({ ...descriptor, title: descriptor.title || label });
+    if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) return null;
+    return { ...descriptor, pluginKey: getPluginKey(plugin) };
+}
+
+export function openPluginPanel(pluginKey, { props, panelNavigation } = {}, openModal = openExpandedModal) {
+    const plugins = [APP_PLUGIN_SLOTS.toolbar, APP_PLUGIN_SLOTS.toolbarPluginsDropdown]
+        .flatMap(slot => getApplicationPluginsForSlot(slot, { contributionType: MOUNT_CONTRIBUTION_TYPE }));
+    const plugin = plugins.find(entry => getPluginKey(entry) === pluginKey && entry.toolbarModal);
+    if (!plugin) throw new Error('This plugin panel is unavailable, disabled, or not permitted for your account.');
+    const descriptor = getPluginToolbarModalDescriptor(plugin);
+    const path = normalizePanelPath(panelNavigation?.path);
+    const componentProps = { ...descriptor.props, ...props, ...(path ? { panelNavigation: { path } } : {}) };
+    return openModal({
+        ...descriptor,
+        title: descriptor.title || getPluginPresentation(plugin).label,
+        ...(Object.keys(componentProps).length ? { props: componentProps } : {}),
+        ...(path ? { panelNavigation: { path } } : {}),
+    });
+}
+
+function openPluginToolbarModal(plugin) {
+    if (!plugin?.toolbarModal) return;
+    return openPluginPanel(getPluginKey(plugin));
 }
 
 function markPluginLoadingFailed(mount, plugin, error) {

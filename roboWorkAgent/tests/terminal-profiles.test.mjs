@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { resolveAlaInstallation } from '../server/ala-installation.mjs';
 import { RobotPaths } from '../server/robot-paths.mjs';
 import { CODING_AGENT_NAMES } from '../server/coding-agents.mjs';
-import { createTerminalProfiles, ensureTerminalStub, parseTerminalProfile, terminalProfileAccess } from '../server/terminal-profiles.mjs';
+import { codingSessionInput, createTerminalProfiles, ensureTerminalStub, parseTerminalProfile, terminalProfileAccess } from '../server/terminal-profiles.mjs';
 import { buildShellSandbox, buildTerminalLaunch, readTerminalDescriptor, shellArguments } from '../scripts/robot-shell.mjs';
 import { prepareRobotShell } from '../server/robot-shell.mjs';
 
@@ -54,7 +54,9 @@ async function fixture(t) {
     const api = createTerminalProfiles({ paths, toolCache, runtimeBundle, environment, sessionCatalogs,
         robots: { require: async id => { if (id !== robot.id) throw new Error('Unknown robot'); return robot; },
             status: async ({ robotIds }) => ({ robots: robotIds.map(id => ({ id, activeAgent: robot.activeAgent })) }) },
-        homeOperation: async (...args) => args[1] === 'coding_sessions' ? (calls.home.push(args), { sessions: homeSessions }) : calls.home.push(args) });
+        homeOperation: async (...args) => args[1] === 'coding_sessions' ? (calls.home.push(args), { sessions: homeSessions })
+            : args[1] === 'coding_agent_skill' ? (calls.home.push(args), { installed: args[2].codingAgent === 'claude' })
+                : calls.home.push(args) });
     return { root, paths, stub, calls, api, environment, runtimeBundle, robot, homeSessions };
 }
 
@@ -314,7 +316,8 @@ test('terminal in a real ALA sandbox module refuses a swapped folder and masks t
     await fs.mkdir(project); await fs.mkdir(sibling);
     const { descriptor } = await readTerminalDescriptor(f.paths, PROFILE, f.stub, project);
     const { packageRoot } = await resolveAlaInstallation();
-    const sandbox = await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/sandbox.mjs')).href);
+    const sandbox = { ...await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/sandbox.mjs')).href),
+        ...await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/native-session.mjs')).href) };
     await fs.rename(project, `${project}-moved`); await fs.symlink(sibling, project);
     await assert.rejects(buildShellSandbox(descriptor, { loadSandbox: async () => ({ ...sandbox, canMountPrivateProc: () => true }) }), { exitCode: 78 });
     await assert.rejects(fs.lstat(path.join(sibling, '.roboteam')), { code: 'ENOENT' });
@@ -486,7 +489,8 @@ test('the real shell sandbox arguments bind robot-a home and never another robot
     const previous = process.env.ALA_SANDBOX_HOME;
     t.after(() => { if (previous === undefined) delete process.env.ALA_SANDBOX_HOME; else process.env.ALA_SANDBOX_HOME = previous; });
     const { packageRoot } = await resolveAlaInstallation();
-    const sandbox = await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/sandbox.mjs')).href);
+    const sandbox = { ...await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/sandbox.mjs')).href),
+        ...await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/native-session.mjs')).href) };
     const launch = await buildShellSandbox(descriptor, { loadSandbox: async () => ({ ...sandbox, canMountPrivateProc: () => true }) });
     assert.ok(launch.args.includes(f.paths.home('robot-a')), 'the robot own home is bound');
     const sources = launch.args.flatMap((value, index) => ['--bind', '--ro-bind'].includes(value) ? [launch.args[index + 1]] : []);
@@ -536,7 +540,17 @@ test('a coding session launch prepares a new or resumed conversation of an enabl
     f.robot.codingAgents = ['codex', 'claude'];
     const state = name => path.join(f.paths.dataDir, 'server-state/terminal', `${name}.json`);
     const fresh = await f.api.launch({ robot: 'robot a', codingAgent: 'codex', directory: 'project', resume: null });
-    assert.deepEqual(fresh, { ok: true, profile: 'robot-a.default.codex', robot: { id: 'robot-a', name: 'Robot A' }, codingAgent: 'codex', nativeSessionId: null });
+    assert.deepEqual(fresh, { ok: true, profile: 'robot-a.default.codex', robot: { id: 'robot-a', name: 'Robot A' }, codingAgent: 'codex', nativeSessionId: null, skill: false });
+    // A launch that names a role and ships its skill asks the home helper to install it.
+    const skilled = await f.api.launch({ robot: 'robot-a', codingAgent: 'claude', directory: 'project', resume: null,
+        skill: { name: 'supervised-session', text: '# Supervisor\n' } });
+    assert.equal(skilled.skill, true);
+    assert.deepEqual(f.calls.home.find(call => call[1] === 'coding_agent_skill'), ['robot-a', 'coding_agent_skill',
+        { codingAgent: 'claude', name: 'supervised-session', text: '# Supervisor\n' }]);
+    // An agent with no skill directory reports that the skill was not installed.
+    const unskilled = await f.api.launch({ robot: 'robot-a', codingAgent: 'codex', directory: 'project', resume: null,
+        skill: { name: 'supervised-session', text: '# Worker\n' } });
+    assert.equal(unskilled.skill, false);
     const descriptor = JSON.parse(await fs.readFile(state('robot-a.default.codex'), 'utf8'));
     assert.equal(descriptor.codingAgent, 'codex'); assert.deepEqual(descriptor.codingAgentArgs, []);
     assert.equal(f.calls.catalog, '/opt/ala');
@@ -607,17 +621,19 @@ test('a coding agent sandbox runs the agent through a login shell instead of an 
     const f = await fixture(t);
     await f.api.prepare('robot-a.default.opencode');
     const { descriptor } = await readTerminalDescriptor(f.paths, 'robot-a.default.opencode', f.stub, f.stub);
+    descriptor.systemPrompt = 'Additional instructions with a newline.\nNo initial turn.';
     const previous = process.env.ALA_SANDBOX_HOME;
     t.after(() => { if (previous === undefined) delete process.env.ALA_SANDBOX_HOME; else process.env.ALA_SANDBOX_HOME = previous; });
     let options;
     await buildShellSandbox(descriptor, { loadSandbox: async () => ({ buildInteractiveCommand, canMountPrivateProc: () => true,
-        buildSandboxArgs: input => { options = input; return ['--', input.binary, ...input.args]; } }) });
+        buildNativeSessionLaunch: input => { options = input; return { command: '/usr/bin/bwrap', args: ['--', input.binary], options: {} }; } }) });
     const binary = path.join(descriptor.binPath, 'opencode');
-    assert.equal(options.privateProc, true);
-    assert.equal(options.newSession, false);
+    assert.equal(options.agent, 'opencode');
+    assert.equal(options.binary, path.join(descriptor.binPath, 'opencode'));
+    assert.match(options.loginShell, /\/bin\/(ba)?sh$/u);
     assert.throws(() => shellArguments('/bin/sh', descriptor), { code: 'PROFILE_REFUSED' });
-    assert.deepEqual(options.args.slice(3), buildInteractiveCommand({ agent: 'opencode', binary }));
-    assert.equal(options.args[1], '-c');
+    assert.deepEqual(options.nativeArgs, []);
+    assert.equal(options.systemPrompt, descriptor.systemPrompt);
     assert.deepEqual(shellArguments('/bin/sh', descriptor, buildInteractiveCommand), ['-l', '-c', 'exec "$0" "$@"', ...buildInteractiveCommand({ agent: 'opencode', binary })]);
     assert.deepEqual(shellArguments('/bin/sh', { ...descriptor, codingAgentArgs: ['--resume', 'abc-1'] }, buildInteractiveCommand),
         ['-l', '-c', 'exec "$0" "$@"', ...buildInteractiveCommand({ agent: 'opencode', binary, args: ['--resume', 'abc-1'] })]);
@@ -631,7 +647,8 @@ test('a coding agent sandbox runs the agent through a login shell instead of an 
 test('a coding terminal at the workspace root writes ordinary files while private state stays masked', async t => {
     const f = await fixture(t);
     const { packageRoot } = await resolveAlaInstallation();
-    const sandbox = await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/sandbox.mjs')).href);
+    const sandbox = { ...await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/sandbox.mjs')).href),
+        ...await import(pathToFileURL(path.join(packageRoot, 'src/coding-agents/native-session.mjs')).href) };
     const bwrap = sandbox.findBubblewrap();
     if (!sandbox.canMountPrivateProc(bwrap)) { t.skip('Bubblewrap private proc is unavailable'); return; }
     for (const name of ['.data', '.ploinky', '.ploinky-box', '.ploinky-box.old', '.roboteam']) {
@@ -684,4 +701,37 @@ test('an Environment root terminal has one pinned writable root mount and retain
     assert.ok(launch.args.includes(`${root}/.data:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`));
     assert.ok(volumes.includes(`/dev/null:${root}/.env:ro`));
     await assert.rejects(environment.buildLaunch({ ...input, tty: false }), /mask overlaps/);
+});
+
+
+test('systemPrompt is bounded text and the session API has no role field', () => {
+    const body = { robot: null, codingAgent: 'pi', directory: '', resume: null };
+    for (const systemPrompt of [null, '', 'Use the project skill.\nDo not start a turn.']) {
+        assert.ok(codingSessionInput('launch', { ...body, systemPrompt }));
+    }
+    for (const systemPrompt of [{}, 1, 'a\0b', 'é'.repeat(8193)]) {
+        assert.equal(codingSessionInput('launch', { ...body, systemPrompt }), null);
+    }
+    assert.equal(codingSessionInput('launch', { ...body, role: 'supervisor' }), null);
+});
+
+test('same-robot instruction launches have separate immutable descriptors, including resume', async t => {
+    const f = await fixture(t);
+    const launch = systemPrompt => f.api.launch({ robot: 'robot-a', codingAgent: 'codex', directory: '',
+        resume: 'native-session-1', systemPrompt });
+    const [a, b] = await Promise.all([launch('Review the work.'), launch('Implement the work.')]);
+    assert.notEqual(a.profile, b.profile);
+    assert.match(a.profile, /\.p-/u);
+    const read = async profile => JSON.parse(await fs.readFile(path.join(f.paths.dataDir,
+        'server-state/terminal', profile + '.json'), 'utf8'));
+    for (const [record, prompt] of [[a, 'Review the work.'], [b, 'Implement the work.']]) {
+        const before = await read(record.profile);
+        assert.equal(before.systemPrompt, prompt);
+        assert.deepEqual(before.codingAgentArgs, ['resume-codex', 'native-session-1']);
+        await f.api.prepare(record.profile);
+        assert.deepEqual(await read(record.profile), before);
+        assert.equal('systemPrompt' in record, false, 'launch response does not expose instructions');
+    }
+    const normal = await f.api.launch({ robot: 'robot-a', codingAgent: 'codex', directory: '', resume: null });
+    assert.equal((await read(normal.profile)).systemPrompt, undefined);
 });

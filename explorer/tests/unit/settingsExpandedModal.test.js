@@ -1,3 +1,4 @@
+import { resolveExpandedPanelUrl, clearPluginPanelLocation } from '../../shared/ui/plugin-panel-navigation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -107,10 +108,10 @@ const source = (await fs.readFile(new URL('../../web-components/modals/expanded-
     .replace(/^import[\s\S]*?;\n/gm, '').replace('export class ExpandedModal', 'class ExpandedModal');
 
 function shell(content, { window = {}, closeModal = () => {} } = {}) {
-    const context = vm.createContext({ window, console, AbortController, clearTimeout, assistOS: { UI: { closeModal } } });
+    const context = vm.createContext({ window, console, AbortController, clearTimeout, resolveExpandedPanelUrl, clearPluginPanelLocation, assistOS: { UI: { closeModal } } });
     vm.runInContext(`${source}\nthis.Modal = ExpandedModal;`, context);
     const attrs = new Map();
-    const p = new context.Modal({ setAttribute: (key, value) => attrs.set(key, value) }, () => {});
+    const p = new context.Modal({ getAttribute: key => attrs.get(key), setAttribute: (key, value) => attrs.set(key, value) }, () => {});
     p.mode = 'component';
     p.contentProxy = { element: { deref: () => ({ webSkelPresenter: content }) } };
     return { p, attrs };
@@ -119,7 +120,7 @@ function shell(content, { window = {}, closeModal = () => {} } = {}) {
 test('component Open in new tab uses the mounted Settings URL', () => {
     const calls = [];
     const { p } = shell({ getOpenInNewTabUrl: () => 'https://workspace.example/?settings=theme#file-exp/' }, {
-        window: { open: (...args) => calls.push(args) }
+        window: { location: { href: 'https://workspace.example/explorer/index.html' }, open: (...args) => calls.push(args) }
     });
     p.openInNewTab();
     assert.deepEqual(calls, [['https://workspace.example/?settings=theme#file-exp/', '_blank', 'noopener,noreferrer']]);
@@ -235,4 +236,13 @@ test('Explorer launches the shared shell, awaits Save and restores its settings 
     assert.equal(fileExp.state.keymap.findFile, 'Alt+P');
     assert.ok(updates.every(args => args[0] === true && args[1] === 30));
     assert.equal(location.href, 'https://workspace.example/#file-exp/demo');
+});
+
+
+test('Settings dedicated links do not reopen a plugin panel from the source tab query', () => {
+    const url = new URL(buildSettingsUrl({ href: 'https://workspace.example/explorer/?panel=gitAgent/git&panelPath=/workspace/repo' }, 'theme'));
+    assert.equal(url.searchParams.get('settings'), 'theme');
+    assert.equal(url.searchParams.has('panel'), false);
+    assert.equal(url.searchParams.has('panelPath'), false);
+    assert.equal(readSettingsTab({ href: 'https://workspace.example/?panel=explorer/help&settings=theme' }), null);
 });

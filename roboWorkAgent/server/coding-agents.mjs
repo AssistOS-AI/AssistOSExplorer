@@ -4,6 +4,17 @@ export const CODING_AGENT_NAMES = Object.freeze(['codex', 'opencode', 'pi', 'omp
 // ALA can inject a Streamable HTTP MCP endpoint into Codex, OpenCode, Claude Code, Mistral Vibe and the Antigravity CLI.
 // Pi and OMP have no native ALA-managed MCP support, so they cannot drive a GUI task.
 export const GUI_CODING_AGENTS = Object.freeze(['codex', 'opencode', 'claude', 'vibe', 'agy']);
+// An agent whose own CLI discovers authored skills from a directory inside the
+// home. Every other agent has no such convention, so a role skill cannot replace
+// a prompt for it.
+export const CODING_AGENT_SKILL_DIRECTORIES = Object.freeze({
+    claude: '.claude/skills',
+    vibe: '.vibe/skills'
+});
+
+export function codingAgentSkillDirectory(codingAgent) {
+    return CODING_AGENT_SKILL_DIRECTORIES[codingAgent] || null;
+}
 
 export function normalizeCodingAgents(value = ['opencode']) {
     if (!Array.isArray(value) || !value.length || value.some(name => !CODING_AGENT_NAMES.includes(name))) {

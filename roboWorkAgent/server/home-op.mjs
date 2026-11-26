@@ -116,6 +116,10 @@ export async function homeOperation(operation, input, home = process.env.HOME) {
         for (const entry of await fs.readdir(home)) await fs.rm(path.join(home, entry), { recursive: true, force: true });
         return { ok: true };
     }
+    if (operation === 'coding_agent_skill') {
+        const { installCodingAgentSkill } = await import('./coding-agent-skill.mjs');
+        return installCodingAgentSkill(home, input);
+    }
     if (operation === 'coding_sessions') {
         const { listCodingSessions } = await import('./coding-sessions.mjs');
         return listCodingSessions(home, input, { alaRoot: path.dirname(path.dirname(process.env.ROBOWORK_ALA_ENTRY)) });

@@ -128,6 +128,7 @@ jobs:
           repository: Axiologic/bizanso
           ssh-key: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}
           path: .qa-bizanso-source
+          fetch-depth: 0
           persist-credentials: false
 
       # No SSH here. The incoming tree is what the copy below streams, so its digest is the one the live tree must reach.
@@ -166,6 +167,23 @@ jobs:
             printf 'BIZANSO_INCOMING_DIR=%s\n' "$INCOMING"
           } >> "$GITHUB_ENV"
           echo "[deploy-qa-bizanso] Bizanso source $COMMIT, tree $TREE, image $IMAGE"
+
+      - name: Test the unpublished-source check
+        run: node --test tests/smoke/lib/qa-unpublished-acceptance.test.mjs tests/smoke/lib/qa-predeploy.test.mjs tests/smoke/lib/qa-copy-manifest.test.mjs tests/smoke/lib/qa-source-inventory.test.mjs tests/smoke/lib/qa-publication.test.mjs
+
+      - name: Check for unpublished QA sources
+        id: source_check
+        env:
+          EXPLORER_QA_LAST_BIZANSO_COMMIT: ${{ vars.EXPLORER_QA_LAST_BIZANSO_COMMIT }}
+        run: node .github/scripts/qaPredeploy.mjs check bizanso
+
+      - name: Retain the blocked source report
+        if: ${{ failure() && steps.source_check.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qa-unpublished-report
+          path: ${{ runner.temp }}/qa-unpublished-report.md
+          retention-days: 7
 
       - name: Deploy Bizanso through Ploinky commands
         env:
@@ -871,7 +889,7 @@ jobs:
           import fs from 'node:fs';
           import path from 'node:path';
 
-          const [liveDir, incomingDir, liveTree, sourceTree, liveImage, imageId] = process.argv.slice(2);
+          const [liveDir, incomingDir, liveTree, sourceTree, liveImage, imageId, copyChanged] = process.argv.slice(2);
           const stable = (value) => {
             if (Array.isArray(value)) return value.map(stable);
             if (!value || typeof value !== 'object') return value;
@@ -904,7 +922,7 @@ jobs:
               return (live === null) !== (incoming === null) || (live !== null && !live.equals(incoming));
             });
             if (changed.length) verdict('whole', changed.join(', ') + ' differs');
-            else if (liveTree === sourceTree && liveImage === imageId) verdict('none', 'the tree and the image are identical');
+            else if (copyChanged !== 'yes' && liveTree === sourceTree && liveImage === imageId) verdict('none', 'the tree and the image are identical');
             else if (article) verdict('whole', 'deepProofArticle is in the tree and the sources or the container image changed');
             else verdict('targeted', 'the sources or the container image changed');
           }
@@ -1076,7 +1094,8 @@ jobs:
           fi
           echo "[deploy-qa-bizanso] source $BIZANSO_SOURCE_COMMIT tree $BIZANSO_SOURCE_TREE image $BIZANSO_IMAGE id $IMAGE_ID"
           echo "[deploy-qa-bizanso] live tree before $LIVE_TREE"
-          if ! CLASSIFICATION="$(classify_bizanso "$LIVE_DIR" "$BIZANSO_INCOMING_DIR" "$LIVE_TREE" "$BIZANSO_SOURCE_TREE" "$LIVE_IMAGE" "$IMAGE_ID")"; then
+          COPY_CHANGED="$(node .github/scripts/qaPredeploy.mjs changed bizanso)"
+          if ! CLASSIFICATION="$(classify_bizanso "$LIVE_DIR" "$BIZANSO_INCOMING_DIR" "$LIVE_TREE" "$BIZANSO_SOURCE_TREE" "$LIVE_IMAGE" "$IMAGE_ID" "$COPY_CHANGED")"; then
             echo "::error::The live and incoming Bizanso manifests could not be compared; the image was pulled and nothing else was changed."
             exit 1
           fi
@@ -1099,6 +1118,7 @@ jobs:
               echo "::error::The host clock could not be read; nothing was copied."
               exit 1
             fi
+            node .github/scripts/qaPredeploy.mjs prepare bizanso
             if ! git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive --format=tar HEAD | run_in_box "$COPY_PROGRAM"; then
               echo "::error::Post-mutation failure: the Bizanso copy did not complete. The copy program replaces bizanso/ only after extracting everything and keeps the previous copy at .ploinky/.qa-private-copy/previous; the agent was not restarted."
               exit 1
@@ -1113,6 +1133,7 @@ jobs:
               echo "::error::Post-mutation failure: the copied Bizanso tree is not the source tree $BIZANSO_SOURCE_TREE. bizanso/ now holds the copy, the previous one is at .ploinky/.qa-private-copy/previous, and the agent was not restarted. Dispatch this workflow again or deploy-explorer-qa-ploinky.yml."
               exit 1
             fi
+            node .github/scripts/qaPredeploy.mjs installed bizanso
             RESTART_STATUS=0
             restart_product "$RESTART_SCOPE" || RESTART_STATUS=$?
             if [ "$RESTART_STATUS" -ne 0 ]; then
@@ -1120,6 +1141,7 @@ jobs:
               exit "$RESTART_STATUS"
             fi
           fi
+          if [ "$RESTART_SCOPE" = none ]; then node .github/scripts/qaPredeploy.mjs installed bizanso; fi
           echo "[deploy-qa-bizanso] restart result: $RESTART_RESULT"
           if [ "$RESTART_SCOPE" != none ]; then
             echo "[deploy-qa-bizanso] $PRODUCT_CHECK_SUMMARY"

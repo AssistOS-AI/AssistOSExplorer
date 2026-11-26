@@ -11,6 +11,8 @@ summary: Defines the Ploinky startup, routing, authentication, and workspace-roo
 
 ## Core Content
 
+Before a QA deploy changes a repository, it checks every source that deploy can change, including installed source copies. The workflow must stop on unpublished files, local-only commits or unverifiable sources and identify every affected repository in its run summary. A clean checkout behind the deployment branch can advance. See the [QA runbook](../deploy-explorer-qa.md#unpublished-work-on-qa).
+
 RoboWork service state uses Ploinky's automatic `.data/agents/roboWorkAgent` home at `/root`. Its manifest declares `.data/robots` at `/robots` for per-robot homes, sockets, run history and terminal stubs. Robot credential records are separate at `/robots/.credentials`; the workspace default Git credential store is `.data/dpu-data/git-credentials`, exposed to RoboWork through `/git-credentials`. RoboTeam receives no robot volume and delegates execution to RoboWork. Robot deletion preserves run history under ordinary release and retention. [RoboWork DS002](../roboWorkAgent/docs/specsLoader.html?spec=DS002-execution-boundary.md) defines storage and execution boundaries.
 
 [Explorer](wiki.html#definition-explorer) CLI and its worker adapter must recognize direct execution by the canonical real filesystem path of `process.argv[1]`, including absolute and relative symlink entrypoints. Importing either module must not read stdin, serve requests or produce CLI output. Direct CLI execution preserves its stdin JSON, argv fallback, tool envelope and exit-status behavior. This import-safety repair does not itself change `toolWorkers` or any tool's `worker` descriptor; the active declaration is described below.

@@ -255,6 +255,21 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "[deploy-qa-scriptahub] Resolved $BRANCH@$HEAD_COMMIT; agent image $AGENT_REPO@$AGENT_INDEX revision $AGENT_REVISION; RoboTeam $ROBOTEAM_REPO@$ROBOTEAM_INDEX"
 
+      - name: Test the unpublished-source check
+        run: node --test tests/smoke/lib/qa-unpublished-acceptance.test.mjs tests/smoke/lib/qa-predeploy.test.mjs tests/smoke/lib/qa-copy-manifest.test.mjs tests/smoke/lib/qa-source-inventory.test.mjs tests/smoke/lib/qa-publication.test.mjs
+
+      - name: Check for unpublished QA sources
+        id: source_check
+        run: node .github/scripts/qaPredeploy.mjs check scriptahub
+
+      - name: Retain the blocked source report
+        if: ${{ failure() && steps.source_check.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qa-unpublished-report
+          path: ${{ runner.temp }}/qa-unpublished-report.md
+          retention-days: 7
+
       - name: Deploy ScriptaHub through Ploinky commands
         run: |
           set -euo pipefail
