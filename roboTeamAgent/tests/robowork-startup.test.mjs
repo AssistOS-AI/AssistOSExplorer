@@ -262,6 +262,25 @@ test('a failed OpenCode migration is never retried', async t => {
     assert.deepEqual(waits, []);
 });
 
+test('one startup call outlasts a RoboWork outage and the OpenCode migration in either order', async () => {
+    for (const [answers, expectedWaits] of [[[inactive, inactive, migrating, migrating], [250, 500, 1000, 2000]],
+        [[migrating, inactive, migrating], [1000, 500, 2000]]]) {
+        const clock = fakeClock(), lines = [];
+        const roboWork = new RoboWorkClient({ startupRetry: true, now: clock.now, wait: clock.wait, log: line => lines.push(line),
+            createClient: async () => ({ callTool: async () => {
+                const next = answers.shift();
+                if (!next) return { ok: true };
+                const outcome = next(); if (outcome instanceof Error) throw outcome; return outcome;
+            } }) });
+        assert.deepEqual(await roboWork.call('robot_ensure', { robotId: 'robot-default' }, { waitForMigration: true }), { ok: true });
+        assert.deepEqual(clock.waits, expectedWaits);
+        assert.equal(roboWork.migrationWaitMs, expectedWaits.filter(ms => ms >= 1000).reduce((sum, ms) => sum + ms, 0));
+        assert.equal(lines.filter(line => /unavailable during startup/.test(line)).length, 1);
+        assert.equal(lines.filter(line => /waits while RoboWork upgrades/.test(line)).length, 1);
+        assert.equal(lines.filter(line => /succeeded after RoboWork's OpenCode V2 migration/.test(line)).length, 1);
+    }
+});
+
 test('only startup creation of the default robot waits for the migration', async t => {
     const { store, roboWork, calls, waits, log } = await startupStore(t, () => migrating());
     t.after(() => assert.deepEqual(log, []));

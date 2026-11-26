@@ -11,8 +11,9 @@ export const STARTUP_RETRY_WINDOW_MS = 5 * 60_000;
 const STARTUP_RETRY_MAX_DELAY_MS = 5000;
 // RoboWork answers robot home operations with OPENCODE_MIGRATING while its own startup upgrades homes to OpenCode V2;
 // a fresh deployment, with no homes yet, spent about 40 seconds there preparing OpenCode. Only startup calls that cannot
-// be deferred wait, and they share one budget that stays well inside the 600 seconds startAgent.sh gives the service by
-// default, so a migration that does not finish is reported by this client rather than by the shell's timeout.
+// be deferred wait, and they share one 300-second budget. It is counted apart from the outage window above, so an outage
+// followed by a migration that does not finish can outlast the 600 seconds startAgent.sh gives the service by default;
+// the shell's timeout then reports the failure instead of this client.
 const STARTUP_MIGRATION_WAIT_MS = 300000;
 const STARTUP_MIGRATION_DELAYS_MS = [1000, 2000, 4000, 5000];
 const CONNECTION_ERRORS = new Set(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT',
@@ -120,7 +121,8 @@ export class RoboWorkClient {
                 });
             }
             // A migration still in progress is waited for; OPENCODE_MIGRATION_FAILED needs an operator and fails at once.
-            // The migration budget is separate from the outage window above: OPENCODE_MIGRATING is never transient.
+            // OPENCODE_MIGRATING is never transient, so outage retries never draw on the migration budget; the outage
+            // window, fixed at construction, keeps running on the clock while a migration is waited for.
             if (outcome.error.code === 'OPENCODE_MIGRATING' && waitForMigration && this.startupRetry) {
                 const left = STARTUP_MIGRATION_WAIT_MS - this.migrationWaitMs;
                 if (left > 0) {
