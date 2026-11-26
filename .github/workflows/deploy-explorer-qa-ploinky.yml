@@ -1388,6 +1388,8 @@ jobs:
           prune_images pre
           require_free_disk
           if [ "$BOX_STATE" = present ] && [ "$RECREATE_BOX" = true ]; then
+            # Repair retained production mode while the Box still has its selected port.
+            ploinky_locked var PROD false
             ploinky_locked destroy
             BOX_STATE=absent
           fi
@@ -1403,7 +1405,6 @@ jobs:
           if [ "$BOX_STATE" = present ]; then
             ploinky_locked var PROD false
             ploinky_locked profile qa
-            ploinky_locked profile check
           fi
           if [ "$GRAPH_UP" = false ]; then
             # `ploinky var` needs a Box, and only `start` accepts the port; a Box created by `var` would take
@@ -1421,7 +1422,6 @@ jobs:
           fi
           ploinky_locked var PROD false
           ploinky_locked profile qa
-          ploinky_locked profile check
           # The Box runs now, possibly started on a kept workspace whose registry the first check could not read. Nothing
           # below has copied the Bizanso tree yet.
           qa_registry_check "Bizanso was not copied; the Box may have been started." need_box || exit 1
@@ -1660,6 +1660,8 @@ jobs:
           # Kept sources move forward here. The restart activates them and registers the MCP tools of newly
           # enabled agents with the Router.
           update_kept_repos
+          # Check the populated registry only after all retained and copied sources have been refreshed.
+          ploinky_locked profile check
           # Check the exact selected source and its dependency fingerprint after repository updates and before restart.
           # Both values arrive on stdin and are checked again inside the Box.
           if ! printf '%s\n%s\n' "$SCRIPTA_HEAD" "$SCRIPTA_DEPENDENCY_FINGERPRINT" | run_in_box 'set -eu

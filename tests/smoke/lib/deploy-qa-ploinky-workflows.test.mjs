@@ -153,13 +153,45 @@ test('deploy: the order sets values, updates sources, saves the publication, the
 
 test('deploy: configures QA mode around the first start and pins all starts', () => {
     const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
-    const settings = 'ploinky_locked var PROD false\n            ploinky_locked profile qa\n            ploinky_locked profile check';
-    assert.match(body, /if \[ "\$BOX_STATE" = present \]; then\n\s+ploinky_locked var PROD false\n\s+ploinky_locked profile qa\n\s+ploinky_locked profile check\n\s+fi\n\s+if \[ "\$GRAPH_UP" = false \]; then/);
-    assert.ok(body.includes(settings));
-    assert.match(body, /wait_ready\n\s+fi\n\s+ploinky_locked var PROD false\n\s+ploinky_locked profile qa\n\s+ploinky_locked profile check\n/);
+    assert.match(body, /if \[ "\$BOX_STATE" = present \]; then\n\s+ploinky_locked var PROD false\n\s+ploinky_locked profile qa\n\s+fi\n\s+if \[ "\$GRAPH_UP" = false \]; then/);
+    assert.match(body, /wait_ready\n\s+fi\n\s+ploinky_locked var PROD false\n\s+ploinky_locked profile qa\n/);
     const starts = body.split('\n').filter((line) => /ploinky_locked --port "\$ROUTER_PORT" start explorer/.test(line));
     assert.equal(starts.length, 3);
     for (const line of starts) assert.match(line, /start explorer --profile qa(?:\s|$)/);
+});
+
+test('deploy: inventory sees refreshed sources and a populated registry before activation', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const first = body.indexOf('if [ "$BOX_STATE" = present ]; then\n            ploinky_locked var PROD false');
+    const copies = body.indexOf('git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive');
+    const enabled = body.indexOf('ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent');
+    const refreshed = body.indexOf('\n          update_kept_repos\n');
+    const checks = [...body.matchAll(/^\s*ploinky_locked profile check$/gm)].map((match) => match.index);
+    const restart = body.indexOf('\n          ploinky_locked restart\n');
+    assert.equal(checks.length, 1);
+    assert.ok(first < copies && copies < enabled && enabled < refreshed && refreshed < checks[0] && checks[0] < restart);
+
+    // Execute the actual profile commands in their workflow order with old or absent manifests.
+    // Refresh replaces them; a genuinely incomplete refreshed source must still stop activation.
+    const commands = body.split('\n').filter((line) => /^\s*(?:ploinky_locked (?:var PROD false|profile qa|profile check)|update_kept_repos)$/.test(line)).map((line) => line.trim());
+    for (const missing of ['false', 'true']) {
+        const script = `set -e
+registry=old
+prod=true
+ploinky_locked() {
+  case "$*" in
+    "var PROD false") prod=false ;;
+    "profile qa") [ "$prod" = false ] ;;
+    "profile check") [ "$registry" = new ] ;;
+  esac
+}
+update_kept_repos() { [ "$MISSING" = true ] || registry=new; }
+${commands.join('\n')}
+echo activated`;
+        const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, MISSING: missing } });
+        assert.equal(result.status, missing === 'true' ? 1 : 0, result.stderr);
+        assert.equal(result.stdout.includes('activated'), missing === 'false');
+    }
 });
 
 test('deploy: the added agents are enabled only when missing and are awaited only after that', () => {
@@ -430,17 +462,17 @@ test('deploy: a recreate with a running graph destroys the Box, runs the first s
     assert.equal(passed.status, 0, passed.stdout + passed.stderr);
     assert.match(passed.stdout, /second-check-passed\ncompleted\n$/);
     const locked = passed.calls.filter((line) => line.startsWith('locked'));
-    assert.deepEqual(locked, ['locked destroy', 'locked --port 8097 start explorer --profile qa', 'locked var PROD false', 'locked profile qa', 'locked profile check']);
+    assert.deepEqual(locked, ['locked var PROD false', 'locked destroy', 'locked --port 8097 start explorer --profile qa', 'locked var PROD false', 'locked profile qa']);
     const refused = runRecreate(t, { recreate: 'true', registry: record2, tree: [] });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
     assert.match(refused.stdout, /::error::The QA registry lists the enabled Bizanso agent\(s\) secondAgent, .* Bizanso was not copied; the Box may have been started\. Disable/);
     assert.doesNotMatch(refused.stdout, /second-check-passed|The QA Box is not running/);
-    assert.deepEqual(refused.calls.filter((line) => line.startsWith('locked')), ['locked destroy', 'locked --port 8097 start explorer --profile qa', 'locked var PROD false', 'locked profile qa', 'locked profile check']);
+    assert.deepEqual(refused.calls.filter((line) => line.startsWith('locked')), ['locked var PROD false', 'locked destroy', 'locked --port 8097 start explorer --profile qa', 'locked var PROD false', 'locked profile qa']);
     // Without a recreate the graph is up and no start runs.
     const kept = runRecreate(t, { recreate: 'false', registry: record2, tree: ['secondAgent'] });
     assert.deepEqual(kept.calls.filter((line) => line.startsWith('locked')), [
-        'locked var PROD false', 'locked profile qa', 'locked profile check',
-        'locked var PROD false', 'locked profile qa', 'locked profile check',
+        'locked var PROD false', 'locked profile qa',
+        'locked var PROD false', 'locked profile qa',
     ]);
 });
 
