@@ -56,6 +56,7 @@ function persistResume(coordinator, descriptor = {}, key = "") {
             component: descriptor.component || "",
             url: descriptor.url || descriptor.iframeUrl || "",
             agentRef: descriptor.agentRef || "",
+            pluginKey: descriptor.pluginKey || "",
             allow: descriptor.allow || "",
             readyTitle: descriptor.readyTitle || "",
             loadingSelector: descriptor.loadingSelector || "",

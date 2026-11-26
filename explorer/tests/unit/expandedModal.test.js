@@ -170,7 +170,7 @@ test('Explorer opens the toolbar panel from the manifest descriptor before loadi
 
     assert.match(source, /import \{ openExpandedModal \} from "\.\.\/\.\.\/\.\.\/shared\/ui\/expanded-modal\.js"/);
     assert.match(source, /function openPluginToolbarModal/);
-    assert.match(source, /openExpandedModal\(\{ \.\.\.descriptor, title: descriptor\.title \|\| label \}\)/);
+    assert.match(source, /return openPluginPanel\(getPluginKey\(plugin\)\)/);
     assert.match(source, /openToolbarPluginWithFeedback\(trigger, \(\) => openPluginToolbarModal\(plugin\)\)/);
 });
 

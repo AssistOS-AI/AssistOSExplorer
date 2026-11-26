@@ -598,18 +598,11 @@ export function attachGitController(fileExp) {
     };
 
     async function openGitPanel(options = {}) {
-        const repoPath = reposRoot;
         ensureAutocommitTimer();
         const conflictSyncPromise = syncConflictFlagFromRepos();
-        const closed = assistOS.UI.openExpandedModal({
-            title: 'Git',
-            component: fileExp.toolbarModal?.component || 'git-panel',
-            fullscreen: true,
-            props: {
-                repoPath,
-                openConflictHelper: Boolean(options.openConflictHelper),
-                selectedRepoPath: options.selectedRepoPath || null
-            }
+        const closed = assistOS.UI.openPluginPanel('gitAgent/git', {
+            panelNavigation: { path: options.selectedRepoPath || '' },
+            props: { openConflictHelper: Boolean(options.openConflictHelper) }
         });
         await conflictSyncPromise;
         await closed;

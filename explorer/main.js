@@ -1,3 +1,5 @@
+import { openPluginPanel } from './web-components/pages/file-exp/file-exp-application-plugins.js';
+import { openPluginPanelFromLocation } from './services/runtime/pluginPanelRoute.js';
 import WebSkel from './shared/libs/webskel/webskel.mjs';
 import assistosSDK, { initialiseAssistOS } from './services/assistosSDK.js';
 import { createComponentRegistry } from './services/runtime/componentRegistry.js';
@@ -472,6 +474,7 @@ async function start() {
         };
 
         webSkel.openExpandedModal = openExpandedModal;
+        webSkel.openPluginPanel = openPluginPanel;
 
         webSkel.createReactiveModal = async (componentName, payload = {}, expectResult = false) => {
             await ensureComponentRegistered(componentName);
@@ -506,7 +509,8 @@ async function start() {
     }
 
     // Reopen a resumable expanded panel (e.g. WebMeet) that was open before a browser refresh.
-    void restoreExpandedModal();
+    const hasPanelLink = !roomEntry && new URL(window.location.href).searchParams.has('panel');
+    if (!hasPanelLink) void restoreExpandedModal();
 
     webSkel.setLoading(`
         <div class="spinner-container">
@@ -530,6 +534,10 @@ async function start() {
         isWebSkelComponent: (name) => Boolean(webSkel.configs?.components?.some((component) => component.name === name))
     });
 
+    if (hasPanelLink) {
+        pageName = 'file-exp';
+        url = 'file-exp/';
+    }
     const isFileExplorerRoute = !roomEntry && pageName === 'file-exp';
     if (!isFileExplorerRoute) {
         const context = await loadRuntimeContext();
@@ -547,6 +555,16 @@ async function start() {
         }
     }
 
+    if (hasPanelLink) {
+        try {
+            await waitForAgentRuntimeAvailability({ label: 'Explorer plugins', operation: loadRuntimeContext });
+            await openPluginPanelFromLocation({ location: window.location, openModal: openExpandedModal });
+        } catch (error) {
+            assistOS.showToast(error.message, 'error', 8000);
+        }
+    }
+    // A panel link opens its shell before the workspace is mounted, keeping the
+    // bootstrap loader visible until then. The workspace remains available on close.
     loader?.close?.();
     loader?.remove?.();
     const mountedPresenter = await mountInitialApplicationRoute({
@@ -571,6 +589,7 @@ async function start() {
                         detail: { phase: 'discovered' }
                     }));
                     scheduleRuntimePluginReady((event) => window.dispatchEvent(event));
+
                 })
                 .catch((error) => {
                     console.error('[runtime-plugins] Failed to initialize plugins after Explorer mount:', error);
