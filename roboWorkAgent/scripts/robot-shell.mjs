@@ -31,7 +31,7 @@ export async function readTerminalDescriptor(paths, profile, selectedHome, cwd) 
     let descriptor;
     try {
         const stat = await handle.stat();
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 32768 || stat.uid !== process.getuid()) throw new Error();
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 131072 || stat.uid !== process.getuid()) throw new Error();
         descriptor = JSON.parse(await handle.readFile('utf8'));
     } finally { await handle.close(); }
     const stub = path.join(paths.robot(id), 'terminal');
@@ -69,7 +69,11 @@ export function shellArguments(shell, descriptor, buildInteractiveCommand) {
     return [login, '-c', 'exec "$0" "$@"', ...command];
 }
 
-export async function buildShellSandbox(descriptor, { loadSandbox = async entry => import(pathToFileURL(path.join(path.dirname(path.dirname(entry)), 'src/coding-agents/sandbox.mjs')).href) } = {}) {
+export async function buildShellSandbox(descriptor, { loadSandbox = async entry => {
+    const root = path.join(path.dirname(path.dirname(entry)), 'src/coding-agents');
+    return { ...await import(pathToFileURL(path.join(root, 'sandbox.mjs')).href),
+        ...await import(pathToFileURL(path.join(root, 'native-session.mjs')).href) };
+} } = {}) {
     const target = homeTarget(descriptor.id);
     // ALA captures its home in static module tables, so this precedes its first import.
     process.env.ALA_SANDBOX_HOME = target;
@@ -92,6 +96,21 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
     // The folder is opened once and bound by descriptor. The robot home has no private project data to mask.
     const pin = descriptor.cwd ? api.pinDirectory(descriptor.cwd, descriptor.cwdIdentity) : null;
     if (descriptor.cwd) await fs.mkdir(path.join(descriptor.cwd, '.roboteam'), { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+    if (descriptor.codingAgent) {
+        if (!CODING_AGENT_NAMES.includes(descriptor.codingAgent) || typeof api.buildNativeSessionLaunch !== 'function') {
+            throw fail('PROFILE_REFUSED', 'ALA native terminal launcher is unavailable');
+        }
+        const launch = api.buildNativeSessionLaunch({
+            agent: descriptor.codingAgent, binary: path.join(descriptor.binPath, descriptor.codingAgent),
+            nativeArgs: descriptor.codingAgentArgs || [], systemPrompt: descriptor.systemPrompt, loginShell: shell, home,
+            workspace: descriptor.cwd || home, workspaceTarget: cwd, workspaceFd: pin?.fd ?? null,
+            ignoredPaths: shown.ignoredPaths, folders, env, bwrap, chdir: cwd,
+        });
+        const boundary = launch.args.indexOf('--');
+        launch.args.splice(boundary, 0, '--setenv', 'PATH', `${descriptor.binPath}:/usr/local/bin:/usr/bin:/bin`,
+            '--setenv', 'ROBOTEAM_WORKING_DIRECTORY', cwd, '--setenv', 'PS1', '\\w $ ');
+        return launch;
+    }
     const args = api.buildSandboxArgs({ workspace: descriptor.cwd || home, workspaceTarget: cwd, ...(pin ? { workspaceFd: pin.fd } : {}), ignoredPaths: shown.ignoredPaths,
         binary: shell, args: shellArguments(shell, descriptor, api.buildInteractiveCommand), env, bwrap,
         privateProc: true, home, folders, chdir: cwd, newSession: false });
@@ -154,6 +173,8 @@ async function run(launch, { inner = false } = {}) {
 
 export async function main() {
     let launch;
+    let native = false;
+    let alaEntry;
     const inner = process.argv[2] === '--inner';
     try {
         if (inner) {
@@ -163,18 +184,27 @@ export async function main() {
             for (const key of Object.keys(process.env)) delete process.env[key];
             Object.assign(process.env, env);
             launch = await buildShellSandbox(descriptor);
+            native = Boolean(descriptor.codingAgent);
+            alaEntry = descriptor.alaEntry;
         } else {
             const { descriptor, paths } = await loadTerminalDescriptor();
             descriptor.term = /^[A-Za-z0-9+_.-]{1,64}$/u.test(process.env.TERM || '') ? process.env.TERM : 'xterm-256color';
             launch = await buildTerminalLaunch(descriptor, paths);
         }
-        process.exitCode = await run(launch, { inner });
+        if (native) {
+            const { runNativeLaunch } = await import(pathToFileURL(path.join(path.dirname(path.dirname(alaEntry)), 'src/native-terminal.mjs')).href);
+            if (!isatty(0)) { process.exitCode = 129; return; }
+            const watch = setInterval(() => { if (!isatty(0)) process.exit(129); }, 100);
+            try { process.exitCode = await runNativeLaunch(launch); }
+            finally { clearInterval(watch); }
+        } else process.exitCode = await run(launch, { inner });
     } catch (error) {
         process.stderr.write(error?.code === 'CWD_REFUSED'
             ? 'A robot terminal cannot open here. Open it in the workspace root, a non-private project folder, or the robot home.\n'
             : 'Robot terminal could not start safely. Close this tab and retry.\n');
         process.exitCode = 124;
     } finally {
+        launch?.cleanup?.();
         if (launch?.directory) await fs.rm(launch.directory, { recursive: true, force: true });
     }
 }

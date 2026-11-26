@@ -1357,16 +1357,42 @@ jobs:
           # so Bizanso keeps its predecessor, and a tree without the agent manifest leaves the live copy in place.
           CSVMAIL_PLACE_PROGRAM='set -eu
           stage=$PWD/.ploinky/.qa-csvmail-copy
-          mkdir -p "$stage"
-          for stale in "$stage"/*; do
-            if [ -e "$stale" ] || [ -L "$stale" ]; then rm -rf -- "$stale"; fi
-          done
+          repo=$PWD/simpleCSVMailSend
+          previous=$stage/previous
+          real_dir_or_absent() {
+            if [ -L "$1" ] || { [ -e "$1" ] && [ ! -d "$1" ]; }; then
+              echo "Expected a real directory or absent path: $1" >&2; exit 1
+            fi
+          }
+          real_dir_or_absent "$PWD/.ploinky"
+          real_dir_or_absent "$stage"
+          real_dir_or_absent "$repo"
+          real_dir_or_absent "$previous"
+          real_dir_or_absent "$repo/csvMailAgent"
+          real_dir_or_absent "$previous/csvMailAgent"
+          mkdir -p "$stage" "$repo" "$previous"
           incoming=$(mktemp -d "$stage/incoming.XXXXXX")
+          trap "rm -rf -- \"$incoming\"" EXIT
           tar -xf - -C "$incoming"
           test "$(ls -A "$incoming")" = csvMailAgent
+          test ! -L "$incoming/csvMailAgent"
+          test -d "$incoming/csvMailAgent"
+          test ! -L "$incoming/csvMailAgent/manifest.json"
           test -f "$incoming/csvMailAgent/manifest.json"
-          if [ -e simpleCSVMailSend ] || [ -L simpleCSVMailSend ]; then mv simpleCSVMailSend "$stage/previous"; fi
-          mv "$incoming" simpleCSVMailSend'
+          if [ -d "$repo/csvMailAgent" ]; then
+            rm -rf -- "$previous/csvMailAgent"
+            mv "$repo/csvMailAgent" "$previous/csvMailAgent"
+            if ! mv "$incoming/csvMailAgent" "$repo/csvMailAgent"; then
+              if [ ! -e "$repo/csvMailAgent" ] && [ ! -L "$repo/csvMailAgent" ]; then
+                mv "$previous/csvMailAgent" "$repo/csvMailAgent" || echo "Could not restore CSV Mail predecessor" >&2
+              else
+                echo "Cannot restore CSV Mail predecessor: destination exists" >&2
+              fi
+              exit 1
+            fi
+          else
+            mv "$incoming/csvMailAgent" "$repo/csvMailAgent"
+          fi'
           # A plain assignment, because a failed command in a `for` list would not stop the run.
           MANAGED_LOCATIONS="$(run_in_box "$MANAGED_PROGRAM" < /dev/null)"
           for repo in $MANAGED_LOCATIONS; do

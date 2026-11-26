@@ -620,12 +620,22 @@ test('deploy: CSV Mail arrives as its agent folder alone, in a stage of its own,
         assert.equal(result.status, 0);
         return result.stdout;
     };
+    fs.mkdirSync(previous, { recursive: true });
+    fs.mkdirSync(path.join(repo, '.roboteam'));
+    fs.writeFileSync(path.join(repo, '.roboteam/marker'), 'live sibling');
+    const rootInode = fs.statSync(repo).ino;
+    fs.writeFileSync(path.join(previous, 'legacy-data'), 'previous sibling');
     assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/two': 'x' })).status, 0);
     assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/two')));
     assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/src/ploinky.mjs')));
+    assert.equal(fs.statSync(repo).ino, rootInode);
+    assert.equal(fs.readFileSync(path.join(repo, '.roboteam/marker'), 'utf8'), 'live sibling');
     assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/three': 'x' })).status, 0);
     assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')) && !fs.existsSync(path.join(repo, 'csvMailAgent/two')));
     assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/two')));
+    assert.equal(fs.statSync(repo).ino, rootInode);
+    assert.equal(fs.readFileSync(path.join(repo, '.roboteam/marker'), 'utf8'), 'live sibling');
+    assert.equal(fs.readFileSync(path.join(previous, 'legacy-data'), 'utf8'), 'previous sibling');
     assert.deepEqual(fs.readdirSync(path.dirname(previous)), ['previous']);
     // Each refusal leaves the live copy in place: data or Git metadata beside the agent, no manifest, nothing at all.
     for (const [name, input] of [
@@ -637,6 +647,52 @@ test('deploy: CSV Mail arrives as its agent folder alone, in a stage of its own,
         assert.notEqual(place(input).status, 0, name);
         assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')), name);
     }
+    // Refuse symlinks in either the incoming agent or its manifest.
+    for (const target of ['csvMailAgent', 'csvMailAgent/manifest.json']) {
+        const source = fs.mkdtempSync(path.join(root, 'symlink-'));
+        if (target.includes('/')) fs.mkdirSync(path.join(source, 'csvMailAgent'));
+        fs.symlinkSync('/tmp', path.join(source, target));
+        const archive = spawnSync('tar', ['-cf', '-', '-C', source, 'csvMailAgent']);
+        assert.equal(archive.status, 0);
+        assert.notEqual(place(archive.stdout).status, 0, target);
+        assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')));
+    }
+    // An interrupted rotation leaves its predecessor intact on the next placement.
+    fs.rmSync(path.join(repo, 'csvMailAgent'), { recursive: true });
+    assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/retry': 'x' })).status, 0);
+    assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/two')));
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/retry')));
+
+    // Fail only the incoming publish; the rotated live agent must be restored.
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'mv'), '#!/bin/sh\ncase "$1" in */incoming.*/csvMailAgent) exit 1;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+    const failedPublish = spawnSync('sh', ['-c', program, 'sh'], {
+        cwd: workspace, input: tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/fail': 'x' }),
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    assert.notEqual(failedPublish.status, 0);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/retry')));
+    assert.equal(fs.readFileSync(path.join(previous, 'legacy-data'), 'utf8'), 'previous sibling');
+    assert.deepEqual(fs.readdirSync(path.dirname(previous)), ['previous']);
+
+    // If a destination appears during a failed publish, retain the backup rather than nesting it.
+    fs.writeFileSync(path.join(bin, 'mv'), '#!/bin/sh\ncase "$1" in */incoming.*/csvMailAgent) mkdir "$2"; exit 1;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+    const occupied = spawnSync('sh', ['-c', program, 'sh'], {
+        cwd: workspace, input: tarOf({ 'csvMailAgent/manifest.json': '{}' }),
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    assert.notEqual(occupied.status, 0);
+    assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/retry')));
+    assert.deepEqual(fs.readdirSync(path.join(repo, 'csvMailAgent')), []);
+    fs.rmSync(path.join(repo, 'csvMailAgent'), { recursive: true });
+    fs.renameSync(path.join(previous, 'csvMailAgent'), path.join(repo, 'csvMailAgent'));
+
+    // A symlink at a protected child path is rejected without following it.
+    fs.rmSync(path.join(previous, 'csvMailAgent'), { recursive: true, force: true });
+    fs.symlinkSync(repo, path.join(previous, 'csvMailAgent'));
+    assert.notEqual(place(tarOf({ 'csvMailAgent/manifest.json': '{}' })).status, 0);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/retry')));
     // The Bizanso predecessor in its own stage is never touched.
     assert.ok(fs.existsSync(path.join(workspace, '.ploinky/.qa-private-copy/previous/bizanso-file')));
 });
