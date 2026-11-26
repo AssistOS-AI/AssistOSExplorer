@@ -8,6 +8,17 @@ name: Deploy Explorer QA Bizanso
 
 on:
   workflow_dispatch:
+    inputs:
+      force_cache_probe_failure:
+        description: 'T9 negative control. Fail the QA origin cache probe and leave the page rule off.'
+        required: false
+        default: false
+        type: boolean
+      create_cache_rules:
+        description: 'D19 first creation: create this host''s two cache rules if both are missing. Tick only with Daniel''s approval for this zone.'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-explorer-qa
@@ -22,6 +33,9 @@ env:
   PUBLIC_HOST: 'explorer-qa.axiologic.dev'
   PUBLIC_URL: 'https://explorer-qa.axiologic.dev'
   SOUL_GATEWAY_ROUTER_PORT: '8080'
+  CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+  CLOUDFLARE_CACHE_R1_REF: 'explorer_qa_cache_r1'
+  CLOUDFLARE_CACHE_R2_REF: 'explorer_qa_cache_r2'
 
 jobs:
   deploy:
@@ -46,7 +60,7 @@ jobs:
           node-version: '24'
 
       - name: Test these workflows
-        run: node --test tests/smoke/lib/deploy-qa-product-workflows.test.mjs
+        run: node --test tests/smoke/lib/deploy-qa-product-workflows.test.mjs tests/smoke/lib/deploy-qa-cache-rules.test.mjs tests/smoke/lib/deploy-qa-cache-origin.test.mjs tests/smoke/lib/deploy-qa-cache-workflows.test.mjs
 
       - name: Validate GitHub configuration
         env:
@@ -81,6 +95,21 @@ jobs:
           chmod 600 "$HOST_KEY_CANDIDATE"
           echo "Validated the pinned Explorer QA SSH host identity."
 
+      - name: Disable QA page caching
+        id: cache_off
+        env:
+          CREATE_CACHE_RULES: ${{ inputs.create_cache_rules }}
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "$CREATE_CACHE_RULES" in
+            true) cache_flags=() ;;
+            false) cache_flags=(--existing-only) ;;
+            *) echo "::error::create_cache_rules must be true or false"; exit 1 ;;
+          esac
+          node .github/scripts/cloudflare-cache-rules.mjs ensure-r1 --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"}
+          node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"}
+
       - name: Prepare SSH key
         env:
           SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
@@ -99,6 +128,7 @@ jobs:
           repository: Axiologic/bizanso
           ssh-key: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}
           path: .qa-bizanso-source
+          fetch-depth: 0
           persist-credentials: false
 
       # No SSH here. The incoming tree is what the copy below streams, so its digest is the one the live tree must reach.
@@ -138,9 +168,29 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "[deploy-qa-bizanso] Bizanso source $COMMIT, tree $TREE, image $IMAGE"
 
+      - name: Test the unpublished-source check
+        run: node --test tests/smoke/lib/qa-unpublished-acceptance.test.mjs tests/smoke/lib/qa-predeploy.test.mjs tests/smoke/lib/qa-copy-manifest.test.mjs tests/smoke/lib/qa-source-inventory.test.mjs tests/smoke/lib/qa-publication.test.mjs
+
+      - name: Check for unpublished QA sources
+        id: source_check
+        env:
+          EXPLORER_QA_LAST_BIZANSO_COMMIT: ${{ vars.EXPLORER_QA_LAST_BIZANSO_COMMIT }}
+        run: node .github/scripts/qaPredeploy.mjs check bizanso
+
+      - name: Retain the blocked source report
+        if: ${{ failure() && steps.source_check.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qa-unpublished-report
+          path: ${{ runner.temp }}/qa-unpublished-report.md
+          retention-days: 7
+
       - name: Deploy Bizanso through Ploinky commands
+        env:
+          EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN }}
         run: |
           set -euo pipefail
+          export -n EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN
           umask 077
 
           SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
@@ -291,6 +341,7 @@ jobs:
             exit 1
           fi
           echo "[deploy-qa-bizanso] Ploinky checkout $PLOINKY_COMMIT (not moved)."
+          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME" >> "$GITHUB_ENV"
 
           # BEGIN QA product flow
           REMOTE_ENV="cd '$WORK_DIR' && export PATH='$QA_NODE_HOME/bin':\"\$PATH\" PLOINKY_WORKSPACE_ROOT='$WORK_DIR'"
@@ -838,7 +889,7 @@ jobs:
           import fs from 'node:fs';
           import path from 'node:path';
 
-          const [liveDir, incomingDir, liveTree, sourceTree, liveImage, imageId] = process.argv.slice(2);
+          const [liveDir, incomingDir, liveTree, sourceTree, liveImage, imageId, copyChanged] = process.argv.slice(2);
           const stable = (value) => {
             if (Array.isArray(value)) return value.map(stable);
             if (!value || typeof value !== 'object') return value;
@@ -871,7 +922,7 @@ jobs:
               return (live === null) !== (incoming === null) || (live !== null && !live.equals(incoming));
             });
             if (changed.length) verdict('whole', changed.join(', ') + ' differs');
-            else if (liveTree === sourceTree && liveImage === imageId) verdict('none', 'the tree and the image are identical');
+            else if (copyChanged !== 'yes' && liveTree === sourceTree && liveImage === imageId) verdict('none', 'the tree and the image are identical');
             else if (article) verdict('whole', 'deepProofArticle is in the tree and the sources or the container image changed');
             else verdict('targeted', 'the sources or the container image changed');
           }
@@ -1024,6 +1075,9 @@ jobs:
             echo "::error::QA routes are not healthy before this run ($ROUTES_STATE). Nothing was changed. Dispatch deploy-explorer-qa-ploinky.yml."
             exit 1
           fi
+          # The existing Router can now receive the purge credential for this admitted QA target.
+          QA_NODE_HOME="$QA_NODE_HOME" EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN="${EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN:-}" bash "$GITHUB_WORKSPACE/.github/scripts/qa-cache-router.sh" pre
+          unset EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN
           # Refusal 7: free what earlier rollouts left behind, then refuse to start on a full disk.
           prune_images pre
           require_free_disk
@@ -1040,7 +1094,8 @@ jobs:
           fi
           echo "[deploy-qa-bizanso] source $BIZANSO_SOURCE_COMMIT tree $BIZANSO_SOURCE_TREE image $BIZANSO_IMAGE id $IMAGE_ID"
           echo "[deploy-qa-bizanso] live tree before $LIVE_TREE"
-          if ! CLASSIFICATION="$(classify_bizanso "$LIVE_DIR" "$BIZANSO_INCOMING_DIR" "$LIVE_TREE" "$BIZANSO_SOURCE_TREE" "$LIVE_IMAGE" "$IMAGE_ID")"; then
+          COPY_CHANGED="$(node .github/scripts/qaPredeploy.mjs changed bizanso)"
+          if ! CLASSIFICATION="$(classify_bizanso "$LIVE_DIR" "$BIZANSO_INCOMING_DIR" "$LIVE_TREE" "$BIZANSO_SOURCE_TREE" "$LIVE_IMAGE" "$IMAGE_ID" "$COPY_CHANGED")"; then
             echo "::error::The live and incoming Bizanso manifests could not be compared; the image was pulled and nothing else was changed."
             exit 1
           fi
@@ -1063,6 +1118,7 @@ jobs:
               echo "::error::The host clock could not be read; nothing was copied."
               exit 1
             fi
+            node .github/scripts/qaPredeploy.mjs prepare bizanso
             if ! git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive --format=tar HEAD | run_in_box "$COPY_PROGRAM"; then
               echo "::error::Post-mutation failure: the Bizanso copy did not complete. The copy program replaces bizanso/ only after extracting everything and keeps the previous copy at .ploinky/.qa-private-copy/previous; the agent was not restarted."
               exit 1
@@ -1077,6 +1133,7 @@ jobs:
               echo "::error::Post-mutation failure: the copied Bizanso tree is not the source tree $BIZANSO_SOURCE_TREE. bizanso/ now holds the copy, the previous one is at .ploinky/.qa-private-copy/previous, and the agent was not restarted. Dispatch this workflow again or deploy-explorer-qa-ploinky.yml."
               exit 1
             fi
+            node .github/scripts/qaPredeploy.mjs installed bizanso
             RESTART_STATUS=0
             restart_product "$RESTART_SCOPE" || RESTART_STATUS=$?
             if [ "$RESTART_STATUS" -ne 0 ]; then
@@ -1084,6 +1141,7 @@ jobs:
               exit "$RESTART_STATUS"
             fi
           fi
+          if [ "$RESTART_SCOPE" = none ]; then node .github/scripts/qaPredeploy.mjs installed bizanso; fi
           echo "[deploy-qa-bizanso] restart result: $RESTART_RESULT"
           if [ "$RESTART_SCOPE" != none ]; then
             echo "[deploy-qa-bizanso] $PRODUCT_CHECK_SUMMARY"
@@ -1142,6 +1200,13 @@ jobs:
             sleep 5
           done
 
+      - name: Verify and clear the new QA origin cache
+        id: cache_probe
+        env:
+          EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN }}
+          QA_CACHE_FORCE_PROBE_FAILURE: ${{ inputs.force_cache_probe_failure }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/qa-cache-router.sh" post
+
       - name: Create summary
         if: always()
         run: |
@@ -1149,7 +1214,7 @@ jobs:
             echo "## Explorer QA Bizanso Deploy"
             echo ""
             echo "- Host: \`${SSH_USER}@${SSH_HOST}\`, workspace \`~/${WORKSPACE}\`"
-            echo "- Scope: only \`bizanso/bizanso\` inside the running Box. The Ploinky checkout, the Box, the tunnel and every other repository are untouched"
+            echo "- Scope: \`bizanso/bizanso\` and its cache on \`$PUBLIC_HOST\`"
             echo "- Source: private Bizanso default branch \`${BIZANSO_SOURCE_COMMIT:-not-resolved}\`, tree \`${BIZANSO_SOURCE_TREE:-not-resolved}\`"
             echo "- Image: \`${BIZANSO_IMAGE:-not-resolved}\`"
             echo "- Restart scope and result: the \`restart scope\` and \`restart result\` lines of the deploy step"
@@ -1172,3 +1237,30 @@ jobs:
             "$RUNNER_TEMP/qa-product-agents.json" \
             "$RUNNER_TEMP/qa-product-targeted.log" \
             "$RUNNER_TEMP/qa-product-restart.log"
+
+      - name: Enable QA page caching
+        id: cache_on
+        if: ${{ success() && steps.cache_probe.outputs.verified == 'true' }}
+        env:
+          CREATE_CACHE_RULES: ${{ inputs.create_cache_rules }}
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "$CREATE_CACHE_RULES" in
+            true) cache_flags=() ;;
+            false) cache_flags=(--existing-only) ;;
+            *) echo "::error::create_cache_rules must be true or false"; exit 1 ;;
+          esac
+          node .github/scripts/cloudflare-cache-rules.mjs r2-on --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"} --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+
+      - name: Disable QA page caching after a failed initial guard
+        if: ${{ always() && (steps.cache_off.outcome == 'failure' || steps.cache_off.outcome == 'cancelled') }}
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --if-present
+
+      - name: Disable QA page caching after a cancelled activation
+        if: ${{ always() && steps.cache_on.outcome == 'cancelled' }}
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"

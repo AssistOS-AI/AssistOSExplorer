@@ -5,6 +5,7 @@
         <button type="button" class="settings-tab" data-local-action="switchTab plugins" data-tab="plugins" role="tab" aria-selected="false">Plugins</button>
         <button type="button" class="settings-tab" data-local-action="switchTab users" data-tab="users" data-admin-tab hidden role="tab" aria-selected="false">Administration</button>
         <button type="button" class="settings-tab" data-local-action="switchTab hardware" data-tab="hardware" data-hardware-tab hidden role="tab" aria-selected="false">Hardware limits</button>
+        <button type="button" class="settings-tab" data-local-action="switchTab cache" data-tab="cache" data-cache-tab hidden role="tab" aria-selected="false">Cache</button>
         <button type="button" class="settings-tab" data-local-action="switchTab keymap" data-tab="keymap" role="tab" aria-selected="false">Keymap</button>
         <button type="button" class="settings-tab" data-local-action="switchTab editor" data-tab="editor" role="tab" aria-selected="false">Editor</button>
         <button type="button" class="settings-tab" data-local-action="switchTab theme" data-tab="theme" role="tab" aria-selected="false">Theme</button>
@@ -13,6 +14,7 @@
     </div>
 
     <div class="settings-content">
+        <p class="settings-status error" data-cache-access-status role="status" hidden></p>
         <section class="settings-section hidden" data-section="account" aria-label="My Account">
             <p class="settings-status error" data-account-status role="status" aria-live="polite" hidden></p>
             <div class="administration-panel">
@@ -107,6 +109,10 @@
 
         <section class="settings-section hidden" data-section="hardware" aria-label="Hardware limits">
             <p class="plugin-settings-description">Loading hardware limits…</p>
+        </section>
+
+        <section class="settings-section hidden" data-section="cache" aria-label="Cache">
+            <p class="settings-status loading" role="status">Loading cache settings…</p>
         </section>
 
         <section class="settings-section hidden" data-section="users" aria-label="Administration">

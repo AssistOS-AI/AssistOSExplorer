@@ -86,7 +86,8 @@ settings-modal[data-active-tab="users"] .modal-actions {
     display: none !important;
 }
 
-settings-modal[data-active-tab="hardware"] .modal-actions {
+settings-modal[data-active-tab="hardware"] .modal-actions,
+settings-modal[data-active-tab="cache"] .modal-actions {
     display: none !important;
 }
 

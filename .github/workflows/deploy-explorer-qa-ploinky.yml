@@ -7,13 +7,23 @@ name: Deploy Explorer QA Box (Ploinky commands)
 on:
   workflow_dispatch:
     inputs:
+      force_cache_probe_failure:
+        description: 'T9 negative control. Fail the QA origin cache probe and leave the page rule off.'
+        required: false
+        default: false
+        type: boolean
       recreate_box:
         description: 'Destroy and recreate the Box, keeping the data. Needed to pick up a new Box image, which no Ploinky command can detect.'
         required: false
         default: false
         type: boolean
       reset_explorer_checkout:
-        description: 'Hard-reset the kept AchillesIDE checkout to main in the first start (discards its local changes). Only when no Box exists, for a kept checkout that the current Ploinky refuses.'
+        description: 'Reset the kept AchillesIDE checkout to main in the first start after the unpublished-source check passes. Only when no Box exists, for a kept checkout that the current Ploinky refuses.'
+        required: false
+        default: false
+        type: boolean
+      create_cache_rules:
+        description: 'D19 first creation: create this host''s two cache rules if both are missing. Tick only with Daniel''s approval for this zone.'
         required: false
         default: false
         type: boolean
@@ -37,6 +47,9 @@ env:
   MEDIA_PUBLIC_IPV4: '45.136.70.141'
   SOUL_GATEWAY_WORKSPACE: 'soulGateway'
   SOUL_GATEWAY_ROUTER_PORT: '8080'
+  CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+  CLOUDFLARE_CACHE_R1_REF: 'explorer_qa_cache_r1'
+  CLOUDFLARE_CACHE_R2_REF: 'explorer_qa_cache_r2'
 
 jobs:
   deploy:
@@ -59,7 +72,7 @@ jobs:
           node-version: '24'
 
       - name: Test these workflows
-        run: node --test tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs
+        run: node --test tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs tests/smoke/lib/deploy-qa-cache-rules.test.mjs tests/smoke/lib/deploy-qa-cache-origin.test.mjs tests/smoke/lib/deploy-qa-cache-workflows.test.mjs
 
       - name: Validate GitHub configuration
         env:
@@ -324,6 +337,21 @@ jobs:
           chmod 600 "$HOST_KEY_CANDIDATE"
           echo "Validated the pinned Explorer QA SSH host identity."
 
+      - name: Disable QA page caching
+        id: cache_off
+        env:
+          CREATE_CACHE_RULES: ${{ inputs.create_cache_rules }}
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "$CREATE_CACHE_RULES" in
+            true) cache_flags=() ;;
+            false) cache_flags=(--existing-only) ;;
+            *) echo "::error::create_cache_rules must be true or false"; exit 1 ;;
+          esac
+          node .github/scripts/cloudflare-cache-rules.mjs ensure-r1 --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"}
+          node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"}
+
       - name: Prepare SSH key
         env:
           SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
@@ -366,45 +394,137 @@ jobs:
             exit 1
           fi
           docker buildx imagetools inspect "$AGENT_REPO@$AGENT_INDEX" --format '{{json .Image}}' > "$RUNNER_TEMP/qa-scriptahub-agent-image.json"
+          # Exit 3 means the revision and assets labels are valid but the image carries no dependency fingerprint label on
+          # either platform, which is an image published before the skill sources were mounted.
+          LABEL_STATUS=0
           IMAGE_LABELS="$(node --input-type=module - "$RUNNER_TEMP/qa-scriptahub-agent-image.json" <<'NODE'
           import fs from 'node:fs';
           const image = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-          const keys = ['org.opencontainers.image.revision', 'io.assistos.scriptahub.skills-tree', 'io.assistos.scriptahub.deployment-tree', 'io.assistos.scriptahub.reader-css-blob'];
-          const values = keys.map((key) => {
-            const a = image?.['linux/amd64']?.config?.Labels?.[key];
-            const b = image?.['linux/arm64']?.config?.Labels?.[key];
-            if (typeof a !== 'string' || a.length !== 40 || !/^[0-9a-f]{40}$/.test(a) || a !== b) throw new Error(`Invalid or inconsistent image label ${key}`);
-            return a;
-          });
-          const assets = image?.['linux/amd64']?.config?.Labels?.['io.assistos.scriptahub.assets-image'];
-          if (typeof assets !== 'string' || assets.length !== 108 || !/^docker\.io\/assistos\/scriptahub-assets@sha256:[0-9a-f]{64}$/.test(assets) || assets !== image?.['linux/arm64']?.config?.Labels?.['io.assistos.scriptahub.assets-image']) throw new Error('Invalid or inconsistent assets image label');
-          process.stdout.write(values.join(' '));
+          const label = (platform, key) => image?.[platform]?.config?.Labels?.[key];
+          const revisionKey = 'org.opencontainers.image.revision';
+          const revision = label('linux/amd64', revisionKey);
+          if (typeof revision !== 'string' || revision.length !== 40 || !/^[0-9a-f]{40}$/.test(revision) || revision !== label('linux/arm64', revisionKey)) throw new Error(`Invalid or inconsistent image label ${revisionKey}`);
+          const assets = label('linux/amd64', 'io.assistos.scriptahub.assets-image');
+          if (typeof assets !== 'string' || assets.length !== 108 || !/^docker\.io\/assistos\/scriptahub-assets@sha256:[0-9a-f]{64}$/.test(assets) || assets !== label('linux/arm64', 'io.assistos.scriptahub.assets-image')) throw new Error('Invalid or inconsistent assets image label');
+          const fingerprintKey = 'io.assistos.scriptahub.dependency-fingerprint';
+          const a = label('linux/amd64', fingerprintKey);
+          const b = label('linux/arm64', fingerprintKey);
+          if (a === undefined && b === undefined) process.exit(3);
+          if (typeof a !== 'string' || !/^[0-9a-f]{64}$/.test(a) || a !== b) throw new Error(`Invalid or inconsistent image label ${fingerprintKey}`);
+          process.stdout.write(`${revision} ${a}`);
           NODE
-          )" || { echo "::error::Invalid ScriptaHub image labels. Nothing was changed."; exit 1; }
-          read -r AGENT_REVISION SKILLS_TREE DEPLOYMENT_TREE READER_BLOB <<< "$IMAGE_LABELS"
+          )" || LABEL_STATUS=$?
+          if [ "$LABEL_STATUS" -eq 3 ]; then
+            echo "::error::The agent image predates mounted skill sources: it carries no io.assistos.scriptahub.dependency-fingerprint label. Publish a matching agent image using publish-scriptahub-agent-image.yml. Nothing was changed."
+            exit 1
+          fi
+          if [ "$LABEL_STATUS" -ne 0 ]; then
+            echo "::error::Invalid ScriptaHub image labels. Nothing was changed."
+            exit 1
+          fi
+          read -r AGENT_REVISION DEPENDENCY_LABEL <<< "$IMAGE_LABELS"
+          [[ "$AGENT_REVISION" =~ ^[0-9a-f]{40}$ ]] && [[ "$DEPENDENCY_LABEL" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Invalid ScriptaHub image labels. Nothing was changed."; exit 1; }
           REFUSAL="Publish a matching agent image from a committed source lock using publish-scriptahub-agent-image.yml. Nothing was changed."
           if ! source_git cat-file -e "$AGENT_REVISION^{commit}" 2> /dev/null || ! source_git merge-base --is-ancestor "$AGENT_REVISION" "$HEAD_COMMIT"; then
             echo "::error::The agent image revision is not an ancestor of $BRANCH@$HEAD_COMMIT. $REFUSAL"
             exit 1
           fi
-          COPIED_TREES=''
-          for pair in "skills:$SKILLS_TREE" "scriptahubAgent/deployment:$DEPLOYMENT_TREE" "scriptahubAgent/site/reader/reader.css:$READER_BLOB"; do
-            path="${pair%%:*}"; expected="${pair#*:}"
-            at_head="$(source_git rev-parse "$HEAD_COMMIT:$path" 2> /dev/null)" || at_head=''
-            at_image="$(source_git rev-parse "$AGENT_REVISION:$path" 2> /dev/null)" || at_image=''
-            if [ "$at_head" != "$expected" ] || [ "$at_image" != "$expected" ]; then
-              echo "::error::$path differs from the agent image source labels. $REFUSAL"
-              exit 1
+          # BEGIN ScriptaHub dependency fingerprint
+          # Dependency fingerprint v1 of a commit: the sha256 of a header and one line, blob id and path, for every file that
+          # scriptahubAgent/deployment/dependency-inputs.txt lists. It runs Git with hooks off and executes nothing from the
+          # checkout. Usage: scripta_dependency_fingerprint <repository directory> <40-hex commit>. It prints 64 lowercase hex
+          # digits, or prints nothing and fails on every input that parseDependencyInputs of dependency-fingerprint.mjs
+          # rejects. The body is a subshell and checks every step itself, because errexit is off wherever a caller tests the result.
+          scripta_dependency_fingerprint() (
+            LC_ALL=C
+            export LC_ALL
+            repo=$1
+            rev=$2
+            inputs=scriptahubAgent/deployment/dependency-inputs.txt
+            fp_fail() { echo "dependency fingerprint: $1" >&2; exit 1; }
+            fp_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$repo" "$@"; }
+            case "$rev" in ""|*[!0-9a-f]*) fp_fail "invalid commit" ;; esac
+            [ "${#rev}" -eq 40 ] || fp_fail "invalid commit"
+            nl=$(printf "\nx")
+            nl=${nl%x}
+            tab=$(printf "\tx")
+            tab=${tab%x}
+            cr=$(printf "\rx")
+            cr=${cr%x}
+            list=$(fp_git cat-file blob "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            [ -n "$list" ] || fp_fail "dependency inputs are empty"
+            case "$list" in *"$cr"*) fp_fail "dependency inputs must use LF line endings" ;; esac
+            blob=$(fp_git rev-parse "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            hashed=$(printf "%s\n" "$list" | fp_git hash-object --no-filters --stdin) || fp_fail "cannot hash the dependency inputs"
+            case "$blob" in ""|*[!0-9a-f]*) fp_fail "invalid blob id" ;; esac
+            [ "${#blob}" -eq 40 ] || fp_fail "invalid blob id"
+            [ "$hashed" = "$blob" ] || fp_fail "dependency inputs must end with exactly one newline"
+            case "$nl$list$nl" in *"$nl$nl"*) fp_fail "dependency inputs contain a blank line" ;; esac
+            sorted=$(printf "%s\n" "$list" | sort -u) || fp_fail "cannot sort the dependency inputs"
+            [ "$sorted" = "$list" ] || fp_fail "dependency inputs must be strictly ascending"
+            data=
+            self=0
+            set -f
+            IFS=$nl
+            for p in $list; do
+              case "$p" in
+                ""|/*|*/|*//*|*[!A-Za-z0-9._/-]*) fp_fail "invalid dependency input path" ;;
+              esac
+              case "/$p/" in */./*|*/../*) fp_fail "invalid dependency input path" ;; esac
+              entry=$(fp_git ls-tree "$rev" -- "$p") || fp_fail "cannot list $p at $rev"
+              case "$entry" in
+                "100644 blob "*|"100755 blob "*) ;;
+                *) fp_fail "$p is not a regular file at $rev" ;;
+              esac
+              rest=${entry#* blob }
+              oid=${rest%%"$tab"*}
+              name=${rest#*"$tab"}
+              [ "$name" = "$p" ] || fp_fail "$p is not one tree entry at $rev"
+              case "$oid" in ""|*[!0-9a-f]*) fp_fail "invalid blob id of $p" ;; esac
+              [ "${#oid}" -eq 40 ] || fp_fail "invalid blob id of $p"
+              if [ "$p" = "$inputs" ]; then self=1; fi
+              data="$data$oid $p$nl"
+            done
+            [ "$self" -eq 1 ] || fp_fail "dependency inputs must list $inputs"
+            if command -v sha256sum > /dev/null 2>&1; then
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | sha256sum) || fp_fail "cannot hash"
+            else
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | shasum -a 256) || fp_fail "cannot hash"
             fi
-            COPIED_TREES="${COPIED_TREES:+$COPIED_TREES }$expected"
-          done
+            sum=${out%% *}
+            case "$sum" in ""|*[!0-9a-f]*) fp_fail "invalid digest" ;; esac
+            [ "${#sum}" -eq 64 ] || fp_fail "invalid digest"
+            printf "%s\n" "$sum"
+          )
+          # END ScriptaHub dependency fingerprint
+          # The image carries what the listed dependency inputs install; skill sources run from the mounted checkout.
+          # The label must equal the fingerprint at the image revision and at the selected head.
+          if ! REVISION_FINGERPRINT="$(scripta_dependency_fingerprint "$SOURCE" "$AGENT_REVISION")"; then
+            echo "::error::The dependency fingerprint of the agent image revision $AGENT_REVISION could not be computed. $REFUSAL"
+            exit 1
+          fi
+          if ! HEAD_FINGERPRINT="$(scripta_dependency_fingerprint "$SOURCE" "$HEAD_COMMIT")"; then
+            echo "::error::The dependency fingerprint of $BRANCH@$HEAD_COMMIT could not be computed. $REFUSAL"
+            exit 1
+          fi
+          if [ "$REVISION_FINGERPRINT" != "$DEPENDENCY_LABEL" ]; then
+            echo "::error::The agent image dependency fingerprint $DEPENDENCY_LABEL differs from the fingerprint $REVISION_FINGERPRINT of its revision $AGENT_REVISION. $REFUSAL"
+            exit 1
+          fi
+          if [ "$HEAD_FINGERPRINT" != "$DEPENDENCY_LABEL" ]; then
+            # The head list was just validated by the fingerprint function, so the paths below are plain.
+            CHANGED_INPUTS="$(source_git diff --name-only --no-renames "$AGENT_REVISION" "$HEAD_COMMIT" -- | grep -Fx -f <(source_git cat-file blob "$HEAD_COMMIT:scriptahubAgent/deployment/dependency-inputs.txt") | tr '\n' ' ' || true)"
+            CHANGED_INPUTS="${CHANGED_INPUTS% }"
+            echo "::error::Skill dependencies changed after the agent image revision: the dependency fingerprint of $BRANCH@$HEAD_COMMIT is $HEAD_FINGERPRINT, the image carries $DEPENDENCY_LABEL (changed inputs: ${CHANGED_INPUTS:-none found}). $REFUSAL"
+            exit 1
+          fi
           {
             printf 'SCRIPTA_HEAD=%s\n' "$HEAD_COMMIT"
             printf 'SCRIPTA_BRANCH=%s\n' "$BRANCH"
             printf 'SCRIPTA_AGENT_REVISION=%s\n' "$AGENT_REVISION"
             printf 'SCRIPTA_AGENT_INDEX=%s\n' "$AGENT_INDEX"
             printf 'SCRIPTA_ROBOTEAM_INDEX=%s\n' "$ROBOTEAM_INDEX"
-            printf 'SCRIPTA_COPIED_TREES=%s\n' "$COPIED_TREES"
+            printf 'SCRIPTA_DEPENDENCY_FINGERPRINT=%s\n' "$HEAD_FINGERPRINT"
           } >> "$GITHUB_ENV"
           echo "[deploy-qa-scriptahub] Resolved $BRANCH@$HEAD_COMMIT; agent image $AGENT_REPO@$AGENT_INDEX revision $AGENT_REVISION; RoboTeam $ROBOTEAM_REPO@$ROBOTEAM_INDEX"
 
@@ -414,6 +534,7 @@ jobs:
           repository: Axiologic/bizanso
           ssh-key: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}
           path: .qa-bizanso-source
+          fetch-depth: 0
           persist-credentials: false
 
       # Same rule: the key stays on the runner. The full history is fetched because it is bundled for the Box.
@@ -434,6 +555,7 @@ jobs:
           repository: Axiologic/simpleCSVMailSend
           ssh-key: ${{ secrets.EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}
           path: .qa-csvmail-source
+          fetch-depth: 0
           persist-credentials: false
 
       # No SSH here: a source without the agent folder is refused before anything on the host changes.
@@ -453,8 +575,28 @@ jobs:
           printf 'CSVMAIL_COMMIT=%s\n' "$COMMIT" >> "$GITHUB_ENV"
           echo "[deploy-qa] simpleCSVMailSend resolved at $COMMIT."
 
+      - name: Test the unpublished-source check
+        run: node --test tests/smoke/lib/qa-unpublished-acceptance.test.mjs tests/smoke/lib/qa-predeploy.test.mjs tests/smoke/lib/qa-copy-manifest.test.mjs tests/smoke/lib/qa-source-inventory.test.mjs tests/smoke/lib/qa-publication.test.mjs
+
+      - name: Check for unpublished QA sources
+        id: source_check
+        env:
+          EXPLORER_QA_LAST_BIZANSO_COMMIT: ${{ vars.EXPLORER_QA_LAST_BIZANSO_COMMIT }}
+          EXPLORER_QA_LAST_CSVMAIL_COMMIT: ${{ vars.EXPLORER_QA_LAST_CSVMAIL_COMMIT }}
+          RESET_EXPLORER_CHECKOUT: ${{ inputs.reset_explorer_checkout }}
+        run: node .github/scripts/qaPredeploy.mjs check full
+
+      - name: Retain the blocked source report
+        if: ${{ failure() && steps.source_check.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qa-unpublished-report
+          path: ${{ runner.temp }}/qa-unpublished-report.md
+          retention-days: 7
+
       - name: Bootstrap the host and deploy through Ploinky commands
         env:
+          EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN }}
           RECREATE_BOX: ${{ inputs.recreate_box }}
           RESET_EXPLORER_CHECKOUT: ${{ inputs.reset_explorer_checkout }}
           QA_USERPERSISTO_GOOGLE_CLIENT_ID: ${{ vars.EXPLORER_QA_USERPERSISTO_GOOGLE_CLIENT_ID }}
@@ -463,6 +605,7 @@ jobs:
           CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
         run: |
           set -euo pipefail
+          export -n EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN
           umask 077
           case "$RECREATE_BOX" in
             true|false) ;;
@@ -577,6 +720,125 @@ jobs:
           }
           qa_registry_check "Nothing was changed." || exit 1
           # END QA registry check
+
+          echo '[deploy-qa] Bootstrapping the pinned Node before cache admission...'
+          BOOTSTRAP_LOG="$RUNNER_TEMP/explorer-qa-bootstrap.log"
+          "${SSH[@]}" "flock -n -E 75 --close '$LOCK' bash -s" <<'REMOTE' | tee "$BOOTSTRAP_LOG"
+          set -euo pipefail
+          if [ "$(id -un)" != 'admin' ] || [ "$HOME" != '/home/admin' ]; then
+            echo '[qa] ERROR: the remote identity is not the pinned admin account.'
+            exit 1
+          fi
+          WORK_DIR=/home/admin/explorerQaWorkspace
+          if [ -L "$WORK_DIR" ] || { [ -e "$WORK_DIR" ] && [ ! -d "$WORK_DIR" ]; }; then
+            echo "[qa] ERROR: the workspace path is not a real directory: $WORK_DIR"
+            exit 1
+          fi
+          # The removed non-Ploinky workflows parked the router access policy and an install marker here, and only
+          # they restored them. Running over that state would silently lose the policy.
+          STATE_DIR=/home/admin/.qa-deployment-state
+          if [ -e "$STATE_DIR" ] && [ -n "$(ls -A "$STATE_DIR")" ]; then
+            echo "[qa] ERROR: $STATE_DIR holds state parked by the removed non-Ploinky QA workflows. No tracked workflow finishes it: restore that workflow from history through the reviewed change process first."
+            exit 1
+          fi
+          for tool in git node curl podman flock; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "[qa] ERROR: missing required host tool '$tool'."
+              exit 1
+            fi
+          done
+          # BEGIN QA isolated Node runtime
+          install_qa_node() (
+            set -euo pipefail
+            umask 077
+            case "$(uname -m)" in
+              x86_64)
+                QA_NODE_ARCH=x64
+                QA_NODE_SHA=14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647
+                ;;
+              aarch64|arm64)
+                QA_NODE_ARCH=arm64
+                QA_NODE_SHA=01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc
+                ;;
+              *) echo '[deploy-qa] Unsupported QA Node architecture.' >&2; exit 1 ;;
+            esac
+            QA_TOOLS_ROOT=/home/admin/.qa-deployment-tools
+            QA_NODE_DIST="node-v24.19.0-linux-$QA_NODE_ARCH"
+            QA_NODE_TARGET="$QA_TOOLS_ROOT/$QA_NODE_DIST"
+            QA_NODE_ARCHIVE="$QA_TOOLS_ROOT/$QA_NODE_DIST.tar.xz"
+            node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_DIST" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [root, distribution] = process.argv.slice(2);
+          assert.equal(root, '/home/admin/.qa-deployment-tools');
+          assert(/^node-v24\.19\.0-linux-(x64|arm64)$/.test(distribution));
+          if (!fs.existsSync(root)) fs.mkdirSync(root, { mode: 0o700 });
+          for (const [file, directory, privateMode] of [
+              [root, true, true],
+              [path.join(root, `${distribution}.tar.xz`), false, true],
+              [path.join(root, distribution), true, false],
+              [path.join(root, distribution, 'bin/node'), false, false],
+          ]) {
+              let stat;
+              try { stat = fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+              assert(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile()), 'Unsafe QA Node path');
+              assert.equal(fs.realpathSync(file), file, 'QA Node path traverses a symlink');
+              assert.equal(stat.uid, process.getuid(), 'QA Node path has a different owner');
+              assert.equal(stat.mode & (privateMode ? 0o077 : 0o022), 0, 'Unsafe QA Node permissions');
+              if (!directory) assert.equal(stat.nlink, 1, 'QA Node file has multiple links');
+          }
+          NODE
+            QA_NODE_STAGE="$(mktemp -d "$QA_TOOLS_ROOT/.node-install-XXXXXXXX")"
+            cleanup_qa_node_stage() {
+              node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_STAGE" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [root, stage] = process.argv.slice(2);
+          assert.equal(root, '/home/admin/.qa-deployment-tools');
+          assert.equal(path.dirname(stage), root);
+          assert(/^\.node-install-[A-Za-z0-9]{8}$/.test(path.basename(stage)));
+          const stat = fs.lstatSync(stage);
+          assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid());
+          assert.equal(fs.realpathSync(stage), stage);
+          fs.rmSync(stage, { recursive: true });
+          NODE
+            }
+            trap cleanup_qa_node_stage EXIT
+            if [ ! -f "$QA_NODE_ARCHIVE" ]; then
+              curl -fsS --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 \
+                --max-filesize 104857600 \
+                "https://nodejs.org/dist/v24.19.0/$QA_NODE_DIST.tar.xz" -o "$QA_NODE_STAGE/archive.tar.xz"
+              printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_STAGE/archive.tar.xz" | timeout 30 sha256sum -c - >/dev/null
+              mv -T "$QA_NODE_STAGE/archive.tar.xz" "$QA_NODE_ARCHIVE"
+            fi
+            printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_ARCHIVE" | timeout 30 sha256sum -c - >/dev/null
+            if [ ! -e "$QA_NODE_TARGET" ]; then
+              timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" -C "$QA_NODE_STAGE"
+              mv -T "$QA_NODE_STAGE/$QA_NODE_DIST" "$QA_NODE_TARGET"
+            fi
+            # Validate an existing binary against the pinned archive too; a
+            # version string or cached marker alone is not integrity evidence.
+            timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" \
+              -C "$QA_NODE_STAGE" "$QA_NODE_DIST/bin/node"
+            timeout 30 cmp -s "$QA_NODE_STAGE/$QA_NODE_DIST/bin/node" "$QA_NODE_TARGET/bin/node"
+            [ "$(timeout 10 "$QA_NODE_TARGET/bin/node" --version)" = 'v24.19.0' ]
+            printf '%s\n' "$QA_NODE_TARGET"
+          )
+          QA_NODE_HOME="$(install_qa_node)"
+          export PATH="$QA_NODE_HOME/bin:$PATH"
+          # END QA isolated Node runtime
+          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME"
+          REMOTE
+          QA_NODE_HOME="$(sed -n 's/^QA_NODE_HOME=//p' "$BOOTSTRAP_LOG" | tail -n 1)"
+          if [[ ! "$QA_NODE_HOME" =~ ^/home/admin/\.qa-deployment-tools/node-v24\.19\.0-linux-(x64|arm64)$ ]]; then
+            echo "::error::The bootstrap did not report the pinned Node."
+            exit 1
+          fi
+          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME" >> "$GITHUB_ENV"
+          QA_NODE_HOME="$QA_NODE_HOME" EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN="${EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN:-}" bash "$GITHUB_WORKSPACE/.github/scripts/qa-cache-router.sh" pre
+          unset EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN
 
           TUNNEL_LIST_RESPONSE=''
           TUNNEL_MUTATION_RESPONSE=''
@@ -793,114 +1055,28 @@ jobs:
           echo "[deploy-qa] Dedicated Explorer QA tunnel id=$CLOUDFLARE_TUNNEL_ID created=$CLOUDFLARE_TUNNEL_CREATED."
 
 
-          echo '[deploy-qa] Bootstrapping the pinned Node, the Ploinky checkout and the workspace directory...'
-          BOOTSTRAP_LOG="$RUNNER_TEMP/explorer-qa-bootstrap.log"
-          "${SSH[@]}" "flock -n -E 75 --close '$LOCK' bash -s" <<'REMOTE' | tee "$BOOTSTRAP_LOG"
+          "${SSH[@]}" "flock -n -E 75 --close '$LOCK' bash -s -- '$QA_NODE_HOME'" <<'REMOTE' | tee -a "$BOOTSTRAP_LOG"
           set -euo pipefail
           if [ "$(id -un)" != 'admin' ] || [ "$HOME" != '/home/admin' ]; then
             echo '[qa] ERROR: the remote identity is not the pinned admin account.'
             exit 1
           fi
-          WORK_DIR=/home/admin/explorerQaWorkspace
-          if [ -L "$WORK_DIR" ] || { [ -e "$WORK_DIR" ] && [ ! -d "$WORK_DIR" ]; }; then
-            echo "[qa] ERROR: the workspace path is not a real directory: $WORK_DIR"
-            exit 1
-          fi
-          # The removed non-Ploinky workflows parked the router access policy and an install marker here, and only
-          # they restored them. Running over that state would silently lose the policy.
-          STATE_DIR=/home/admin/.qa-deployment-state
-          if [ -e "$STATE_DIR" ] && [ -n "$(ls -A "$STATE_DIR")" ]; then
-            echo "[qa] ERROR: $STATE_DIR holds state parked by the removed non-Ploinky QA workflows. No tracked workflow finishes it: restore that workflow from history through the reviewed change process first."
-            exit 1
-          fi
+          export PATH="$1/bin:$PATH"
           for tool in git node curl podman flock; do
             if ! command -v "$tool" >/dev/null 2>&1; then
               echo "[qa] ERROR: missing required host tool '$tool'."
               exit 1
             fi
           done
-          # BEGIN QA isolated Node runtime
-          install_qa_node() (
-            set -euo pipefail
-            umask 077
-            case "$(uname -m)" in
-              x86_64)
-                QA_NODE_ARCH=x64
-                QA_NODE_SHA=14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647
-                ;;
-              aarch64|arm64)
-                QA_NODE_ARCH=arm64
-                QA_NODE_SHA=01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc
-                ;;
-              *) echo '[deploy-qa] Unsupported QA Node architecture.' >&2; exit 1 ;;
-            esac
-            QA_TOOLS_ROOT=/home/admin/.qa-deployment-tools
-            QA_NODE_DIST="node-v24.19.0-linux-$QA_NODE_ARCH"
-            QA_NODE_TARGET="$QA_TOOLS_ROOT/$QA_NODE_DIST"
-            QA_NODE_ARCHIVE="$QA_TOOLS_ROOT/$QA_NODE_DIST.tar.xz"
-            node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_DIST" <<'NODE'
-          import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          import path from 'node:path';
-          const [root, distribution] = process.argv.slice(2);
-          assert.equal(root, '/home/admin/.qa-deployment-tools');
-          assert(/^node-v24\.19\.0-linux-(x64|arm64)$/.test(distribution));
-          if (!fs.existsSync(root)) fs.mkdirSync(root, { mode: 0o700 });
-          for (const [file, directory, privateMode] of [
-              [root, true, true],
-              [path.join(root, `${distribution}.tar.xz`), false, true],
-              [path.join(root, distribution), true, false],
-              [path.join(root, distribution, 'bin/node'), false, false],
-          ]) {
-              let stat;
-              try { stat = fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-              assert(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile()), 'Unsafe QA Node path');
-              assert.equal(fs.realpathSync(file), file, 'QA Node path traverses a symlink');
-              assert.equal(stat.uid, process.getuid(), 'QA Node path has a different owner');
-              assert.equal(stat.mode & (privateMode ? 0o077 : 0o022), 0, 'Unsafe QA Node permissions');
-              if (!directory) assert.equal(stat.nlink, 1, 'QA Node file has multiple links');
-          }
-          NODE
-            QA_NODE_STAGE="$(mktemp -d "$QA_TOOLS_ROOT/.node-install-XXXXXXXX")"
-            cleanup_qa_node_stage() {
-              node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_STAGE" <<'NODE'
-          import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          import path from 'node:path';
-          const [root, stage] = process.argv.slice(2);
-          assert.equal(root, '/home/admin/.qa-deployment-tools');
-          assert.equal(path.dirname(stage), root);
-          assert(/^\.node-install-[A-Za-z0-9]{8}$/.test(path.basename(stage)));
-          const stat = fs.lstatSync(stage);
-          assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid());
-          assert.equal(fs.realpathSync(stage), stage);
-          fs.rmSync(stage, { recursive: true });
-          NODE
-            }
-            trap cleanup_qa_node_stage EXIT
-            if [ ! -f "$QA_NODE_ARCHIVE" ]; then
-              curl -fsS --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 \
-                --max-filesize 104857600 \
-                "https://nodejs.org/dist/v24.19.0/$QA_NODE_DIST.tar.xz" -o "$QA_NODE_STAGE/archive.tar.xz"
-              printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_STAGE/archive.tar.xz" | timeout 30 sha256sum -c - >/dev/null
-              mv -T "$QA_NODE_STAGE/archive.tar.xz" "$QA_NODE_ARCHIVE"
-            fi
-            printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_ARCHIVE" | timeout 30 sha256sum -c - >/dev/null
-            if [ ! -e "$QA_NODE_TARGET" ]; then
-              timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" -C "$QA_NODE_STAGE"
-              mv -T "$QA_NODE_STAGE/$QA_NODE_DIST" "$QA_NODE_TARGET"
-            fi
-            # Validate an existing binary against the pinned archive too; a
-            # version string or cached marker alone is not integrity evidence.
-            timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" \
-              -C "$QA_NODE_STAGE" "$QA_NODE_DIST/bin/node"
-            timeout 30 cmp -s "$QA_NODE_STAGE/$QA_NODE_DIST/bin/node" "$QA_NODE_TARGET/bin/node"
-            [ "$(timeout 10 "$QA_NODE_TARGET/bin/node" --version)" = 'v24.19.0' ]
-            printf '%s\n' "$QA_NODE_TARGET"
-          )
-          QA_NODE_HOME="$(install_qa_node)"
-          export PATH="$QA_NODE_HOME/bin:$PATH"
-          # END QA isolated Node runtime
+          WORK_DIR=/home/admin/explorerQaWorkspace
+          if [ -L "$WORK_DIR" ] || { [ -e "$WORK_DIR" ] && [ ! -d "$WORK_DIR" ]; }; then
+            echo '[qa] ERROR: the workspace is no longer the expected QA directory.'
+            exit 1
+          fi
+          if [ -d /home/admin/.qa-deployment-state ] && [ -n "$(ls -A /home/admin/.qa-deployment-state)" ]; then
+            echo '[qa] ERROR: the removed non-Ploinky QA workflows parked state in /home/admin/.qa-deployment-state. Restore that workflow from history through the reviewed change process first.'
+            exit 1
+          fi
           # Ploinky cannot install itself, so this bootstrap is the one Git use on the host. The checkout lies
           # outside the workspace: a Box mounts it read-only and cannot write its hooks or configuration.
           PLOINKY_URL=https://github.com/AssistOS-AI/ploinky.git
@@ -926,13 +1102,7 @@ jobs:
           chmod 700 "$WORK_DIR"
           # The one read of the workspace: a kept publication cannot follow a replaced tunnel.
           if [ -e "$WORK_DIR/.ploinky/edge-desired.json" ]; then echo 'QA_KEPT_PUBLICATION=true'; fi
-          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME"
           REMOTE
-          QA_NODE_HOME="$(sed -n 's/^QA_NODE_HOME=//p' "$BOOTSTRAP_LOG" | tail -n 1)"
-          if [[ ! "$QA_NODE_HOME" =~ ^/home/admin/\.qa-deployment-tools/node-v24\.19\.0-linux-(x64|arm64)$ ]]; then
-            echo "::error::The bootstrap did not report the pinned Node."
-            exit 1
-          fi
 
           REMOTE_ENV="cd '$WORK_DIR' && export PATH='$QA_NODE_HOME/bin':\"\$PATH\" PLOINKY_WORKSPACE_ROOT='$WORK_DIR'"
           # Every argument below is a fixed word. A secret only ever reaches a command through ssh stdin.
@@ -1401,8 +1571,12 @@ jobs:
               *) echo "::error::Unexpected repository in the managed location check."; exit 1 ;;
             esac
           done
+          node .github/scripts/qaPredeploy.mjs prepare bizanso
           git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive --format=tar HEAD | run_in_box "$COPY_PROGRAM"
+          node .github/scripts/qaPredeploy.mjs installed bizanso
+          node .github/scripts/qaPredeploy.mjs prepare simpleCSVMailSend
           git -C "$GITHUB_WORKSPACE/.qa-csvmail-source" archive --format=tar "$CSVMAIL_COMMIT" csvMailAgent | run_in_box "$CSVMAIL_PLACE_PROGRAM"
+          node .github/scripts/qaPredeploy.mjs installed simpleCSVMailSend
           PROMOTIONSCOUT_SOURCE="$GITHUB_WORKSPACE/.qa-promotionscout-source"
           PROMOTIONSCOUT_BRANCH="$(git -C "$PROMOTIONSCOUT_SOURCE" symbolic-ref --short HEAD)"
           git -C "$PROMOTIONSCOUT_SOURCE" bundle create - "refs/heads/$PROMOTIONSCOUT_BRANCH" | run_in_box "$BUNDLE_PROGRAM"
@@ -1478,16 +1652,89 @@ jobs:
           # Kept sources move forward here. The restart activates them and registers the MCP tools of newly
           # enabled agents with the Router.
           update_kept_repos
-          # Check the exact selected source and copied objects after repository updates and before restart.
-          if ! printf '%s\n%s\n' "$SCRIPTA_HEAD" "$SCRIPTA_COPIED_TREES" | run_in_box 'set -eu
+          # Check the exact selected source and its dependency fingerprint after repository updates and before restart.
+          # Both values arrive on stdin and are checked again inside the Box.
+          if ! printf '%s\n%s\n' "$SCRIPTA_HEAD" "$SCRIPTA_DEPENDENCY_FINGERPRINT" | run_in_box 'set -eu
           read -r head
           read -r expected
+          case "$head" in ""|*[!0-9a-f]*) exit 1 ;; esac
+          test "${#head}" -eq 40
+          case "$expected" in ""|*[!0-9a-f]*) exit 1 ;; esac
+          test "${#expected}" -eq 64
           g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C ScriptaHubAgent "$@"; }
           test -z "$(g status --porcelain)"
           test "$(g rev-parse HEAD)" = "$head"
-          actual=$(g rev-parse HEAD:skills HEAD:scriptahubAgent/deployment HEAD:scriptahubAgent/site/reader/reader.css)
-          test "$(echo $actual)" = "$expected"'; then
-            echo "::error::ScriptaHub checkout did not match the selected source; repositories and image tags may have changed, no restart has occurred."
+          # BEGIN ScriptaHub dependency fingerprint
+          # Dependency fingerprint v1 of a commit: the sha256 of a header and one line, blob id and path, for every file that
+          # scriptahubAgent/deployment/dependency-inputs.txt lists. It runs Git with hooks off and executes nothing from the
+          # checkout. Usage: scripta_dependency_fingerprint <repository directory> <40-hex commit>. It prints 64 lowercase hex
+          # digits, or prints nothing and fails on every input that parseDependencyInputs of dependency-fingerprint.mjs
+          # rejects. The body is a subshell and checks every step itself, because errexit is off wherever a caller tests the result.
+          scripta_dependency_fingerprint() (
+            LC_ALL=C
+            export LC_ALL
+            repo=$1
+            rev=$2
+            inputs=scriptahubAgent/deployment/dependency-inputs.txt
+            fp_fail() { echo "dependency fingerprint: $1" >&2; exit 1; }
+            fp_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$repo" "$@"; }
+            case "$rev" in ""|*[!0-9a-f]*) fp_fail "invalid commit" ;; esac
+            [ "${#rev}" -eq 40 ] || fp_fail "invalid commit"
+            nl=$(printf "\nx")
+            nl=${nl%x}
+            tab=$(printf "\tx")
+            tab=${tab%x}
+            cr=$(printf "\rx")
+            cr=${cr%x}
+            list=$(fp_git cat-file blob "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            [ -n "$list" ] || fp_fail "dependency inputs are empty"
+            case "$list" in *"$cr"*) fp_fail "dependency inputs must use LF line endings" ;; esac
+            blob=$(fp_git rev-parse "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            hashed=$(printf "%s\n" "$list" | fp_git hash-object --no-filters --stdin) || fp_fail "cannot hash the dependency inputs"
+            case "$blob" in ""|*[!0-9a-f]*) fp_fail "invalid blob id" ;; esac
+            [ "${#blob}" -eq 40 ] || fp_fail "invalid blob id"
+            [ "$hashed" = "$blob" ] || fp_fail "dependency inputs must end with exactly one newline"
+            case "$nl$list$nl" in *"$nl$nl"*) fp_fail "dependency inputs contain a blank line" ;; esac
+            sorted=$(printf "%s\n" "$list" | sort -u) || fp_fail "cannot sort the dependency inputs"
+            [ "$sorted" = "$list" ] || fp_fail "dependency inputs must be strictly ascending"
+            data=
+            self=0
+            set -f
+            IFS=$nl
+            for p in $list; do
+              case "$p" in
+                ""|/*|*/|*//*|*[!A-Za-z0-9._/-]*) fp_fail "invalid dependency input path" ;;
+              esac
+              case "/$p/" in */./*|*/../*) fp_fail "invalid dependency input path" ;; esac
+              entry=$(fp_git ls-tree "$rev" -- "$p") || fp_fail "cannot list $p at $rev"
+              case "$entry" in
+                "100644 blob "*|"100755 blob "*) ;;
+                *) fp_fail "$p is not a regular file at $rev" ;;
+              esac
+              rest=${entry#* blob }
+              oid=${rest%%"$tab"*}
+              name=${rest#*"$tab"}
+              [ "$name" = "$p" ] || fp_fail "$p is not one tree entry at $rev"
+              case "$oid" in ""|*[!0-9a-f]*) fp_fail "invalid blob id of $p" ;; esac
+              [ "${#oid}" -eq 40 ] || fp_fail "invalid blob id of $p"
+              if [ "$p" = "$inputs" ]; then self=1; fi
+              data="$data$oid $p$nl"
+            done
+            [ "$self" -eq 1 ] || fp_fail "dependency inputs must list $inputs"
+            if command -v sha256sum > /dev/null 2>&1; then
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | sha256sum) || fp_fail "cannot hash"
+            else
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | shasum -a 256) || fp_fail "cannot hash"
+            fi
+            sum=${out%% *}
+            case "$sum" in ""|*[!0-9a-f]*) fp_fail "invalid digest" ;; esac
+            [ "${#sum}" -eq 64 ] || fp_fail "invalid digest"
+            printf "%s\n" "$sum"
+          )
+          # END ScriptaHub dependency fingerprint
+          actual=$(scripta_dependency_fingerprint ScriptaHubAgent "$head") || exit 1
+          test "$actual" = "$expected"'; then
+            echo "::error::ScriptaHub checkout did not match the selected source or its dependency fingerprint; repositories and image tags may have changed, no restart has occurred."
             exit 1
           fi
           ploinky_locked restart
@@ -1787,6 +2034,13 @@ jobs:
           console.log(`Protected proxies ingress and unrelated DNS are unchanged at ${digest(after)}.`);
           NODE
 
+      - name: Verify and clear the new QA origin cache
+        id: cache_probe
+        env:
+          EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN }}
+          QA_CACHE_FORCE_PROBE_FAILURE: ${{ inputs.force_cache_probe_failure }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/qa-cache-router.sh" post
+
       - name: Create summary
         if: always()
         env:
@@ -1821,3 +2075,30 @@ jobs:
             "$RUNNER_TEMP/explorer-qa-response.txt" \
             "$RUNNER_TEMP/explorer-qa-headers.txt" \
             "$RUNNER_TEMP/explorer_qa_protected_cloudflare_before.json"
+
+      - name: Enable QA page caching
+        id: cache_on
+        if: ${{ success() && steps.cache_probe.outputs.verified == 'true' }}
+        env:
+          CREATE_CACHE_RULES: ${{ inputs.create_cache_rules }}
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "$CREATE_CACHE_RULES" in
+            true) cache_flags=() ;;
+            false) cache_flags=(--existing-only) ;;
+            *) echo "::error::create_cache_rules must be true or false"; exit 1 ;;
+          esac
+          node .github/scripts/cloudflare-cache-rules.mjs r2-on --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"} --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+
+      - name: Disable QA page caching after a failed initial guard
+        if: ${{ always() && (steps.cache_off.outcome == 'failure' || steps.cache_off.outcome == 'cancelled') }}
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --if-present
+
+      - name: Disable QA page caching after a cancelled activation
+        if: ${{ always() && steps.cache_on.outcome == 'cancelled' }}
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
