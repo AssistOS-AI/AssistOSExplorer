@@ -7,6 +7,11 @@ name: Deploy Explorer QA Box (Ploinky commands)
 on:
   workflow_dispatch:
     inputs:
+      force_cache_probe_failure:
+        description: 'T9 negative control. Fail the QA origin cache probe and leave the page rule off.'
+        required: false
+        default: false
+        type: boolean
       recreate_box:
         description: 'Destroy and recreate the Box, keeping the data. Needed to pick up a new Box image, which no Ploinky command can detect.'
         required: false
@@ -14,6 +19,11 @@ on:
         type: boolean
       reset_explorer_checkout:
         description: 'Hard-reset the kept AchillesIDE checkout to main in the first start (discards its local changes). Only when no Box exists, for a kept checkout that the current Ploinky refuses.'
+        required: false
+        default: false
+        type: boolean
+      create_cache_rules:
+        description: 'D19 first creation: create this host''s two cache rules if both are missing. Tick only with Daniel''s approval for this zone.'
         required: false
         default: false
         type: boolean
@@ -37,6 +47,9 @@ env:
   MEDIA_PUBLIC_IPV4: '45.136.70.141'
   SOUL_GATEWAY_WORKSPACE: 'soulGateway'
   SOUL_GATEWAY_ROUTER_PORT: '8080'
+  CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
+  CLOUDFLARE_CACHE_R1_REF: 'explorer_qa_cache_r1'
+  CLOUDFLARE_CACHE_R2_REF: 'explorer_qa_cache_r2'
 
 jobs:
   deploy:
@@ -59,7 +72,7 @@ jobs:
           node-version: '24'
 
       - name: Test these workflows
-        run: node --test tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs
+        run: node --test tests/smoke/lib/deploy-qa-ploinky-workflows.test.mjs tests/smoke/lib/deploy-qa-cache-rules.test.mjs tests/smoke/lib/deploy-qa-cache-origin.test.mjs tests/smoke/lib/deploy-qa-cache-workflows.test.mjs
 
       - name: Validate GitHub configuration
         env:
@@ -324,6 +337,21 @@ jobs:
           chmod 600 "$HOST_KEY_CANDIDATE"
           echo "Validated the pinned Explorer QA SSH host identity."
 
+      - name: Disable QA page caching
+        id: cache_off
+        env:
+          CREATE_CACHE_RULES: ${{ inputs.create_cache_rules }}
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "$CREATE_CACHE_RULES" in
+            true) cache_flags=() ;;
+            false) cache_flags=(--existing-only) ;;
+            *) echo "::error::create_cache_rules must be true or false"; exit 1 ;;
+          esac
+          node .github/scripts/cloudflare-cache-rules.mjs ensure-r1 --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"}
+          node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"}
+
       - name: Prepare SSH key
         env:
           SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
@@ -455,6 +483,7 @@ jobs:
 
       - name: Bootstrap the host and deploy through Ploinky commands
         env:
+          EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN }}
           RECREATE_BOX: ${{ inputs.recreate_box }}
           RESET_EXPLORER_CHECKOUT: ${{ inputs.reset_explorer_checkout }}
           QA_USERPERSISTO_GOOGLE_CLIENT_ID: ${{ vars.EXPLORER_QA_USERPERSISTO_GOOGLE_CLIENT_ID }}
@@ -463,6 +492,7 @@ jobs:
           CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
         run: |
           set -euo pipefail
+          export -n EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN
           umask 077
           case "$RECREATE_BOX" in
             true|false) ;;
@@ -577,6 +607,125 @@ jobs:
           }
           qa_registry_check "Nothing was changed." || exit 1
           # END QA registry check
+
+          echo '[deploy-qa] Bootstrapping the pinned Node before cache admission...'
+          BOOTSTRAP_LOG="$RUNNER_TEMP/explorer-qa-bootstrap.log"
+          "${SSH[@]}" "flock -n -E 75 --close '$LOCK' bash -s" <<'REMOTE' | tee "$BOOTSTRAP_LOG"
+          set -euo pipefail
+          if [ "$(id -un)" != 'admin' ] || [ "$HOME" != '/home/admin' ]; then
+            echo '[qa] ERROR: the remote identity is not the pinned admin account.'
+            exit 1
+          fi
+          WORK_DIR=/home/admin/explorerQaWorkspace
+          if [ -L "$WORK_DIR" ] || { [ -e "$WORK_DIR" ] && [ ! -d "$WORK_DIR" ]; }; then
+            echo "[qa] ERROR: the workspace path is not a real directory: $WORK_DIR"
+            exit 1
+          fi
+          # The removed non-Ploinky workflows parked the router access policy and an install marker here, and only
+          # they restored them. Running over that state would silently lose the policy.
+          STATE_DIR=/home/admin/.qa-deployment-state
+          if [ -e "$STATE_DIR" ] && [ -n "$(ls -A "$STATE_DIR")" ]; then
+            echo "[qa] ERROR: $STATE_DIR holds state parked by the removed non-Ploinky QA workflows. No tracked workflow finishes it: restore that workflow from history through the reviewed change process first."
+            exit 1
+          fi
+          for tool in git node curl podman flock; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "[qa] ERROR: missing required host tool '$tool'."
+              exit 1
+            fi
+          done
+          # BEGIN QA isolated Node runtime
+          install_qa_node() (
+            set -euo pipefail
+            umask 077
+            case "$(uname -m)" in
+              x86_64)
+                QA_NODE_ARCH=x64
+                QA_NODE_SHA=14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647
+                ;;
+              aarch64|arm64)
+                QA_NODE_ARCH=arm64
+                QA_NODE_SHA=01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc
+                ;;
+              *) echo '[deploy-qa] Unsupported QA Node architecture.' >&2; exit 1 ;;
+            esac
+            QA_TOOLS_ROOT=/home/admin/.qa-deployment-tools
+            QA_NODE_DIST="node-v24.19.0-linux-$QA_NODE_ARCH"
+            QA_NODE_TARGET="$QA_TOOLS_ROOT/$QA_NODE_DIST"
+            QA_NODE_ARCHIVE="$QA_TOOLS_ROOT/$QA_NODE_DIST.tar.xz"
+            node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_DIST" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [root, distribution] = process.argv.slice(2);
+          assert.equal(root, '/home/admin/.qa-deployment-tools');
+          assert(/^node-v24\.19\.0-linux-(x64|arm64)$/.test(distribution));
+          if (!fs.existsSync(root)) fs.mkdirSync(root, { mode: 0o700 });
+          for (const [file, directory, privateMode] of [
+              [root, true, true],
+              [path.join(root, `${distribution}.tar.xz`), false, true],
+              [path.join(root, distribution), true, false],
+              [path.join(root, distribution, 'bin/node'), false, false],
+          ]) {
+              let stat;
+              try { stat = fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+              assert(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile()), 'Unsafe QA Node path');
+              assert.equal(fs.realpathSync(file), file, 'QA Node path traverses a symlink');
+              assert.equal(stat.uid, process.getuid(), 'QA Node path has a different owner');
+              assert.equal(stat.mode & (privateMode ? 0o077 : 0o022), 0, 'Unsafe QA Node permissions');
+              if (!directory) assert.equal(stat.nlink, 1, 'QA Node file has multiple links');
+          }
+          NODE
+            QA_NODE_STAGE="$(mktemp -d "$QA_TOOLS_ROOT/.node-install-XXXXXXXX")"
+            cleanup_qa_node_stage() {
+              node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_STAGE" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [root, stage] = process.argv.slice(2);
+          assert.equal(root, '/home/admin/.qa-deployment-tools');
+          assert.equal(path.dirname(stage), root);
+          assert(/^\.node-install-[A-Za-z0-9]{8}$/.test(path.basename(stage)));
+          const stat = fs.lstatSync(stage);
+          assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid());
+          assert.equal(fs.realpathSync(stage), stage);
+          fs.rmSync(stage, { recursive: true });
+          NODE
+            }
+            trap cleanup_qa_node_stage EXIT
+            if [ ! -f "$QA_NODE_ARCHIVE" ]; then
+              curl -fsS --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 \
+                --max-filesize 104857600 \
+                "https://nodejs.org/dist/v24.19.0/$QA_NODE_DIST.tar.xz" -o "$QA_NODE_STAGE/archive.tar.xz"
+              printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_STAGE/archive.tar.xz" | timeout 30 sha256sum -c - >/dev/null
+              mv -T "$QA_NODE_STAGE/archive.tar.xz" "$QA_NODE_ARCHIVE"
+            fi
+            printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_ARCHIVE" | timeout 30 sha256sum -c - >/dev/null
+            if [ ! -e "$QA_NODE_TARGET" ]; then
+              timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" -C "$QA_NODE_STAGE"
+              mv -T "$QA_NODE_STAGE/$QA_NODE_DIST" "$QA_NODE_TARGET"
+            fi
+            # Validate an existing binary against the pinned archive too; a
+            # version string or cached marker alone is not integrity evidence.
+            timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" \
+              -C "$QA_NODE_STAGE" "$QA_NODE_DIST/bin/node"
+            timeout 30 cmp -s "$QA_NODE_STAGE/$QA_NODE_DIST/bin/node" "$QA_NODE_TARGET/bin/node"
+            [ "$(timeout 10 "$QA_NODE_TARGET/bin/node" --version)" = 'v24.19.0' ]
+            printf '%s\n' "$QA_NODE_TARGET"
+          )
+          QA_NODE_HOME="$(install_qa_node)"
+          export PATH="$QA_NODE_HOME/bin:$PATH"
+          # END QA isolated Node runtime
+          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME"
+          REMOTE
+          QA_NODE_HOME="$(sed -n 's/^QA_NODE_HOME=//p' "$BOOTSTRAP_LOG" | tail -n 1)"
+          if [[ ! "$QA_NODE_HOME" =~ ^/home/admin/\.qa-deployment-tools/node-v24\.19\.0-linux-(x64|arm64)$ ]]; then
+            echo "::error::The bootstrap did not report the pinned Node."
+            exit 1
+          fi
+          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME" >> "$GITHUB_ENV"
+          QA_NODE_HOME="$QA_NODE_HOME" EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN="${EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN:-}" bash "$GITHUB_WORKSPACE/.github/scripts/qa-cache-router.sh" pre
+          unset EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN
 
           TUNNEL_LIST_RESPONSE=''
           TUNNEL_MUTATION_RESPONSE=''
@@ -793,114 +942,28 @@ jobs:
           echo "[deploy-qa] Dedicated Explorer QA tunnel id=$CLOUDFLARE_TUNNEL_ID created=$CLOUDFLARE_TUNNEL_CREATED."
 
 
-          echo '[deploy-qa] Bootstrapping the pinned Node, the Ploinky checkout and the workspace directory...'
-          BOOTSTRAP_LOG="$RUNNER_TEMP/explorer-qa-bootstrap.log"
-          "${SSH[@]}" "flock -n -E 75 --close '$LOCK' bash -s" <<'REMOTE' | tee "$BOOTSTRAP_LOG"
+          "${SSH[@]}" "flock -n -E 75 --close '$LOCK' bash -s -- '$QA_NODE_HOME'" <<'REMOTE' | tee -a "$BOOTSTRAP_LOG"
           set -euo pipefail
           if [ "$(id -un)" != 'admin' ] || [ "$HOME" != '/home/admin' ]; then
             echo '[qa] ERROR: the remote identity is not the pinned admin account.'
             exit 1
           fi
-          WORK_DIR=/home/admin/explorerQaWorkspace
-          if [ -L "$WORK_DIR" ] || { [ -e "$WORK_DIR" ] && [ ! -d "$WORK_DIR" ]; }; then
-            echo "[qa] ERROR: the workspace path is not a real directory: $WORK_DIR"
-            exit 1
-          fi
-          # The removed non-Ploinky workflows parked the router access policy and an install marker here, and only
-          # they restored them. Running over that state would silently lose the policy.
-          STATE_DIR=/home/admin/.qa-deployment-state
-          if [ -e "$STATE_DIR" ] && [ -n "$(ls -A "$STATE_DIR")" ]; then
-            echo "[qa] ERROR: $STATE_DIR holds state parked by the removed non-Ploinky QA workflows. No tracked workflow finishes it: restore that workflow from history through the reviewed change process first."
-            exit 1
-          fi
+          export PATH="$1/bin:$PATH"
           for tool in git node curl podman flock; do
             if ! command -v "$tool" >/dev/null 2>&1; then
               echo "[qa] ERROR: missing required host tool '$tool'."
               exit 1
             fi
           done
-          # BEGIN QA isolated Node runtime
-          install_qa_node() (
-            set -euo pipefail
-            umask 077
-            case "$(uname -m)" in
-              x86_64)
-                QA_NODE_ARCH=x64
-                QA_NODE_SHA=14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647
-                ;;
-              aarch64|arm64)
-                QA_NODE_ARCH=arm64
-                QA_NODE_SHA=01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc
-                ;;
-              *) echo '[deploy-qa] Unsupported QA Node architecture.' >&2; exit 1 ;;
-            esac
-            QA_TOOLS_ROOT=/home/admin/.qa-deployment-tools
-            QA_NODE_DIST="node-v24.19.0-linux-$QA_NODE_ARCH"
-            QA_NODE_TARGET="$QA_TOOLS_ROOT/$QA_NODE_DIST"
-            QA_NODE_ARCHIVE="$QA_TOOLS_ROOT/$QA_NODE_DIST.tar.xz"
-            node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_DIST" <<'NODE'
-          import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          import path from 'node:path';
-          const [root, distribution] = process.argv.slice(2);
-          assert.equal(root, '/home/admin/.qa-deployment-tools');
-          assert(/^node-v24\.19\.0-linux-(x64|arm64)$/.test(distribution));
-          if (!fs.existsSync(root)) fs.mkdirSync(root, { mode: 0o700 });
-          for (const [file, directory, privateMode] of [
-              [root, true, true],
-              [path.join(root, `${distribution}.tar.xz`), false, true],
-              [path.join(root, distribution), true, false],
-              [path.join(root, distribution, 'bin/node'), false, false],
-          ]) {
-              let stat;
-              try { stat = fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-              assert(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile()), 'Unsafe QA Node path');
-              assert.equal(fs.realpathSync(file), file, 'QA Node path traverses a symlink');
-              assert.equal(stat.uid, process.getuid(), 'QA Node path has a different owner');
-              assert.equal(stat.mode & (privateMode ? 0o077 : 0o022), 0, 'Unsafe QA Node permissions');
-              if (!directory) assert.equal(stat.nlink, 1, 'QA Node file has multiple links');
-          }
-          NODE
-            QA_NODE_STAGE="$(mktemp -d "$QA_TOOLS_ROOT/.node-install-XXXXXXXX")"
-            cleanup_qa_node_stage() {
-              node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_STAGE" <<'NODE'
-          import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          import path from 'node:path';
-          const [root, stage] = process.argv.slice(2);
-          assert.equal(root, '/home/admin/.qa-deployment-tools');
-          assert.equal(path.dirname(stage), root);
-          assert(/^\.node-install-[A-Za-z0-9]{8}$/.test(path.basename(stage)));
-          const stat = fs.lstatSync(stage);
-          assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid());
-          assert.equal(fs.realpathSync(stage), stage);
-          fs.rmSync(stage, { recursive: true });
-          NODE
-            }
-            trap cleanup_qa_node_stage EXIT
-            if [ ! -f "$QA_NODE_ARCHIVE" ]; then
-              curl -fsS --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 \
-                --max-filesize 104857600 \
-                "https://nodejs.org/dist/v24.19.0/$QA_NODE_DIST.tar.xz" -o "$QA_NODE_STAGE/archive.tar.xz"
-              printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_STAGE/archive.tar.xz" | timeout 30 sha256sum -c - >/dev/null
-              mv -T "$QA_NODE_STAGE/archive.tar.xz" "$QA_NODE_ARCHIVE"
-            fi
-            printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_ARCHIVE" | timeout 30 sha256sum -c - >/dev/null
-            if [ ! -e "$QA_NODE_TARGET" ]; then
-              timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" -C "$QA_NODE_STAGE"
-              mv -T "$QA_NODE_STAGE/$QA_NODE_DIST" "$QA_NODE_TARGET"
-            fi
-            # Validate an existing binary against the pinned archive too; a
-            # version string or cached marker alone is not integrity evidence.
-            timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" \
-              -C "$QA_NODE_STAGE" "$QA_NODE_DIST/bin/node"
-            timeout 30 cmp -s "$QA_NODE_STAGE/$QA_NODE_DIST/bin/node" "$QA_NODE_TARGET/bin/node"
-            [ "$(timeout 10 "$QA_NODE_TARGET/bin/node" --version)" = 'v24.19.0' ]
-            printf '%s\n' "$QA_NODE_TARGET"
-          )
-          QA_NODE_HOME="$(install_qa_node)"
-          export PATH="$QA_NODE_HOME/bin:$PATH"
-          # END QA isolated Node runtime
+          WORK_DIR=/home/admin/explorerQaWorkspace
+          if [ -L "$WORK_DIR" ] || { [ -e "$WORK_DIR" ] && [ ! -d "$WORK_DIR" ]; }; then
+            echo '[qa] ERROR: the workspace is no longer the expected QA directory.'
+            exit 1
+          fi
+          if [ -d /home/admin/.qa-deployment-state ] && [ -n "$(ls -A /home/admin/.qa-deployment-state)" ]; then
+            echo '[qa] ERROR: the removed non-Ploinky QA workflows parked state in /home/admin/.qa-deployment-state. Restore that workflow from history through the reviewed change process first.'
+            exit 1
+          fi
           # Ploinky cannot install itself, so this bootstrap is the one Git use on the host. The checkout lies
           # outside the workspace: a Box mounts it read-only and cannot write its hooks or configuration.
           PLOINKY_URL=https://github.com/AssistOS-AI/ploinky.git
@@ -926,13 +989,7 @@ jobs:
           chmod 700 "$WORK_DIR"
           # The one read of the workspace: a kept publication cannot follow a replaced tunnel.
           if [ -e "$WORK_DIR/.ploinky/edge-desired.json" ]; then echo 'QA_KEPT_PUBLICATION=true'; fi
-          printf 'QA_NODE_HOME=%s\n' "$QA_NODE_HOME"
           REMOTE
-          QA_NODE_HOME="$(sed -n 's/^QA_NODE_HOME=//p' "$BOOTSTRAP_LOG" | tail -n 1)"
-          if [[ ! "$QA_NODE_HOME" =~ ^/home/admin/\.qa-deployment-tools/node-v24\.19\.0-linux-(x64|arm64)$ ]]; then
-            echo "::error::The bootstrap did not report the pinned Node."
-            exit 1
-          fi
 
           REMOTE_ENV="cd '$WORK_DIR' && export PATH='$QA_NODE_HOME/bin':\"\$PATH\" PLOINKY_WORKSPACE_ROOT='$WORK_DIR'"
           # Every argument below is a fixed word. A secret only ever reaches a command through ssh stdin.
@@ -1761,6 +1818,13 @@ jobs:
           console.log(`Protected proxies ingress and unrelated DNS are unchanged at ${digest(after)}.`);
           NODE
 
+      - name: Verify and clear the new QA origin cache
+        id: cache_probe
+        env:
+          EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN }}
+          QA_CACHE_FORCE_PROBE_FAILURE: ${{ inputs.force_cache_probe_failure }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/qa-cache-router.sh" post
+
       - name: Create summary
         if: always()
         env:
@@ -1795,3 +1859,30 @@ jobs:
             "$RUNNER_TEMP/explorer-qa-response.txt" \
             "$RUNNER_TEMP/explorer-qa-headers.txt" \
             "$RUNNER_TEMP/explorer_qa_protected_cloudflare_before.json"
+
+      - name: Enable QA page caching
+        id: cache_on
+        if: ${{ success() && steps.cache_probe.outputs.verified == 'true' }}
+        env:
+          CREATE_CACHE_RULES: ${{ inputs.create_cache_rules }}
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "$CREATE_CACHE_RULES" in
+            true) cache_flags=() ;;
+            false) cache_flags=(--existing-only) ;;
+            *) echo "::error::create_cache_rules must be true or false"; exit 1 ;;
+          esac
+          node .github/scripts/cloudflare-cache-rules.mjs r2-on --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN ${cache_flags[@]+"${cache_flags[@]}"} --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+
+      - name: Disable QA page caching after a failed initial guard
+        if: ${{ always() && (steps.cache_off.outcome == 'failure' || steps.cache_off.outcome == 'cancelled') }}
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --if-present
+
+      - name: Disable QA page caching after a cancelled activation
+        if: ${{ always() && steps.cache_on.outcome == 'cancelled' }}
+        env:
+          EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN }}
+        run: node .github/scripts/cloudflare-cache-rules.mjs r2-off --token-env EXPLORER_QA_CLOUDFLARE_CACHE_RULES_TOKEN --activation-receipt "$RUNNER_TEMP/cache-activation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"

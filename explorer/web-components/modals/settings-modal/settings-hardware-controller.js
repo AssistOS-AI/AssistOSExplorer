@@ -44,9 +44,4 @@ export const hardwareController = {
             this.hardwareMounting = false;
         }
     },
-
-    afterUnload() {
-        this.hardwareClosed = true;
-        this.hardwareAbort?.abort();
-    },
 };

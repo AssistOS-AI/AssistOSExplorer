@@ -131,7 +131,7 @@ for (const key of KEYS) {
         assert.equal(copied.length, 7);
         assert.equal(copied[6], "  PUBLIC_URL: 'https://explorer-qa.axiologic.dev'");
         assert.ok(source.includes(`${copied.join('\n')}\n`), 'the seven identity lines of the full deploy');
-        assert.match(source, /\non:\n {2}workflow_dispatch:\n\n/);
+        assert.match(source, /\non:\n {2}workflow_dispatch:\n/);
         assert.match(source, /timeout-minutes: (?:90|150)\n/);
     });
 
@@ -208,12 +208,20 @@ test('no in-Box program contains a single quote, and each is valid shell', () =>
     assert.throws(() => inBoxPrograms("          X_PROGRAM='a'b'\n"));
 });
 
-test('neither workflow takes inputs, touches the tunnel, starts, destroys, installs or enables, or fixes a port', () => {
+test('product dispatch exposes only the Bizanso cache probe input and cannot change tunnel or workspace setup', () => {
     for (const key of KEYS) {
         const source = workflow(key);
-        assert.doesNotMatch(source, /^\s*inputs:/m, key);
-        assert.doesNotMatch(source, /\$\{\{\s*inputs\./, key);
-        assert.doesNotMatch(source, /CLOUDFLARE|Cloudflare|edge set/, key);
+        const dispatch = source.split('  workflow_dispatch:\n')[1].split('\nconcurrency:')[0];
+        const inputs = [...dispatch.matchAll(/^ {6}(\w+):$/gm)].map(match => match[1]);
+        // Only the Bizanso product workflow has a cache, so only it also carries the default-off D19 approval input.
+        assert.deepEqual(inputs, key === 'bizanso' ? ['force_cache_probe_failure', 'create_cache_rules'] : []);
+        // Exact readers: the guard and enable steps read the D19 input, and only the probe step reads the T9 input.
+        // A further reader anywhere, including a job-level env or if, changes this list.
+        const references = [...source.matchAll(/\$\{\{\s*inputs\.(\w+)/g)].map(match => match[1]);
+        assert.deepEqual(references.sort(),
+            key === 'bizanso' ? ['create_cache_rules', 'create_cache_rules', 'force_cache_probe_failure'] : []);
+        assert.doesNotMatch(source, /edge set|cfd_tunnel|dns_records|CLOUDFLARE_(?:API|TUNNEL)/, key);
+        if (key === 'scriptahub') assert.doesNotMatch(source, /CLOUDFLARE|Cloudflare/, key);
         assert.doesNotMatch(source, /ploinky_locked\s+(?:start|destroy|uninstall|install|add repo|enable agent|--port|reinstall|update)/, key);
         assert.doesNotMatch(source, /--port/, key);
         assert.doesNotMatch(source, /ploinky_locked[^\n]*--accept-failed-drain/, key);
@@ -258,7 +266,9 @@ test('every action is pinned by commit, tests run first, and no job holds more t
 test('secrets reach steps only through env or ssh-key, and each key only the step that needs it', () => {
     const bizanso = workflow('bizanso');
     const secretLines = (source) => source.split('\n').filter((line) => line.includes('secrets.'));
-    assert.deepEqual(secretLines(bizanso).map((line) => line.trim()), [
+    // Cache credentials have their own step-scoping checks in deploy-qa-cache-workflows.
+    const productSecrets = secretLines(bizanso).filter(line => !/secrets\.EXPLORER_QA_CLOUDFLARE_(?:CACHE_RULES|PURGE)_TOKEN\s*\}\}/.test(line));
+    assert.deepEqual(productSecrets.map((line) => line.trim()), [
         'SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}',
         'BIZANSO_DEPLOY_KEY: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}',
         'SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}',
@@ -836,6 +846,9 @@ const epoch = () => Math.floor(Date.now() / 1000);
 // A Box whose bizanso/ holds `live`, running `liveImage`, with `source` waiting in the runner's checkout.
 function bizansoBox(t, { source = {}, live = {}, liveImage = hex('a'), pulledId = hex('b'), started = epoch() - 3600 } = {}) {
     const box = makeBox(t);
+    const scripts = path.join(box.github, '.github/scripts');
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.writeFileSync(path.join(scripts, 'qa-cache-router.sh'), 'test "$1" = pre && test -z "${EXPLORER_QA_CLOUDFLARE_PURGE_TOKEN:-}"\n');
     commitTree(path.join(box.github, '.qa-bizanso-source'), bizansoFiles(source));
     writeTree(path.join(box.ws, 'bizanso'), bizansoFiles(live));
     box.ps(BIZ_PREFIX, [`${liveImage} ${started} ${BIZ_PREFIX}abc`]);

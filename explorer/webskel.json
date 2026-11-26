@@ -82,6 +82,11 @@
       "presenterClassName": "HardwareLimitsPanel"
     },
     {
+      "name": "cache-panel",
+      "type": "components",
+      "presenterClassName": "CachePanel"
+    },
+    {
       "name": "admin-users-settings",
       "type": "components",
       "presenterClassName": "AdminUsersSettings"

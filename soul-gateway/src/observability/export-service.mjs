@@ -22,6 +22,12 @@ const CSV_COLUMNS = [
     'completed_at',
 ];
 
+// An export holds administrator-only audit data. The Router relays this
+// header unchanged, and a shared cache in front of it (Cloudflare caches
+// `.csv` URLs by default) must never keep an export, whatever other headers
+// the Router adds to the response.
+const EXPORT_CACHE_CONTROL = 'private, no-store';
+
 /**
  * ExportService — streaming bulk export of audit logs.
  */
@@ -39,6 +45,7 @@ export class ExportService {
             'Content-Type': 'text/csv; charset=utf-8',
             'Content-Disposition':
                 'attachment; filename="soul-gateway-logs.csv"',
+            'Cache-Control': EXPORT_CACHE_CONTROL,
             'Transfer-Encoding': 'chunked',
         });
 
@@ -76,6 +83,7 @@ export class ExportService {
             'Content-Type': 'application/json',
             'Content-Disposition':
                 'attachment; filename="soul-gateway-logs.json"',
+            'Cache-Control': EXPORT_CACHE_CONTROL,
             'Transfer-Encoding': 'chunked',
         });
 

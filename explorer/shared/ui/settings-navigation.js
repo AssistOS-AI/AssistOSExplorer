@@ -1,4 +1,4 @@
-const SETTINGS_TABS = ['account', 'agents', 'plugins', 'keymap', 'editor', 'theme', 'avatar', 'users', 'hardware'];
+const SETTINGS_TABS = ['account', 'agents', 'plugins', 'keymap', 'editor', 'theme', 'avatar', 'users', 'hardware', 'cache'];
 
 export function normalizeSettingsTab(tab) {
     return SETTINGS_TABS.includes(tab) ? tab : 'agents';
