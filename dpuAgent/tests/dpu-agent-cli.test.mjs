@@ -404,6 +404,31 @@ test('DPU Research launcher uses the standard Explorer tools slot and WebChat en
   const template = await fs.promises.readFile(path.join(pluginRoot, 'dpu-research-tool-button.html'), 'utf8');
   const presenter = await fs.promises.readFile(path.join(pluginRoot, 'dpu-research-tool-button.js'), 'utf8');
   assert.match(template, /app-plugin-tool-button/);
-  assert.match(presenter, /agent:\s*'dpuAgent'/);
-  assert.match(presenter, /'forward-envelope':\s*'1'/);
+  const target = new URL(config.toolbarModal.url, 'https://workspace.example');
+  assert.equal(config.toolbarModal.mode, 'iframe');
+  assert.equal(target.pathname, '/webchat');
+  assert.equal(target.searchParams.get('agent'), 'dpuAgent');
+  assert.equal(target.searchParams.get('forward-envelope'), '1');
+  assert.equal(target.searchParams.get('workspace-dir'), '.');
+  assert.match(presenter, /openPluginPanel\('dpuAgent\/dpu-research-launcher'\)/);
+  assert.doesNotMatch(presenter, /window\.open/);
+});
+
+test('DPU Tools action delegates to Explorer and releases the click handler', async t => {
+  const { DpuResearchToolButton } = await import('../IDE-plugins/dpu-research-tool-button/dpu-research-tool-button.js');
+  const previous = globalThis.assistOS;
+  t.after(() => { if (previous === undefined) delete globalThis.assistOS; else globalThis.assistOS = previous; });
+  const calls = [];
+  const button = new EventTarget();
+  button.setAttribute = () => {};
+  const element = { isConnected: true, dataset: {}, querySelector: selector => selector === '#dpuResearchToolButton' ? button : {} };
+  globalThis.assistOS = { UI: { openPluginPanel: key => calls.push(key) } };
+  const presenter = new DpuResearchToolButton(element, () => {});
+  presenter.afterRender();
+  presenter.afterRender();
+  button.dispatchEvent(new Event('click'));
+  assert.deepEqual(calls, ['dpuAgent/dpu-research-launcher']);
+  presenter.afterUnload();
+  button.dispatchEvent(new Event('click'));
+  assert.equal(calls.length, 1);
 });
