@@ -116,12 +116,8 @@ export class GitToolButton {
             return cleanup;
         };
 
-        const presenter = this;
         return {
             element: this.element,
-            get toolbarModal() {
-                return presenter.hostContext?.pluginToolbarModal;
-            },
             get state() {
                 return getHostFileExp()?.state || {};
             },

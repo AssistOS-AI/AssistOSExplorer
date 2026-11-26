@@ -168,3 +168,7 @@ Repository Visibility is a settings draft confined to the credentials dialog. To
 - [DS000-vision](specsLoader.html?spec=DS000-vision.md)
 
 [gitAgent](wiki.html#definition-gitagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.
+
+### Separate browser tab
+
+Git’s launcher calls `assistOS.UI.openPluginPanel` with `gitAgent/git`, the optional selected repository path and the internal conflict-helper flag. Explorer resolves the descriptor and owns the shell, title, identity and loading. Git does not construct another modal descriptor; status reads, autocommit and conflict operations remain Git responsibilities. Open in new tab creates a separate Git panel through Explorer’s active-registry `panel` link. The explicit `panelPath` navigation value selects a repository within the current workspace; Git validates the boundary and initializes both `repoPath` and `selectedRepoPath`, so the normal first refresh retains that repository. It does not copy selected files, commit drafts, credentials, conflict actions or generic props into a URL. The original panel stays open. The link re-resolves the enabled plugin and its authorization on every page refresh.

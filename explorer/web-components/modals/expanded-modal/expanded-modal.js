@@ -1,3 +1,4 @@
+import { resolveExpandedPanelUrl, clearPluginPanelLocation } from '../../../shared/ui/plugin-panel-navigation.js';
 import { ensureMarketplaceAgentRunning } from "../../../services/infrastructure/marketplaceAgentRuntime.js";
 import assistosSDK from "../../../services/assistosSDK.js";
 import { waitForComponentReady } from "../../../shared/ui/component-readiness.js";
@@ -605,6 +606,8 @@ export class ExpandedModal {
     }
 
     async updateDescriptor(descriptor) {
+        if (descriptor.pluginKey) this.pluginKey = descriptor.pluginKey;
+        if (descriptor.panelNavigation) this.panelNavigation = descriptor.panelNavigation;
         const revision = this.descriptorRevision = (this.descriptorRevision || 0) + 1;
         if (descriptor.title) {
             this.element.querySelector("#expandedModalTitle").textContent = descriptor.title;
@@ -684,18 +687,21 @@ export class ExpandedModal {
 
     openInNewTab() {
         if (typeof window === "undefined") return;
-        if (this.mode === "component") {
-            const url = this.componentPresenter()?.getOpenInNewTabUrl?.();
-            if (url) {
-                window.open(url, "_blank", "noopener,noreferrer");
-                return;
-            }
+        try {
+            const url = resolveExpandedPanelUrl({
+                location: window.location,
+                mode: this.mode,
+                frame: this.frame,
+                frameUrl: this.mode === 'iframe' ? this.frameUrl() : '',
+                presenter: this.componentPresenter(),
+                pluginKey: this.pluginKey || this.attr('plugin-key'),
+                navigation: this.panelNavigation,
+            });
+            if (!url) throw new Error('This panel has no page to open in a new tab.');
+            window.open(url, "_blank", "noopener,noreferrer");
+        } catch (error) {
+            globalThis.assistOS?.showToast?.(error.message, 'error', 6000);
         }
-        let url = "";
-        try { if (this.mode === "iframe" && this.frame?.contentWindow) url = this.frame.contentWindow.location.href; }
-        catch (_) { url = ""; }
-        if (!url) url = this.frame?.getAttribute("src") || window.location.href;
-        window.open(url, "_blank", "noopener,noreferrer");
     }
 
     // Records whether the newly loaded frame document offers the close guard.
@@ -789,6 +795,7 @@ export class ExpandedModal {
             await this.notifyFrameUserClose();
             this.closed = true;
             this.cancelLoading();
+            clearPluginPanelLocation(window.location, window.history, this.pluginKey);
             assistOS.UI.closeModal(this.element);
         } finally {
             this.closing = false;
@@ -799,6 +806,7 @@ export class ExpandedModal {
         if (this.closed) return;
         this.closed = true;
         this.cancelLoading();
+        clearPluginPanelLocation(window.location, window.history, this.pluginKey);
         assistOS.UI.closeModal(this.element, payload);
     }
 }

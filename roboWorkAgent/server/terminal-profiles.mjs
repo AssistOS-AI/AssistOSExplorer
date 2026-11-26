@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { directoryIdentity, fail, robotId } from './robot-paths.mjs';
 import { CODING_AGENT_NAMES, robotCodingAgents } from './coding-agents.mjs';
+import { SKILL_CONTENT_LIMIT, SKILL_NAME } from './coding-agent-skill.mjs';
 import { TOOL_SESSION_CHECK_MS } from './constants.mjs';
 import { NATIVE_SESSION_ID, codingSessionArguments, presetsSessionId } from './coding-sessions.mjs';
 
@@ -19,16 +20,17 @@ export function terminalProfileAccess(access) {
 
 // `<robot>.<environment>` opens the robot shell; `<robot>.<environment>.<coding agent>` opens that coding agent in the
 // same sandbox instead of the shell. A fourth part names its conversation: `r-<id>` resumes the native session <id>,
-// `n-<id>` opens a new one under the identifier <id> chosen in advance.
+// `n-<id>` opens a new one under the identifier <id> chosen in advance; `p-<id>` is an immutable launch descriptor.
 export function parseTerminalProfile(value) {
     if (typeof value !== 'string' || value.length > 128) throw fail('INVALID_INPUT', 'Invalid terminal profile');
     const parts = value.split('.');
     if (parts.length < 2 || parts.length > 4 || !/^[A-Za-z0-9_-]{1,96}$/u.test(parts[1])
         || (parts.length >= 3 && !CODING_AGENT_NAMES.includes(parts[2]))) throw fail('INVALID_INPUT', 'Invalid terminal profile');
-    const session = parts[3] === undefined ? null : parts[3].match(/^([rn])-(.+)$/u);
+    const session = parts[3] === undefined ? null : parts[3].match(/^([rnp])-(.+)$/u);
     if (parts.length === 4 && (!session || !NATIVE_SESSION_ID.test(session[2]))) throw fail('INVALID_INPUT', 'Invalid terminal profile');
     return { id: robotId(parts[0]), key: parts[1], codingAgent: parts[2] || null,
-        resume: session?.[1] === 'r' ? session[2] : null, sessionId: session?.[1] === 'n' ? session[2] : null };
+        resume: session?.[1] === 'r' ? session[2] : null, sessionId: session?.[1] === 'n' ? session[2] : null,
+        ...(session?.[1] === 'p' ? { launchId: session[2] } : {}) };
 }
 
 function plainBody(body, keys) {
@@ -50,9 +52,21 @@ export function codingSessionInput(route, body) {
             && validDirectory(body.directory) ? { robot: body.robot, codingAgent: body.codingAgent, directory: body.directory } : null;
     }
     if (route === 'launch') {
-        return plainBody(body, ['robot', 'codingAgent', 'directory', 'resume']) && validRobot(body.robot) && validAgent(body.codingAgent)
-            && validDirectory(body.directory) && (body.resume === null || (typeof body.resume === 'string' && NATIVE_SESSION_ID.test(body.resume)))
-            ? { robot: body.robot, codingAgent: body.codingAgent, directory: body.directory, resume: body.resume } : null;
+        // Instructions configure the native session without submitting a user turn.
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+        const optional = ['skill', 'systemPrompt'];
+        const systemPrompt = body.systemPrompt ?? null;
+        if (systemPrompt !== null && (typeof systemPrompt !== 'string' || systemPrompt.includes('\0')
+            || Buffer.byteLength(systemPrompt) > 16384)) return null;
+        if (Object.keys(body).some(key => !['robot', 'codingAgent', 'directory', 'resume', ...optional].includes(key))) return null;
+        const skill = body.skill === undefined ? null : body.skill;
+        if (skill !== null && !(plainBody(skill, ['name', 'text']) && SKILL_NAME.test(skill.name)
+            && typeof skill.text === 'string' && Buffer.byteLength(skill.text) <= SKILL_CONTENT_LIMIT)) return null;
+        return plainBody(body, ['robot', 'codingAgent', 'directory', 'resume', ...optional].filter(key => key in body))
+            && validRobot(body.robot) && validAgent(body.codingAgent) && validDirectory(body.directory)
+            && (body.resume === null || (typeof body.resume === 'string' && NATIVE_SESSION_ID.test(body.resume)))
+            ? { robot: body.robot, codingAgent: body.codingAgent, directory: body.directory, resume: body.resume, skill, ...(systemPrompt !== null ? { systemPrompt } : {}) }
+            : null;
     }
     return null;
 }
@@ -194,9 +208,15 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         const alaPath = ala.path || path.dirname(path.dirname(ala.entry));
         const nativeSessionId = input.resume || (await sessionCatalogs.presetsSessionId(alaPath, codingAgent) ? randomUUID() : null);
         const conversation = input.resume ? `.r-${input.resume}` : nativeSessionId ? `.n-${nativeSessionId}` : '';
-        const profile = `${robot.id}.default.${codingAgent}${conversation}`;
-        await prepareNow(profile);
-        return { ok: true, profile, robot: { id: robot.id, name: robot.name }, codingAgent, nativeSessionId };
+        // The role skill is installed before the terminal starts, so the agent
+        // discovers it as its own instructions.
+        const skill = input.skill
+            ? (await homeOperation(robot.id, 'coding_agent_skill', { codingAgent, ...input.skill })).installed === true
+            : false;
+        const profile = `${robot.id}.default.${codingAgent}${input.systemPrompt ? `.p-${randomUUID()}` : conversation}`;
+        await prepareNow(profile, input.systemPrompt ? { systemPrompt: input.systemPrompt,
+            resume: input.resume, sessionId: input.resume ? null : nativeSessionId } : null);
+        return { ok: true, profile, robot: { id: robot.id, name: robot.name }, codingAgent, nativeSessionId, skill };
     }
 
     async function catalog() {
@@ -235,17 +255,27 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
     // A conversation profile is prepared once per launch; its descriptor is only read when that terminal starts.
     async function pruneConversationDescriptors(now = Date.now()) {
         for (const name of await fs.readdir(stateRoot).catch(() => [])) {
-            if (!/^[^.]+\.[^.]+\.[^.]+\.[rn]-[A-Za-z0-9_-]+\.json$/u.test(name)) continue;
+            if (!/^[^.]+\.[^.]+\.[^.]+\.[rnp]-[A-Za-z0-9_-]+\.json$/u.test(name)) continue;
             const file = path.join(stateRoot, name);
             const stat = await fs.lstat(file).catch(() => null);
             if (stat?.isFile() && now - stat.mtimeMs > CONVERSATION_DESCRIPTOR_LIFETIME_MS) await fs.rm(file, { force: true });
         }
     }
 
-    async function prepareNow(profile) {
+    async function prepareNow(profile, instructions = null) {
         if (prepareOperations.has(profile)) return prepareOperations.get(profile);
         const operation = (async () => {
             const selected = await selection(profile);
+            if (parseTerminalProfile(profile).launchId && !instructions) {
+                // Prepared prompt-bearing profiles are immutable. WebTTY prepares a returned profile again.
+                const stored = JSON.parse(await fs.readFile(recordPath(profile), 'utf8'));
+                if (stored.profile !== profile || typeof stored.systemPrompt !== 'string') {
+                    throw fail('PROFILE_REFUSED', 'Terminal profile is unavailable', 409);
+                }
+                return { ok: true, id: profile, label: selected.robot.name,
+                    root: `.data/robots/${selected.id}/terminal` };
+            }
+            if (instructions) Object.assign(selected, instructions);
             const tools = await toolCache.prepareShellTools(undefined, { maxAgeMs: TOOL_SESSION_CHECK_MS });
             const bundle = selected.environment ? await runtimeBundle.prepare()
                 : { ala: await runtimeBundle.prepareAla(), bwrap: { bin: '/usr/bin/bwrap' } };
@@ -263,7 +293,8 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
                 workspaceRoot: paths.workspaceRoot, dataDir: paths.dataDir, robotsDir: paths.robotsDir, binPath: tools.binPath,
                 cacheRoot: toolCache.root, alaEntry: bundle.ala.entry || path.join(bundle.ala.path, 'bin', 'ala.mjs'), bwrap: bundle.bwrap.bin,
                 stub: { path: stub(selected.id), dev: stat.dev, ino: stat.ino },
-                ...(selected.codingAgent ? { codingAgent: selected.codingAgent, codingAgentArgs } : {}) };
+                ...(selected.codingAgent ? { codingAgent: selected.codingAgent, codingAgentArgs } : {}),
+                ...(instructions ? { systemPrompt: instructions.systemPrompt } : {}) };
             const temporary = path.join(stateRoot, '.' + randomUUID());
             await fs.writeFile(temporary, JSON.stringify(descriptor), { mode: 0o600, flag: 'wx' });
             await fs.rename(temporary, recordPath(profile));

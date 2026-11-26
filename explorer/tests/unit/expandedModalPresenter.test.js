@@ -1,3 +1,4 @@
+import { resolveExpandedPanelUrl, clearPluginPanelLocation } from '../../shared/ui/plugin-panel-navigation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,7 +9,7 @@ const source = (await fs.readFile(new URL('../../web-components/modals/expanded-
     .replace(/^import[\s\S]*?;\n/gm, '').replace('export class ExpandedModal', 'class ExpandedModal');
 function presenter(extra = {}) {
     const frames = [];
-    const context = vm.createContext({ window: { innerWidth: 1200, innerHeight: 800 }, console, AbortController, AbortSignal, clearTimeout, waitForComponentReady, requestAnimationFrame: callback => frames.push(callback), setTimeout, ...extra });
+    const context = vm.createContext({ window: { innerWidth: 1200, innerHeight: 800 }, console, AbortController, AbortSignal, clearTimeout, waitForComponentReady, resolveExpandedPanelUrl, clearPluginPanelLocation, requestAnimationFrame: callback => frames.push(callback), setTimeout, ...extra });
     vm.runInContext(`${source}\nthis.Modal = ExpandedModal;`, context);
     const element = { isConnected: true, querySelector: () => ({ textContent: '' }) };
     const modal = new context.Modal(element, () => {});
@@ -612,4 +613,52 @@ test('host Escape on a guarded iframe panel goes through the guarded close; nest
     p.handleComponentEscape(plain);
     assert.equal(plain.defaultPrevented, false);
     assert.equal(closes.length, 0);
+});
+
+
+test('Open in new tab opens the same component without closing or mutating the source panel', () => {
+    const opened = [];
+    const p = presenter({ window: { location: { href: 'https://workspace.example/explorer/index.html' }, open: (...args) => opened.push(args) } });
+    p.mode = 'component';
+    p.pluginKey = 'explorer/help';
+    p.attr = () => '';
+    p.closeModal = () => { throw new Error('The source must stay open'); };
+    p.openInNewTab();
+    assert.equal(opened.length, 1);
+    assert.equal(new URL(opened[0][0]).searchParams.get('panel'), 'explorer/help');
+    assert.deepEqual(opened[0].slice(1), ['_blank', 'noopener,noreferrer']);
+    assert.equal(p.closed, false);
+});
+
+test('Open in new tab uses the declared iframe page even before the frame exists', () => {
+    const opened = [];
+    const p = presenter({ window: { location: { href: 'https://workspace.example/explorer/index.html' }, open: url => opened.push(url) } });
+    p.mode = 'iframe';
+    p.attr = key => key === 'url' ? '/agent/page.html' : '';
+    p.openInNewTab();
+    assert.deepEqual(opened, ['https://workspace.example/agent/page.html']);
+    assert.equal(p.closed, false);
+});
+
+
+test('a refused close keeps the panel link and an accepted close cleans it before returning to Explorer', async () => {
+    const calls = [];
+    const location = { href: 'https://workspace.example/explorer/?panel=explorer/help&panelPath=/workspace/repo#file-exp/' };
+    let allow = false;
+    const p = presenter({
+        window: { location, history: { state: null, replaceState: (_, __, url) => { location.href = url; calls.push('URL cleared'); } } },
+        assistOS: { UI: { closeModal: () => calls.push('dialog closed') } },
+    });
+    p.mode = 'component';
+    p.pluginKey = 'explorer/help';
+    p.componentPresenter = () => ({ confirmDiscardChanges: () => allow });
+    p.cancelLoading = () => {};
+    await p.closeModal();
+    assert.deepEqual(calls, []);
+    assert.equal(new URL(location.href).searchParams.get('panel'), 'explorer/help');
+    allow = true;
+    await p.closeModal();
+    assert.deepEqual(calls, ['URL cleared', 'dialog closed']);
+    assert.equal(new URL(location.href).searchParams.has('panel'), false);
+    assert.equal(new URL(location.href).searchParams.has('panelPath'), false);
 });
