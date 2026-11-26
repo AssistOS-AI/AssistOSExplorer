@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { test, expect } from '../lib/fixtures.mjs';
 import { openExplorer } from '../lib/explorer.mjs';
 
@@ -82,7 +83,11 @@ test('captured production policy controls Git and Marketplace', async ({ page },
   }
   await expect(content).toBeVisible();
   await expect(panel.locator('[data-role="git-panel-loader"]')).toBeHidden();
-  await expect(panel.locator('git-commit-actions #gitCommitMessage')).toBeVisible();
+  if (repoPath !== '.') {
+    await panel.locator('#gitRepoTreePanel').getByText(path.basename(repoPath), { exact: true }).click();
+  }
+  await expect(panel.getByRole('checkbox', { name: 'Advanced mode', exact: true })).toBeVisible();
+  await expect(panel.locator('git-commit-actions .git-action-buttons')).toBeVisible();
   const sync = panel.locator('button.git-sync-button');
   await expect(sync).toHaveCount(1);
   await expect(sync).toBeAttached();
