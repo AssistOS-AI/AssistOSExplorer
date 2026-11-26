@@ -25,12 +25,17 @@ test('captured production policy controls Git and Marketplace', async ({ page },
     const list = await send('tools/list', {}, session);
     const tools = (await list.json()).result.tools.map((tool) => tool.name);
     const status = await send('tools/call', { name: 'git_status', arguments: { path: '.' } }, session);
-    const pull = production ? await send('tools/call', { name: 'git_pull', arguments: { path: '.' } }, session) : null;
-    return { tools, status: status.status, pull: pull?.status };
+    // gitAgent requires a path string, so this cannot reach a Git checkout.
+    const pull = production ? await send('tools/call', { name: 'git_pull', arguments: { path: null } }, session) : null;
+    const denial = pull ? await pull.json() : null;
+    return { tools, status: status.status, pull: pull?.status, denialCode: denial?.error?.data?.code };
   }, production);
   expect(result.status).toBe(200);
   expect(result.tools.includes('git_pull')).toBe(!production);
-  if (production) expect(result.pull).toBe(403);
+  if (production) {
+    expect(result.pull).toBe(403);
+    expect(result.denialCode).toBe('PROD_DISABLED');
+  }
   await page.getByRole('button', { name: 'Git', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Git', exact: true });
   await expect(dialog).toBeVisible();
