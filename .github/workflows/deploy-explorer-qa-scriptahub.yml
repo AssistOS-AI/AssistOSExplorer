@@ -2,9 +2,10 @@ name: Deploy Explorer QA ScriptaHub
 
 # Updates only ScriptaHub inside the running Explorer QA Box, without the Ploinky checkout, the Box, the tunnel or any
 # other repository (docs/deploy-explorer-qa.md, "Product workflows"). The checkout moves to the ScriptaHubAgent default
-# branch head only when every copied agent input matches its published image labels. Both the agent and canonical
-# RoboTeam images are pulled by registry digest. One whole-workspace restart activates changes. Actions are
-# pinned by commit: checkout as in container-image-builds, setup-node as in bizanso.
+# branch head only when its dependency fingerprint (the blob ids of the files listed in
+# scriptahubAgent/deployment/dependency-inputs.txt) equals the label of the published agent image, so a skill source edit
+# needs no image. Both the agent and canonical RoboTeam images are pulled by registry digest. One whole-workspace
+# restart activates changes. Actions are pinned by commit: checkout as in container-image-builds, setup-node as in bizanso.
 
 on:
   workflow_dispatch:
@@ -120,45 +121,137 @@ jobs:
             exit 1
           fi
           docker buildx imagetools inspect "$AGENT_REPO@$AGENT_INDEX" --format '{{json .Image}}' > "$RUNNER_TEMP/qa-scriptahub-agent-image.json"
+          # Exit 3 means the revision and assets labels are valid but the image carries no dependency fingerprint label on
+          # either platform, which is an image published before the skill sources were mounted.
+          LABEL_STATUS=0
           IMAGE_LABELS="$(node --input-type=module - "$RUNNER_TEMP/qa-scriptahub-agent-image.json" <<'NODE'
           import fs from 'node:fs';
           const image = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-          const keys = ['org.opencontainers.image.revision', 'io.assistos.scriptahub.skills-tree', 'io.assistos.scriptahub.deployment-tree', 'io.assistos.scriptahub.reader-css-blob'];
-          const values = keys.map((key) => {
-            const a = image?.['linux/amd64']?.config?.Labels?.[key];
-            const b = image?.['linux/arm64']?.config?.Labels?.[key];
-            if (typeof a !== 'string' || a.length !== 40 || !/^[0-9a-f]{40}$/.test(a) || a !== b) throw new Error(`Invalid or inconsistent image label ${key}`);
-            return a;
-          });
-          const assets = image?.['linux/amd64']?.config?.Labels?.['io.assistos.scriptahub.assets-image'];
-          if (typeof assets !== 'string' || assets.length !== 108 || !/^docker\.io\/assistos\/scriptahub-assets@sha256:[0-9a-f]{64}$/.test(assets) || assets !== image?.['linux/arm64']?.config?.Labels?.['io.assistos.scriptahub.assets-image']) throw new Error('Invalid or inconsistent assets image label');
-          process.stdout.write(values.join(' '));
+          const label = (platform, key) => image?.[platform]?.config?.Labels?.[key];
+          const revisionKey = 'org.opencontainers.image.revision';
+          const revision = label('linux/amd64', revisionKey);
+          if (typeof revision !== 'string' || revision.length !== 40 || !/^[0-9a-f]{40}$/.test(revision) || revision !== label('linux/arm64', revisionKey)) throw new Error(`Invalid or inconsistent image label ${revisionKey}`);
+          const assets = label('linux/amd64', 'io.assistos.scriptahub.assets-image');
+          if (typeof assets !== 'string' || assets.length !== 108 || !/^docker\.io\/assistos\/scriptahub-assets@sha256:[0-9a-f]{64}$/.test(assets) || assets !== label('linux/arm64', 'io.assistos.scriptahub.assets-image')) throw new Error('Invalid or inconsistent assets image label');
+          const fingerprintKey = 'io.assistos.scriptahub.dependency-fingerprint';
+          const a = label('linux/amd64', fingerprintKey);
+          const b = label('linux/arm64', fingerprintKey);
+          if (a === undefined && b === undefined) process.exit(3);
+          if (typeof a !== 'string' || !/^[0-9a-f]{64}$/.test(a) || a !== b) throw new Error(`Invalid or inconsistent image label ${fingerprintKey}`);
+          process.stdout.write(`${revision} ${a}`);
           NODE
-          )" || { echo "::error::Invalid ScriptaHub image labels. Nothing was changed."; exit 1; }
-          read -r AGENT_REVISION SKILLS_TREE DEPLOYMENT_TREE READER_BLOB <<< "$IMAGE_LABELS"
+          )" || LABEL_STATUS=$?
+          if [ "$LABEL_STATUS" -eq 3 ]; then
+            echo "::error::The agent image predates mounted skill sources: it carries no io.assistos.scriptahub.dependency-fingerprint label. Publish a matching agent image using publish-scriptahub-agent-image.yml. Nothing was changed."
+            exit 1
+          fi
+          if [ "$LABEL_STATUS" -ne 0 ]; then
+            echo "::error::Invalid ScriptaHub image labels. Nothing was changed."
+            exit 1
+          fi
+          read -r AGENT_REVISION DEPENDENCY_LABEL <<< "$IMAGE_LABELS"
+          [[ "$AGENT_REVISION" =~ ^[0-9a-f]{40}$ ]] && [[ "$DEPENDENCY_LABEL" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Invalid ScriptaHub image labels. Nothing was changed."; exit 1; }
           REFUSAL="Publish a matching agent image from a committed source lock using publish-scriptahub-agent-image.yml. Nothing was changed."
           if ! source_git cat-file -e "$AGENT_REVISION^{commit}" 2> /dev/null || ! source_git merge-base --is-ancestor "$AGENT_REVISION" "$HEAD_COMMIT"; then
             echo "::error::The agent image revision is not an ancestor of $BRANCH@$HEAD_COMMIT. $REFUSAL"
             exit 1
           fi
-          COPIED_TREES=''
-          for pair in "skills:$SKILLS_TREE" "scriptahubAgent/deployment:$DEPLOYMENT_TREE" "scriptahubAgent/site/reader/reader.css:$READER_BLOB"; do
-            path="${pair%%:*}"; expected="${pair#*:}"
-            at_head="$(source_git rev-parse "$HEAD_COMMIT:$path" 2> /dev/null)" || at_head=''
-            at_image="$(source_git rev-parse "$AGENT_REVISION:$path" 2> /dev/null)" || at_image=''
-            if [ "$at_head" != "$expected" ] || [ "$at_image" != "$expected" ]; then
-              echo "::error::$path differs from the agent image source labels. $REFUSAL"
-              exit 1
+          # BEGIN ScriptaHub dependency fingerprint
+          # Dependency fingerprint v1 of a commit: the sha256 of a header and one line, blob id and path, for every file that
+          # scriptahubAgent/deployment/dependency-inputs.txt lists. It runs Git with hooks off and executes nothing from the
+          # checkout. Usage: scripta_dependency_fingerprint <repository directory> <40-hex commit>. It prints 64 lowercase hex
+          # digits, or prints nothing and fails on every input that parseDependencyInputs of dependency-fingerprint.mjs
+          # rejects. The body is a subshell and checks every step itself, because errexit is off wherever a caller tests the result.
+          scripta_dependency_fingerprint() (
+            LC_ALL=C
+            export LC_ALL
+            repo=$1
+            rev=$2
+            inputs=scriptahubAgent/deployment/dependency-inputs.txt
+            fp_fail() { echo "dependency fingerprint: $1" >&2; exit 1; }
+            fp_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$repo" "$@"; }
+            case "$rev" in ""|*[!0-9a-f]*) fp_fail "invalid commit" ;; esac
+            [ "${#rev}" -eq 40 ] || fp_fail "invalid commit"
+            nl=$(printf "\nx")
+            nl=${nl%x}
+            tab=$(printf "\tx")
+            tab=${tab%x}
+            cr=$(printf "\rx")
+            cr=${cr%x}
+            list=$(fp_git cat-file blob "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            [ -n "$list" ] || fp_fail "dependency inputs are empty"
+            case "$list" in *"$cr"*) fp_fail "dependency inputs must use LF line endings" ;; esac
+            blob=$(fp_git rev-parse "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            hashed=$(printf "%s\n" "$list" | fp_git hash-object --no-filters --stdin) || fp_fail "cannot hash the dependency inputs"
+            case "$blob" in ""|*[!0-9a-f]*) fp_fail "invalid blob id" ;; esac
+            [ "${#blob}" -eq 40 ] || fp_fail "invalid blob id"
+            [ "$hashed" = "$blob" ] || fp_fail "dependency inputs must end with exactly one newline"
+            case "$nl$list$nl" in *"$nl$nl"*) fp_fail "dependency inputs contain a blank line" ;; esac
+            sorted=$(printf "%s\n" "$list" | sort -u) || fp_fail "cannot sort the dependency inputs"
+            [ "$sorted" = "$list" ] || fp_fail "dependency inputs must be strictly ascending"
+            data=
+            self=0
+            set -f
+            IFS=$nl
+            for p in $list; do
+              case "$p" in
+                ""|/*|*/|*//*|*[!A-Za-z0-9._/-]*) fp_fail "invalid dependency input path" ;;
+              esac
+              case "/$p/" in */./*|*/../*) fp_fail "invalid dependency input path" ;; esac
+              entry=$(fp_git ls-tree "$rev" -- "$p") || fp_fail "cannot list $p at $rev"
+              case "$entry" in
+                "100644 blob "*|"100755 blob "*) ;;
+                *) fp_fail "$p is not a regular file at $rev" ;;
+              esac
+              rest=${entry#* blob }
+              oid=${rest%%"$tab"*}
+              name=${rest#*"$tab"}
+              [ "$name" = "$p" ] || fp_fail "$p is not one tree entry at $rev"
+              case "$oid" in ""|*[!0-9a-f]*) fp_fail "invalid blob id of $p" ;; esac
+              [ "${#oid}" -eq 40 ] || fp_fail "invalid blob id of $p"
+              if [ "$p" = "$inputs" ]; then self=1; fi
+              data="$data$oid $p$nl"
+            done
+            [ "$self" -eq 1 ] || fp_fail "dependency inputs must list $inputs"
+            if command -v sha256sum > /dev/null 2>&1; then
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | sha256sum) || fp_fail "cannot hash"
+            else
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | shasum -a 256) || fp_fail "cannot hash"
             fi
-            COPIED_TREES="${COPIED_TREES:+$COPIED_TREES }$expected"
-          done
+            sum=${out%% *}
+            case "$sum" in ""|*[!0-9a-f]*) fp_fail "invalid digest" ;; esac
+            [ "${#sum}" -eq 64 ] || fp_fail "invalid digest"
+            printf "%s\n" "$sum"
+          )
+          # END ScriptaHub dependency fingerprint
+          # The image carries what the listed dependency inputs install; skill sources run from the mounted checkout.
+          # The label must equal the fingerprint at the image revision and at the selected head.
+          if ! REVISION_FINGERPRINT="$(scripta_dependency_fingerprint "$SOURCE" "$AGENT_REVISION")"; then
+            echo "::error::The dependency fingerprint of the agent image revision $AGENT_REVISION could not be computed. $REFUSAL"
+            exit 1
+          fi
+          if ! HEAD_FINGERPRINT="$(scripta_dependency_fingerprint "$SOURCE" "$HEAD_COMMIT")"; then
+            echo "::error::The dependency fingerprint of $BRANCH@$HEAD_COMMIT could not be computed. $REFUSAL"
+            exit 1
+          fi
+          if [ "$REVISION_FINGERPRINT" != "$DEPENDENCY_LABEL" ]; then
+            echo "::error::The agent image dependency fingerprint $DEPENDENCY_LABEL differs from the fingerprint $REVISION_FINGERPRINT of its revision $AGENT_REVISION. $REFUSAL"
+            exit 1
+          fi
+          if [ "$HEAD_FINGERPRINT" != "$DEPENDENCY_LABEL" ]; then
+            # The head list was just validated by the fingerprint function, so the paths below are plain.
+            CHANGED_INPUTS="$(source_git diff --name-only --no-renames "$AGENT_REVISION" "$HEAD_COMMIT" -- | grep -Fx -f <(source_git cat-file blob "$HEAD_COMMIT:scriptahubAgent/deployment/dependency-inputs.txt") | tr '\n' ' ' || true)"
+            CHANGED_INPUTS="${CHANGED_INPUTS% }"
+            echo "::error::Skill dependencies changed after the agent image revision: the dependency fingerprint of $BRANCH@$HEAD_COMMIT is $HEAD_FINGERPRINT, the image carries $DEPENDENCY_LABEL (changed inputs: ${CHANGED_INPUTS:-none found}). $REFUSAL"
+            exit 1
+          fi
           {
             printf 'SCRIPTA_HEAD=%s\n' "$HEAD_COMMIT"
             printf 'SCRIPTA_BRANCH=%s\n' "$BRANCH"
             printf 'SCRIPTA_AGENT_REVISION=%s\n' "$AGENT_REVISION"
             printf 'SCRIPTA_AGENT_INDEX=%s\n' "$AGENT_INDEX"
             printf 'SCRIPTA_ROBOTEAM_INDEX=%s\n' "$ROBOTEAM_INDEX"
-            printf 'SCRIPTA_COPIED_TREES=%s\n' "$COPIED_TREES"
+            printf 'SCRIPTA_DEPENDENCY_FINGERPRINT=%s\n' "$HEAD_FINGERPRINT"
           } >> "$GITHUB_ENV"
           echo "[deploy-qa-scriptahub] Resolved $BRANCH@$HEAD_COMMIT; agent image $AGENT_REPO@$AGENT_INDEX revision $AGENT_REVISION; RoboTeam $ROBOTEAM_REPO@$ROBOTEAM_INDEX"
 
@@ -318,7 +411,7 @@ jobs:
 
 
           # BEGIN QA product flow
-          echo "[deploy-qa-scriptahub] main $SCRIPTA_BRANCH@$SCRIPTA_HEAD; agent image revision $SCRIPTA_AGENT_REVISION; copied trees equal"
+          echo "[deploy-qa-scriptahub] main $SCRIPTA_BRANCH@$SCRIPTA_HEAD; agent image revision $SCRIPTA_AGENT_REVISION; dependency fingerprint equal"
           REMOTE_ENV="cd '$WORK_DIR' && export PATH='$QA_NODE_HOME/bin':\"\$PATH\" PLOINKY_WORKSPACE_ROOT='$WORK_DIR'"
           # Every argument below is a fixed word. A value only ever reaches a command through ssh stdin.
           ploinky_locked() {
@@ -593,7 +686,9 @@ jobs:
           esac
           podman ps --no-trunc --filter "name=^$prefix" --format "{{.ImageID}} {{.StartedAt}} {{.Names}}"'
           # ScriptaHub is an ordinary checkout of the public repository at the workspace root. Every Git call is read-only
-          # and has hooks and fsmonitor off, because the Box can write the checkout's Git configuration.
+          # and has hooks and fsmonitor off, because the Box can write the checkout's Git configuration. A checkout that
+          # predates the dependency inputs file prints an empty DEPENDENCIES value, which no label ever equals: only the
+          # post-mutation check uses it.
           SCRIPTAHUB_READ_PROGRAM='set -eu
           url=https://github.com/Axiologic/ScriptaHubAgent.git
           test -d ScriptaHubAgent
@@ -608,10 +703,78 @@ jobs:
           test -z "$state"
           branch=$(g symbolic-ref --short HEAD)
           head=$(g rev-parse HEAD)
-          copied=$(g rev-parse HEAD:skills HEAD:scriptahubAgent/deployment HEAD:scriptahubAgent/site/reader/reader.css)
+          # BEGIN ScriptaHub dependency fingerprint
+          # Dependency fingerprint v1 of a commit: the sha256 of a header and one line, blob id and path, for every file that
+          # scriptahubAgent/deployment/dependency-inputs.txt lists. It runs Git with hooks off and executes nothing from the
+          # checkout. Usage: scripta_dependency_fingerprint <repository directory> <40-hex commit>. It prints 64 lowercase hex
+          # digits, or prints nothing and fails on every input that parseDependencyInputs of dependency-fingerprint.mjs
+          # rejects. The body is a subshell and checks every step itself, because errexit is off wherever a caller tests the result.
+          scripta_dependency_fingerprint() (
+            LC_ALL=C
+            export LC_ALL
+            repo=$1
+            rev=$2
+            inputs=scriptahubAgent/deployment/dependency-inputs.txt
+            fp_fail() { echo "dependency fingerprint: $1" >&2; exit 1; }
+            fp_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$repo" "$@"; }
+            case "$rev" in ""|*[!0-9a-f]*) fp_fail "invalid commit" ;; esac
+            [ "${#rev}" -eq 40 ] || fp_fail "invalid commit"
+            nl=$(printf "\nx")
+            nl=${nl%x}
+            tab=$(printf "\tx")
+            tab=${tab%x}
+            cr=$(printf "\rx")
+            cr=${cr%x}
+            list=$(fp_git cat-file blob "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            [ -n "$list" ] || fp_fail "dependency inputs are empty"
+            case "$list" in *"$cr"*) fp_fail "dependency inputs must use LF line endings" ;; esac
+            blob=$(fp_git rev-parse "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            hashed=$(printf "%s\n" "$list" | fp_git hash-object --no-filters --stdin) || fp_fail "cannot hash the dependency inputs"
+            case "$blob" in ""|*[!0-9a-f]*) fp_fail "invalid blob id" ;; esac
+            [ "${#blob}" -eq 40 ] || fp_fail "invalid blob id"
+            [ "$hashed" = "$blob" ] || fp_fail "dependency inputs must end with exactly one newline"
+            case "$nl$list$nl" in *"$nl$nl"*) fp_fail "dependency inputs contain a blank line" ;; esac
+            sorted=$(printf "%s\n" "$list" | sort -u) || fp_fail "cannot sort the dependency inputs"
+            [ "$sorted" = "$list" ] || fp_fail "dependency inputs must be strictly ascending"
+            data=
+            self=0
+            set -f
+            IFS=$nl
+            for p in $list; do
+              case "$p" in
+                ""|/*|*/|*//*|*[!A-Za-z0-9._/-]*) fp_fail "invalid dependency input path" ;;
+              esac
+              case "/$p/" in */./*|*/../*) fp_fail "invalid dependency input path" ;; esac
+              entry=$(fp_git ls-tree "$rev" -- "$p") || fp_fail "cannot list $p at $rev"
+              case "$entry" in
+                "100644 blob "*|"100755 blob "*) ;;
+                *) fp_fail "$p is not a regular file at $rev" ;;
+              esac
+              rest=${entry#* blob }
+              oid=${rest%%"$tab"*}
+              name=${rest#*"$tab"}
+              [ "$name" = "$p" ] || fp_fail "$p is not one tree entry at $rev"
+              case "$oid" in ""|*[!0-9a-f]*) fp_fail "invalid blob id of $p" ;; esac
+              [ "${#oid}" -eq 40 ] || fp_fail "invalid blob id of $p"
+              if [ "$p" = "$inputs" ]; then self=1; fi
+              data="$data$oid $p$nl"
+            done
+            [ "$self" -eq 1 ] || fp_fail "dependency inputs must list $inputs"
+            if command -v sha256sum > /dev/null 2>&1; then
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | sha256sum) || fp_fail "cannot hash"
+            else
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | shasum -a 256) || fp_fail "cannot hash"
+            fi
+            sum=${out%% *}
+            case "$sum" in ""|*[!0-9a-f]*) fp_fail "invalid digest" ;; esac
+            [ "${#sum}" -eq 64 ] || fp_fail "invalid digest"
+            printf "%s\n" "$sum"
+          )
+          # END ScriptaHub dependency fingerprint
+          dependencies=$(scripta_dependency_fingerprint ScriptaHubAgent "$head") || dependencies=
           printf "BRANCH=%s\n" "$branch"
           printf "HEAD=%s\n" "$head"
-          printf "COPIED=%s\n" "$(echo $copied)"'
+          printf "DEPENDENCIES=%s\n" "$dependencies"'
           # References are registry-resolved indexes, checked again inside the Box before pulling.
           SCRIPTAHUB_DIGEST_PROGRAM='set -eu
           podman image inspect --format "{{range .RepoDigests}}{{println .}}{{end}}" docker.io/assistos/scriptahub-agent:runtime'
@@ -1029,19 +1192,21 @@ jobs:
                 echo "::error::Post-mutation failure: the images were pulled and the scriptahub-agent:runtime tag names the pulled agent image, but the ScriptaHub checkout could not be fast-forwarded to $SCRIPTA_HEAD (it stays at $OLD_HEAD unless Git moved it). roboteam-agent:runtime was not retagged and nothing was restarted."
                 exit 1
               fi
-              # Post-mutation check: the copied paths of the moved checkout must be the ones the agent image was built from.
+              # Post-mutation check: the dependency fingerprint of the moved checkout must be the image label.
               if ! MOVED_OUTPUT="$(run_in_box "$SCRIPTAHUB_READ_PROGRAM" < /dev/null)"; then
                 echo "::error::Post-mutation failure: the images were pulled and the scriptahub-agent:runtime tag names the pulled agent image, and the ScriptaHub checkout moved, but it could not be read back. roboteam-agent:runtime was not retagged and nothing was restarted."
                 exit 1
               fi
               NEW_HEAD="$(sed -n 's/^HEAD=//p' <<< "$MOVED_OUTPUT" | tail -n 1)"
-              NEW_COPIED="$(sed -n 's/^COPIED=//p' <<< "$MOVED_OUTPUT" | tail -n 1)"
-              if [ "$NEW_COPIED" != "$SCRIPTA_COPIED_TREES" ]; then
-                echo "::error::Post-mutation failure: the ScriptaHub checkout moved to $(printable "$NEW_HEAD"), but its copied trees ($(printable "$NEW_COPIED")) are not the ones the agent image was built from ($SCRIPTA_COPIED_TREES). The images were pulled and the scriptahub-agent:runtime tag names the pulled agent image. roboteam-agent:runtime was not retagged and nothing was restarted; the checkout is left moved."
+              NEW_DEPENDENCIES="$(sed -n 's/^DEPENDENCIES=//p' <<< "$MOVED_OUTPUT" | tail -n 1)"
+              if [[ ! "$NEW_DEPENDENCIES" =~ ^[0-9a-f]{64}$ ]] || [ "$NEW_DEPENDENCIES" != "$SCRIPTA_DEPENDENCY_FINGERPRINT" ]; then
+                echo "::error::Post-mutation failure: the ScriptaHub checkout moved to $(printable "$NEW_HEAD"), but its dependency fingerprint ($(printable "$NEW_DEPENDENCIES")) is not the one the agent image carries ($SCRIPTA_DEPENDENCY_FINGERPRINT). The images were pulled and the scriptahub-agent:runtime tag names the pulled agent image. roboteam-agent:runtime was not retagged and nothing was restarted; the checkout is left moved."
                 exit 1
               fi
+              # Skill sources run from the checkout and are no longer pinned by the image, so only the selected head is accepted.
               if [ "$NEW_HEAD" != "$SCRIPTA_HEAD" ]; then
-                echo "[deploy-qa-scriptahub] The checkout is at $(printable "$NEW_HEAD"), not $SCRIPTA_HEAD, but its copied trees are equal."
+                echo "::error::Post-mutation failure: the ScriptaHub checkout is at $(printable "$NEW_HEAD"), not the selected $SCRIPTA_HEAD, although its dependency fingerprint is equal. The images were pulled and the scriptahub-agent:runtime tag names the pulled agent image. roboteam-agent:runtime was not retagged and nothing was restarted; the checkout is left moved."
+                exit 1
               fi
             fi
             if [ "$ROBOT_CHANGES" = true ]; then
