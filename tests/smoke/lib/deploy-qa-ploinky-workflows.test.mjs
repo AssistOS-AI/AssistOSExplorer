@@ -94,7 +94,7 @@ for (const [name, source] of [['deploy', deploy], ['destroy', destroy]]) {
 }
 
 test('deploy: a secret reaches a command only through stdin', () => {
-    const uses = deploy.split('\n').filter((line) => /ploinky_locked var /.test(line));
+    const uses = deploy.split('\n').filter((line) => /ploinky_locked var /.test(line) && !/ploinky_locked var PROD false$/.test(line));
     assert.ok(uses.length >= 5);
     for (const line of uses) {
         assert.match(line, /^\s*printf '%s' "\$[A-Z_]+[^"]*" \| ploinky_locked var \S+ --stdin$/, line);
@@ -109,8 +109,8 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         'update_kept_repos() {',
         'BOX_STATE=present',
         'reset_explorer_checkout needs a workspace with no Box. Nothing was changed.',
-        'ploinky_locked --port "$ROUTER_PORT" start explorer --repo-branch AchillesIDE=main --reset-repos',
-        'ploinky_locked --port "$ROUTER_PORT" start explorer\n            fi\n            wait_ready',
+        'ploinky_locked --port "$ROUTER_PORT" start explorer --profile qa --repo-branch AchillesIDE=main --reset-repos',
+        'ploinky_locked --port "$ROUTER_PORT" start explorer --profile qa\n            fi\n            wait_ready',
         'ploinky_locked var "$CLOUDFLARE_API_SECRET_HANDLE" --stdin',
         'ploinky_locked var "$CLOUDFLARE_TUNNEL_SECRET_HANDLE" --stdin',
         'ploinky_locked var USERPERSISTO_OIDC_ISSUER --stdin',
@@ -139,7 +139,7 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         'ploinky_locked restart\n          wait_ready',
         'Post-restart image verification failed',
         '| ploinky_locked edge set -',
-        'ploinky_locked --port "$ROUTER_PORT" start explorer\n\n          wait_ready',
+        'ploinky_locked --port "$ROUTER_PORT" start explorer --profile qa\n\n          wait_ready',
     ];
     let cursor = 0;
     for (const marker of order) {
@@ -149,6 +149,17 @@ test('deploy: the order sets values, updates sources, saves the publication, the
     }
     // Overwriting a Cloudflare-mode journal with a local-only document is refused by Ploinky.
     assert.doesNotMatch(deploy, /"hosts":\{\}/);
+});
+
+test('deploy: configures QA mode around the first start and pins all starts', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const settings = 'ploinky_locked var PROD false\n            ploinky_locked profile qa\n            ploinky_locked profile check';
+    assert.match(body, /if \[ "\$BOX_STATE" = present \]; then\n\s+ploinky_locked var PROD false\n\s+ploinky_locked profile qa\n\s+ploinky_locked profile check\n\s+fi\n\s+if \[ "\$GRAPH_UP" = false \]; then/);
+    assert.ok(body.includes(settings));
+    assert.match(body, /wait_ready\n\s+fi\n\s+ploinky_locked var PROD false\n\s+ploinky_locked profile qa\n\s+ploinky_locked profile check\n/);
+    const starts = body.split('\n').filter((line) => /ploinky_locked --port "\$ROUTER_PORT" start explorer/.test(line));
+    assert.equal(starts.length, 3);
+    for (const line of starts) assert.match(line, /start explorer --profile qa(?:\s|$)/);
 });
 
 test('deploy: the added agents are enabled only when missing and are awaited only after that', () => {
@@ -419,23 +430,26 @@ test('deploy: a recreate with a running graph destroys the Box, runs the first s
     assert.equal(passed.status, 0, passed.stdout + passed.stderr);
     assert.match(passed.stdout, /second-check-passed\ncompleted\n$/);
     const locked = passed.calls.filter((line) => line.startsWith('locked'));
-    assert.deepEqual(locked, ['locked destroy', 'locked --port 8097 start explorer']);
+    assert.deepEqual(locked, ['locked destroy', 'locked --port 8097 start explorer --profile qa', 'locked var PROD false', 'locked profile qa', 'locked profile check']);
     const refused = runRecreate(t, { recreate: 'true', registry: record2, tree: [] });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
     assert.match(refused.stdout, /::error::The QA registry lists the enabled Bizanso agent\(s\) secondAgent, .* Bizanso was not copied; the Box may have been started\. Disable/);
     assert.doesNotMatch(refused.stdout, /second-check-passed|The QA Box is not running/);
-    assert.deepEqual(refused.calls.filter((line) => line.startsWith('locked')), ['locked destroy', 'locked --port 8097 start explorer']);
+    assert.deepEqual(refused.calls.filter((line) => line.startsWith('locked')), ['locked destroy', 'locked --port 8097 start explorer --profile qa', 'locked var PROD false', 'locked profile qa', 'locked profile check']);
     // Without a recreate the graph is up and no start runs.
     const kept = runRecreate(t, { recreate: 'false', registry: record2, tree: ['secondAgent'] });
-    assert.equal(kept.calls.filter((line) => line.startsWith('locked')).length, 0, kept.stdout + kept.stderr);
+    assert.deepEqual(kept.calls.filter((line) => line.startsWith('locked')), [
+        'locked var PROD false', 'locked profile qa', 'locked profile check',
+        'locked var PROD false', 'locked profile qa', 'locked profile check',
+    ]);
 });
 
-test('deploy: the second registry check follows the first start and comes before every value, repository move and the Bizanso copy', () => {
+test('deploy: the second registry check follows the first start and precedes secrets, repository moves and the Bizanso copy', () => {
     const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
     const call = 'qa_registry_check "Bizanso was not copied; the Box may have been started." need_box || exit 1\n';
     assert.equal(body.split(call).length - 1, 1);
     const at = body.indexOf(call);
-    const start = body.indexOf('ploinky_locked --port "$ROUTER_PORT" start explorer\n            fi\n            wait_ready\n          fi\n');
+    const start = body.indexOf('ploinky_locked --port "$ROUTER_PORT" start explorer --profile qa\n            fi\n            wait_ready\n          fi\n');
     assert.notEqual(start, -1);
     assert.ok(start < at);
     for (const marker of ['ploinky_locked var "$CLOUDFLARE_API_SECRET_HANDLE"', 'ploinky_locked uninstall repo', '| run_in_box "$COPY_PROGRAM"', 'ploinky_locked add repo']) {
@@ -1057,10 +1071,10 @@ const FIRST_START = { from: '          if [ "$GRAPH_UP" = false ]; then\n', to: 
 test('deploy: only a requested reset adds the AchillesIDE reset to the first start', (t) => {
     const reset = runSlice(t, { ...FIRST_START, env: { GRAPH_UP: 'false', RESET_EXPLORER_CHECKOUT: 'true' } });
     assert.equal(reset.status, 0);
-    assert.deepEqual(reset.calls, ['locked --port 8097 start explorer --repo-branch AchillesIDE=main --reset-repos', 'wait_ready', 'done']);
+    assert.deepEqual(reset.calls, ['locked --port 8097 start explorer --profile qa --repo-branch AchillesIDE=main --reset-repos', 'wait_ready', 'done']);
     const plain = runSlice(t, { ...FIRST_START, env: { GRAPH_UP: 'false', RESET_EXPLORER_CHECKOUT: 'false' } });
     assert.equal(plain.status, 0);
-    assert.deepEqual(plain.calls, ['locked --port 8097 start explorer', 'wait_ready', 'done']);
+    assert.deepEqual(plain.calls, ['locked --port 8097 start explorer --profile qa', 'wait_ready', 'done']);
     const up = runSlice(t, { ...FIRST_START, env: { GRAPH_UP: 'true', RESET_EXPLORER_CHECKOUT: 'true' } });
     assert.equal(up.status, 0);
     assert.deepEqual(up.calls, ['done']);
@@ -1639,7 +1653,7 @@ test('deploy: a pre prune and the disk gate run before anything moves, a post pr
         'BOX_STATE=present',
         '          prune_images pre\n          require_free_disk\n',
         'ploinky_locked destroy',
-        'ploinky_locked --port "$ROUTER_PORT" start explorer\n            fi\n            wait_ready',
+        'ploinky_locked --port "$ROUTER_PORT" start explorer --profile qa\n            fi\n            wait_ready',
         '# BEGIN QA workspace repositories',
         'ploinky_locked restart\n          wait_ready',
         'An unrelated host container changed during the deployment.',

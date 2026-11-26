@@ -166,9 +166,10 @@ owner of any architecture change needed to activate that lane.
 | Work | Command |
 | --- | --- |
 | Save the publication document | `ploinky edge set -` |
+| Select QA mode | On an existing Box, `ploinky var PROD false`, `ploinky profile qa`, then `ploinky profile check` before any first start; repeat after the first-start block, including when the Box is newly created |
 | Store Cloudflare and UserPersisto values | `ploinky var NAME --stdin`, with values only on SSH stdin |
 | Update the repository sources | `ploinky update repo` for each installed repository except the Bizanso and CSV Mail copies and PromotionScoutV2, then a fast-forward of the RoboTeam `link-install` checkouts `AdvancedLanguageAgent` and `DocumentationSkills` at the workspace root (each only when it exists), then `ploinky restart`, on every deploy |
-| Start | `ploinky --port 8097 start explorer`, first when the graph is not running and again after the publication is saved |
+| Start | `ploinky --port 8097 start explorer --profile qa`, first when the graph is not running and again after the publication is saved |
 | Readiness | `ploinky status`, 13 of 13 runtimes ready three times in a row |
 | Destroy, keeping data | `ploinky destroy` |
 | Destroy, deleting data | `ploinky destroy --delete-data --confirm-workspace /home/admin/explorerQaWorkspace` |

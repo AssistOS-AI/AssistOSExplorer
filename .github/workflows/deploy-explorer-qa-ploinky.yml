@@ -1400,6 +1400,11 @@ jobs:
           # A Box that was just destroyed, or never existed, has no graph whatever the status read before the destroy showed.
           # The first start then always runs, with the router port, before anything else needs a Box.
           if [ "$BOX_STATE" = absent ]; then GRAPH_UP=false; fi
+          if [ "$BOX_STATE" = present ]; then
+            ploinky_locked var PROD false
+            ploinky_locked profile qa
+            ploinky_locked profile check
+          fi
           if [ "$GRAPH_UP" = false ]; then
             # `ploinky var` needs a Box, and only `start` accepts the port; a Box created by `var` would take
             # 8080, which Soul Gateway owns on this host. So the first start runs before the values are set.
@@ -1408,12 +1413,15 @@ jobs:
             # update a kept checkout that the current Ploinky refuses. reset_explorer_checkout asks this start to
             # hard-reset only AchillesIDE to main before it reads any manifest.
             if [ "$RESET_EXPLORER_CHECKOUT" = true ]; then
-              ploinky_locked --port "$ROUTER_PORT" start explorer --repo-branch AchillesIDE=main --reset-repos
+              ploinky_locked --port "$ROUTER_PORT" start explorer --profile qa --repo-branch AchillesIDE=main --reset-repos
             else
-              ploinky_locked --port "$ROUTER_PORT" start explorer
+              ploinky_locked --port "$ROUTER_PORT" start explorer --profile qa
             fi
             wait_ready
           fi
+          ploinky_locked var PROD false
+          ploinky_locked profile qa
+          ploinky_locked profile check
           # The Box runs now, possibly started on a kept workspace whose registry the first check could not read. Nothing
           # below has copied the Bizanso tree yet.
           qa_registry_check "Bizanso was not copied; the Box may have been started." need_box || exit 1
@@ -1779,7 +1787,7 @@ jobs:
           printf '%s\n' "$EDGE_DOCUMENT" | ploinky_locked edge set -
 
           echo '[deploy-qa] Starting Explorer with the publication...'
-          ploinky_locked --port "$ROUTER_PORT" start explorer
+          ploinky_locked --port "$ROUTER_PORT" start explorer --profile qa
 
           wait_ready
 
