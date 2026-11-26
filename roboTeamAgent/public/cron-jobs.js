@@ -178,9 +178,9 @@ export function initCronJobs({ root = document, api, endpoint, bindLink, closeMe
             const edit = card.querySelector('.cron-edit'); edit.onclick = () => open(job, card.querySelector('.manage-toggle'));
             const remove = card.querySelector('.cron-delete'); remove.onclick = () => mutate(job, remove, 'delete');
             const runNow = card.querySelector('.cron-run-now'); runNow.onclick = () => mutate(job, runNow, 'run-now');
-            const held = job.launching || ['pending', 'running', 'paused'].includes(job.lastFlowStatus);
+            const held = job.launching || ['pending', 'running'].includes(job.lastFlowStatus);
             runNow.disabled = held;
-            if (held) runNow.title = 'This job already has a running or paused workflow';
+            if (held) runNow.title = 'This job already has a pending or running workflow';
             if (pendingMutations.has(job.id)) card.querySelectorAll('[data-robot-menu-options] button').forEach(control => { control.disabled = true; });
             card.querySelector('.manage-toggle').dataset.navigationKey = `cron-menu:${job.id}`;
             card.querySelector('.cron-actions').hidden = !admin;

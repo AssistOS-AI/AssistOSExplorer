@@ -2,10 +2,10 @@ import crypto from 'node:crypto';
 import { nextRun } from './schedule-timing.mjs';
 import { invalid } from './graph.mjs';
 
-const heldStates = new Set(['pending', 'running', 'paused']);
+const heldStates = new Set(['pending', 'running']);
 export class WorkflowScheduler {
-    constructor({ schedules, flows, startFlow, now = Date.now, pollMs = 1000, onError = error => console.error(`[cron-jobs] ${error.message}`) }) {
-        Object.assign(this, { schedules, flows, startFlow, now, pollMs, onError });
+    constructor({ schedules, flows, startFlow, resumeFlow, now = Date.now, pollMs = 1000, onError = error => console.error(`[cron-jobs] ${error.message}`) }) {
+        Object.assign(this, { schedules, flows, startFlow, resumeFlow, now, pollMs, onError });
         this.closed = true;
         this.manualLaunches = new Set();
     }
@@ -40,12 +40,12 @@ export class WorkflowScheduler {
             if (!current) throw Object.assign(invalid('Cron job not found'), { statusCode: 404 });
             if (current.revision !== revision) throw Object.assign(invalid('Cron job changed; reload before running'), { statusCode: 409 });
             const previous = current.lastFlowId && this.flows.getSync(current.lastFlowId);
-            if (current.pendingLaunch || (previous && heldStates.has(previous.status))) throw Object.assign(invalid('This Cron job already has a running or paused workflow'), { statusCode: 409 });
+            if (current.pendingLaunch || (previous && heldStates.has(previous.status))) throw Object.assign(invalid('This Cron job already has a pending or running workflow'), { statusCode: 409 });
             const timestamp = this.now(), now = new Date(timestamp).toISOString();
             current.revision++; current.updatedBy = createdBy; current.updatedAt = now;
             current.nextRunAt = current.enabled ? new Date(nextRun(current.timing, timestamp)).toISOString() : null;
             current.lastAttemptAt = now; current.lastError = null;
-            current.pendingLaunch = { token: crypto.randomUUID(), scheduledAt: now };
+            current.pendingLaunch = { token: crypto.randomUUID(), scheduledAt: now, ...(previous?.status === 'paused' && { resumeFlowId: previous.id }) };
             this.schedules.saveSync(current);
             return structuredClone(current);
         });
@@ -64,9 +64,9 @@ export class WorkflowScheduler {
                 job.lastAttemptAt = new Date(now).toISOString();
                 const previous = job.lastFlowId && this.flows.getSync(job.lastFlowId);
                 if (job.pendingLaunch || (previous && heldStates.has(previous.status))) {
-                    job.lastOutcome = 'skipped'; job.lastError = 'Previous scheduled workflow is still running or paused';
+                    job.lastOutcome = 'skipped'; job.lastError = 'Previous scheduled workflow is pending or running';
                 } else {
-                    job.pendingLaunch = { token: crypto.randomUUID(), scheduledAt };
+                    job.pendingLaunch = { token: crypto.randomUUID(), scheduledAt, ...(previous?.status === 'paused' && { resumeFlowId: previous.id }) };
                     job.lastError = null; result.push(structuredClone(job));
                 }
                 this.schedules.saveSync(job);
@@ -78,6 +78,21 @@ export class WorkflowScheduler {
     async _launch(job, { manual = false, createdBy = job.createdBy, ownerPrincipal = job.ownerPrincipal ?? null } = {}) {
         try {
             if (this.closed) throw new Error('Cron job scheduler stopped before launch');
+            const { resumeFlowId } = job.pendingLaunch;
+            if (resumeFlowId) {
+                const current = this.schedules.getSync(job.id);
+                if (!current || (!manual && !current.enabled) || current.pendingLaunch?.token !== job.pendingLaunch.token) {
+                    throw new Error('Cron job changed before resuming');
+                }
+                const flow = await this.resumeFlow(resumeFlowId);
+                this.schedules.database.transaction(() => {
+                    const saved = this.schedules.getSync(job.id);
+                    if (saved?.pendingLaunch?.token !== job.pendingLaunch.token) return;
+                    saved.pendingLaunch = null; saved.lastOutcome = 'started'; saved.lastError = null;
+                    this.schedules.saveSync(saved);
+                });
+                return flow;
+            }
             return await this.startFlow({ workflowTypeId: job.workflowTypeId, objective: [job.objective, job.privateContext].filter(Boolean).join('\n\n'), folder: job.folder, executionType: job.executionType,
                 createdBy, ownerPrincipal }, {
                 scheduleId: job.id, scheduledAt: job.pendingLaunch.scheduledAt,

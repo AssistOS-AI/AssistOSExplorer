@@ -57,7 +57,7 @@ export class RoboFlowService {
             resolveCwd: folder => this.runFolders.base(folder),
             defaultFolder: () => this.scheduleFolders.defaultFolder(), now: options.scheduleNow });
         this.scheduler = new WorkflowScheduler({ schedules: this.schedules, flows: this.store,
-            startFlow: (input, options) => this.startFlow(input, options), now: options.scheduleNow, pollMs: options.schedulePollMs });
+            startFlow: (input, options) => this.startFlow(input, options), resumeFlow: id => this.resumeFlow(id), now: options.scheduleNow, pollMs: options.schedulePollMs });
         this.random = options.random || Math.random;
         this.maxVisits = Number(options.maxVisits ?? process.env.ROBOTEAM_WORKFLOW_MAX_VISITS ?? 500);
         this.presetRetryMs = Number(options.presetRetryMs ?? 5000);
@@ -504,6 +504,12 @@ export class RoboFlowService {
         if (!flow || flow.status === 'terminated') return;
         const instance = flow.instances.find(item => item.id === binding.instanceId);
         if (!instance || (terminal(instance.state) && !(event.forcedFailure && instance.state === 'paused'))) return;
+        const usageLimit = event.state === 'failed' && typeof event.error === 'string'
+            && /^ALA exited with \d+:/.test(event.error)
+            && /(?:^ALA exited with \d+: |^|\n)ALA execution failed \(\d+\): [^\r\n]*?(?:you[’']ve hit your usage limit|usage limit reached)\b/i.test(event.error);
+        if (usageLimit && flow.humanInput?.status !== 'pending' && !terminal(instance.state)) {
+            return this._fail(flow.id, event.error, 'paused');
+        }
         if (event.forcedFailure && event.state === 'failed') {
             await this.store.update(flow.id, current => {
                 const visit = current.instances.find(item => item.id === instance.id);

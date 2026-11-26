@@ -17,7 +17,7 @@ test('WebMeet opens through the Explorer toolbar before using its framed dashboa
     const requests = [];
     const completedSlowRequests = [];
     const modalSource = (await readFile(new URL('../../../explorer/web-components/modals/expanded-modal/expanded-modal.js', import.meta.url), 'utf8'))
-        .replace(/from "[^"]+"/g, 'from "/fixture-deps.mjs"');
+        .replace(/from (["'])[^"']+\1/g, 'from "/fixture-deps.mjs"');
     const server = http.createServer((request, response) => {
         const url = new URL(request.url, 'http://fixture.test');
         requests.push(url.pathname);
@@ -35,6 +35,7 @@ test('WebMeet opens through the Explorer toolbar before using its framed dashboa
                     probeAgentRuntimeMcp = null, probeAgentRuntimeRouteStability = null,
                     probeAgentRuntimeTargetAndMcp = null, probeAgentRuntimeTarget = null,
                     waitForAgentRuntimeAvailability = null, readMarketplaceAgent = null,
+                    resolveExpandedPanelUrl = null, clearPluginPanelLocation = () => {},
                     waitForComponentReady = null;`);
         } else if (url.pathname === '/activate') {
             running = true;

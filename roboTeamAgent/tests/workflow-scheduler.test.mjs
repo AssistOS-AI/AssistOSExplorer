@@ -9,9 +9,13 @@ const definition = { id: 'scheduled', name: 'Scheduled work', description: 'Sche
 async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'workflow-scheduler-')));
     let now = Date.parse('2026-10-09T07:00:00Z');
-    const robot = { id: 'default-id', name: 'default', codingAgents: ['opencode'] }, started = [];
+    const robot = { id: 'default-id', name: 'default', codingAgents: ['opencode'] }, started = [], resumed = [];
     const runtimeManager = { resolveCwd: async folder => { if (!folder.startsWith(root)) throw new Error('Folder outside workspace'); return folder; },
-        startTask: (robot, type, request) => { started.push(request); return { taskId: request.runtimeTaskId }; }, stopTask() {} };
+        startTask: (robot, type, request) => { started.push(request); return { taskId: request.runtimeTaskId }; }, stopTask() {},
+        resumeTask: (_robot, taskId, _prompt, options) => {
+            resumed.push({ taskId, nextTaskId: options.runtimeTaskId });
+            return { taskId: options.runtimeTaskId };
+        } };
     const service = new RoboFlowService({ databaseFile: path.join(root, 'roboflow.sqlite'), workspaceRoot: root,
         robotStore: { list: async () => [robot], get: async () => robot, getDefault: async () => robot }, runtimeManager,
         skillsets: { repositoriesClient: { listRepositories: async () => [{ name: 'DocumentationSkills', source: root, origin: 'local' }] }, start: async (robot, input, enqueue) => enqueue(robot) },
@@ -19,7 +23,7 @@ async function fixture(t) {
     await service.initialize(); await service.presetReady; await service.createWorkflow(definition); service.scheduler.start();
     t.after(async () => { await service.close(); await fs.rm(root, { recursive: true, force: true }); });
     const create = (extra = {}) => service.saveSchedule({ workflowTypeId: 'scheduled', folder: root, objective: 'Write the report', timing: { kind: 'interval', everyMinutes: 60 }, ...extra }, 'admin');
-    return { service, root, started, create, advance: minutes => { now += minutes * 60000; }, now: () => now };
+    return { service, root, started, resumed, create, advance: minutes => { now += minutes * 60000; }, now: () => now };
 }
 test('durable Cron jobs create ordinary workflow snapshots and do not launch twice on concurrent ticks', async t => {
     const f = await fixture(t), job = await f.create();
@@ -36,14 +40,58 @@ test('durable Cron jobs create ordinary workflow snapshots and do not launch twi
     assert.equal(f.started[0].cwd, flow.folder);
     assert.equal(current.nextRunAt, '2026-10-09T09:00:00.000Z');
 });
-test('running and paused scheduled flows skip subsequent slots; completion permits a future run', async t => {
+test('cron pauses an ALA usage limit and resumes the same attempt context on the next slot', async t => {
     const f = await fixture(t); await f.create(); f.advance(60); await f.service.scheduler.tick();
-    let job = (await f.service.listSchedules())[0];
-    f.advance(60); await f.service.scheduler.tick(); assert.equal(f.started.length, 1); assert.equal((await f.service.listSchedules())[0].lastOutcome, 'skipped');
-    await f.service.store.update(job.lastFlowId, flow => { flow.status = 'paused'; });
-    f.advance(60); await f.service.scheduler.tick(); assert.equal(f.started.length, 1);
-    await f.service.store.update(job.lastFlowId, flow => { flow.status = 'completed'; });
-    f.advance(60); await f.service.scheduler.tick(); assert.equal(f.started.length, 2);
+    const job = (await f.service.listSchedules())[0], originalTask = f.started[0].runtimeTaskId;
+    const finish = async (taskId, state, error) => {
+        f.service.onRuntimeTaskEvent({kind:'terminal', taskId, state, error});
+        while (f.service.chains.size) await Promise.allSettled(f.service.chains.values());
+    };
+    f.advance(60); await f.service.scheduler.tick();
+    assert.equal(f.started.length, 1);
+    assert.equal((await f.service.listSchedules())[0].lastOutcome, 'skipped');
+
+    const limit = 'ALA exited with 1: ALA execution failed (5): You’ve hit your usage limit. Upgrade to Pro';
+    await f.service.store.update(job.lastFlowId, flow => { flow.instances[0].startedAt = new Date(f.now()).toISOString(); });
+    await finish(originalTask, 'failed', limit);
+    const paused = await f.service.store.get(job.lastFlowId);
+    assert.equal(paused.status, 'paused');
+    assert.equal(paused.instances[0].error, limit);
+    f.advance(60); await Promise.all([f.service.scheduler.tick(), f.service.scheduler.tick()]);
+    const continued = await f.service.store.get(job.lastFlowId);
+    assert.equal(continued.status, 'running');
+    assert.equal(continued.instances[0].id, paused.instances[0].id);
+    assert.equal(continued.instances[0].runtimeTaskId, f.resumed[0].nextTaskId);
+    assert.equal(f.resumed[0].taskId, originalTask);
+    assert.equal(f.resumed.length, 1);
+    assert.equal(f.started.length, 1);
+    assert.equal((await f.service.listSchedules())[0].lastFlowId, job.lastFlowId);
+
+    await finish(f.resumed[0].nextTaskId, 'failed', 'ALA exited with 1: ALA execution failed (5): invalid task');
+    assert.equal((await f.service.store.get(job.lastFlowId)).status, 'failed');
+    f.advance(60); await f.service.scheduler.tick();
+    assert.equal(f.started.length, 2);
+});
+test('Run now resumes a manual pause and leaves pending human input in place', async t => {
+    const f = await fixture(t);
+    const job = await f.create();
+    const first = await f.service.runScheduleNow(job.id, job.revision, 'admin');
+    await f.service.store.update(first.flow.id, flow => { flow.instances[0].startedAt = new Date(f.now()).toISOString(); });
+    await f.service.pauseFlow(first.flow.id);
+    const result = await f.service.runScheduleNow(job.id, first.schedule.revision, 'admin');
+    assert.equal(result.flow.id, first.flow.id);
+    assert.equal(f.resumed.length, 1);
+    assert.equal(f.started.length, 1);
+
+    await f.service.store.update(first.flow.id, flow => {
+        flow.status = 'paused';
+        flow.instances[0].state = 'paused';
+        flow.humanInput = {status:'pending'};
+    });
+    f.advance(60); await f.service.scheduler.tick();
+    assert.equal((await f.service.store.get(first.flow.id)).status, 'paused');
+    assert.equal(f.resumed.length, 1);
+    assert.equal(f.started.length, 1);
 });
 test('disable, optimistic editing and removal preserve a previously started workflow', async t => {
     const f = await fixture(t), original = await f.create(); f.advance(60); await f.service.scheduler.tick();
@@ -199,7 +247,7 @@ test('Run now rejects stale, missing and held jobs without changing their next o
     await assert.rejects(f.service.runScheduleNow('cron_missing', 1, 'admin'), { statusCode: 404 });
     assert.equal(f.service.schedules.getSync(job.id).nextRunAt, job.nextRunAt);
     f.advance(20); const { flow, schedule } = await f.service.runScheduleNow(job.id, 1, 'admin');
-    for (const state of ['pending', 'running', 'paused']) {
+    for (const state of ['pending', 'running']) {
         await f.service.store.update(flow.id, record => { record.status = state; });
         await assert.rejects(f.service.runScheduleNow(job.id, schedule.revision, 'admin'), { statusCode: 409 });
         assert.equal(f.service.schedules.getSync(job.id).nextRunAt, schedule.nextRunAt);

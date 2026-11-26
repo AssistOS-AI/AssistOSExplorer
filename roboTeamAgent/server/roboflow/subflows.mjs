@@ -126,7 +126,8 @@ export class Subflows {
         for (const visit of flow.instances.filter(item => item.creatorInstanceId && paused(item.state))) {
             for (const id of visit.childFlowIds || []) {
                 const child = await this.service.store.get(id);
-                if (child?.status === 'completed') continue;
+                if (child?.status === 'completed'
+                    || (visit.continueOnChildFailure === true && ['failed','terminated'].includes(child?.status))) continue;
                 if (child && paused(child.status)) ids.push(id);
                 break;
             }

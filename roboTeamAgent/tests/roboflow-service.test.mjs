@@ -1141,7 +1141,16 @@ test('an opted-in batch continues after a failed child without reporting that ch
     assert.equal((await f.service.getFlow(one)).status,'failed');
     assert.equal((await f.service.getFlow(two)).status,'running');
     assert.equal(f.started.length,3,'the second child must run despite the failed predecessor');
-    await f.finish(2,'Second item completed');
+    await f.service.store.update(two, flow => { flow.instances[0].startedAt = new Date().toISOString(); });
+    const secondTask = f.started[2].taskId;
+    f.service.onRuntimeTaskEvent({kind:'terminal', taskId:secondTask, state:'failed',
+        error:'ALA exited with 1: ALA execution failed (5): You’ve hit your usage limit.'});
+    while (f.service.chains.size) await Promise.allSettled(f.service.chains.values());
+    assert.equal((await f.service.getFlow(two)).status,'paused');
+    assert.equal((await f.service.getFlow(parent.id)).status,'paused');
+    await f.service.resumeFlow(parent.id);
+    assert.equal(f.resumed[0].taskId,secondTask);
+    await f.finish(f.resumed[0].nextTaskId,'Second item completed');
     assert.equal(f.started.length,4,'the parent reconciliation phase must run');
     const current=await f.service.getFlow(parent.id);
     assert.equal(current.instances.at(-1).taskId,'end');
