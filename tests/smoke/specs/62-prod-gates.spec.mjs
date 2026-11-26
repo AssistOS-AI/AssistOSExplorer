@@ -45,12 +45,18 @@ test('captured production policy controls Git and Marketplace', async ({ page },
   expect(list.status()).toBe(200);
   const tools = (await list.json()).result.tools.map((tool) => tool.name);
   expect(tools.includes('git_pull')).toBe(!production);
-  const status = await send('tools/call', { name: 'git_status', arguments: { path: '.' } }, session);
+  const repoPath = process.env.SMOKE_GIT_STATUS_PATH || '.';
+  const status = await send('tools/call', { name: 'git_status', arguments: { path: repoPath } }, session);
   expect(status.status()).toBe(200);
   const statusBody = await status.json();
   expect(statusBody.error).toBeUndefined();
   expect(statusBody.result).toBeTruthy();
-  expect(statusBody.result.isError).toBe(false);
+  expect([undefined, false]).toContain(statusBody.result.isError);
+  const toolContent = statusBody.result.content;
+  expect(Array.isArray(toolContent) && toolContent.length === 1 && toolContent[0].type === 'text').toBe(true);
+  const gitStatus = JSON.parse(toolContent[0].text);
+  expect(gitStatus.ok, 'git_status must succeed in the SMOKE_GIT_STATUS_PATH repository').toBe(true);
+  expect(Array.isArray(gitStatus.status?.staged)).toBe(true);
   if (production) {
     // The invalid path cannot operate on a Git checkout if the policy is broken.
     const pull = await send('tools/call', { name: 'git_pull', arguments: { path: null } }, session);

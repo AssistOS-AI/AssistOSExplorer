@@ -83,6 +83,12 @@ click Enable, verify the successful POST to `/api/marketplace/agents`, then requ
 Running in the UI and the exact enabled/running runtime. Record setup duration.
 This setup does not establish a spec03 pass or change default enablement.
 
+### Production Git and Marketplace controls
+
+Run spec 62 against a dedicated test workspace and an account that can open Git. Set `SMOKE_EXPECT_PROD` to the expected captured mode, either `true` or `false`. Set `SMOKE_GIT_STATUS_PATH` to a local Git repository visible to gitAgent. The path defaults to `.` for workspaces whose root is a Git repository. A new, empty repository with no remote is sufficient.
+
+From `tests/smoke`, run `npm test -- --project=chromium --workers=1 --retries=0 specs/62-prod-gates.spec.mjs`. The test reads Git status in the selected repository. Its production-denial probe supplies an invalid path to `git_pull`, so it cannot update a checkout.
+
 ## Box acceptance preflight and outcomes
 
 Use `npm test -- --project=chromium --workers=1 --retries=0` with complete
