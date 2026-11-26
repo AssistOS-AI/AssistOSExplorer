@@ -12,11 +12,6 @@ const HIDDEN_REPOSITORY_IDENTITIES = new Set([
     'ploinkyskills',
 ]);
 
-// Mixed sources stay hidden, except these, whose agents an administrator manages here.
-const LISTED_MIXED_REPOSITORY_IDENTITIES = new Set([
-    'scriptahubagent',
-]);
-
 const SKILL_TYPES = new Set([
     'skill', 'skills', 'skill.md', 'cskill', 'dcgskill', 'mskill', 'oskill', 'tskill',
 ]);
@@ -71,11 +66,9 @@ export function getVisibleMarketplaceCatalog(marketplace) {
         marketplaceRepositoryIdentity(repo?.name),
         marketplaceRepositoryIdentity(repo?.url),
     ].filter(Boolean)]));
-    const isListedMixed = repo => isMixedEntry(repo)
-        && identitiesByRepository.get(repo).some(value => LISTED_MIXED_REPOSITORY_IDENTITIES.has(value));
-    const hiddenRepositories = new Set(repositories.filter(repo => (
-        isSkillEntry(repo) || (isMixedEntry(repo) && !isListedMixed(repo))
-    )));
+    // A mixed source holds agents next to its skills: Marketplace manages its agents,
+    // and the Skills Manifest editor keeps reading its skills.
+    const hiddenRepositories = new Set(repositories.filter(isSkillEntry));
 
     // Propagate a source's policy to every local alias, independent of catalog ordering.
     let changed = true;
@@ -111,8 +104,8 @@ export function getVisibleMarketplaceCatalog(marketplace) {
     return {
         repositories: repositories.filter(repo => !hiddenRepositories.has(repo)).map(repo => ({
             ...repo,
-            // The Repos tab lists only agent repositories.
-            ...(isListedMixed(repo) ? {kind: 'agents'} : {}),
+            // The Repos tab lists only agent repositories; hasSkills keeps the uninstall warning.
+            ...(isMixedEntry(repo) ? {kind: 'agents', hasSkills: true} : {}),
             activeAgentsCount: enabledCounts.get(repo.name) || 0,
         })),
         agents: visibleAgents,

@@ -308,10 +308,18 @@ export class MarketplaceModal {
 
   updateRepositoryCount(note, repository) {
     const count = Number(repository.activeAgentsCount || 0);
-    note.textContent = count > 0
-      ? `${count} enabled agent${count === 1 ? '' : 's'} will be removed if this repo is uninstalled.`
-      : '';
-    note.hidden = count === 0;
+    const notes = [];
+    if (count > 0) {
+      notes.push(`${count} enabled agent${count === 1 ? '' : 's'} will be removed if this repo is uninstalled.`);
+    }
+    // The router unregisters a workspace checkout and keeps its files, but deletes a managed clone.
+    if (repository.installed && repository.hasSkills) {
+      notes.push(repository.workspacePath
+        ? `Uninstalling keeps its files, including its skills, in ${repository.workspacePath}.`
+        : 'Uninstalling also deletes the skills in this repo.');
+    }
+    note.textContent = notes.join(' ');
+    note.hidden = notes.length === 0;
   }
 
   updateAgentRuntimeUi(agent) {
