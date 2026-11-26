@@ -62,6 +62,7 @@ export class GitCredentialsPrompt {
         this.githubContinueButton = this.element.querySelector('[data-local-action="continueGithubAuth"]');
         this.githubActions = this.element.querySelector('.git-github-actions');
         this.githubDisconnectButton = this.element.querySelector('[data-local-action="disconnectGithubAuth"]');
+        this.autosyncGroup = this.element.querySelector('[data-autosync-group]');
         this.autocommitIntervalInput = this.element.querySelector('#gitCredentialsAutocommitInterval');
         this.autocommitReposContainer = this.element.querySelector('#gitCredentialsAutocommitRepos');
         this.autocommitToggleAllInput = this.element.querySelector('#gitCredentialsAutocommitToggleAll');
@@ -539,6 +540,10 @@ export class GitCredentialsPrompt {
 
     applyState(next) {
         if (!next || typeof next !== 'object') return;
+        if (Object.prototype.hasOwnProperty.call(next, 'syncAvailable')) {
+            this.state.syncAvailable = next.syncAvailable === true;
+        }
+        if (this.autosyncGroup) this.autosyncGroup.hidden = this.state.syncAvailable !== true;
         if (Object.prototype.hasOwnProperty.call(next, 'credentialsAuthAction')) {
             this.state.credentialsAuthAction = next.credentialsAuthAction || null;
         }

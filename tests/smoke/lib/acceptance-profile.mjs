@@ -6,6 +6,7 @@ import { validateQaAcceptanceProfile } from './qa-acceptance-profile.mjs';
 import { foreignAccount } from './live-sessions.mjs';
 import { requireFreeCopilotSetup, requiresFreeCopilotSetup } from './copilot-free-model.mjs';
 
+export const prodGatesLedger = JSON.parse(fs.readFileSync(new URL('../prod-gates-ledger.json', import.meta.url), 'utf8'));
 export const acceptanceLedger = JSON.parse(fs.readFileSync(new URL('../acceptance-ledger.json', import.meta.url), 'utf8'));
 export const roboWorkRestartLedger = JSON.parse(fs.readFileSync(new URL('../robowork-restart-ledger.json', import.meta.url), 'utf8'));
 export const terminalAgentLedger = JSON.parse(fs.readFileSync(new URL('../terminal-agent-ledger.json', import.meta.url), 'utf8'));
@@ -72,6 +73,9 @@ export function validateAcceptanceProfile(args, env = process.env, options = {})
         throw new Error('RoboWork feature spec 09 is unavailable: E7 has no accepted actual model-route proof. It cannot be selected or counted as passing.');
     }
     const profiles = plannedProfiles.filter(profile => enabled(env[profile.flag]));
+    if (['true', 'false'].includes(env.SMOKE_EXPECT_PROD)) {
+        profiles.push({ spec: 'specs/62-prod-gates.spec.mjs', coverage: 'prod-gates', ledger: prodGatesLedger });
+    }
     if (profiles.length > 1) throw new Error('Planned RoboWork acceptance profiles require separate invocations.');
     const planned = profiles[0];
     if (planned && (args.filter(value => value.includes('.spec.mjs')).length !== 1 || !args.includes(planned.spec))) {

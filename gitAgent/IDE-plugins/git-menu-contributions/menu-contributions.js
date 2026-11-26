@@ -1,3 +1,4 @@
+import { hasGitTools } from '../git-tool-button/utils/git-sync-permission.mjs';
 import { callAgentTool, parseToolResult } from "/explorer/services/infrastructure/explorerApi.js";
 import { beginRepositoryLoader, endRepositoryLoader } from "../git-tool-button/components/git-repository-modal-shared/repository-loader.js";
 
@@ -161,6 +162,7 @@ export async function getMenuItems({ context, plugin }) {
         if (context?.isConfidential || !context?.currentFsPath) {
             return [];
         }
+        if (!await hasGitTools(assistOS.appServices, ["git_init_repository","git_create_github_repository","git_submodule_add"])) return [];
         return [{
             id: 'git:add-repository',
             label: 'Add new repository',
@@ -199,6 +201,7 @@ export async function getMenuItems({ context, plugin }) {
 
 export async function executeMenuAction({ action, context, host }) {
     if (action === 'add-repository') {
+        if (!await hasGitTools(assistOS.appServices, ["git_init_repository","git_create_github_repository","git_submodule_add"])) return;
         await executeAddRepository({ context, host });
         return;
     }

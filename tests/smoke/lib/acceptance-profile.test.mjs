@@ -572,3 +572,17 @@ test('terminal live-agent profile is a fixed opt-in ledger with strict outcomes'
     assert.throws(() => validateAcceptanceProfile([...terminalArgs, 'specs/01-webtty-core.spec.mjs'], env));
     assert.throws(() => validateAcceptanceProfile(terminalArgs, { ...env, SMOKE_ROBOWORK_RESTART: '1' }));
 });
+
+test('production gates select exactly one separate identity for either captured mode', () => {
+    const args = ['--project=chromium', '--workers=1', '--retries=0', 'specs/62-prod-gates.spec.mjs', '--list'];
+    for (const value of ['true', 'false']) {
+        const profile = validateAcceptanceProfile(args, { SMOKE_EXPECT_PROD: value });
+        assert.equal(profile.coverage, 'prod-gates');
+        assert.equal(profile.cases.length, 1);
+        assert.match(profile.cases[0].identity, /^62-prod-gates/);
+        assert.throws(() => assertLedgerResults(profile.cases, [], { terminal: true }));
+        assert.throws(() => validateAcceptanceProfile([...args, '--grep=missing'], { SMOKE_EXPECT_PROD: value }), /zero required/u);
+    }
+    assert.throws(() => validateAcceptanceProfile(args, {}), /zero required/u);
+    assert.equal(acceptanceLedger.identities.length, 46);
+});

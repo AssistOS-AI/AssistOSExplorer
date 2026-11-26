@@ -41,6 +41,7 @@
 
                 <section>
                     <h2>Runtime Behavior</h2>
+                    <p>Sync and AutoSync require the Router to expose pull, commit, and push. Production policy can withhold these tools; the controls are then hidden and AutoSync stops.</p>
                     <p>At runtime, Git requests enter through <a href="wiki.html#definition-mcp">MCP</a> and are executed through <code>gitAgent/tools/git_tool.sh</code> and the modules behind <code>git_tool.mjs</code>. Explorer plugins stay thin: they collect intent, call the tool surface, and render status. The agent remains responsible for repository discovery, command dispatch, remote-auth persistence, canonical GitHub remote URLs, and creating missing GitHub repositories under the owner encoded in the remote URL.</p>
                     <p>Repository initialization and cloning enforce one local checkout per canonical remote in the workspace. Equivalent GitHub HTTPS and SSH URLs identify the same repository. When that remote is already present, the operation stops before creating a directory and reports the existing workspace path.</p>
                     <p>GitHub token lookups call DPU through the router transport URL and preserve the canonical router authority in the HTTP <code>Host</code> header. This keeps agent-to-agent authentication working when a container reaches the router through a different internal hostname.</p>

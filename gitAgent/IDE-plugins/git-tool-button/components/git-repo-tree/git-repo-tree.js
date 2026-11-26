@@ -152,6 +152,7 @@ export class GitRepoTree {
 
     applyState(next = {}) {
         if (!next || typeof next !== 'object') return;
+        if (Array.isArray(next.availableGitTools)) this.state.availableGitTools = next.availableGitTools;
         if (Object.prototype.hasOwnProperty.call(next, 'reposRoot')) {
             this.state.reposRoot = String(next.reposRoot || '');
         }
@@ -340,10 +341,11 @@ export class GitRepoTree {
         const branchMenuList = document.createElement('div');
         branchMenuList.className = 'git-file-menu-list git-branch-menu-list';
         const branchActions = [
-            ['checkoutBranchFromRepoRow', 'Checkout branch...'],
-            ['createBranchFromRepoRow', 'New branch...'],
-            ['mergeBranchFromRepoRow', 'Merge into current...']
-        ];
+            ['checkoutBranchFromRepoRow', 'Checkout branch...', 'git_branch_checkout'],
+            ['createBranchFromRepoRow', 'New branch...', 'git_branch_create'],
+            ['mergeBranchFromRepoRow', 'Merge into current...', 'git_branch_merge']
+        ].filter(([, , tool]) => !Array.isArray(this.state.availableGitTools) || this.state.availableGitTools.includes(tool));
+        if (!branchActions.length) return null;
         for (const [action, text] of branchActions) {
             const item = document.createElement('div');
             item.className = 'git-file-menu-item git-branch-menu-item';
@@ -586,6 +588,7 @@ export class GitRepoTree {
             getAncestorCoveringPrefix: (repoPath, prefix) => this.getAncestorCoveringPrefix(repoPath, prefix),
             getCoveringPrefix: (repoPath, prefix) => this.getCoveringPrefix(repoPath, prefix),
             isFolderExpanded: (repoPath, prefix) => this.isTreeFolderExpanded(repoPath, prefix),
+            canRestore: !Array.isArray(this.state.availableGitTools) || this.state.availableGitTools.includes('git_restore'),
             initialDepth: 3
         });
     }

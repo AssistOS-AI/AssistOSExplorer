@@ -19,10 +19,23 @@ async function openEditSkillsManifestModal(context) {
     }, true);
 }
 
+async function canEditSkillsManifest() {
+    try {
+        const response = await fetch('/api/marketplace/agents', { credentials: 'include', headers: { Accept: 'application/json' } });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return data?.marketplace?.permissions?.production === false;
+    } catch {
+        return false;
+    }
+}
+
 export async function getMenuItems({ context, plugin }) {
     if (!context?.isDirectory || !normalizePath(context?.selectedFsPath)) {
         return [];
     }
+
+    if (!await canEditSkillsManifest()) return [];
 
     return [{
         id: 'achilles-ide:edit-skills-manifest',
@@ -37,6 +50,7 @@ export async function executeMenuAction({ action, context, host }) {
         return;
     }
 
+    if (!await canEditSkillsManifest()) return;
     const result = await openEditSkillsManifestModal(context);
     if (!result?.changed) {
         return;

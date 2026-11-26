@@ -38,6 +38,7 @@
     },
     {
       "name": "git_branch_checkout",
+      "tags": ["prod-disabled"],
       "title": "Git Branch Checkout",
       "description": "Checkout an existing local or remote branch.",
       "command": "tools/git_tool.sh",
@@ -58,6 +59,7 @@
     },
     {
       "name": "git_branch_create",
+      "tags": ["prod-disabled"],
       "title": "Git Branch Create",
       "description": "Create a new branch, optionally from a selected start point.",
       "command": "tools/git_tool.sh",
@@ -86,6 +88,7 @@
     },
     {
       "name": "git_branch_merge",
+      "tags": ["prod-disabled"],
       "title": "Git Branch Merge",
       "description": "Merge a selected branch into the current branch.",
       "command": "tools/git_tool.sh",
@@ -110,6 +113,7 @@
     },
     {
       "name": "git_init_repository",
+      "tags": ["prod-disabled"],
       "title": "Git Init Repository",
       "description": "Create a new directory and initialize a Git repository inside it.",
       "command": "tools/git_tool.sh",
@@ -138,6 +142,7 @@
     },
     {
       "name": "git_create_github_repository",
+      "tags": ["prod-disabled"],
       "title": "Git Create GitHub Repository",
       "description": "Create a GitHub repository, initialize a local repository, and configure its remote.",
       "command": "tools/git_tool.sh",
@@ -183,6 +188,7 @@
     },
     {
       "name": "git_clone_repository",
+      "tags": ["prod-disabled"],
       "title": "Git Clone Repository",
       "description": "Clone a repository into a new local directory.",
       "command": "tools/git_tool.sh",
@@ -220,6 +226,7 @@
     },
     {
       "name": "git_submodule_add",
+      "tags": ["prod-disabled"],
       "title": "Git Add Submodule",
       "description": "Add an existing remote repository as a Git submodule inside the selected parent repository.",
       "command": "tools/git_tool.sh",
@@ -337,6 +344,7 @@
     },
     {
       "name": "git_resolve_conflict",
+      "tags": ["prod-disabled"],
       "title": "Resolve Git Conflict",
       "description": "Resolve a git conflict by merging base/ours/theirs using an LLM.",
       "command": "tools/git_tool.sh",
@@ -365,6 +373,7 @@
     },
     {
       "name": "git_remote_set",
+      "tags": ["prod-disabled"],
       "title": "Git Remote Set",
       "description": "Add or update a repository remote URL.",
       "command": "tools/git_tool.sh",
@@ -584,6 +593,7 @@
     },
     {
       "name": "git_restore",
+      "tags": ["prod-disabled"],
       "title": "Git Restore",
       "description": "Restore files to the last commit.",
       "command": "tools/git_tool.sh",
@@ -627,6 +637,7 @@
     },
     {
       "name": "git_checkout_conflict",
+      "tags": ["prod-disabled"],
       "title": "Git Checkout Conflict",
       "description": "Checkout ours/theirs version for a conflicted file.",
       "command": "tools/git_tool.sh",
@@ -651,6 +662,7 @@
     },
     {
       "name": "git_stash",
+      "tags": ["prod-disabled"],
       "title": "Git Stash",
       "description": "Stash local changes.",
       "command": "tools/git_tool.sh",
@@ -675,6 +687,7 @@
     },
     {
       "name": "git_stash_pop",
+      "tags": ["prod-disabled"],
       "title": "Git Stash Pop",
       "description": "Apply and drop the latest stash.",
       "command": "tools/git_tool.sh",
@@ -715,6 +728,7 @@
     },
     {
       "name": "git_commit",
+      "tags": ["prod-disabled"],
       "title": "Git Commit",
       "description": "Create a commit from staged changes. Files >= 50 MiB return large_files_warning without committing. Ask the user before retrying with the listed approvedLargeFileOids.",
       "command": "tools/git_tool.sh",
@@ -955,6 +969,7 @@
     },
     {
       "name": "git_push",
+      "tags": ["prod-disabled"],
       "title": "Git Push",
       "description": "Push the current branch to a remote. Outgoing blobs >= 50 MiB return large_files_warning before pushing or creating a remote. Ask the user before retrying with the listed approvedLargeFileOids.",
       "command": "tools/git_tool.sh",
@@ -1039,6 +1054,7 @@
     },
     {
       "name": "git_pull",
+      "tags": ["prod-disabled"],
       "title": "Git Pull",
       "description": "Pull from remote.",
       "command": "tools/git_tool.sh",

@@ -25,6 +25,8 @@ import {
 import { FILE_EXP_REFRESH_EVENT } from "/explorer/utils/appEvents.js";
 import { GIT_PANEL_CLOSED_EVENT } from "../../git-tool-button-events.js";
 
+import { listAvailableGitTools, includesSyncTools } from '../../utils/git-sync-permission.mjs';
+
 export class GitPanel {
     constructor(element, invalidate, props = {}) {
         this.element = element;
@@ -43,6 +45,8 @@ export class GitPanel {
         this.panelBusyMessages = [];
         this.stateStore = createGitCommitState(props);
         this.state = this.stateStore.state;
+        this.state.syncAvailable = false;
+        this.state.availableGitTools = [];
         this.service = createGitCommitService({
             callTool: this.callTool.bind(this),
             callAgentTool: this.callAgentTool.bind(this),
@@ -273,6 +277,12 @@ export class GitPanel {
         this.bindEvents();
         this.initialLoad = (async () => {
             await this.withPanelLoader(async () => {
+                this.state.availableGitTools = await listAvailableGitTools(assistOS.appServices);
+                this.state.syncAvailable = includesSyncTools(this.state.availableGitTools);
+                if (this.unloaded) return;
+                this.updateCommitButtons();
+                this.ui.updateRepoTree();
+                this.updateIdentityPrompt();
                 await this.refreshGithubAuthStatus({ silent: true }).catch(() => {});
 
                 if (this.unloaded) return;
