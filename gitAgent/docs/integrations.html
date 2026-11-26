@@ -81,11 +81,13 @@
                         </tbody>
                     </table>
                 </section>
+<section class="doc-section"><h2>Open Git in another tab</h2><p>Git’s toolbar and conflict actions open through Explorer’s shared plugin entry point, using the active registry descriptor rather than constructing a Git-specific modal. The shared Explorer panel opens a separate Git instance through that same runtime plugin identity. It transfers only the selected repository path, validates that path against the current workspace and keeps it selected after refresh. Commit drafts, selected files and credentials stay in the source panel, which remains open. A disabled or unauthorized plugin cannot be reopened through its direct link.</p></section>
             </div>
         </div>
     <p>Shared expanded panels cancel superseded launches, retain one close promise when reused, and forward updated properties without recreating the Git panel. Fullscreen restore preserves the previous size within the viewport; Help uses the shared window controls.</p>
 <p>Closing a loading panel cancels its startup requests, polling, timers and pending mount. Late shared imports or already submitted server operations cannot resume the closed panel.</p>
 <p>Modal cleanup is owned directly by the presenter. Close stops HTTP probes and timers; ordinary asynchronous component loading checks whether the modal is closed before continuing. Hosted components clean up in afterUnload.</p>
+
 </main>
 
     <footer id="site-footer" class="site-footer"></footer>

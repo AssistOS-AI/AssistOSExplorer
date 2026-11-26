@@ -9,7 +9,7 @@ import { ToolCache, toolCacheInternals } from '../server/tool-cache.mjs';
 const { CACHE_SCHEMA, IN_PLACE_LOCK_STALE_MS } = toolCacheInternals;
 const NOW = Date.UTC(2026, 10, 23, 12, 0, 0);
 const MINUTE = 60 * 1000;
-const PLUGIN = '@opencode-ai/plugin';
+const PLUGIN = '@opencode/plugin';
 
 // A 64-digit lowercase hexadecimal generation name for a number or a repeated digit.
 const gen = value => (typeof value === 'number' ? value.toString(16).padStart(64, '0') : value.repeat(64));
@@ -481,7 +481,9 @@ async function runMain(t, mode) {
             warmup() { trace('toolCache.warmup'); return Promise.resolve(); }
         }`,
         './runtime-bundle.mjs': "export class RuntimeBundle { warmup() { trace('runtimeBundle.warmup'); return Promise.resolve(); } close() {} }",
+        './opencode-migration.mjs': "export function createOpenCodeMigration() { return { guard() {}, status() {}, start() { trace('migration.start'); return Promise.resolve().then(() => trace('migration.done')); } }; }",
         './run-manager.mjs': "export class RunManager { async initialize() { trace('runs.initialize'); } list() { return []; } async close() {} }",
+        './robot-manager.mjs': "export class RobotManager { async initialize() {} async restoreGitCredentials() {} async status() { return { robots: [] }; } }",
         './gui-manager.mjs': "export class GuiManager { images = {}; async initialize() { trace('gui.initialize'); } async shutdown() {} }\nexport const proxySessionHttp = deep(); export const proxySessionWebSocket = deep();",
         './http-server.mjs': "export function createRoboWorkServer() { return { listen(_port, _host, ready) { trace('listen'); ready(); }, close() {}, closeAllConnections() {} }; }",
     };
@@ -508,6 +510,7 @@ test('T17: the startup entry point collects after both kill steps, before listen
     for (const name of ['runs.initialize', 'gui.initialize', 'collect.start', 'collect.done', 'listen', 'cleanup', 'runtimeBundle.warmup', 'toolCache.warmup']) assert.notEqual(at(name), -1, `${name} in ${order}`);
     assert.ok(at('runs.initialize') < at('collect.start') && at('gui.initialize') < at('collect.start'), order.join(' '));
     assert.ok(at('collect.done') < at('listen'), 'the rename phase is awaited before listen');
+    assert.ok(at('gui.initialize') < at('migration.start') && at('migration.done') < at('toolCache.warmup'));
     for (const name of ['cleanup', 'runtimeBundle.warmup', 'toolCache.warmup']) assert.ok(at('listen') < at(name), `${name} runs after listen`);
     assert.deepEqual(events.find(event => event[0] === 'collect.start')[1], { terminalStateDir: '/root/server-state/terminal', legacyNpmCache: '/root/.npm' });
 });

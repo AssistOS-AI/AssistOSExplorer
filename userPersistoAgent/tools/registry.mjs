@@ -129,28 +129,24 @@ const HANDLERS = {
         await requireActiveActor(actor);
         return totp.setupVerify({ userId: actor, token: args.token, setupId: args.setupId });
     },
-    userpersisto_scriptahub_points_apply: async (args, context) => {
-        const agentId = process.env.USERPERSISTO_SCRIPTAHUB_AGENT_ID || 'agent:ScriptaHubAgent/scriptahubAgent';
-        if (context.agentId !== agentId) {
-            throw Object.assign(new Error('ScriptaHub agent access is required.'), { statusCode: 403 });
+    credits_apply: async (args, context) => {
+        const { agentId } = context;
+        if (!agentId || context.agentDependency !== true) {
+            throw Object.assign(new Error('The calling agent must declare a dependency on this service.'), { statusCode: 403 });
         }
-        const { userId, operation, requestId, attempt, amount, kind } = args;
-        const reward = ['reward','expiry'].includes(operation);
-        if (!/^[0-9a-f-]{36}$/i.test(requestId) || !Number.isSafeInteger(attempt) || attempt < 1
-            || !Number.isSafeInteger(amount) || amount < 1 || amount > 1000000
-            || !(reward ? ['book-proposal', 'manuscript', 'edit'] : ['edition', 'fork']).includes(kind)) {
-            throw Object.assign(new Error('Invalid ScriptaHub points operation.'), { statusCode: 400 });
+        const { userId, operation, referenceId: operationId, reason, amount } = args;
+        if (typeof operationId !== 'string' || !operationId.trim() || operationId !== operationId.trim()) {
+            throw Object.assign(new Error('A stable credit operation reference is required.'), { statusCode: 400 });
         }
-        const referenceId = reward ? `scriptahub:reward:${requestId}` : `scriptahub:${kind}:${requestId}:${attempt}`;
-        const reason = {
-            'book-proposal': 'Approved book proposal', manuscript: 'Approved manuscript',
-            edit: 'Approved corrections', edition: 'New book edition', fork: 'Derived book',
-        }[kind];
+        const referenceId = `${agentId}:${operationId}`;
+        if (operation === 'inspect-expiry') return credits.inspectCreditExpiry(userId, referenceId);
+        if (!Number.isSafeInteger(amount) || amount < 1 || amount > 1000000 || typeof reason !== 'string' || !reason.trim() || reason.length > 256) {
+            throw Object.assign(new Error('Invalid credit operation amount or reason.'), { statusCode: 400 });
+        }
         const input = { userId, amount, reason, referenceId, actorId: agentId };
-        if (operation === 'expiry') return credits.inspectCreditExpiry(userId,referenceId);
-        if (operation === 'reward') return credits.grant({ ...input, expiresAt: args.expiresAt || '' });
+        if (operation === 'grant') return credits.grant({ ...input, expiresAt: args.expiresAt || '' });
         if (operation === 'refund') return credits.refundSpend(input);
-        if (operation !== 'debit') throw Object.assign(new Error('Invalid ScriptaHub points operation.'), { statusCode: 400 });
+        if (operation !== 'debit') throw Object.assign(new Error('Invalid credit operation.'), { statusCode: 400 });
         try {
             await credits.reserve(input);
         } catch (error) {

@@ -38,8 +38,11 @@ export function actorContext(authInfo = {}) {
     const caller = invocation?.caller;
     const agentId = !authInfo.user && caller?.kind === 'agent' && invocation.actor?.kind === 'agent'
         && caller.id === invocation.actor.id && caller.id === invocation.subject ? caller.id : '';
+    const agentDependency = agentId && Array.isArray(invocation.scope)
+        && invocation.scope.includes('agent-dependency');
     return {
         ...(agentId ? { agentId } : {}),
+        ...(agentDependency ? { agentDependency: true } : {}),
         actorUserId: String(userId).replace(/^user:/, ''),
         actorRoles: roles.map(String),
     };

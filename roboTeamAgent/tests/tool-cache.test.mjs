@@ -57,7 +57,7 @@ async function writeExecutable(filePath) {
 
 // Builds what a service leaves on disk: per-agent generations with current.json and
 // stamp.json, plus the shell selection whose bin symlinks point at those generations.
-async function writePreparedShell(cacheRoot, versions = { codex: '1.0.0', opencode: '1.0.0', pi: '1.0.0', omp: '1.0.0', claude: '1.0.0', vibe: '1.0.0', agy: '1.0.0' }, tag = 'a') {
+async function writePreparedShell(cacheRoot, versions = { codex: '1.0.0', opencode: '2.4.1', pi: '1.0.0', omp: '1.0.0', claude: '1.0.0', vibe: '1.0.0', agy: '1.0.0' }, tag = 'a') {
     const schema = toolCacheInternals.CACHE_SCHEMA;
     const generation = path.join(cacheRoot, 'shell-generations', `g-${tag}`);
     await fs.mkdir(path.join(generation, 'bin'), { recursive: true });
@@ -72,7 +72,8 @@ async function writePreparedShell(cacheRoot, versions = { codex: '1.0.0', openco
             await writeExecutable(companionBinary);
             await fs.symlink(path.relative(path.join(generation, 'bin'), companionBinary), path.join(generation, 'bin', companion.executable));
         }
-        const stamp = { schema, name, generation: id, versions: { [name]: versions[name] } };
+        const stamp = { schema, name, generation: id, versions: { [name]: versions[name] },
+            ...(name === 'opencode' ? { identity: { package: '@opencode/cli' } } : {}) };
         await fs.writeFile(path.join(directory, 'stamp.json'), JSON.stringify(stamp));
         await fs.writeFile(path.join(cacheRoot, name, 'current.json'), JSON.stringify(stamp));
         await fs.symlink(path.relative(path.join(generation, 'bin'), binary), path.join(generation, 'bin', name));
@@ -90,14 +91,14 @@ test('startup warms every tool and concurrent requests reuse the same installati
         root, arch: 'x64', log: () => {},
         execFileImpl: async (command, args, options) => {
             if (await fakeUvInstall(command, args, options, installs)) return { stdout: '', stderr: '' };
-            if (args[0] === 'view') return { stdout: '"1.2.3"' };
+            if (args[0] === 'view') return { stdout: args.includes('@opencode/cli@latest') ? '"2.4.1"' : '"1.2.3"' };
             if (args[0] === 'install') {
                 const prefix = args[args.indexOf('--prefix') + 1];
                 const packages = Object.values(toolCacheInternals.CODING_AGENT_PACKAGES)
                     .flatMap(value => [value, ...(value.companions || [])]);
                 for (const specification of args.slice(args.indexOf('--prefix') + 2)) {
                     installs.push(specification);
-                    const definition = packages.find(value => specification === `${value.packageName}@1.2.3`);
+                    const definition = packages.find(value => specification.startsWith(`${value.packageName}@`));
                     await writeExecutable(path.join(prefix, 'bin', definition.executable));
                 }
             } else if (args[0] === 'run' && args.includes('/usr/local/bin/npm')) {
@@ -125,7 +126,7 @@ test('startup warms every tool and concurrent requests reuse the same installati
     assert.equal(results[2].value, browser);
     assert.deepEqual(installs.sort(), [
         '@anthropic-ai/claude-code@1.2.3', '@earendil-works/pi-coding-agent@1.2.3', '@oh-my-pi/pi-coding-agent@1.2.3',
-        '@openai/codex@1.2.3', '@playwright/mcp@1.2.3', 'antigravity-cli', 'bun@1.2.3', 'mistral-vibe==1.2.3', 'opencode-ai@1.2.3', 'supergateway@1.2.3',
+        '@openai/codex@1.2.3', '@opencode/cli@2.4.1', '@playwright/mcp@1.2.3', 'antigravity-cli', 'bun@1.2.3', 'mistral-vibe==1.2.3', 'supergateway@1.2.3',
     ]);
     await fs.access(path.join(desktop.path, 'computer-use-linux'));
     for (const name of ['codex', 'opencode', 'pi', 'omp', 'bun', 'claude', 'vibe', 'agy']) await fs.access(path.join(shell.binPath, name));
@@ -167,7 +168,7 @@ test('prepares coding agents once and reuses persistent generations', async (t) 
             assert.ok(args.includes('--global'));
             const executable = packageSpec.startsWith('@openai/codex@')
                 ? 'codex'
-                : packageSpec.startsWith('opencode-ai@') ? 'opencode' : 'pi';
+                : packageSpec.startsWith('@opencode/cli@') ? 'opencode' : 'pi';
             await writeExecutable(path.join(prefix, 'bin', executable));
         }
         return { stdout: '', stderr: '' };
@@ -307,7 +308,7 @@ function fakeExec({ latest = OTHER, failInstall = false, failProbe = false, call
             if (failInstall) throw new Error('registry install failed');
             const prefix = args[args.indexOf('--prefix') + 1];
             const spec = args.at(-1);
-            const executable = spec.startsWith(`${CODEX}@`) ? 'codex' : spec.startsWith('opencode-ai@') ? 'opencode' : 'pi';
+            const executable = spec.startsWith(`${CODEX}@`) ? 'codex' : spec.startsWith('@opencode/cli@') ? 'opencode' : 'pi';
             await writeExecutable(path.join(prefix, 'bin', executable));
         }
         if (args[0] === '--version' && failProbe) throw new Error('probe failed');
@@ -394,12 +395,12 @@ test('T1/T2 a pinned coding agent skips npm view, installs the exact version and
 test('T1 a pin affects only its own coding agent', async (t) => {
     const root = await tempRoot(t);
     const exec = fakeExec({ latest: '5.4.3' });
-    const cache = makeCache(root, { ROBOTEAM_OPENCODE_VERSION: '1.2.3' }, exec);
+    const cache = makeCache(root, { ROBOTEAM_OPENCODE_VERSION: '2.4.1' }, exec);
     const agents = await cache.prepareCodingAgents(['codex', 'opencode', 'pi']);
-    assert.equal(agents.opencode.versions.opencode, '1.2.3');
+    assert.equal(agents.opencode.versions.opencode, '2.4.1');
     assert.equal(agents.codex.versions.codex, '5.4.3');
     assert.equal(agents.pi.versions.pi, '5.4.3');
-    assert.equal(views(exec.calls, 'opencode-ai').length, 0);
+    assert.equal(views(exec.calls, '@opencode/cli').length, 0);
     assert.equal(views(exec.calls).length, 1);
     assert.equal(views(exec.calls, '@earendil-works/pi-coding-agent').length, 1);
 });
@@ -568,7 +569,7 @@ test('peekShellTools reuses a consistent prepared shell and rejects pin or selec
     for (const [name, agent] of Object.entries(peeked.agents)) {
         const id = (`a${name}`).padEnd(64, '0').replace(/[^0-9a-f]/g, 'f');
         const directory = path.join(root, name, 'generations', id);
-        assert.deepEqual(agent, { path: directory, binPath: path.join(directory, 'bin'), versions: { [name]: '1.0.0' } }, name);
+        assert.deepEqual(agent, { path: directory, binPath: path.join(directory, 'bin'), versions: { [name]: name === 'opencode' ? '2.4.1' : '1.0.0' } }, name);
     }
     assert.equal(peeked.binPath, path.join(root, 'shell-selections', 'shell', 'bin'));
     assert.ok(await make({ codex: '1.0.0' }).peekShellTools(), 'matching pin reuses');
@@ -585,7 +586,7 @@ test('peekShellTools reuses a consistent prepared shell and rejects pin or selec
     assert.equal(await make().peekShellTools(), null, 'current.json ahead of a stale selection');
     assert.equal(await make({ pi: '2.0.0' }).peekShellTools(), null, 'pinned version not what the selection resolves to');
 
-    await writePreparedShell(root, { codex: '1.0.0', opencode: '1.0.0', pi: '2.0.0', omp: '1.0.0', claude: '1.0.0', vibe: '1.0.0', agy: '1.0.0' }, 'c');
+    await writePreparedShell(root, { codex: '1.0.0', opencode: '2.4.1', pi: '2.0.0', omp: '1.0.0', claude: '1.0.0', vibe: '1.0.0', agy: '1.0.0' }, 'c');
     assert.ok(await make({ pi: '2.0.0' }).peekShellTools(), 'relinked selection is consistent again');
     await fs.rm(path.join(root, 'codex', 'current.json'));
     assert.equal(await make().peekShellTools(), null, 'missing descriptor');

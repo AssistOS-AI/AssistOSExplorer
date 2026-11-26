@@ -13,6 +13,7 @@ import { WorkflowScheduler } from './workflow-scheduler.mjs';
 import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator, resolveWorkflowObjective, assertRunnable } from './graph.mjs';
 import { coverage, matchRobot, robotSelections, discoverWorkflowSkillsets } from './skill-matching.mjs';
 import { parseRoute, parseWorkflowResponse, workflowResponseContext } from './result-parser.mjs';
+import { readPhaseProgress, verifyPhaseCompletion } from './phase-completion.mjs';
 import { generationPrompt, routingPrompt, buildWorkflowTaskPrompt, creatorPrompt } from '../../copilot/src/lib/prompts.mjs';
 import { presetGraph, readPresets } from './workflow-presets.mjs';
 import { requiredDocumentationRepository } from '../required-skills.mjs';
@@ -319,6 +320,8 @@ export class RoboFlowService {
             const skills = required.filter(item => item.kind === 'skill').map(item => item.selector);
             const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, workflowRunId: id,
                 workflowInstanceId: instance.id, ownerPrincipal: ownerPrincipalOf(flow.ownerPrincipal), skillSets, skills,
+                ...(node.effort ? { effort: node.effort } : {}),
+                ...(node.requiresCompletionEvidence ? { workflowCompletionStep: node.id } : {}),
                 requiredWorkflowSkillsets: node.skillsets, workflowCreator: node.creator === true, allowsHumanInput: node.allowsHumanInput === true,
                 ...(mode === 'terminal' && node.environment ? { environment: node.environment } : {}),
                 systemPrompt: [node.creator ? creatorPrompt(flow.graph, node.id, await this.subflows.catalog()) : outgoing.length > 1 ? routingPrompt(flow.graph, node.id) : '',
@@ -514,12 +517,49 @@ export class RoboFlowService {
         if (flow.humanInput?.status === 'pending' || (terminal(flow.status) && !binding.manual)) return;
         if (event.state === 'paused') return this._fail(flow.id, event.error || `Task ${instance.taskId} paused`, 'paused');
         if (event.state !== 'completed' || event.error) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, 'failed');
-        await this.store.writeOutput(flow.id, instance.id, event.result || '', 'result');
         const node = flow.graph.tasks.find(task => task.id === instance.taskId);
+        let completion;
+        try {
+            completion = await verifyPhaseCompletion(flow.folder, node, instance.runtimeTaskId);
+        } catch (error) {
+            if (error.code !== 'phase_evidence_incomplete') throw error;
+            if (event.result) await this.store.writeOutput(flow.id, instance.id, event.result, 'log');
+            const progress = await readPhaseProgress(flow.folder, node.id, instance.runtimeTaskId);
+            return this._continueIncompletePhase(flow.id, instance, error.message, progress);
+        }
+        await this.store.writeOutput(flow.id, instance.id, event.result || '', 'result');
         const outgoing = flow.graph.edges.filter(edge => edge.sourceTaskId === instance.taskId);
         const plan = node.creator ? await this.subflows.plan(flow, instance, event.result) : null;
-        const edge = plan?.edge || (outgoing.length > 1 ? parseRoute(event.result, flow.graph, instance.taskId).edge : outgoing[0]);
+        const verifiedEdge = completion?.nextEdgeId === undefined ? null : outgoing.find(edge => edge.id === completion.nextEdgeId);
+        if (completion?.nextEdgeId !== undefined && !verifiedEdge) throw new Error(`Phase ${node.id} verified an invalid outgoing route`);
+        const edge = plan?.edge || verifiedEdge || (outgoing.length > 1 ? parseRoute(event.result, flow.graph, instance.taskId).edge : outgoing[0]);
         await this._advance(flow.id, instance.id, edge, plan);
+    }
+    async _continueIncompletePhase(id, instance, reason, progress) {
+        const advanced = progress > (instance.completionProgress || 0);
+        const attempts = advanced ? 0 : instance.completionContinuations || 0;
+        const canContinue = attempts < 2;
+        await this.store.update(id, current => {
+            const visit = current.instances.find(item => item.id === instance.id);
+            visit.state = 'paused';
+            visit.endedAt = new Date().toISOString();
+            visit.error = reason;
+            if (advanced) visit.completionProgress = progress;
+            if (canContinue) visit.completionContinuations = advanced ? 0 : attempts + 1;
+            this._derive(current);
+        });
+        if (canContinue) {
+            const prompt = `${reason}. Continue the same phase and execution from the saved handoff. Reuse completed work and finish the remaining outputs before checking completion again.`;
+            try {
+                await this._resumeInstance(id, instance.id, prompt);
+            } catch (error) {
+                return this.store.update(id, current => {
+                    const visit = current.instances.find(item => item.id === instance.id);
+                    visit.error = `${reason}. Could not resume: ${error.message}`;
+                    current.error = visit.error;
+                });
+            }
+        }
     }
     async _advance(id, instanceId, edge, plan = null) {
         await this.store.update(id, current => {

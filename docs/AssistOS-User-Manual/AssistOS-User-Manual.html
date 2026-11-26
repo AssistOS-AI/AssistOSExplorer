@@ -40,6 +40,33 @@ tbody tr:nth-child(even) td{background:#f6f9fc;}
 .component-summary-table td,.component-summary-table th{overflow-wrap:anywhere;}
 .component-summary-table td[rowspan]{vertical-align:middle;}
 .component-summary-table td[rowspan] p{text-align:left;}
+.architecture-map{border:1px solid #cbd9ea;border-radius:18px;padding:26px;background:linear-gradient(180deg,#f4f8ff 0%,#fff 70%);margin:1.2em 0;box-shadow:0 10px 28px rgba(20,60,107,.08);break-inside:avoid;page-break-inside:avoid;}
+.architecture-map__eyebrow{text-align:center;color:#526783;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:12px;}
+.architecture-map__hub{max-width:510px;margin:0 auto;background:linear-gradient(120deg,#143c6b,#2457a5);color:#fff;text-align:center;padding:17px 22px;border-radius:13px;box-shadow:0 8px 20px rgba(20,60,107,.18);}
+.architecture-map__hub strong{display:block;font-size:24px;line-height:1.2;}
+.architecture-map__hub span{display:block;font-size:14px;line-height:1.45;margin-top:5px;}
+.architecture-map__connector{position:relative;height:64px;color:#5d83b6;}
+.architecture-map__trunk{position:absolute;left:50%;top:0;height:26px;border-left:2px solid currentColor;}
+.architecture-map__rail{position:absolute;left:12.5%;right:12.5%;top:25px;border-top:2px solid currentColor;}
+.architecture-map__drop{position:absolute;top:25px;width:25%;height:39px;display:flex;flex-direction:column;align-items:center;}
+.architecture-map__drop::before{content:"";height:29px;border-left:2px solid currentColor;}
+.architecture-map__drop::after{content:"";border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid currentColor;}
+.architecture-map__drop:nth-of-type(3){left:0;}
+.architecture-map__drop:nth-of-type(4){left:25%;}
+.architecture-map__drop:nth-of-type(5){left:50%;}
+.architecture-map__drop:nth-of-type(6){left:75%;}
+.architecture-map__groups{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;}
+.architecture-map__group{--group:#2d62a4;--group-soft:#eef5ff;border:1px solid #d8e2ee;border-top:4px solid var(--group);border-radius:11px;background:#fff;padding:15px;min-width:0;box-shadow:0 3px 9px rgba(20,60,107,.05);}
+.architecture-map__group--ai{--group:#b26a16;--group-soft:#fff6e9;}
+.architecture-map__group--collaboration{--group:#137e73;--group-soft:#ecf9f6;}
+.architecture-map__group--security{--group:#714e9d;--group-soft:#f6f1fb;}
+.architecture-map__group strong{display:block;color:var(--group);font-size:16px;line-height:1.3;min-height:2.6em;}
+.architecture-map__group p{font-size:13px;line-height:1.45;color:#526072;text-align:left;margin:6px 0 12px;}
+.architecture-map__items{display:flex;flex-wrap:wrap;gap:6px;}
+.architecture-map__items span{display:inline-block;background:var(--group-soft);color:#25364a;border:1px solid #e3e9f0;border-radius:6px;padding:5px 7px;font-size:13px;line-height:1.25;}
+.architecture-map__mobile-note{display:none;}
+@media(max-width:760px){.architecture-map__connector{display:none;}.architecture-map__mobile-note{display:block;text-align:center;font-size:13px;color:#526783;margin:15px 0;}.architecture-map__groups{grid-template-columns:repeat(2,minmax(0,1fr));}.architecture-map__group strong{min-height:0;}}
+@media(max-width:480px){.architecture-map{padding:16px;}.architecture-map__groups{grid-template-columns:1fr;}}
 center{display:block;}
 
 hr{border:none;border-top:1px solid var(--line);margin:2em 0;}
@@ -48,112 +75,106 @@ p[align="center"]{color:#5b6675;font-style:italic;}</style>
 <body lang="en-US" link="#000080" vlink="#800000" dir="ltr"><h1 id="sec1" class="western">
 Table of Contents</h1>
 <nav class="toc">
-<div class="toc-item lvl1"><a href="#sec3"><span class="t">1. Executive Summary</span><span class="dots"></span><span class="p">4</span></a></div>
-<div class="toc-item lvl1"><a href="#sec4"><span class="t">2. Introduction</span><span class="dots"></span><span class="p">5</span></a></div>
-<div class="toc-item lvl1"><a href="#sec5"><span class="t">3. AssistOS Components and User Workflows</span><span class="dots"></span><span class="p">7</span></a></div>
-<div class="toc-item lvl2"><a href="#sec6"><span class="t">3.1 Explorer</span><span class="dots"></span><span class="p">8</span></a></div>
-<div class="toc-item lvl3"><a href="#sec7"><span class="t">3.1.1 Access and Initial Use</span><span class="dots"></span><span class="p">8</span></a></div>
-<div class="toc-item lvl3"><a href="#sec8"><span class="t">3.1.2 User Interface</span><span class="dots"></span><span class="p">11</span></a></div>
-<div class="toc-item lvl3"><a href="#sec9"><span class="t">3.1.3 Files and Repository Management</span><span class="dots"></span><span class="p">13</span></a></div>
-<div class="toc-item lvl3"><a href="#sec10"><span class="t">3.1.4 Documents</span><span class="dots"></span><span class="p">17</span></a></div>
-<div class="toc-item lvl3"><a href="#sec11"><span class="t">3.1.5 Search and Help Tools</span><span class="dots"></span><span class="p">19</span></a></div>
-<div class="toc-item lvl3"><a href="#sec12"><span class="t">3.1.6 Error Messages</span><span class="dots"></span><span class="p">21</span></a></div>
-<div class="toc-item lvl2"><a href="#sec13"><span class="t">3.2 Git</span><span class="dots"></span><span class="p">27</span></a></div>
-<div class="toc-item lvl3"><a href="#sec14"><span class="t">3.2.1 Purpose and Access</span><span class="dots"></span><span class="p">27</span></a></div>
-<div class="toc-item lvl3"><a href="#sec15"><span class="t">3.2.2 Authentication</span><span class="dots"></span><span class="p">27</span></a></div>
-<div class="toc-item lvl3"><a href="#sec16"><span class="t">3.2.3 Preferences</span><span class="dots"></span><span class="p">29</span></a></div>
-<div class="toc-item lvl3"><a href="#sec17"><span class="t">3.2.4 Repositories and Changes</span><span class="dots"></span><span class="p">29</span></a></div>
-<div class="toc-item lvl3"><a href="#sec18"><span class="t">3.2.5 Synchronisation and Advanced Operations</span><span class="dots"></span><span class="p">30</span></a></div>
-<div class="toc-item lvl3"><a href="#sec19"><span class="t">3.2.6 Error Messages</span><span class="dots"></span><span class="p">32</span></a></div>
-<div class="toc-item lvl2"><a href="#sec20"><span class="t">3.3 WebMeet</span><span class="dots"></span><span class="p">35</span></a></div>
-<div class="toc-item lvl3"><a href="#sec21"><span class="t">3.3.1 WebMeet in the Workspace</span><span class="dots"></span><span class="p">35</span></a></div>
-<div class="toc-item lvl3"><a href="#sec22"><span class="t">3.3.2 Meeting Rooms</span><span class="dots"></span><span class="p">35</span></a></div>
-<div class="toc-item lvl3"><a href="#sec23"><span class="t">3.3.3 Robo Team – Collaboration Assistants</span><span class="dots"></span><span class="p">37</span></a></div>
-<div class="toc-item lvl3"><a href="#sec24"><span class="t">3.3.4 The Meeting Room</span><span class="dots"></span><span class="p">40</span></a></div>
-<div class="toc-item lvl3"><a href="#sec25"><span class="t">3.3.5 Audio, Video, Voice Commands and Avatar Settings</span><span class="dots"></span><span class="p">41</span></a></div>
-<div class="toc-item lvl3"><a href="#sec26"><span class="t">3.3.6 The Blackboard</span><span class="dots"></span><span class="p">43</span></a></div>
-<div class="toc-item lvl3"><a href="#sec27"><span class="t">3.3.7 Error Messages</span><span class="dots"></span><span class="p">44</span></a></div>
-<div class="toc-item lvl2"><a href="#sec28"><span class="t">3.4 Marketplace</span><span class="dots"></span><span class="p">48</span></a></div>
-<div class="toc-item lvl3"><a href="#sec29"><span class="t">3.4.1 Purpose and Access</span><span class="dots"></span><span class="p">48</span></a></div>
-<div class="toc-item lvl3"><a href="#sec30"><span class="t">3.4.2 Agents</span><span class="dots"></span><span class="p">48</span></a></div>
-<div class="toc-item lvl3"><a href="#sec31"><span class="t">3.4.3 Repositories</span><span class="dots"></span><span class="p">49</span></a></div>
-<div class="toc-item lvl3"><a href="#sec32"><span class="t">3.4.4 Error Messages</span><span class="dots"></span><span class="p">49</span></a></div>
-<div class="toc-item lvl2"><a href="#sec33"><span class="t">3.5 Copilot</span><span class="dots"></span><span class="p">49</span></a></div>
-<div class="toc-item lvl3"><a href="#sec34"><span class="t">3.5.1 Purpose and Access</span><span class="dots"></span><span class="p">49</span></a></div>
-<div class="toc-item lvl3"><a href="#sec35"><span class="t">3.5.2 The Achilles CLI Interface</span><span class="dots"></span><span class="p">50</span></a></div>
-<div class="toc-item lvl3"><a href="#sec36"><span class="t">3.5.3 Skills and Repositories</span><span class="dots"></span><span class="p">51</span></a></div>
-<div class="toc-item lvl3"><a href="#sec37"><span class="t">3.5.4 Commands</span><span class="dots"></span><span class="p">51</span></a></div>
-<div class="toc-item lvl3"><a href="#sec38"><span class="t">3.5.5 Tasks</span><span class="dots"></span><span class="p">53</span></a></div>
-<div class="toc-item lvl3"><a href="#sec39"><span class="t">3.5.6 Error Messages</span><span class="dots"></span><span class="p">53</span></a></div>
-<div class="toc-item lvl2"><a href="#sec40"><span class="t">3.6 DPU Agent Confidential</span><span class="dots"></span><span class="p">53</span></a></div>
-<div class="toc-item lvl3"><a href="#sec41"><span class="t">3.6.1 Purpose and Access</span><span class="dots"></span><span class="p">53</span></a></div>
-<div class="toc-item lvl3"><a href="#sec42"><span class="t">3.6.2 Confidential Area</span><span class="dots"></span><span class="p">54</span></a></div>
-<div class="toc-item lvl3"><a href="#sec45"><span class="t">3.6.3 Error Messages</span><span class="dots"></span><span class="p">59</span></a></div>
-<div class="toc-item lvl2"><a><span class="t">3.7 MD Editors</span><span class="dots"></span><span class="p">60</span></a></div>
-<div class="toc-item lvl3"><a href="#sec47"><span class="t">3.7.1 Purpose and Access</span><span class="dots"></span><span class="p">60</span></a></div>
-<div class="toc-item lvl3"><a href="#sec48"><span class="t">3.7.2 Preview Mode</span><span class="dots"></span><span class="p">60</span></a></div>
-<div class="toc-item lvl3"><a href="#sec49"><span class="t">3.7.3 Edit Mode</span><span class="dots"></span><span class="p">61</span></a></div>
-<div class="toc-item lvl3"><a href="#sec50"><span class="t">3.7.4 Advanced Edit Mode</span><span class="dots"></span><span class="p">62</span></a></div>
-<div class="toc-item lvl3"><a href="#sec51"><span class="t">3.7.5 Document Management</span><span class="dots"></span><span class="p">62</span></a></div>
-<div class="toc-item lvl3"><a href="#sec53"><span class="t">3.7.6 SCRIPTA Variants</span><span class="dots"></span><span class="p">64</span></a></div>
-<div class="toc-item lvl3"><a href="#sec52"><span class="t">3.7.7 Error Messages</span><span class="dots"></span><span class="p">65</span></a></div>
+<div class="toc-item lvl1"><a href="#sec3"><span class="t">1. Executive Summary</span></a></div>
+<div class="toc-item lvl1"><a href="#sec4"><span class="t">2. Introduction</span></a></div>
+<div class="toc-item lvl1"><a href="#sec5"><span class="t">3. AssistOS Components and User Workflows</span></a></div>
+<div class="toc-item lvl2"><a href="#sec6"><span class="t">3.1 Explorer</span></a></div>
+<div class="toc-item lvl3"><a href="#sec7"><span class="t">3.1.1 Access and Initial Use</span></a></div>
+<div class="toc-item lvl3"><a href="#sec8"><span class="t">3.1.2 User Interface</span></a></div>
+<div class="toc-item lvl3"><a href="#sec9"><span class="t">3.1.3 Files and Repository Management</span></a></div>
+<div class="toc-item lvl3"><a href="#sec10"><span class="t">3.1.4 Documents</span></a></div>
+<div class="toc-item lvl3"><a href="#sec11"><span class="t">3.1.5 Search and Help Tools</span></a></div>
+<div class="toc-item lvl3"><a href="#sec12"><span class="t">3.1.6 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec13"><span class="t">3.2 Git</span></a></div>
+<div class="toc-item lvl3"><a href="#sec14"><span class="t">3.2.1 Purpose and Access</span></a></div>
+<div class="toc-item lvl3"><a href="#sec15"><span class="t">3.2.2 Authentication</span></a></div>
+<div class="toc-item lvl3"><a href="#sec16"><span class="t">3.2.3 Preferences</span></a></div>
+<div class="toc-item lvl3"><a href="#sec17"><span class="t">3.2.4 Repositories and Changes</span></a></div>
+<div class="toc-item lvl3"><a href="#sec18"><span class="t">3.2.5 Synchronisation and Advanced Operations</span></a></div>
+<div class="toc-item lvl3"><a href="#sec19"><span class="t">3.2.6 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec20"><span class="t">3.3 WebMeet</span></a></div>
+<div class="toc-item lvl3"><a href="#sec21"><span class="t">3.3.1 WebMeet in the Workspace</span></a></div>
+<div class="toc-item lvl3"><a href="#sec22"><span class="t">3.3.2 Meeting Rooms</span></a></div>
+<div class="toc-item lvl3"><a href="#sec23"><span class="t">3.3.3 Robo Team – Collaboration Assistants</span></a></div>
+<div class="toc-item lvl3"><a href="#sec24"><span class="t">3.3.4 The Meeting Room</span></a></div>
+<div class="toc-item lvl3"><a href="#sec25"><span class="t">3.3.5 Audio, Video, Voice Commands and Avatar Settings</span></a></div>
+<div class="toc-item lvl3"><a href="#sec26"><span class="t">3.3.6 The Blackboard</span></a></div>
+<div class="toc-item lvl3"><a href="#sec27"><span class="t">3.3.7 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec28"><span class="t">3.4 Marketplace</span></a></div>
+<div class="toc-item lvl3"><a href="#sec29"><span class="t">3.4.1 Purpose and Access</span></a></div>
+<div class="toc-item lvl3"><a href="#sec30"><span class="t">3.4.2 Agents</span></a></div>
+<div class="toc-item lvl3"><a href="#sec31"><span class="t">3.4.3 Repositories</span></a></div>
+<div class="toc-item lvl3"><a href="#sec32"><span class="t">3.4.4 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec33"><span class="t">3.5 Copilot</span></a></div>
+<div class="toc-item lvl3"><a href="#sec34"><span class="t">3.5.1 Purpose and Access</span></a></div>
+<div class="toc-item lvl3"><a href="#sec35"><span class="t">3.5.2 The Achilles CLI Interface</span></a></div>
+<div class="toc-item lvl3"><a href="#sec36"><span class="t">3.5.3 Skills and Repositories</span></a></div>
+<div class="toc-item lvl3"><a href="#sec37"><span class="t">3.5.4 Commands</span></a></div>
+<div class="toc-item lvl3"><a href="#sec38"><span class="t">3.5.5 Tasks</span></a></div>
+<div class="toc-item lvl3"><a href="#sec39"><span class="t">3.5.6 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec40"><span class="t">3.6 DPU Agent Confidential</span></a></div>
+<div class="toc-item lvl3"><a href="#sec41"><span class="t">3.6.1 Purpose and Access</span></a></div>
+<div class="toc-item lvl3"><a href="#sec42"><span class="t">3.6.2 Confidential Area</span></a></div>
+<div class="toc-item lvl3"><a href="#sec45"><span class="t">3.6.3 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec46"><span class="t">3.7 MD Editors</span></a></div>
+<div class="toc-item lvl3"><a href="#sec47"><span class="t">3.7.1 Purpose and Access</span></a></div>
+<div class="toc-item lvl3"><a href="#sec48"><span class="t">3.7.2 Preview Mode</span></a></div>
+<div class="toc-item lvl3"><a href="#sec49"><span class="t">3.7.3 Edit Mode</span></a></div>
+<div class="toc-item lvl3"><a href="#sec50"><span class="t">3.7.4 Advanced Edit Mode</span></a></div>
+<div class="toc-item lvl3"><a href="#sec51"><span class="t">3.7.5 Document Management</span></a></div>
+<div class="toc-item lvl3"><a href="#sec53"><span class="t">3.7.6 SCRIPTA Variants</span></a></div>
+<div class="toc-item lvl3"><a href="#sec52"><span class="t">3.7.7 Error Messages</span></a></div>
 
-<div class="toc-item lvl2"><a href="#sec59"><span class="t">3.8 Backlog</span><span class="dots"></span><span class="p">70</span></a></div>
-<div class="toc-item lvl3"><a href="#sec60"><span class="t">3.8.1 Purpose and Access</span><span class="dots"></span><span class="p">70</span></a></div>
-<div class="toc-item lvl3"><a href="#sec61"><span class="t">3.8.2 Viewing and Filtering Tasks</span><span class="dots"></span><span class="p">71</span></a></div>
-<div class="toc-item lvl3"><a href="#sec62"><span class="t">3.8.3 Create a new Task</span><span class="dots"></span><span class="p">72</span></a></div>
-<div class="toc-item lvl3"><a href="#sec63"><span class="t">3.8.4 Display Modes and Persistence</span><span class="dots"></span><span class="p">72</span></a></div>
-<div class="toc-item lvl3"><a href="#sec64"><span class="t">3.8.5 Error Messages</span><span class="dots"></span><span class="p">73</span></a></div>
-<div class="toc-item lvl2"><a href="#sec72"><span class="t">3.9 Settings</span><span class="dots"></span><span class="p">76</span></a></div>
-<div class="toc-item lvl3"><a href="#sec73"><span class="t">3.9.1 Purpose and Access</span><span class="dots"></span><span class="p">76</span></a></div>
-<div class="toc-item lvl3"><a href="#sec74"><span class="t">3.9.2 My Account</span><span class="dots"></span><span class="p">77</span></a></div>
-<div class="toc-item lvl3"><a href="#sec75"><span class="t">3.9.3 Agents</span><span class="dots"></span><span class="p">79</span></a></div>
-<div class="toc-item lvl3"><a href="#sec76"><span class="t">3.9.4 Plugins</span><span class="dots"></span><span class="p">80</span></a></div>
-<div class="toc-item lvl3"><a href="#sec77"><span class="t">3.9.5 Administration</span><span class="dots"></span><span class="p">80</span></a></div>
-<div class="toc-item lvl3"><a href="#sec116"><span class="t">3.9.6 Hardware limits</span><span class="dots"></span><span class="p">83</span></a></div>
-<div class="toc-item lvl3"><a href="#sec78"><span class="t">3.9.7 Keymap, Editor and Theme</span><span class="dots"></span><span class="p">83</span></a></div>
-<div class="toc-item lvl3"><a href="#sec79"><span class="t">3.9.8 Avatar</span><span class="dots"></span><span class="p">85</span></a></div>
-<div class="toc-item lvl3"><a href="#sec80"><span class="t">3.9.9 Error Messages</span><span class="dots"></span><span class="p">85</span></a></div>
-<div class="toc-item lvl2"><a><span class="t">3.10 Workspace Monitor</span><span class="dots"></span><span class="p">86</span></a></div>
-<div class="toc-item lvl3"><a href="#sec82"><span class="t">3.10.1 Purpose and Access</span><span class="dots"></span><span class="p">86</span></a></div>
-<div class="toc-item lvl3"><a href="#sec83"><span class="t">3.10.2 Overview</span><span class="dots"></span><span class="p">86</span></a></div>
-<div class="toc-item lvl3"><a href="#sec84"><span class="t">3.10.3 Resources</span><span class="dots"></span><span class="p">87</span></a></div>
-<div class="toc-item lvl3"><a href="#sec85"><span class="t">3.10.4 Router Logs</span><span class="dots"></span><span class="p">87</span></a></div>
-<div class="toc-item lvl3"><a href="#sec86"><span class="t">3.10.5 Policy Audit and DPU Audit</span><span class="dots"></span><span class="p">87</span></a></div>
-<div class="toc-item lvl3"><a href="#sec87"><span class="t">3.10.6 Error Messages</span><span class="dots"></span><span class="p">87</span></a></div>
-<div class="toc-item lvl2"><a href="#sec88"><span class="t">3.11 RoboTeam</span><span class="dots"></span><span class="p">88</span></a></div>
-<div class="toc-item lvl3"><a href="#sec89"><span class="t">3.11.1 Purpose and Access</span><span class="dots"></span><span class="p">88</span></a></div>
-<div class="toc-item lvl3"><a href="#sec90"><span class="t">3.11.2 Creating and Managing Robots</span><span class="dots"></span><span class="p">89</span></a></div>
-<div class="toc-item lvl3"><a href="#sec90a"><span class="t">3.11.3 Managing Skills and Skillsets</span><span class="dots"></span><span class="p">89</span></a></div>
-<div class="toc-item lvl3"><a href="#sec90b"><span class="t">3.11.4 Choosing a Coding Agent</span><span class="dots"></span><span class="p">90</span></a></div>
-<div class="toc-item lvl3"><a href="#sec90c"><span class="t">3.11.5 Workflow Types and the Workflow Editor</span><span class="dots"></span><span class="p">90</span></a></div>
-<div class="toc-item lvl3"><a href="#sec90d"><span class="t">3.11.6 Running, Scheduling and Monitoring Workflows</span><span class="dots"></span><span class="p">91</span></a></div>
-<div class="toc-item lvl3"><a href="#sec90f"><span class="t">3.11.7 Robot Conversations and Commands</span><span class="dots"></span><span class="p">92</span></a></div>
-<div class="toc-item lvl3"><a href="#sec92"><span class="t">3.11.8 Error Messages</span><span class="dots"></span><span class="p">92</span></a></div>
-<div class="toc-item lvl2"><a href="#sec90e"><span class="t">3.12 Observability</span><span class="dots"></span><span class="p">92</span></a></div>
-<div class="toc-item lvl2"><a href="#sec115"><span class="t">3.13 Live Sessions</span><span class="dots"></span><span class="p">93</span></a></div>
-<div class="toc-item lvl2"><a href="#sec93"><span class="t">3.14 Code Editor</span><span class="dots"></span><span class="p">95</span></a></div>
-<div class="toc-item lvl3"><a href="#sec94"><span class="t">3.14.1 Purpose and Access</span><span class="dots"></span><span class="p">95</span></a></div>
-<div class="toc-item lvl3"><a href="#sec95"><span class="t">3.14.2 Editing Source Code</span><span class="dots"></span><span class="p">95</span></a></div>
-<div class="toc-item lvl3"><a href="#sec96"><span class="t">3.14.3 Viewing Modes</span><span class="dots"></span><span class="p">96</span></a></div>
-<div class="toc-item lvl3"><a href="#sec97"><span class="t">3.14.4 Saving and Cancelling Changes</span><span class="dots"></span><span class="p">96</span></a></div>
-<div class="toc-item lvl3"><a href="#sec98"><span class="t">3.14.5 Error Messages</span><span class="dots"></span><span class="p">97</span></a></div>
-<div class="toc-item lvl2"><a href="#sec99"><span class="t">3.15 Soul Gateway</span><span class="dots"></span><span class="p">97</span></a></div>
-<div class="toc-item lvl3"><a href="#sec100"><span class="t">3.15.1 Purpose and Access</span><span class="dots"></span><span class="p">97</span></a></div>
-<div class="toc-item lvl3"><a href="#sec101"><span class="t">3.15.2 Providers, Models and Tiers</span><span class="dots"></span><span class="p">97</span></a></div>
-<div class="toc-item lvl3"><a href="#sec102"><span class="t">3.15.3 Keys and Export</span><span class="dots"></span><span class="p">97</span></a></div>
-<div class="toc-item lvl3"><a href="#sec103"><span class="t">3.15.4 Monitoring Activity and Errors</span><span class="dots"></span><span class="p">98</span></a></div>
-<div class="toc-item lvl3"><a href="#sec104"><span class="t">3.15.5 Blacklist and Middlewares</span><span class="dots"></span><span class="p">100</span></a></div>
-<div class="toc-item lvl3"><a href="#sec105"><span class="t">3.15.6 Error Messages</span><span class="dots"></span><span class="p">100</span></a></div>
-<div class="toc-item lvl2"><a href="#sec109"><span class="t">3.16 Local LLMs</span><span class="dots"></span><span class="p">100</span></a></div>
-<div class="toc-item lvl3"><a href="#sec110"><span class="t">3.16.1 Purpose and Overview</span><span class="dots"></span><span class="p">100</span></a></div>
-<div class="toc-item lvl3"><a href="#sec111"><span class="t">3.16.2 Models and Adding a Model</span><span class="dots"></span><span class="p">101</span></a></div>
-<div class="toc-item lvl3"><a href="#sec112"><span class="t">3.16.3 Runners</span><span class="dots"></span><span class="p">101</span></a></div>
-<div class="toc-item lvl3"><a href="#sec113"><span class="t">3.16.4 Playground</span><span class="dots"></span><span class="p">102</span></a></div>
-<div class="toc-item lvl3"><a href="#sec114"><span class="t">3.16.5 Logs</span><span class="dots"></span><span class="p">102</span></a></div>
-<div class="toc-item lvl1"><a href="#sec106"><span class="t">4. Conclusions</span><span class="dots"></span><span class="p">103</span></a></div>
-<div class="toc-item lvl1"><a href="#sec107"><span class="t">5. Annexes</span><span class="dots"></span><span class="p">104</span></a></div>
-<div class="toc-item lvl2"><a href="#sec108"><span class="t">5.1 Glossary</span><span class="dots"></span><span class="p">104</span></a></div>
+<div class="toc-item lvl2"><a href="#sec72"><span class="t">3.8 Settings</span></a></div>
+<div class="toc-item lvl3"><a href="#sec73"><span class="t">3.8.1 Purpose and Access</span></a></div>
+<div class="toc-item lvl3"><a href="#sec74"><span class="t">3.8.2 My Account</span></a></div>
+<div class="toc-item lvl3"><a href="#sec75"><span class="t">3.8.3 Agents</span></a></div>
+<div class="toc-item lvl3"><a href="#sec76"><span class="t">3.8.4 Plugins</span></a></div>
+<div class="toc-item lvl3"><a href="#sec77"><span class="t">3.8.5 Administration</span></a></div>
+<div class="toc-item lvl3"><a href="#sec116"><span class="t">3.8.6 Hardware limits</span></a></div>
+<div class="toc-item lvl3"><a href="#sec78"><span class="t">3.8.7 Keymap, Editor and Theme</span></a></div>
+<div class="toc-item lvl3"><a href="#sec79"><span class="t">3.8.8 Avatar</span></a></div>
+<div class="toc-item lvl3"><a href="#sec80"><span class="t">3.8.9 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec81"><span class="t">3.9 Workspace Monitor</span></a></div>
+<div class="toc-item lvl3"><a href="#sec82"><span class="t">3.9.1 Purpose and Access</span></a></div>
+<div class="toc-item lvl3"><a href="#sec83"><span class="t">3.9.2 Overview</span></a></div>
+<div class="toc-item lvl3"><a href="#sec84"><span class="t">3.9.3 Resources</span></a></div>
+<div class="toc-item lvl3"><a href="#sec85"><span class="t">3.9.4 Router Logs</span></a></div>
+<div class="toc-item lvl3"><a href="#sec86"><span class="t">3.9.5 Policy Audit and DPU Audit</span></a></div>
+<div class="toc-item lvl3"><a href="#sec87"><span class="t">3.9.6 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec88"><span class="t">3.10 RoboTeam</span></a></div>
+<div class="toc-item lvl3"><a href="#sec89"><span class="t">3.10.1 Purpose and Access</span></a></div>
+<div class="toc-item lvl3"><a href="#sec90"><span class="t">3.10.2 Creating and Managing Robots</span></a></div>
+<div class="toc-item lvl3"><a href="#sec90a"><span class="t">3.10.3 Managing Skills and Skillsets</span></a></div>
+<div class="toc-item lvl3"><a href="#sec90b"><span class="t">3.10.4 Choosing a Coding Agent</span></a></div>
+<div class="toc-item lvl3"><a href="#sec90c"><span class="t">3.10.5 Workflow Types and the Workflow Editor</span></a></div>
+<div class="toc-item lvl3"><a href="#sec90d"><span class="t">3.10.6 Running, Scheduling and Monitoring Workflows</span></a></div>
+<div class="toc-item lvl3"><a href="#sec90f"><span class="t">3.10.7 Robot Conversations and Commands</span></a></div>
+<div class="toc-item lvl3"><a href="#sec92"><span class="t">3.10.8 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec90e"><span class="t">3.11 Observability</span></a></div>
+<div class="toc-item lvl2"><a href="#sec115"><span class="t">3.12 Live Sessions</span></a></div>
+<div class="toc-item lvl2"><a href="#sec93"><span class="t">3.13 Code Editor</span></a></div>
+<div class="toc-item lvl3"><a href="#sec94"><span class="t">3.13.1 Purpose and Access</span></a></div>
+<div class="toc-item lvl3"><a href="#sec95"><span class="t">3.13.2 Editing Source Code</span></a></div>
+<div class="toc-item lvl3"><a href="#sec96"><span class="t">3.13.3 Viewing Modes</span></a></div>
+<div class="toc-item lvl3"><a href="#sec97"><span class="t">3.13.4 Saving and Cancelling Changes</span></a></div>
+<div class="toc-item lvl3"><a href="#sec98"><span class="t">3.13.5 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec99"><span class="t">3.14 Soul Gateway</span></a></div>
+<div class="toc-item lvl3"><a href="#sec100"><span class="t">3.14.1 Purpose and Access</span></a></div>
+<div class="toc-item lvl3"><a href="#sec101"><span class="t">3.14.2 Providers, Models and Tiers</span></a></div>
+<div class="toc-item lvl3"><a href="#sec102"><span class="t">3.14.3 Keys and Export</span></a></div>
+<div class="toc-item lvl3"><a href="#sec103"><span class="t">3.14.4 Monitoring Activity and Errors</span></a></div>
+<div class="toc-item lvl3"><a href="#sec104"><span class="t">3.14.5 Blacklist and Middlewares</span></a></div>
+<div class="toc-item lvl3"><a href="#sec105"><span class="t">3.14.6 Error Messages</span></a></div>
+<div class="toc-item lvl2"><a href="#sec109"><span class="t">3.15 Local LLMs</span></a></div>
+<div class="toc-item lvl3"><a href="#sec110"><span class="t">3.15.1 Purpose and Overview</span></a></div>
+<div class="toc-item lvl3"><a href="#sec111"><span class="t">3.15.2 Models and Adding a Model</span></a></div>
+<div class="toc-item lvl3"><a href="#sec112"><span class="t">3.15.3 Runners</span></a></div>
+<div class="toc-item lvl3"><a href="#sec113"><span class="t">3.15.4 Playground</span></a></div>
+<div class="toc-item lvl3"><a href="#sec114"><span class="t">3.15.5 Logs</span></a></div>
+<div class="toc-item lvl1"><a href="#sec106"><span class="t">4. Conclusions</span></a></div>
+<div class="toc-item lvl1"><a href="#sec107"><span class="t">5. Annexes</span></a></div>
+<div class="toc-item lvl2"><a href="#sec108"><span class="t">5.1 Glossary</span></a></div>
 </nav>
 
 
@@ -269,9 +290,7 @@ repositories to the workspace, so that source and documentation are
 developed and synchronised from the same surface. It keeps
 documentation close to the code it describes. It provides
 collaborative working sessions, so that discussion and joint work
-take place beside the material they concern, and it supports the
-planning of work through backlogs and tasks that remain associated
-with the project. It manages the extensible resources of the
+take place beside the material they concern. It manages the extensible resources of the
 environment, including the agents, repositories and skills that add
 capabilities, and it supports the automation of repeatable
 activities. Finally, it integrates artificial-intelligence assistance
@@ -286,7 +305,7 @@ appears in the same place. Internally the environment is composed of
 a shared surface and a set of specialised components. The shared
 surface is Explorer. The specialised components provide the
 capabilities that act on the workspace, each according to its own
-domain and under its own authorization. The sixteen components are
+domain and under its own authorization. The fifteen components are
 documented in Chapter 3; they are described individually there, but
 they are designed and used as parts of the same environment.</p>
 <p>The components
@@ -302,44 +321,27 @@ contains Copilot, Marketplace, RoboTeam, Observability, Live Sessions,
 Soul Gateway and Local LLMs, which provide context-aware assistance, manage
 extensible resources and specialised robots, track workflows, and
 provide access to model providers. The
-third group, Collaboration and Project Management, contains WebMeet
-and the Backlog, which provide real-time collaboration and the
-organisation of planned work. The fourth group, Security and
+third group, Collaboration, contains WebMeet, which provides real-time collaboration. The fourth group, Security and
 Administration, contains the DPU Agent Confidential, Settings and the
 Workspace Monitor, which own confidential resources, configuration
 and monitoring, and thereby establish the boundaries within which all
 other activity takes place.</p>
-<p align="center">
-<img loading="lazy" decoding="async" src="images/assistos-workspace-architecture.png" alt="Conceptual architecture of the AssistOS workspace and its components" align="bottom" border="0"/>
-</p>
+<div class="architecture-map" aria-label="Explorer connects the four groups of AssistOS components">
+<div class="architecture-map__eyebrow">One authenticated workspace</div>
+<div class="architecture-map__hub"><strong>Explorer</strong><span>Choose a workspace location and open the tools available to your account</span></div>
+<div class="architecture-map__connector" aria-hidden="true"><span class="architecture-map__trunk"></span><span class="architecture-map__rail"></span><span class="architecture-map__drop"></span><span class="architecture-map__drop"></span><span class="architecture-map__drop"></span><span class="architecture-map__drop"></span></div>
+<p class="architecture-map__mobile-note">From Explorer, you can reach each group below.</p>
+<div class="architecture-map__groups">
+<div class="architecture-map__group architecture-map__group--workspace"><strong>Workspace and Development</strong><p>Work with files, documents and repositories.</p><div class="architecture-map__items"><span>Git</span><span>Code Editor</span><span>MD Editors</span></div></div>
+<div class="architecture-map__group architecture-map__group--ai"><strong>AI and Automation</strong><p>Use assistance, models and automated workflows.</p><div class="architecture-map__items"><span>Copilot</span><span>Marketplace</span><span>RoboTeam</span><span>Observability</span><span>Live Sessions</span><span>Soul Gateway</span><span>Local LLMs</span></div></div>
+<div class="architecture-map__group architecture-map__group--collaboration"><strong>Collaboration</strong><p>Meet and work with other participants.</p><div class="architecture-map__items"><span>WebMeet</span></div></div>
+<div class="architecture-map__group architecture-map__group--security"><strong>Security and Administration</strong><p>Manage access, settings and workspace activity.</p><div class="architecture-map__items"><span>DPU Agent Confidential</span><span>Settings</span><span>Workspace Monitor</span></div></div>
+</div>
+</div>
 <p align="center">
 <i>Figure
 1. AssistOS — conceptual architecture of the workspace.</i></p>
-<p>The outer
-container represents the environment itself: every component
-shown operates inside one AssistOS workspace and shares its identity,
-its material and its rules. Within it, the most important
-relationships concern Explorer, which is the principal point of
-access. The arrow from Explorer to the Workspace and Development group
-indicates that the user reaches repository access and management, and
-therefore the synchronisation of the project, from the location
-selected in the workspace. The arrow from Explorer to the AI and
-Automation group indicates that the user can engage
-artificial-intelligence assistance using the selected workspace
-location as context, so that assistance is grounded in the material
-the user is actually working on. Together these two
-relationships express the central idea of the manual: from Explorer
-the user both manages the project and requests assistance about it.</p>
-<p>The remaining
-relationships concern the extensible and intelligent capabilities of
-the environment. The arrow from Marketplace to Agents and Skills
-indicates that Marketplace is where the user discovers, installs and
-manages the resources that extend the workspace; this is why new
-capabilities appear in the environment without the user leaving it.
-The arrow from Soul Gateway to the artificial-intelligence components
-indicates that Soul Gateway manages connections to model providers
-and services for the AI components. Together, these relationships
-show how Explorer connects the workspace, extensions and AI services.</p>
+<p>The arrows in Figure 1 show that Explorer is the main access point for each group. From the selected workspace location, users can work with files and repositories, join a meeting, or open the tools available to their account. Marketplace manages the resources that extend the workspace, while Soul Gateway manages connections to the model providers used by AI features.</p>
 <p>The manual
 follows the user's activity. Chapter 3 documents the components in the order in which a
 user typically encounters them, beginning with the workspace itself.
@@ -479,18 +481,7 @@ component to which they belong.</p>
 					meetings, shared sessions and communication between
 					participants.</p>
 				</td>
-				<td rowspan="2" width="76"><p>
-					Collaboration and Project
-					Management</p>
-				</td>
-			</tr>
-			<tr>
-				<td width="95" height="8" valign="top"><p>
-					Backlog</p>
-				</td>
-				<td width="414" valign="top"><p>
-					Organises planned work
-					into backlogs and tasks linked to the project.</p>
+				<td width="76"><p>Collaboration</p>
 				</td>
 			</tr>
 			<tr>
@@ -672,10 +663,9 @@ files from the local machine into the current directory. The<b> New</b>
 menu creates workspace content and offers to create a folder, create
 a file, add a new repository and clone an existing repository; its
 operations are described in Section 3.1.3. The Tools menu groups the
-project-level functions <b>Copilot</b>, <b>Tasks</b>, <b>DPU Research</b>
+project-level functions <b>Copilot</b>, <b>DPU Research</b>
 and <b>Builder</b>. Copilot opens assistant access in the
-context of the current location, Tasks provides the entry point to
-the project's backlogs and tasks, DPU Research opens the research
+context of the current location, DPU Research opens the research
 assistant, and Builder runs project build
 processes and presents their logs, variables and results.
 </p>
@@ -1899,16 +1889,6 @@ that is not listed here is not expected during ordinary use.</p>
 	</tr>
 	<tr>
 		<td width="156" height="38" valign="top"><p>
-			Failed to prepare SOPLang
-			tag editor.</p>
-		</td>
-		<td width="331" valign="top"><p>
-			The structured SOPLang tag
-			editor could not be prepared.</p>
-		</td>
-	</tr>
-	<tr>
-		<td width="156" height="38" valign="top"><p>
 			Failed to load document
 			variables.</p>
 		</td>
@@ -2232,18 +2212,15 @@ are applied when they are saved and affect subsequent operations.</p>
 lists the repositories configured in the workspace together with the
 information needed to decide what to do next: the repository name,
 its local location, the active branch, the synchronisation status,
-and whether local changes or remote updates are pending. The component also uses colour
-indicators in the file tree so that the state of each file is visible
-at a glance and the files that need attention are easy to find. The
-indicators are summarised in Table 5.</p>
+and whether local changes or remote updates are pending. In the Git panel, the names of changed files are coloured in the repository tree so you can see which files need attention. Table 5 explains the colours.</p>
 <p align="center">
 <img loading="lazy" decoding="async" src="images/manual-embedded-020.jpg" align="bottom" border="0"/>
 </p>
 <p align="center">
 <i>Figure
 20. Git — Repositories and the Diff panel.</i></p>
-<p><b>Table
-5. Git file-status indicators<!-- de retestat --></b></p>
+<p><b>Table
+5. Git file-status colours</b></p>
 <center>
 	<table width="605" cellpadding="7" cellspacing="0">
 		<col width="287"/>
@@ -2265,7 +2242,7 @@ indicators are summarised in Table 5.</p>
 					Blue</p>
 				</td>
 				<td width="287"><p>
-					Modified</p>
+					Modified, renamed or copied</p>
 				</td>
 			</tr>
 			<tr valign="top">
@@ -2273,7 +2250,7 @@ indicators are summarised in Table 5.</p>
 					Green</p>
 				</td>
 				<td width="287"><p>
-					Added</p>
+					New or untracked</p>
 				</td>
 			</tr>
 			<tr valign="top">
@@ -2297,12 +2274,14 @@ indicators are summarised in Table 5.</p>
 					Brown</p>
 				</td>
 				<td width="287"><p>
-					Add to gitignore</p>
+					Ignored by Git</p>
 				</td>
 			</tr>
 		</tbody>
 	</table>
 </center>
+
+<p>New files appear in green whether they have already been added to Git or are still untracked. Brown marks files covered by an ignore rule. Open a file's action menu in the Git panel to add or remove an ignore rule.</p>
 
 <p>To review a
 change before recording it, the Diff view compares the local version
@@ -2826,8 +2805,7 @@ repository operation cannot be completed.</p>
 			</tr>
 			<tr valign="top">
 				<td width="264"><p>
-					Pull failed: branches
-					diverged. Use Pull ▾ → Rebase or Merge.</p>
+					Pull failed because the branches diverged. Open the Pull menu and choose Rebase or Merge.</p>
 				</td>
 				<td width="310"><p>
 					The local and remote
@@ -5631,7 +5609,7 @@ list.</p>
 	</table>
 </center>
 
-<h2 id="sec46" class="western">3.7 MD Editors<!-- figuri --></h2>
+<h2 id="sec46" class="western">3.7 MD Editors</h2>
 <h3 id="sec47" class="western">3.7.1 Purpose and Access</h3>
 <p>Markdown is the
 format in which much of the project's documentation and structured
@@ -5869,130 +5847,8 @@ paragraphs.</p>
 	</table>
 </center>
 
-<h2 id="sec59" class="western">3.8 Backlog</h2>
-<h3 id="sec60" class="western">3.8.1 Purpose and Access</h3>
-<p>
-Development involves a continuous flow of work that needs to be
-planned, assigned, and tracked through to completion. The Backlog
-component keeps tasks alongside the project work they describe. It
-allows users to organise project work into backlogs, create and
-filter tasks, and easily return to them later, even after leaving the
-application.</p>
-<p>
-The Backlog can be accessed from the <b>Tools</b> menu in Explorer,
-described in Section 3.1.2. Selecting <b>Tasks</b> opens the backlog
-view, where users can manage the tasks associated with the project.</p>
-<p>
-<img loading="lazy" decoding="async" src="images/manual-embedded-058.jpg" alt="Shape9" align="bottom"/>
-</p>
-<p align="center">
-<i>Figure
-64. Tasks- Backlog</i></p>
-<p>
-The backlog page provides all the main tools needed for task
-management. At the top, users can refresh the task list, change the
-way tasks are displayed, create a new task, or view the tasks as
-text. The filtering section below includes a status filter, a search
-field, and an option to clear the applied filters. The actions
-available to each user depend on their permissions. Tasks are saved
-by the system and remain available when the user returns to the
-project in a later session.</p>
-
-<h3 id="sec61" class="western">3.8.2 Viewing and Filtering Tasks</h3>
-<p>Existing tasks
-are displayed in the tasks area. When the page is opened the status
-filter is set to all, so every available task is shown.</p>
-<p><img loading="lazy" decoding="async" src="images/manual-embedded-059.jpg" alt="Shape11" align="bottom"/>
-</p>
-<p align="center">
-<i>Figure
-65. Task Status and Filtering Options</i></p>
-<p> Tasks can be
-filtered by status using the values all, approved, new and done, and
-the list is updated as soon as a value is chosen. A specific task can
-be located with the search field, which filters the list as text is
-entered. When the backlog contains no tasks, or when the search and
-filter criteria return no results, the list reports that no tasks
-were found and invites the user either to create a task or to adjust
-the criteria.</p>
-<h3 id="sec62" class="western">3.8.3 Create a new Task</h3>
-<p>A task is
-created by selecting the new-task control, which opens the creation
-window. The user enters the description of the task and can add one
-or more options with the add-option control.
-</p>
-<p><img loading="lazy" decoding="async" src="images/manual-embedded-060.jpg" alt="Shape12" align="bottom"/>
-</p>
-<p align="center">
-<i>Figure
-66. Creating a New Task</i></p>
-<p>When the
-required information is complete, the task is saved and appears in
-the list. If the user decides not to keep the task, the window can be
-closed with the cancel control or the close icon, in which case the
-task is not saved.</p>
-<h3 id="sec63" class="western">3.8.4 Display Modes and Persistence</h3>
-<p>The same set of
-tasks can be displayed in different formats according to the user's
-preference. The list view presents tasks as a list, while the
-carousel view presents them in a carousel; the view-as-text option
-displays the tasks as plain text, which provides an alternative to
-the graphical view.
-</p>
-<p><img loading="lazy" decoding="async" src="images/manual-embedded-058.jpg" alt="Shape13" align="bottom"/>
-</p>
-<p align="center">
-<i>Figure
-67. Tasks List View</i></p>
-<p>The refresh
-control reloads the list so that the latest information is shown. The
-tasks and the information entered for them are saved by the system
-and remain available after the application is refreshed and after the
-user signs in again, so work is not lost when a session ends.</p>
-<h3 id="sec64" class="western">3.8.5 Error Messages</h3>
-<p align="center"><b>Table
-14. Backlog messages</b></p>
-<center>
-	<table width="605" cellpadding="7" cellspacing="0">
-		<col width="287"/>
-		<col width="287"/>
-		<thead>
-			<tr valign="top">
-				<th style="background:#1f4e79 !important;color:#ffffff !important;font-weight:700 !important;" width="287"><font color="#ffffff" style="color:#ffffff !important"><p>
-					<b>Message</b></p>
-				</font></th>
-				<th style="background:#1f4e79 !important;color:#ffffff !important;font-weight:700 !important;" width="287"><font color="#ffffff" style="color:#ffffff !important"><p>
-					<b>Description</b></p>
-				</font></th>
-			</tr>
-		</thead>
-		<tbody>
-			<tr valign="top">
-				<td width="287"><p>
-					No tasks found. Create a
-					new task or adjust your filters.</p>
-				</td>
-				<td width="287"><p>
-					The backlog contains no
-					tasks, or no task matches the current search or filter. Create a
-					task or adjust the criteria.</p>
-				</td>
-			</tr>
-			<tr valign="top">
-				<td width="287"><p>
-					Backlog is managed by the
-					Backlog panel.</p>
-				</td>
-				<td width="287"><p>
-					Open the Backlog panel to edit the backlog.</p>
-				</td>
-			</tr>
-		</tbody>
-	</table>
-</center>
-
-<h2 id="sec72" class="western">3.9 Settings</h2>
-<h3 id="sec73" class="western">3.9.1 Purpose and Access</h3>
+<h2 id="sec72" class="western">3.8 Settings</h2>
+<h3 id="sec73" class="western">3.8.1 Purpose and Access</h3>
 <p>The
 workspace and user account can be customised through the <b>Settings</b>
 section, which brings the available configuration options together in
@@ -6014,8 +5870,8 @@ user's role and permissions.</p>
 </p>
 <p align="center">
 <i>Figure
-68. Settings — tabs and agent settings overview.</i></p>
-<h3 id="sec74" class="western">3.9.2 My Account</h3>
+64. Settings — tabs and agent settings overview.</i></p>
+<h3 id="sec74" class="western">3.8.2 My Account</h3>
 <p>The
 <b>My Account</b> section brings together the user's profile and
 account security settings. In the profile area, users can view and
@@ -6039,8 +5895,8 @@ Explorer link becomes available.</p>
 </p>
 <p align="center">
 <i>Figure
-69. Settings — My Account.</i></p>
-<h3 id="sec75" class="western">3.9.3 Agents</h3>
+65. Settings — My Account.</i></p>
+<h3 id="sec75" class="western">3.8.3 Agents</h3>
 <p>The Agents section configures the
 agents available in the workspace. Each agent is presented in its own
 entry, which shows its name, the setting identifier, the associated
@@ -6056,16 +5912,16 @@ options depends on the user's roles and permissions.</p>
 </p>
 <p align="center">
 <i>Figure
-70. Settings — Agents.</i></p>
-<h3 id="sec76" class="western">3.9.4 Plugins</h3>
+66. Settings — Agents.</i></p>
+<h3 id="sec76" class="western">3.8.4 Plugins</h3>
 <p>Open <b>Settings</b> and select <b>Plugins</b> to see the features available in your workspace interface. The list may include familiar tools such as Git, Marketplace, WebMeet, RoboTeam and Help; some entries are shown only to accounts with administrative permissions. The message above the list shows how many plugins were loaded for the workspace. Each row names a plugin and shows a switch on the right.</p>
 <p align="center">
 <img loading="lazy" decoding="async" src="images/settings-plugins-2026-11.png" alt="Settings Plugins tab with a list of workspace plugins and enable switches" align="bottom" border="0"/>
 </p>
 <p align="center">
-<i>Figure 71. Settings — Plugins and their enable switches.</i></p>
+<i>Figure 67. Settings — Plugins and their enable switches.</i></p>
 <p>A blue switch means the plugin is enabled. Select a switch to enable or disable that plugin; the change is saved immediately, and a message above the list confirms the result. The smaller line under each name shows technical details, including where the plugin adds a button or menu item. For example, <b>file-exp:toolbar</b> means its control appears in the Explorer toolbar. The <b>Save</b> button at the bottom saves other Settings preferences; plugin switches save as you change them.</p>
-<h3 id="sec77" class="western">3.9.5 Administration</h3>
+<h3 id="sec77" class="western">3.8.5 Administration</h3>
 <p>Open <b>Settings</b> and select <b>Administration</b> to manage access to this workspace. The pages available here depend on your account permissions. <b>Users</b> and <b>Roles</b> are shown to people who can manage users; <b>Applications</b> and <b>Authentication policy</b> are shown to people who can manage account settings. If you do not see Administration, ask a workspace administrator to review your role.</p>
 <p>On the <b>Users</b> page, use the search box to find an account by name, email address or user ID, then review its entry in the results. You can see the account's email verification state, current roles and status. Update the username or display name, or choose <b>Blocked</b> to prevent the account from signing in. Select <b>Save details</b> to apply those changes. The email address is shown for reference and cannot be edited here.</p>
 <p>Accounts are created when people complete sign-up or sign in with Google for the first time, if the workspace allows self-registration. A new account receives the restricted <b>selfRegistered</b> role. To grant access to Explorer, open the account's roles menu, select the <b>user</b> role and choose <b>Save roles</b>. You can assign more than one role. If a person should lose workspace access, review their roles and account status together.</p>
@@ -6074,7 +5930,7 @@ options depends on the user's roles and permissions.</p>
 </p>
 <p align="center">
 <i>Figure
-72. Settings — Administration, Users.</i></p>
+68. Settings — Administration, Users.</i></p>
 <p>The <b>Roles</b> page shows the permission sets you can assign to accounts. Search by role name, description or permission to see what is already available. Built-in roles, including <b>admin</b>, <b>user</b> and <b>selfRegistered</b>, can be viewed but are protected from editing. For a different level of access, select <b>New role</b>, enter a clear name and description, choose its permissions and select <b>Create role</b>. Assign the new role from the Users page.</p>
 <p>When you change a custom role's permissions, everyone who has that role is affected. A custom role can be deleted after it has been removed from all accounts; the page shows how many people currently have it.</p>
 <p align="center">
@@ -6082,14 +5938,14 @@ options depends on the user's roles and permissions.</p>
 </p>
 <p align="center">
 <i>Figure
-73. Settings — Administration, Roles.</i></p>
+69. Settings — Administration, Roles.</i></p>
 <p>The <b>Applications</b> page lets you manage applications that use the workspace account system to authenticate users or provide access to services. Select <b>New application</b> and give it a name. In <b>Redirect URIs</b>, enter the exact address where that application expects users to return after signing in. Its setup instructions should tell you which client authentication option, scopes (the information it may request) and grants (the ways it may obtain access) to select. Leave <b>Application enabled</b> selected when it should be available, then select <b>Save application</b>. The list below lets you edit, enable, disable or delete existing applications.</p>
 <p align="center">
 <img loading="lazy" decoding="async" src="images/manual-embedded-068.jpg" align="bottom" border="0"/>
 </p>
 <p align="center">
 <i>Figure
-74. Settings — Administration, Applications.</i></p>
+70. Settings — Administration, Applications.</i></p>
 <p>If an application uses a client secret, treat it like that application's password. Save it in the application's secure configuration as soon as it appears; this page displays it only once. Saving changes or replacing the secret ends the application's existing authorizations and sign-in tokens, so its users will need to sign in and approve access again. You can disable an application temporarily or delete it when it is no longer needed.</p>
 <p>Use the <b>Authentication policy</b> page to choose which sign-in methods are available across the workspace: password, email code, passkey, authenticator app and Google. You can allow or close self-registration and decide whether new users must verify their email during sign-up. The page also shows whether email delivery and Google sign-in are ready. These settings affect how people enter the workspace; each person manages their own password, passkeys and authenticator app under <b>My Account</b>.</p>
 <p>Additional trusted redirect origins can be entered when another approved address needs to return users after sign-in. The workspace Router addresses are displayed separately and updated automatically. Review the choices, then select <b>Save authentication policy</b>. At least one sign-in method must remain enabled.</p>
@@ -6098,16 +5954,16 @@ options depends on the user's roles and permissions.</p>
 </p>
 <p align="center">
 <i>Figure
-75. Settings — Administration, Authentication policy.</i></p>
-<h3 id="sec116" class="western">3.9.6 Hardware limits</h3>
+71. Settings — Administration, Authentication policy.</i></p>
+<h3 id="sec116" class="western">3.8.6 Hardware limits</h3>
 <p>Administrators can open <b>Settings</b> and select <b>Hardware limits</b> to manage the resources available to each workspace agent. Search for an agent by name or choose one from the list. The selected agent's card shows its registered instances, whether their limits have been applied, and recent CPU and memory use. At the top of the page, the workspace summary shows reported CPU capacity, Box memory, GPU availability and whether the host is prepared to enforce limits. Use <b>Refresh</b> to load the latest status.</p>
 <p>Set <b>CPU cores</b> and <b>RAM %</b> for the selected agent. Where a supported GPU is available, <b>GPU SM %</b> limits its processing share and <b>GPU VRAM %</b> limits its memory share. Percentage fields accept whole numbers from 1 to 100. Leave a field empty when you want the agent to inherit its default value. The <b>Changes to apply</b> table lets you compare the limits currently in effect with the values that will apply after saving. In the example below, GPU limits are unavailable, so those fields cannot be edited.</p>
 <p align="center">
 <img loading="lazy" decoding="async" src="images/settings-hardware-limits-2026-11.png" alt="Hardware limits settings for Local LLMs, showing resource fields and the changes to apply" align="bottom" border="0"/>
 </p>
-<p align="center"><i>Figure 76. Settings — Hardware limits for an agent.</i></p>
+<p align="center"><i>Figure 72. Settings — Hardware limits for an agent.</i></p>
 <p>Select <b>Save and apply</b> to store the new limits and apply them to the agent's registered instances. This can restart the agent and interrupt work in progress; if the agent is not enabled, its saved limits take effect on its next start. <b>Restore defaults</b> removes the custom limits and applies the agent's declared defaults. After either action, check the result shown on the page. You can expand <b>Instance diagnostics</b> to see more detail about an instance's status and applied limits. When changes remain pending for other instances, <b>Apply all pending</b> becomes available at the top of the page.</p>
-<h3 id="sec78" class="western">3.9.7 Keymap, Editor and Theme</h3>
+<h3 id="sec78" class="western">3.8.7 Keymap, Editor and Theme</h3>
 <p>Users can manage the application's keyboard shortcuts from the Keymap section, which provides the mappings assigned to the available actions. To assign a different combination, the user selects the relevant action and presses the desired keys; the new shortcut is registered automatically. An existing mapping can be removed using the clear option or the Backspace key.</p>
 <p>Once the configuration has been adjusted, the changes can be saved or discarded, and the original default mappings can be restored at any time. The available actions include file search, finding and replacing text across files, saving the active file, triggering assisted code completion, and opening the settings window. The default shortcuts may differ depending on the operating system.</p>
 <p align="center">
@@ -6115,7 +5971,7 @@ options depends on the user's roles and permissions.</p>
 </p>
 <p align="center">
 <i>Figure
-77. Settings — Keymap.</i></p>
+73. Settings — Keymap.</i></p>
 <p>The Editor section configures the
 behaviour of the code editor used for collaborative document editing.
 It includes automatic saving, which is disabled by default; when it
@@ -6129,15 +5985,15 @@ how to proceed.</p>
 </p>
 <p align="center">
 <i>Figure
-78. Settings — Editor.</i></p>
+74. Settings — Editor.</i></p>
 <p>Users can customize the application's visual appearance through the Theme section, where they can choose between a light theme and a dark theme intended for use in low-light conditions. The selected option takes effect once the changes are saved. If the user cancels the modification, the application keeps the theme that was previously configured.</p>
 <p align="center">
 <img loading="lazy" decoding="async" src="images/manual-embedded-071.jpg" align="bottom" border="0"/>
 </p>
 <p align="center">
 <i>Figure
-79. Settings — Theme.</i></p>
-<h3 id="sec79" class="western">3.9.8 Avatar</h3>
+75. Settings — Theme.</i></p>
+<h3 id="sec79" class="western">3.8.8 Avatar</h3>
 <p>The Avatar section configures the
 avatar associated with the account and, for administrators, the
 avatars used by the application's agents. The profile-avatar area
@@ -6151,10 +6007,10 @@ avatar can be assigned to each agent.</p>
 </p>
 <p align="center">
 <i>Figure
-80. Settings — Avatar.</i></p>
-<h3 id="sec80" class="western">3.9.9 Error Messages</h3>
+76. Settings — Avatar.</i></p>
+<h3 id="sec80" class="western">3.8.9 Error Messages</h3>
 <p><b>Table
-15. Settings and administration messages</b></p>
+14. Settings and administration messages</b></p>
 <center>
 	<table width="605" cellpadding="7" cellspacing="0">
 		<col width="287"/>
@@ -6341,8 +6197,8 @@ avatar can be assigned to each agent.</p>
 	</table>
 </center>
 
-<h2 id="sec81" class="western">3.10 Workspace Monito<!-- urmeaza figura 87 -->r</h2>
-<h3 id="sec82" class="western">3.10.1 Purpose and Access</h3>
+<h2 id="sec81" class="western">3.9 Workspace Monitor</h2>
+<h3 id="sec82" class="western">3.9.1 Purpose and Access</h3>
 <p>An administrator needs to know
 whether the workspace and the components that run it are healthy, and
 to be able to examine what has happened when they are not. The
@@ -6352,7 +6208,7 @@ shows resource usage, and gives access to the logs and audits
 produced by the system. It is reached from the account menu of
 Explorer, described in Section 3.1.1, and is available only to
 accounts with administrative permissions.</p>
-<h3 id="sec83" class="western">3.10.2 Overview</h3>
+<h3 id="sec83" class="western">3.9.2 Overview</h3>
 <p>The Workspace Monitor opens on the
 Overview tab, which summarises the current state of the workspace.
 The summary area reports the current workspace, the router status,
@@ -6371,7 +6227,7 @@ time, and the number of persisted samples available for the selected
 period is displayed. The history is presented as graphs for CPU and
 memory so that resource utilisation and its evolution can be
 reviewed.</p>
-<h3 id="sec84" class="western">3.10.3 Resources</h3>
+<h3 id="sec84" class="western">3.9.3 Resources</h3>
 <p>The Resources section gives a
 detailed view of the runtimes associated with the workspace and their
 resource utilisation. Each runtime is listed
@@ -6386,8 +6242,8 @@ system at the time of monitoring.</p>
 </p>
 <p align="center">
 <i>Figure
-81. Workspace Monitor — Resources.</i></p>
-<h3 id="sec85" class="western">3.10.4 Router Logs</h3>
+77. Workspace Monitor — Resources.</i></p>
+<h3 id="sec85" class="western">3.9.4 Router Logs</h3>
 <p>The Router Logs section displays the
 activity recorded by the router. Each record reports information such
 as the timestamp, the log level, the event type, the HTTP method and
@@ -6397,7 +6253,7 @@ search field locates records, a control clears the search and another
 reloads the records manually. The section is used to review router
 activity, to investigate the requests it handled and to identify
 events or information reported by the router.</p>
-<h3 id="sec86" class="western">3.10.5 Policy Audit and DPU Audit</h3>
+<h3 id="sec86" class="western">3.9.5 Policy Audit and DPU Audit</h3>
 <p>The Policy Audit section provides
 access to the audit information associated with the monitored
 policies, so that events and records produced by policy changes or
@@ -6411,9 +6267,9 @@ older records may remain in the archives according to the retention
 policy. The DPU Audit section provides the equivalent view for the
 DPU, with the same search, clear and reload controls and the same
 live monitoring.</p>
-<h3 id="sec87" class="western">3.10.6 Error Messages</h3>
+<h3 id="sec87" class="western">3.9.6 Error Messages</h3>
 <p><b>Table
-16. Workspace Monitor messages</b></p>
+15. Workspace Monitor messages</b></p>
 <center>
 	<table width="605" cellpadding="7" cellspacing="0">
 		<col width="287"/>
@@ -6614,88 +6470,90 @@ live monitoring.</p>
 	</table>
 </center>
 
-<h2 id="sec88" class="western">3.11 RoboTeam</h2>
-<h3 id="sec89" class="western">3.11.1 Purpose and Access</h3>
+<h2 id="sec88" class="western">3.10 RoboTeam</h2>
+<h3 id="sec89" class="western">3.10.1 Purpose and Access</h3>
 <p>RoboTeam manages workspace robots, their coding agents and skills, reusable workflow types, scheduled jobs and execution history. Open it from the <b>RoboTeam</b> button in Explorer. Its page has three tabs: <b>Robots</b>, <b>Workflow types</b> and <b>Cron jobs</b>. Administrators manage robots, skills, workflow types and schedules. An authenticated user can open an available robot's Copilot conversation and inspect permitted workflow runs.</p>
 <p>RoboTeam creates the ordinary robot named <b>default</b> at startup if it is absent. Explorer's <b>Open Copilot here</b> action opens that robot in the selected directory. Each robot retains its own coding-agent account and home, while conversations and their history belong to the directory in which they were opened.</p>
-<h3 id="sec90" class="western">3.11.2 Creating and Managing Robots</h3>
+<h3 id="sec90" class="western">3.10.2 Creating and Managing Robots</h3>
 <p>The <b>Robots</b> tab lists each robot's name, identifier, status and coding agent. Search by name or ID, or filter the list by login state and agent in use. An administrator selects <b>Create robot</b>, enters a unique name in the dialog and confirms. New robots use OpenCode initially. <b>Import CSV</b> creates robots named from email addresses in a CSV file.</p>
 <p>Select <b>Open</b> on a robot card to choose <b>Browser</b>, <b>Desktop</b>, <b>Terminal</b> or <b>Copilot</b>. Browser and Desktop open a visible workstation; Terminal opens a command-line session for administrators; Copilot opens the robot's conversation. A ready workstation can be reopened from its session link and stopped independently of a task.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-robots-open-2026-11.png" alt="RoboTeam Robots tab with the Open menu showing Browser, Desktop, Terminal and Copilot"/></p>
-<p align="center"><i>Figure 82. RoboTeam — Robots tab and Open menu.</i></p>
+<p align="center"><i>Figure 78. RoboTeam — Robots tab and Open menu.</i></p>
 <p>The three-dot menu on the robot card contains <b>Logs</b>, <b>Manage skills</b>, <b>Coding agent</b> and, for administrators when the robot is idle, <b>Delete robot</b>. Logs opens the active workstation's container output. Deletion requires confirmation and is unavailable while the robot has active or queued work.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-robot-actions-2026-11.png" alt="RoboTeam robot card with the three-dot actions menu open"/></p>
-<p align="center"><i>Figure 83. RoboTeam — robot management actions.</i></p>
-<h3 id="sec90a" class="western">3.11.3 Managing Skills and Skillsets</h3>
+<p align="center"><i>Figure 79. RoboTeam — robot management actions.</i></p>
+<h3 id="sec90a" class="western">3.10.3 Managing Skills and Skillsets</h3>
 <p>Open the robot's three-dot menu and select <b>Manage skills</b>. The dialog shows required and built-in skills, recommended repositories and a Repository URL field. An administrator can add a recommended repository or register an HTTPS skills repository. A skillset is a named group of skills supplied by a repository. Removing a repository prevents later executions from selecting its skills; review a workflow's task selections before running it again.</p>
 <p>The default robot receives the built-in copilot skillset. Copilot conversations also receive the required workflow discovery and launch skills. A workflow task uses the skills or skillsets selected for that task, and RoboFlow needs a robot whose registered skills cover those selections.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-manage-skills-current.png" alt="Manage skills dialog with built-in and recommended repositories"/></p>
-<p align="center"><i>Figure 84. RoboTeam — Manage skills dialog.</i></p>
-<h3 id="sec90b" class="western">3.11.4 Choosing a Coding Agent</h3>
+<p align="center"><i>Figure 80. RoboTeam — Manage skills dialog.</i></p>
+<h3 id="sec90b" class="western">3.10.4 Choosing a Coding Agent</h3>
 <p>From the robot's three-dot menu, select <b>Coding agent</b>. An administrator can choose <b>Codex</b>, <b>OpenCode</b>, <b>Pi</b> or <b>Claude Code</b>, and set a default model and reasoning effort where the selected agent offers them. Stop the robot's workstation and unfinished work before changing its agent. The new selection applies to later chats and terminals; existing conversations keep the backend they started with. Pi cannot run Browser or Desktop work.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-coding-agent-2026-11.png" alt="Coding agent dialog showing four agents and the default model picker"/></p>
-<p align="center"><i>Figure 85. RoboTeam — coding agent and default model.</i></p>
-<h3 id="sec90c" class="western">3.11.5 Workflow Types and the Workflow Editor</h3>
+<p align="center"><i>Figure 81. RoboTeam — coding agent and default model.</i></p>
+<h3 id="sec90c" class="western">3.10.5 Workflow Types and the Workflow Editor</h3>
 <p>The <b>Workflow types</b> tab lists saved workflows, their descriptions, task and connection counts, and any missing-robot warning. <b>Flows history</b> opens past executions. The built-in <b>Standard development</b> and <b>Code Development</b> types can be inspected; administrators create their own type with <b>Create workflow</b>. A workflow card may also offer <b>Run now</b> in its actions.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-workflow-types-2026-11.png" alt="Workflow types tab showing Code Development and Standard development"/></p>
-<p align="center"><i>Figure 86. RoboTeam — Workflow types tab.</i></p>
+<p align="center"><i>Figure 82. RoboTeam — Workflow types tab.</i></p>
 <p>For a new type, describe the work and select <b>Generate</b> to draft a graph, or select <b>Skip</b> to build it manually. Generation runs only when requested. Review the draft before saving it.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-create-workflow-current.png" alt="Describe the workflow page with Generate and Skip actions"/></p>
-<p align="center"><i>Figure 87. RoboTeam — describe or skip workflow generation.</i></p>
+<p align="center"><i>Figure 83. RoboTeam — describe or skip workflow generation.</i></p>
 <p>The current editor keeps the workflow description, task list and graph in one view. Select a task to open its details beside the graph. Administrators can add tasks, edit names and prompts, choose terminal, desktop or browser execution, set a task's reasoning effort, select skills or skillsets, and mark a task as a start node, workflow creator or human-input task. Drag nodes to arrange them and connect their ports to define the route. The legend distinguishes Start, Intermediate and End roles. Missing robot coverage appears as a warning; a workflow needs a matching robot before it can run. <b>Save</b> requires a name, description, at least one ordinary task and prompts for ordinary tasks.</p>
 <p>The built-in Code Development graph illustrates a creator task and the managed <b>Run workflows</b> coordinator. Child workflows run in their listed order; a failed or paused child holds the later children. The coordinator itself has no robot, prompt, execution mode or skill selection.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-workflow-editor-2026-11.png" alt="Current Code Development workflow editor showing its task list, role legend and graph"/></p>
-<p align="center"><i>Figure 88. RoboTeam — current workflow editor and graph.</i></p>
+<p align="center"><i>Figure 84. RoboTeam — current workflow editor and graph.</i></p>
 <p>Select a task in the list or graph to inspect and edit its settings. The task panel shows its name, execution type, reasoning effort, environment, prompt and selected skills. The checkboxes mark a start node, permit sub-flows or permit a human-input question. Figure 88 shows the Validation task; its prompt asks the robot to check the integrated result before the workflow finishes.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-task-settings-2026-11.png" alt="Code Development task settings for Validation, including execution type, prompt and selected skills"/></p>
-<p align="center"><i>Figure 89. RoboTeam — edit a workflow task.</i></p>
+<p align="center"><i>Figure 85. RoboTeam — edit a workflow task.</i></p>
 <p>Select <b>Run workflows</b> to inspect the coordinator's connections. Connect a task that permits sub-flows to this node and add an outgoing edge for the route after its child workflows complete. The coordinator does not have its own robot or prompt.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-run-workflows-settings-2026-11.png" alt="Run workflows coordinator settings and connected Code Development graph"/></p>
-<p align="center"><i>Figure 90. RoboTeam — Run workflows coordinator.</i></p>
-<p><b>Note:</b> The coordinator panel in Figure 89 still says that child workflows run “in parallel.” Current RoboFlow runs newly created child workflows sequentially in the order selected by the creator task. A failed or paused child holds the later children until it is completed.</p>
-<h3 id="sec90d" class="western">3.11.6 Running, Scheduling and Monitoring Workflows</h3>
+<p align="center"><i>Figure 86. RoboTeam — Run workflows coordinator.</i></p>
+<p><b>Note:</b> The coordinator panel in Figure 86 still says that child workflows run “in parallel.” Current RoboFlow runs newly created child workflows sequentially in the order selected by the creator task. A failed or paused child holds the later children until it is completed.</p>
+<h3 id="sec90d" class="western">3.10.6 Running, Scheduling and Monitoring Workflows</h3>
 <p>Start a workflow with <b>Run now</b> when the workflow card offers it, or ask a robot's Copilot conversation to launch a type for an objective and working folder. Each start creates a flow. <b>Flows history</b> lists the saved runs and opens their execution pages. The default objective of a saved custom workflow can be used when no new prompt is supplied; a specific prompt takes precedence.</p>
 <p>The <b>Cron jobs</b> tab schedules a saved workflow at regular intervals or at daily times. Select <b>Create job</b>, choose a workflow and results folder, enter or inherit its prompt, set the schedule, and choose whether the job starts enabled. The selected results folder keeps the job's runs together. <b>Change folder</b> opens the workspace folder picker.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-cron-jobs-2026-11.png" alt="Cron jobs tab with an empty job list and Create job button"/></p>
-<p align="center"><i>Figure 91. RoboTeam — Cron jobs tab.</i></p>
+<p align="center"><i>Figure 87. RoboTeam — Cron jobs tab.</i></p>
+<p>Select <b>Create job</b> to open the scheduling form. Choose the workflow to run, set when it should start, and decide whether the schedule should be enabled right away. The form also shows the objective and the folder that will hold the results of future runs.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-create-cron-job-2026-11.png" alt="Create Cron job dialog showing workflow, results folder, prompt and interval settings"/></p>
-<p align="center"><i>Figure 92. RoboTeam — create a scheduled workflow job.</i></p>
+<p align="center"><i>Figure 88. RoboTeam — create a scheduled workflow job.</i></p>
+<p>The results folder keeps the files from this job's runs together. Select <b>Change folder</b> to choose a workspace folder in the picker shown in Figure 89. You can also create a folder there before saving the job.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-cron-folder-2026-11.png" alt="Folder picker for a Cron job results folder"/></p>
-<p align="center"><i>Figure 93. RoboTeam — select a results folder.</i></p>
+<p align="center"><i>Figure 89. RoboTeam — select a results folder.</i></p>
 <p>A saved job shows its next run and last attempt. Its actions can run it immediately, edit it, disable or enable it, or delete it. <b>Run now</b> starts the job immediately and resets its next scheduled time. Missed scheduled times are skipped after restart, and a running or paused execution prevents overlap for the same job. Disabling or deleting a job does not stop a run already created.</p>
 <p>On an execution page, the header shows status and duration. <b>Pause workflow</b> pauses active work; <b>Resume workflow</b> continues a paused flow; <b>Terminate workflow</b> ends it after confirmation. The phase list and execution graph show the route through tasks. Select a phase to read its prompt, robot, selected skills, logs, human report and, when applicable, child workflows. A running phase accepts a live prompt; a paused, completed or failed phase can be continued with a new instruction in its saved session. Terminal conversations may run independently while graphical tasks queue behind another graphical task on the same robot.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/roboteam-flows-history-2026-11.png" alt="RoboTeam Flows history showing a completed Standard development test run"/></p>
-<p align="center"><i>Figure 94. RoboTeam — flows history.</i></p>
-<h3 id="sec90f" class="western">3.11.7 Robot Conversations and Commands</h3>
-<p>Select <b>Open → Copilot</b> on a robot card, or <b>Open Copilot here</b> on an Explorer directory for the default robot. Conversations and task history are stored per working folder. Use the WebChat menu's <b>Conversation skills</b> page to select the skills for later turns. The required workflow discovery and launch skills remain available independently of that selection.</p>
+<p align="center"><i>Figure 90. RoboTeam — flows history.</i></p>
+<h3 id="sec90f" class="western">3.10.7 Robot Conversations and Commands</h3>
+<p>On a robot card, open the <b>Open</b> menu and choose <b>Copilot</b>. For the default robot, you can also select <b>Open Copilot here</b> from an Explorer directory. Conversations and task history are stored for each working folder. In WebChat, open <b>Conversation skills</b> to choose the skills for later turns. The skills needed to discover and launch workflows remain available regardless of that choice.</p>
 <p>The command interface includes <code>/session</code> for saved conversations, <code>/session new</code> and <code>/session resume</code> for conversation lifecycle, <code>/tasks</code> for delegated work, <code>/model</code> for the conversation's model and effort, <code>/permissions</code> for the permission policy, and <code>/list robots</code> for the workspace robot catalog. <code>/exec</code> invokes an available skill; skill selection itself is managed from Conversation skills.</p>
-<h3 id="sec92" class="western">3.11.8 Error Messages</h3>
+<h3 id="sec92" class="western">3.10.8 Error Messages</h3>
 <p>RoboTeam displays workflow errors on the execution page and in Observability. A saved failed run remains in history for inspection, and a failed phase can be continued when its native session is recoverable. General workspace errors are described in Section 3.1.6.</p>
-<h2 id="sec90e" class="western">3.12 Observability</h2>
+<h2 id="sec90e" class="western">3.11 Observability</h2>
 <p>Open <b>Observability</b> from its own entry in the Explorer toolbar when you want to check a workflow after it has started. The panel groups runs by what needs attention now: <b>Requires human input</b>, <b>Running</b> and <b>History</b>. The number beside each tab shows how many runs are in that view. This is a quick overview; the workflow execution page remains the place to read individual task logs and inspect the full route through the workflow.</p>
 <p>Select a run from the list on the left. The details on the right show its current status, when it started in your local time, how long it has spent executing, how many task steps have finished, and the original workflow prompt. Execution time counts active work. The step count records work already done. Select <b>View workflow</b> to open the full execution page in a new browser tab.</p>
-<p><b>Requires human input</b> is the first tab. It lists paused and failed workflows. When a robot needs your decision, select the run to read its question and suggested answers, as shown in Figure 95. For a run that stopped for another reason, open the workflow to see what happened and which actions are available.</p>
+<p><b>Requires human input</b> is the first tab. It lists paused and failed workflows. When a robot needs your decision, select the run to read its question and suggested answers, as shown in Figure 91. For a run that stopped for another reason, open the workflow to see what happened and which actions are available.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/manual-embedded-074.jpg" alt="Observability Requires human input tab showing a paused workflow, its question, answer choices and View workflow button"/></p>
-<p align="center"><i>Figure 95. Observability — answer a workflow question.</i></p>
-<p>In Figure 94, the workflow is paused because the robot needs a choice about a data migration. Read the question and select one of the three suggestions, or select <b>Other answer</b> and write your own response. <b>Send answer</b> becomes available when the answer is complete and the robot has finished saving its current work. The answer continues the task in the same workflow. Once accepted, the run moves to <b>Running</b>. If sending fails, the panel shows an error and keeps your choice so you can try again.</p>
+<p align="center"><i>Figure 91. Observability — answer a workflow question.</i></p>
+<p>In Figure 91, the workflow is paused because the robot needs a choice about a data migration. Read the question and select one of the three suggestions, or select <b>Other answer</b> and write your own response. <b>Send answer</b> becomes available when the answer is complete and the robot has finished saving its current work. The answer continues the task in the same workflow. Once accepted, the run moves to <b>Running</b>. If sending fails, the panel shows an error and keeps your choice so you can try again.</p>
 <p><b>Running</b> shows workflows that are in progress or waiting to start. Select a run to see its latest status and elapsed execution time. The panel updates automatically while it is open. For task-by-task progress, open the workflow from its details.</p>
-<p><b>History</b> lists completed, failed, paused and terminated workflows, with the newest first. Select a run to review its details, then use <b>View workflow</b> to inspect task results or errors. Figure 95 shows the list with a completed workflow.</p>
+<p><b>History</b> lists completed, failed, paused and terminated workflows, with the newest first. Select a run to review its details, then use <b>View workflow</b> to inspect task results or errors. Figure 92 shows the list with a completed workflow.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/manual-embedded-075.jpg" alt="Observability History tab listing a stopped workflow and a completed workflow"/></p>
-<p align="center"><i>Figure 96. Observability — workflow history.</i></p>
-<h2 id="sec115" class="western">3.13 Live Sessions</h2>
+<p align="center"><i>Figure 92. Observability — workflow history.</i></p>
+<h2 id="sec115" class="western">3.12 Live Sessions</h2>
 <p>Open <b>Live Sessions</b> from the Explorer toolbar to follow work while an agent is running. The list on the left shows Copilot turns, delegated tasks, robot tasks and workflow phases that you are allowed to view. Recently finished runs may appear there too. Administrators may also see workspace terminals. Each session card identifies the work and its folder, shows its status and owner, and offers the actions available to you.</p>
 <p>Select <b>Watch</b> on an agent session to open its output in the viewer on the right. New output appears there as the run progresses. In the example below, the list contains two workflow phases and the selected phase is open in the viewer. A session marked <b>Watch only</b> lets you follow its progress. If you own an active run and it accepts messages, its card shows that you can message it; a stop action appears when you are allowed to end it.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/live-sessions-watch-2026-11.png" alt="Live Sessions panel with two workflow phases on the left and a selected phase open in the viewer"/></p>
-<p align="center"><i>Figure 97. Live Sessions — watch a workflow phase in Explorer.</i></p>
-<p>Use <b>Detach view</b> to close the viewer for an agent run while the session continues. Select <b>Open in new tab</b> to open the same session view in a separate browser tab. This is useful when you want to keep watching a run while working elsewhere in Explorer. The separate view shows the run's output and its latest status, as in the next image.</p>
+<p align="center"><i>Figure 93. Live Sessions — watch a workflow phase in Explorer.</i></p>
+<p>Use <b>Detach view</b> to close the viewer for an agent run while the session continues. Select <b>Pop out</b> to open the same session view in a separate browser tab. This is useful when you want to keep watching a run while working elsewhere in Explorer. The separate view shows the run's output and its latest status, as in the next image.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/live-sessions-pop-out-2026-11.png" alt="A workflow phase opened in a separate Live session browser tab with its output and completed status"/></p>
-<p align="center"><i>Figure 98. Live Sessions — session opened in a separate tab.</i></p>
+<p align="center"><i>Figure 94. Live Sessions — session opened in a separate tab.</i></p>
 <p>When <b>Transcript</b> is available on a session card, select it to open the recorded text in another tab. The transcript can be long and may include the agent's messages, commands and technical output. Scroll through it or use your browser's search to find the part you need, such as an error or the final response.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/live-sessions-transcript-2026-11.png" alt="Plain-text transcript of a Live Sessions workflow phase in a separate browser tab"/></p>
-<p align="center"><i>Figure 99. Live Sessions — session transcript.</i></p>
+<p align="center"><i>Figure 95. Live Sessions — session transcript.</i></p>
 <p>A finished RoboTeam run stays in Live Sessions for a limited time. Use <b>Observability</b> or <b>Flows history</b> to find saved workflow runs later. For an active workflow phase, the stop action is labelled <b>Pause workflow</b>; it pauses the whole workflow, which can then be resumed from its execution page.</p>
-<h2 id="sec93" class="western">3.14 Code Editor</h2>
-<h3 id="sec94" class="western">3.14.1 Purpose and Access</h3>
+<h2 id="sec93" class="western">3.13 Code Editor</h2>
+<h3 id="sec94" class="western">3.13.1 Purpose and Access</h3>
 <p>Source code must be created and
 changed in the same environment in which the rest of the project is
 managed, so that it is edited with the project context and saved
@@ -6707,7 +6565,7 @@ plain text, and it provides editing, code navigation and previewing of
 web content. Markdown documents are handled by the dedicated editor
 described in Section 3.7. The Code Editor is reached by opening a
 supported file in Explorer, as described in Section 3.1.4.</p>
-<h3 id="sec95" class="western">3.14.2 Editing Source Code</h3>
+<h3 id="sec95" class="western">3.13.2 Editing Source Code</h3>
 <p>When a text file is opened, its
 contents are displayed in the editor area. The file is shown first in a
 read-only preview; selecting <b>Edit</b> enables editing and replaces the
@@ -6727,12 +6585,12 @@ has unsaved changes, the editor marks the document as changed. A very
 large file is opened as a read-only preview with editing disabled, so
 that the interface remains responsive.</p>
 <p align="center">
-<img loading="lazy" decoding="async" src="images/manual-embedded-076.jpg" align="bottom" border="0"/>
+<img loading="lazy" decoding="async" src="images/code-editor-editing-source-2026-11.png" alt="Explorer Code Editor editing a JavaScript file with line numbers, syntax highlighting, and Save and Cancel controls" align="bottom" border="0"/>
 </p>
 <p align="center">
 <i>Figure
-100. Code Editor — Editing a source file.</i></p>
-<h3 id="sec96" class="western">3.14.3 Viewing Modes</h3>
+96. Code Editor — editing a JavaScript file.</i></p>
+<h3 id="sec96" class="western">3.13.3 Viewing Modes</h3>
 <p>For HTML files the preview provides
 three viewing modes, selected from the controls in the preview header
 and switchable without closing the document. In <b>Code</b> mode the
@@ -6746,7 +6604,7 @@ them, the preview can be refreshed, and the preview pane can be closed
 without closing the edited document. The selected file can be opened in
 a new browser tab with the <b>Open in new tab</b> control in the Explorer
 toolbar.</p>
-<h3 id="sec97" class="western">3.14.4 Saving and Cancelling Changes</h3>
+<h3 id="sec97" class="western">3.13.4 Saving and Cancelling Changes</h3>
 <p>After a source file has been
 changed, the <b>Save</b> control stores the updated content through the
 workspace contract, while the <b>Cancel</b> control discards the unsaved
@@ -6757,13 +6615,13 @@ continue working without closing the document. If the file is changed
 outside the editor while it is open, the editor reports the external
 change so that the latest version can be reloaded before editing
 continues.</p>
-<h3 id="sec98" class="western">3.14.5 Error Messages</h3>
+<h3 id="sec98" class="western">3.13.5 Error Messages</h3>
 <p>The Code Editor reports problems
 through the messages documented in Section 3.1.6 under documents and
 editing, including failures to load, save or refresh the file and the
 warning raised when a file is modified externally.</p>
-<h2 id="sec99" class="western">3.15 Soul Gateway</h2>
-<h3 id="sec100" class="western">3.15.1 Purpose and Access</h3>
+<h2 id="sec99" class="western">3.14 Soul Gateway</h2>
+<h3 id="sec100" class="western">3.14.1 Purpose and Access</h3>
 <p>The artificial-intelligence
 components of AssistOS need access to language models and services,
 and that access must be configured, controlled and monitored rather
@@ -6778,24 +6636,22 @@ identified. The management interface requires a Ploinky administrator
 session and is opened from Settings. Its sections are presented in a
 navigation bar and include Providers, Models, Tiers, Keys, Logs,
 Errors, Activity, Usage, Blacklist, Middlewares and Export.</p>
-<h3 id="sec101" class="western">3.15.2 Providers, Models and Tiers</h3>
+<h3 id="sec101" class="western">3.14.2 Providers, Models and Tiers</h3>
 <p>A new installation does not include a local language model. Soul Gateway initially provides a restricted free OpenRouter provider for the <code>fast</code>, <code>code</code>, <code>plan</code>, <code>write</code>, <code>deep</code>, <code>ultra</code> and <code>web-assist</code> tiers. It needs an internet connection, and the bundled credential has a daily quota shared across installations. An administrator can replace that credential in Soul Gateway settings. OpenCode free models may also be available if an administrator enables the optional provider. They are not assigned to a tier automatically and support plain-text chat without tools or images.</p>
-<p>The <b>Providers</b> section reviews and
-manages the providers available in Soul Gateway. The list can be
-filtered, and each provider shows its name, display name, base
-address, adapter, authentication strategy, pipeline membership and
-enabled status. A provider is enabled or disabled with its toggle, and
-the actions on each row allow it to be edited or deleted and to be
-tested and synchronised, so that its models are refreshed from the
-provider. A new provider is added with the <b>Add Provider</b> control;
-once the required information has been saved, it appears in the list
-and can be managed from the same section.</p>
+<p>The <b>Providers</b> tab lets administrators manage the services and workspace agents that Soul Gateway can contact. Expand a source group to see its providers, or use the filter to find one by name. Each row shows the provider's display name, adapter, authentication method and base URL (the service address), along with its enabled status. Use the switch in the <b>Enabled</b> column to make a provider available or unavailable. To register another provider, select <b>Add Provider</b> and enter its connection details.</p>
 <p align="center">
 <img loading="lazy" decoding="async" src="images/manual-embedded-077.jpg"/>
 </p>
 <p align="center">
 <i>Figure
-101. Soul Gateway — Providers.</i></p>
+97. Soul Gateway — Providers.</i></p>
+<p>The current Providers view groups entries by source. In the example below, <b>AchillesIDE</b> is expanded and the three-dot <b>Actions</b> menu is open for one provider. Open that menu on the row you want to work with; the action applies to that provider only.</p>
+<p align="center"><img loading="lazy" decoding="async" src="images/soul-gateway-provider-actions-2026-11.png" alt="Soul Gateway Providers tab with the AchillesIDE group expanded and the Actions menu showing Test, Sync, View, Pipeline, Edit and Delete"/></p>
+<p align="center"><i>Figure 98. Soul Gateway — provider actions in the Providers tab.</i></p>
+<p>If you have just added a provider or changed its connection details, choose <b>Test</b> to check whether Soul Gateway can reach it. The result tells you whether the connection worked. When the provider changes the models it offers, choose <b>Sync</b> to refresh the models saved in Soul Gateway.</p>
+<p>Choose <b>View</b> to see the models currently offered by the provider. You can add a model manually from this view. If the list is empty, you can still add a model from the <b>Models</b> tab.</p>
+<p><b>Pipeline</b> opens the provider's processing settings. Here you can choose the adapter and arrange the components that process requests. Use <b>Edit</b> to change saved details such as the provider's display name, service address, authentication method or enabled status.</p>
+<p>Choose <b>Delete</b> when a provider is no longer needed. Soul Gateway asks you to confirm the removal and explains that models discovered automatically for that provider will also be removed.</p>
 <p>The <b>Models</b> section lists the models
 available in Soul Gateway. The list can be searched and filtered by
 enabled state, by whether the model is free, by billing type and by
@@ -6805,7 +6661,7 @@ tag, and a new model is added with <b>Add Model</b>.</p>
 </p>
 <p align="center">
 <i>Figure
-102. Soul Gateway — Models.</i></p>
+99. Soul Gateway — Models.</i></p>
 <p>The <b>Tiers</b> section defines the
 cascades used to serve a request. A tier has a key, a display name, an
 ordered list of child models, a maximum number of attempts and an
@@ -6819,8 +6675,8 @@ before it is deleted.</p>
 </p>
 <p align="center">
 <i>Figure
-103. Soul Gateway — Tiers.</i></p>
-<h3 id="sec102" class="western">3.15.3 Keys and Export</h3>
+100. Soul Gateway — Tiers.</i></p>
+<h3 id="sec102" class="western">3.14.3 Keys and Export</h3>
 <p>The <b>Keys</b> section lists API keys for users and agents. The
 list shows each key's label, type, masked key hint, daily budget and
 spending, requests-per-minute limit (<b>RPM</b>), last use, creation
@@ -6831,7 +6687,7 @@ at creation. Use <b>Edit</b> to change a key's label or policy, and
 <b>Reset</b> to start a new budget period after confirmation. The
 <b>Revoke</b> action is available for user keys only.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/soul-gateway-keys-current.jpg" alt="Soul Gateway API Keys list with agent keys and management actions"/></p>
-<p align="center"><i>Figure 104. Soul Gateway API Keys list.</i></p>
+<p align="center"><i>Figure 101. Soul Gateway API Keys list.</i></p>
 <p>The <b>Export</b> section prepares the
 configuration required to use Soul Gateway from another tool. The
 administrator selects the format (<b>OpenCode</b>, <b>Claude Code</b> or
@@ -6839,7 +6695,7 @@ administrator selects the format (<b>OpenCode</b>, <b>Claude Code</b> or
 selects the models to expose and, if required, a default model. Soul
 Gateway generates the configuration, which is displayed for review and
 can be copied or downloaded for later use.</p>
-<h3 id="sec103" class="western">3.15.4 Monitoring Activity and Errors</h3>
+<h3 id="sec103" class="western">3.14.4 Monitoring Activity and Errors</h3>
 <p>The <b>Logs</b> section shows the activity
 recorded in Soul Gateway. The left panel lists the keys with their
 request counts, and the period to be viewed can be selected as day,
@@ -6853,7 +6709,7 @@ columns.</p>
 </p>
 <p align="center">
 <i>Figure
-105. Soul Gateway — Logs.</i></p>
+102. Soul Gateway — Logs.</i></p>
 <p>The <b>Errors</b> section reviews the
 issues that occur during request processing. A summary of the selected
 period reports the total number of requests, the requests that failed,
@@ -6869,7 +6725,7 @@ the system reports that there are no errors.</p>
 <img alt="Soul Gateway Errors view with zero requests and no errors for the selected day" loading="lazy" decoding="async" src="images/soul-gateway-errors-current.png" align="bottom" border="0"/>
 </p>
 <p align="center">
-<i>Figure 106. Soul Gateway Errors view for a selected day.</i></p>
+<i>Figure 103. Soul Gateway Errors view for a selected day.</i></p>
 <p>The <b>Activity</b> section reports the
 activity carried out within Soul Gateway for the selected period,
 grouped by key, and can be used to monitor relevant events. When an
@@ -6881,7 +6737,7 @@ obtain additional context.</p>
 </p>
 <p align="center">
 <i>Figure
-107. Soul Gateway — Activity.</i></p>
+104. Soul Gateway — Activity.</i></p>
 <p>The <b>Usage</b> section reports the cost
 of the services and models used during the selected period, broken down
 by model, and can be reviewed together with Activity and Errors.</p>
@@ -6890,8 +6746,8 @@ by model, and can be reviewed together with Activity and Errors.</p>
 </p>
 <p align="center">
 <i>Figure
-108. Soul Gateway — Usage.</i></p>
-<h3 id="sec104" class="western">3.15.5 Blacklist and Middlewares</h3>
+105. Soul Gateway — Usage.</i></p>
+<h3 id="sec104" class="western">3.14.5 Blacklist and Middlewares</h3>
 <p>The <b>Blacklist</b> section manages the
 rules that restrict what may be used in the system. Each rule has a
 pattern and a match type (substring, exact or regular expression)
@@ -6904,9 +6760,9 @@ middleware files are listed with their name, type and version, a marker
 for those that support streaming, and an indication when a file is
 missing. The list is refreshed from disk with <b>Rescan Files</b>, and
 the selected middleware shows its configuration.</p>
-<h3 id="sec105" class="western">3.15.6 Error Messages</h3>
+<h3 id="sec105" class="western">3.14.6 Error Messages</h3>
 <p><b>Table
-17. Soul Gateway messages</b></p>
+16. Soul Gateway messages</b></p>
 <center>
 	<table width="605" cellpadding="7" cellspacing="0">
 		<col width="287"/>
@@ -6946,30 +6802,30 @@ the selected middleware shows its configuration.</p>
 	</table>
 </center>
 
-<h2 id="sec109" class="western">3.16 Local LLMs</h2>
-<h3 id="sec110" class="western">3.16.1 Purpose and Overview</h3>
-<p>Only administrators see <b>Local LLMs</b> in the Explorer toolbar and under <b>Settings → Agents</b>. Either entry opens the same dashboard, where an administrator can choose and run a language model on the workspace's own hardware. The panel shows the available CPU cores, memory and disk space at the top, together with the currently running model. Its four tabs are <b>Models</b>, <b>Runners</b>, <b>Playground</b> and <b>Logs</b>. Available models and runners depend on the machine's hardware; on a machine without a usable GPU, supported models can run on the CPU.</p>
-<p>Local LLMs manages the model running on this machine. Other AssistOS components reach that running model through <b>Soul Gateway</b>, described in Section 3.15. Adding a model to the list does not start it.</p>
-<h3 id="sec111" class="western">3.16.2 Models and Adding a Model</h3>
+<h2 id="sec109" class="western">3.15 Local LLMs</h2>
+<h3 id="sec110" class="western">3.15.1 Purpose and Overview</h3>
+<p>Only administrators can open <b>Local LLMs</b> from the Explorer toolbar or from the <b>Agents</b> tab in <b>Settings</b>. Either entry opens the same dashboard, where they can choose and run a language model on the workspace's own hardware. The panel shows the available CPU cores, memory and disk space at the top, together with the currently running model. Its four tabs are <b>Models</b>, <b>Runners</b>, <b>Playground</b> and <b>Logs</b>. Available models and runners depend on the machine's hardware. On a machine without a usable GPU, supported models can run on the CPU.</p>
+<p>Local LLMs manages the model running on this machine. Other AssistOS components reach that running model through <b>Soul Gateway</b>, described in Section 3.14. Adding a model to the list does not start it.</p>
+<h3 id="sec111" class="western">3.15.2 Models and Adding a Model</h3>
 <p>Use the <b>Models</b> tab to select a model and review its files, runner options and estimated memory use. The example below selects a model that needs more memory than this machine has available: the runner says <b>does not fit</b> and the estimate is marked in red. Select a smaller model or adjust its settings before running it.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/local-llms-models-2026-11.png" alt="Local LLMs Models tab showing the model list, selected model, runner, and a red warning that the model does not fit in available memory"/></p>
-<p align="center"><i>Figure 109. Local LLMs — Models tab and memory estimate.</i></p>
+<p align="center"><i>Figure 106. Local LLMs — Models tab and memory estimate.</i></p>
 <p>To add a model, select <b>Add model</b>, choose a source and enter the model location. For the Hugging Face GGUF example shown below, enter the repository and revision, then select <b>Look up</b> to retrieve the available file and information used for the memory estimate. Choose the GGUF file, review the proposed name and sizing details, and select <b>Add model</b>. The source is recorded at this stage; the model weights are downloaded only when you later select <b>Run</b>.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/local-llms-add-model-2026-11.png" alt="Local LLMs Add model dialog with a Hugging Face GGUF repository, file, model name and memory sizing fields"/></p>
-<p align="center"><i>Figure 110. Local LLMs — adding a model from a Hugging Face GGUF file.</i></p>
+<p align="center"><i>Figure 107. Local LLMs — adding a model from a Hugging Face GGUF file.</i></p>
 <p>After adding or selecting a model, choose a compatible <b>Runner</b> in its details, review the settings and memory estimate, then select <b>Run</b>. If the estimate or a runner warning says the machine cannot support the selected combination, choose a smaller model or another available runner before trying again. When the model starts, its name appears in the <b>Running model</b> summary at the top of the panel.</p>
-<h3 id="sec112" class="western">3.16.3 Runners</h3>
+<h3 id="sec112" class="western">3.15.3 Runners</h3>
 <p>A runner is the software that loads a model and generates its answers. The <b>Runners</b> tab shows which runners are installed, which can be installed, and which are unsupported on the current hardware. In the example below, <b>llama.cpp</b> and <b>Ollama</b> are installed, while a separate CPU build of llama.cpp can be installed. Read the status on each card before choosing a runner for a model; a runner marked <b>Unsupported</b> cannot be used on this machine. An <b>Install</b> button appears only where installation is available.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/local-llms-runners-2026-11.png" alt="Local LLMs Runners tab showing installed, installable and unsupported runners"/></p>
-<p align="center"><i>Figure 111. Local LLMs — runner availability on the current machine.</i></p>
-<h3 id="sec113" class="western">3.16.4 Playground</h3>
+<p align="center"><i>Figure 108. Local LLMs — runner availability on the current machine.</i></p>
+<h3 id="sec113" class="western">3.15.4 Playground</h3>
 <p>Use <b>Playground</b> to check a model after starting it from <b>Models</b>. Type a short question or instruction into <b>Prompt</b>, optionally change <b>Maximum tokens</b> to limit the length of the answer, then select <b>Send</b>. The answer appears in the <b>Response</b> panel. If the page says <b>No model is ready</b>, return to <b>Models</b>, select a model and press <b>Run</b>; sending a prompt alone does not start one.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/local-llms-playground-2026-11.png" alt="Local LLMs Playground tab with a prompt field, maximum tokens, Send button and response area"/></p>
-<p align="center"><i>Figure 112. Local LLMs — Playground before a model is ready.</i></p>
-<h3 id="sec114" class="western">3.16.5 Logs</h3>
+<p align="center"><i>Figure 109. Local LLMs — Playground before a model is ready.</i></p>
+<h3 id="sec114" class="western">3.15.5 Logs</h3>
 <p>The <b>Logs</b> tab shows the latest 200 lines of output from the model runner and its controller. Open it when a model does not start or a request fails, and read the latest messages for a possible cause. Keep <b>Follow new lines</b> selected to see new messages as they arrive; clear it when you want to inspect an earlier message without the view moving. <b>No runner output yet</b> means there is nothing to show at that moment.</p>
 <p align="center"><img loading="lazy" decoding="async" src="images/local-llms-logs-2026-11.png" alt="Local LLMs Logs tab showing the Follow new lines option and an empty runner output area"/></p>
-<p align="center"><i>Figure 113. Local LLMs — runner and controller logs.</i></p>
+<p align="center"><i>Figure 110. Local LLMs — runner and controller logs.</i></p>
 
 <h1 id="sec106" class="western">4. Conclusions</h1>
 <p>AssistOS addresses a problem that
@@ -6977,7 +6833,7 @@ project teams recognise immediately: work is spread across many
 tools, and every movement between them loses context. The environment
 documented in this manual answers that problem by making the
 workspace the shared frame of reference. Files, source code,
-documentation, repositories, collaborative sessions, planned work,
+documentation, repositories, collaborative sessions,
 extensible resources, automation and artificial intelligence are all
 reached from the same place, under the same identity and with the
 same working context. This shared view helps teams move through project work with fewer context switches.</p>
@@ -6987,21 +6843,10 @@ project is visible, and where the other components are reached. Its
 selection-based model is what makes the other capabilities usable
 without restating the task: the editor opens for the selected file,
 the repository controls apply to the selected location, the assistant
-works in the selected directory, and the confidential, collaborative
-and planning surfaces open around the selected resource. Every
+works in the selected directory, and the confidential and collaborative
+surfaces open around the selected resource. Every
 component is reached at the point in the user's activity where it becomes useful.</p>
-<p>The components themselves are
-documented as parts of one environment because that is how they are
-used. Git keeps the project synchronised; the Markdown editors support
-SCRIPTA paragraph variants and voting; the Code Editor changes source
-files; the DPU Agent protects confidential resources; WebMeet and
-the Backlog support collaboration and planning; the Marketplace
-extends the environment; RoboTeam automates workspace tasks;
-Observability tracks running and completed workflows; Live Sessions
-shows agent work as it happens;
-Copilot, Local LLMs and Soul Gateway bring artificial intelligence into it under
-control; and Settings and the Workspace Monitor configure and observe
-the whole.</p>
+<p>The components are documented as parts of one environment because that is how they are used. Git keeps repositories synchronised, while the Markdown and Code Editors help users work with project files. The DPU Agent protects confidential resources, and WebMeet supports collaboration. Marketplace extends the workspace, RoboTeam automates workflows, and Observability and Live Sessions help users follow their progress. Copilot, Local LLMs and Soul Gateway provide access to AI capabilities. Settings and Workspace Monitor help administrators configure and oversee the workspace.</p>
 <p>A second idea runs through the
 manual: the shared surface is separate from the protected state that
 each capability owns. Explorer presents the components without taking
@@ -7209,16 +7054,6 @@ of terms</b></p>
 			</tr>
 			<tr valign="top">
 				<td width="186"><p>
-					SOPLang</p>
-				</td>
-				<td width="388"><p>
-					The structured document
-					model that adds metadata, chapters, paragraphs, commands,
-					variables and references to Markdown.</p>
-				</td>
-			</tr>
-			<tr valign="top">
-				<td width="186"><p>
 					OnlyOffice</p>
 				</td>
 				<td width="388"><p>
@@ -7252,24 +7087,6 @@ of terms</b></p>
 				<td width="388"><p>
 					A sequence of activities,
 					or a task graph, defined in RoboTeam to achieve an objective.</p>
-				</td>
-			</tr>
-			<tr valign="top">
-				<td width="186"><p>
-					Backlog</p>
-				</td>
-				<td width="388"><p>
-					The component that
-					organises project work into tasks.</p>
-				</td>
-			</tr>
-			<tr valign="top">
-				<td width="186"><p>
-					Task</p>
-				</td>
-				<td width="388"><p>
-					A unit of planned work in
-					a backlog.</p>
 				</td>
 			</tr>
 			<tr valign="top">

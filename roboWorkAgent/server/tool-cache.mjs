@@ -20,7 +20,7 @@ const TOOL_MOUNT_PATH = '/opt/roboteam-tools';
 const NESTED_CONTAINER_ARGS = ['--ipc', 'none'];
 const CODING_AGENT_PACKAGES = Object.freeze({
     codex: Object.freeze({ packageName: '@openai/codex', executable: 'codex' }),
-    opencode: Object.freeze({ packageName: 'opencode-ai', executable: 'opencode' }),
+    opencode: Object.freeze({ packageName: '@opencode/cli', executable: 'opencode' }),
     pi: Object.freeze({ packageName: '@earendil-works/pi-coding-agent', executable: 'pi' }),
     // OMP (Oh My Pi) is a Bun program (`#!/usr/bin/env bun`), so Bun is installed into the same prefix and
     // linked beside it: ALA puts that prefix's bin first on the sandbox PATH, and the shell view links it too.
@@ -249,6 +249,8 @@ export class ToolCache {
                 const generation = path.join(bundleRoot, 'generations', descriptor.generation);
                 const stamp = JSON.parse(await fs.readFile(path.join(generation, 'stamp.json'), 'utf8'));
                 if (stamp?.schema !== CACHE_SCHEMA || stamp.name !== name || stamp.generation !== descriptor.generation) return null;
+                if (name === 'opencode' && (stamp.identity?.package !== '@opencode/cli'
+                    || !(Number(stamp.versions?.opencode?.split('.')[0]) >= 2))) return null;
                 const pin = this.versionPins[name];
                 if (pin !== undefined && (descriptor.versions?.[name] !== pin || stamp.versions?.[name] !== pin)) return null;
                 for (const file of agentExecutables(definition)) {
@@ -618,7 +620,9 @@ export class ToolCache {
         if (definition.installer === 'agy-manifest') return this._prepareManifestAgent(name);
         const companions = definition.companions || [];
         return this._prepare(name, async () => {
+            // The data migration targets a tested release, not a moving npm tag.
             const version = this.versionPins[name] ?? await this._npmVersion(definition.packageName);
+            if (name === 'opencode' && !(Number(version.split('.')[0]) >= 2)) throw new Error('RoboWork requires OpenCode >=2');
             // Companions track their latest release; their versions are part of the generation identity.
             const companionVersions = Object.fromEntries(await Promise.all(companions.map(async (companion) => (
                 [companion.executable, await this._npmVersion(companion.packageName)]))));
@@ -793,6 +797,8 @@ export class ToolCache {
             const directory = path.join(bundleRoot, 'generations', descriptor.generation);
             const stamp = JSON.parse(await fs.readFile(path.join(directory, 'stamp.json'), 'utf8'));
             if (stamp?.schema !== CACHE_SCHEMA || stamp.name !== name || stamp.generation !== descriptor.generation) throw new Error('invalid cached generation stamp');
+            if (name === 'opencode' && (!(Number(stamp.versions?.opencode?.split('.')[0]) >= 2)
+                || stamp.identity?.package !== '@opencode/cli')) throw new Error('OpenCode V1 fallback is disabled after migration');
             const codingAgent = CODING_AGENT_PACKAGES[name];
             const pin = codingAgent ? this.versionPins[name] : undefined;
             if (pin !== undefined && (descriptor.versions?.[name] !== pin || stamp.versions?.[name] !== pin)) {

@@ -620,12 +620,22 @@ test('deploy: CSV Mail arrives as its agent folder alone, in a stage of its own,
         assert.equal(result.status, 0);
         return result.stdout;
     };
+    fs.mkdirSync(previous, { recursive: true });
+    fs.mkdirSync(path.join(repo, '.roboteam'));
+    fs.writeFileSync(path.join(repo, '.roboteam/marker'), 'live sibling');
+    const rootInode = fs.statSync(repo).ino;
+    fs.writeFileSync(path.join(previous, 'legacy-data'), 'previous sibling');
     assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/two': 'x' })).status, 0);
     assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/two')));
     assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/src/ploinky.mjs')));
+    assert.equal(fs.statSync(repo).ino, rootInode);
+    assert.equal(fs.readFileSync(path.join(repo, '.roboteam/marker'), 'utf8'), 'live sibling');
     assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/three': 'x' })).status, 0);
     assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')) && !fs.existsSync(path.join(repo, 'csvMailAgent/two')));
     assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/two')));
+    assert.equal(fs.statSync(repo).ino, rootInode);
+    assert.equal(fs.readFileSync(path.join(repo, '.roboteam/marker'), 'utf8'), 'live sibling');
+    assert.equal(fs.readFileSync(path.join(previous, 'legacy-data'), 'utf8'), 'previous sibling');
     assert.deepEqual(fs.readdirSync(path.dirname(previous)), ['previous']);
     // Each refusal leaves the live copy in place: data or Git metadata beside the agent, no manifest, nothing at all.
     for (const [name, input] of [
@@ -637,6 +647,52 @@ test('deploy: CSV Mail arrives as its agent folder alone, in a stage of its own,
         assert.notEqual(place(input).status, 0, name);
         assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')), name);
     }
+    // Refuse symlinks in either the incoming agent or its manifest.
+    for (const target of ['csvMailAgent', 'csvMailAgent/manifest.json']) {
+        const source = fs.mkdtempSync(path.join(root, 'symlink-'));
+        if (target.includes('/')) fs.mkdirSync(path.join(source, 'csvMailAgent'));
+        fs.symlinkSync('/tmp', path.join(source, target));
+        const archive = spawnSync('tar', ['-cf', '-', '-C', source, 'csvMailAgent']);
+        assert.equal(archive.status, 0);
+        assert.notEqual(place(archive.stdout).status, 0, target);
+        assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')));
+    }
+    // An interrupted rotation leaves its predecessor intact on the next placement.
+    fs.rmSync(path.join(repo, 'csvMailAgent'), { recursive: true });
+    assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/retry': 'x' })).status, 0);
+    assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/two')));
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/retry')));
+
+    // Fail only the incoming publish; the rotated live agent must be restored.
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'mv'), '#!/bin/sh\ncase "$1" in */incoming.*/csvMailAgent) exit 1;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+    const failedPublish = spawnSync('sh', ['-c', program, 'sh'], {
+        cwd: workspace, input: tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/fail': 'x' }),
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    assert.notEqual(failedPublish.status, 0);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/retry')));
+    assert.equal(fs.readFileSync(path.join(previous, 'legacy-data'), 'utf8'), 'previous sibling');
+    assert.deepEqual(fs.readdirSync(path.dirname(previous)), ['previous']);
+
+    // If a destination appears during a failed publish, retain the backup rather than nesting it.
+    fs.writeFileSync(path.join(bin, 'mv'), '#!/bin/sh\ncase "$1" in */incoming.*/csvMailAgent) mkdir "$2"; exit 1;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+    const occupied = spawnSync('sh', ['-c', program, 'sh'], {
+        cwd: workspace, input: tarOf({ 'csvMailAgent/manifest.json': '{}' }),
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    assert.notEqual(occupied.status, 0);
+    assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/retry')));
+    assert.deepEqual(fs.readdirSync(path.join(repo, 'csvMailAgent')), []);
+    fs.rmSync(path.join(repo, 'csvMailAgent'), { recursive: true });
+    fs.renameSync(path.join(previous, 'csvMailAgent'), path.join(repo, 'csvMailAgent'));
+
+    // A symlink at a protected child path is rejected without following it.
+    fs.rmSync(path.join(previous, 'csvMailAgent'), { recursive: true, force: true });
+    fs.symlinkSync(repo, path.join(previous, 'csvMailAgent'));
+    assert.notEqual(place(tarOf({ 'csvMailAgent/manifest.json': '{}' })).status, 0);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/retry')));
     // The Bizanso predecessor in its own stage is never touched.
     assert.ok(fs.existsSync(path.join(workspace, '.ploinky/.qa-private-copy/previous/bizanso-file')));
 });
@@ -678,6 +734,7 @@ test('deploy: a failed managed location check stops the run before anything move
 run_in_box() { case "$1" in MANAGED) ${stub} ;; *) cat > /dev/null; echo "box:$1" ;; esac; }
 ploinky_locked() { echo "ploinky:$*"; }
 git() { case "$*" in *symbolic-ref*) echo main ;; *) echo archive ;; esac; }
+node() { [[ "$1" = .github/scripts/qaPredeploy.mjs ]] && echo "receipt:$2:$3"; }
 MANAGED_PROGRAM=MANAGED COPY_PROGRAM=COPY CSVMAIL_PLACE_PROGRAM=CSVMAIL BUNDLE_PROGRAM=BUNDLE CLONE_PROGRAM=CLONE GITHUB_WORKSPACE=/w CSVMAIL_COMMIT=${'c'.repeat(40)}
 ${block.slice(start, end)}`], { encoding: 'utf8' });
     const refused = run('echo bizanso; exit 1');
@@ -686,9 +743,9 @@ ${block.slice(start, end)}`], { encoding: 'utf8' });
     const unexpected = run('echo other');
     assert.notEqual(unexpected.status, 0);
     assert.doesNotMatch(unexpected.stdout, /ploinky:|box:/);
-    assert.equal(run('echo bizanso').stdout, 'ploinky:uninstall repo bizanso\nbox:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
-    assert.equal(run('echo simpleCSVMailSend').stdout, 'ploinky:uninstall repo simpleCSVMailSend\nbox:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
-    assert.equal(run('true').stdout, 'box:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('echo bizanso').stdout, 'ploinky:uninstall repo bizanso\nreceipt:prepare:bizanso\nbox:COPY\nreceipt:installed:bizanso\nreceipt:prepare:simpleCSVMailSend\nbox:CSVMAIL\nreceipt:installed:simpleCSVMailSend\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('echo simpleCSVMailSend').stdout, 'ploinky:uninstall repo simpleCSVMailSend\nreceipt:prepare:bizanso\nbox:COPY\nreceipt:installed:bizanso\nreceipt:prepare:simpleCSVMailSend\nbox:CSVMAIL\nreceipt:installed:simpleCSVMailSend\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('true').stdout, 'receipt:prepare:bizanso\nbox:COPY\nreceipt:installed:bizanso\nreceipt:prepare:simpleCSVMailSend\nbox:CSVMAIL\nreceipt:installed:simpleCSVMailSend\nbox:BUNDLE\nbox:CLONE\n');
 });
 
 test('deploy: ScriptaHub is a workspace-root checkout of the exact public source', () => {
@@ -1823,5 +1880,121 @@ test('deploy: the image verification program rejects a wrong running RoboWork im
         }
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// ScriptaHub dependency fingerprint: the gate compares the selected checkout with the image label before the restart.
+
+const I10 = ' '.repeat(10);
+const FP_BEGIN = `${I10}# BEGIN ScriptaHub dependency fingerprint`;
+const FP_END = `${I10}# END ScriptaHub dependency fingerprint`;
+const fingerprintBlocks = (source) => {
+    const found = [];
+    let from = 0;
+    for (;;) {
+        const start = source.indexOf(`\n${FP_BEGIN}\n`, from);
+        if (start === -1) return found;
+        const end = source.indexOf(`\n${FP_END}\n`, start);
+        assert.notEqual(end, -1, 'an unterminated fingerprint block');
+        found.push(source.slice(start + 1, end + 1 + FP_END.length));
+        from = end;
+    }
+};
+const unindent10 = (text) => text.split('\n').map((line) => (line.startsWith(I10) ? line.slice(I10.length) : line)).join('\n');
+const INPUTS = 'scriptahubAgent/deployment/dependency-inputs.txt';
+const LOCKFILE = 'skills/a/external/html/package-lock.json';
+const blobId = (bytes) => crypto.createHash('sha1').update(`blob ${Buffer.byteLength(bytes)}\0`).update(bytes).digest('hex');
+const oracleFingerprint = (files) => {
+    const hash = crypto.createHash('sha256').update('scriptahub-dependency-fingerprint-v1\n');
+    for (const file of files[INPUTS].slice(0, -1).split('\n')) hash.update(`${blobId(files[file])} ${file}\n`);
+    return hash.digest('hex');
+};
+const GOLDEN = { files: { [INPUTS]: `${INPUTS}\nskills/x/external/html/package-lock.json\n`, 'skills/x/external/html/package-lock.json': '{}\n' }, fingerprint: 'b46a273fb33f3535a42f1244c246494d87596d7214588d45b9bdb74877b40016' };
+const SHELLS = [...new Set([process.env.QA_PROGRAM_SHELL || 'sh', 'bash', ...(fs.existsSync('/bin/dash') ? ['/bin/dash'] : [])])];
+
+function gitRepo(t, name, files) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-pre-restart-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const repo = path.join(root, name);
+    fs.mkdirSync(repo);
+    const git = (...args) => {
+        const result = spawnSync('git', ['-c', 'core.autocrlf=false', '-c', 'user.email=t@example.test', '-c', 'user.name=t', '-c', 'init.defaultBranch=main', ...args], { cwd: repo, encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        return result.stdout.trim();
+    };
+    git('init', '--quiet');
+    const commit = (next, message = 'commit') => {
+        for (const entry of fs.readdirSync(repo)) if (entry !== '.git') fs.rmSync(path.join(repo, entry), { recursive: true, force: true });
+        for (const [file, content] of Object.entries(next)) {
+            fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+            if (typeof content === 'string') fs.writeFileSync(path.join(repo, file), content);
+            else fs.symlinkSync(content.symlink, path.join(repo, file));
+        }
+        git('add', '-A');
+        git('commit', '--quiet', '--allow-empty', '-m', message);
+        return git('rev-parse', 'HEAD');
+    };
+    return { root, repo, git, commit };
+}
+
+test('deploy: the ScriptaHub dependency fingerprint block is the one of the product workflow and yields the golden vector', (t) => {
+    const product = read('deploy-explorer-qa-scriptahub.yml');
+    const [resolveBlock, preRestartBlock] = fingerprintBlocks(deploy);
+    assert.equal(fingerprintBlocks(deploy).length, 2, 'the resolve step and the pre-restart program');
+    assert.equal(fingerprintBlocks(step(deploy, 'Resolve the ScriptaHub source and the published images')).length, 1);
+    assert.equal(resolveBlock, preRestartBlock);
+    for (const use of fingerprintBlocks(product)) assert.equal(use, resolveBlock);
+    assert.equal(resolveBlock.includes("'"), false);
+    const { repo, commit } = gitRepo(t, 'golden', {});
+    const rev = commit(GOLDEN.files);
+    for (const shell of SHELLS) {
+        const result = spawnSync(shell, ['-c', `${unindent10(resolveBlock)}\nscripta_dependency_fingerprint "$1" "$2"`, 'sh', repo, rev], { encoding: 'utf8' });
+        assert.deepEqual({ status: result.status, stdout: result.stdout, stderr: result.stderr }, { status: 0, stdout: `${GOLDEN.fingerprint}\n`, stderr: '' }, shell);
+    }
+    assert.equal(oracleFingerprint(GOLDEN.files), GOLDEN.fingerprint);
+});
+
+test('deploy: the pre-restart check compares the dependency fingerprint of the checkout at HEAD in the Box, before the restart', (t) => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const found = body.match(/printf '%s\\n%s\\n' "\$SCRIPTA_HEAD" "\$SCRIPTA_DEPENDENCY_FINGERPRINT" \| run_in_box '(set -eu\n[\s\S]*?)'; then\n\s+echo "::error::([^"]*)"/);
+    assert.ok(found, 'the pre-restart program');
+    assert.match(found[2], /did not match the selected source or its dependency fingerprint.*no restart has occurred/);
+    assert.equal(body.includes('SCRIPTA_COPIED_TREES'), false);
+    // The gate is the resolve step, which runs before the step that pulls, moves and restarts.
+    assert.ok(deploy.indexOf('- name: Resolve the ScriptaHub source and the published images\n') < deploy.indexOf('- name: Bootstrap the host and deploy through Ploinky commands\n'));
+    const check = body.indexOf('"$SCRIPTA_DEPENDENCY_FINGERPRINT" | run_in_box');
+    assert.ok(body.indexOf('\n          update_kept_repos\n') < check && check < body.indexOf('\n          ploinky_locked restart\n'), 'update, then check, then restart');
+    const program = unindent10(found[1]);
+    const files = { [INPUTS]: `${INPUTS}\n${LOCKFILE}\n`, [LOCKFILE]: '{}\n', 'skills/a/SKILL.md': 'a\n' };
+    const F = oracleFingerprint(files);
+    const run = (workspace, input, shell = SHELLS[0]) => spawnSync(shell, ['-c', program, 'sh'], { cwd: workspace, input, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: workspace } });
+    for (const shell of SHELLS) {
+        const { root, repo, commit } = gitRepo(t, 'ScriptaHubAgent', {});
+        const head = commit(files);
+        const ok = run(root, `${head}\n${F}\n`, shell);
+        assert.equal(ok.status, 0, `${shell}: ${ok.stderr}`);
+        // A skill source edit after the image keeps the check passing; the checkout must be clean and at the head.
+        const edited = commit({ ...files, 'skills/a/SKILL.md': 'changed\n' }, 'skill edit');
+        assert.equal(run(root, `${edited}\n${F}\n`, shell).status, 0, `${shell}: a skill source edit keeps the fingerprint`);
+        assert.notEqual(run(root, `${head}\n${F}\n`, shell).status, 0, `${shell}: another head`);
+        assert.notEqual(run(root, `${edited}\n${'1'.repeat(64)}\n`, shell).status, 0, `${shell}: another fingerprint`);
+        fs.writeFileSync(path.join(repo, 'README.md'), 'untracked\n');
+        assert.notEqual(run(root, `${edited}\n${F}\n`, shell).status, 0, `${shell}: a dirty checkout`);
+        fs.rmSync(path.join(repo, 'README.md'));
+        // Hostile or malformed stdin is refused before Git runs.
+        for (const hostile of [`$(touch ${path.join(root, 'pwned')})\n${F}\n`, `${edited}\n${F.toUpperCase()}\n`, `${edited}\n${F.slice(1)}\n`, `${edited.slice(1)}\n${F}\n`, `\n\n`, '', `${edited}\n`]) {
+            assert.notEqual(run(root, hostile, shell).status, 0, `${shell}: ${JSON.stringify(hostile)}`);
+        }
+        assert.equal(fs.existsSync(path.join(root, 'pwned')), false);
+        // The inputs that the head carries decide, and an input that became a symlink or a lockfile edit is refused.
+        const lockEdited = commit({ ...files, [LOCKFILE]: '{"changed":true}\n' }, 'lockfile edit');
+        assert.notEqual(run(root, `${lockEdited}\n${F}\n`, shell).status, 0, `${shell}: a lockfile edit`);
+        const linked = commit({ ...files, [LOCKFILE]: { symlink: 'SKILL.md' } }, 'a symlinked input');
+        assert.notEqual(run(root, `${linked}\n${F}\n`, shell).status, 0, `${shell}: a symlinked input`);
+        const crlf = commit({ ...files, [INPUTS]: `${INPUTS}\r\n${LOCKFILE}\r\n` }, 'CRLF list');
+        assert.notEqual(run(root, `${crlf}\n${F}\n`, shell).status, 0, `${shell}: a CRLF list`);
+        const noList = commit({ [LOCKFILE]: '{}\n' }, 'no list');
+        assert.notEqual(run(root, `${noList}\n${F}\n`, shell).status, 0, `${shell}: a checkout that predates the list`);
     }
 });

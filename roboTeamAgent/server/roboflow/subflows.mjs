@@ -150,7 +150,10 @@ export class Subflows {
         const index = ids.indexOf(flow.id);
         if (index < 0) throw invalid('Child workflow is not in its parent sequence');
         for (const id of ids.slice(0, index)) {
-            if ((await this.service.store.get(id))?.status !== 'completed') throw invalid('Complete the preceding sub-workflow first');
+            const status = (await this.service.store.get(id))?.status;
+            if (status !== 'completed' && !(visit.continueOnChildFailure === true && ['failed','terminated'].includes(status))) {
+                throw invalid('Complete the preceding sub-workflow first');
+            }
         }
         for (const id of ids.slice(index + 1)) {
             if ((await this.service.store.get(id))?.status !== 'pending') throw invalid('A later sub-workflow has already started');

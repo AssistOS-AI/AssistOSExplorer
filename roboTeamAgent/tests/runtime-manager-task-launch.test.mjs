@@ -48,6 +48,26 @@ async function fixture(t, { environments = {} } = {}) {
 
 const value = (args, flag) => args[args.indexOf(flag) + 1];
 
+test('continuing a workflow sends only the current phase attempt ID to the model', async t => {
+    const f = await fixture(t);
+    const robot = { id: 'resume-a1b2c3', name: 'Resume', codingAgents: ['codex'] };
+    const { accepted } = await f.run(robot, 'simple', {
+        ca: 'codex', workflowCompletionStep: 'summary', systemPrompt: 'Keep the workflow context.',
+    });
+    const originalId = accepted.taskId;
+    const runtimeTaskId = '128b86c2-34dc-4b03-8bd5-337ed14474c1';
+    assert.match(f.spawns[0].prompt.systemPrompt, new RegExp('completionId=' + originalId));
+    await f.manager.resumeTask(robot, originalId, 'Continue the summary.', {runtimeTaskId});
+    while (f.manager.taskStatus(robot.id, runtimeTaskId).state !== 'completed') {
+        assert.notEqual(f.manager.taskStatus(robot.id, runtimeTaskId).state, 'failed');
+        await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    const {systemPrompt, prompt} = f.spawns.at(-1).prompt;
+    assert.equal(systemPrompt, 'Keep the workflow context.');
+    assert.match(prompt, /^Continue the summary\./);
+    assert.deepEqual(prompt.match(/completionId=[a-f0-9-]+/g), ['completionId=' + runtimeTaskId]);
+});
+
 test('a coding agent the robot has disabled is refused before anything is prepared or started', async t => {
     const f = await fixture(t);
     const robot = { id: 'selected-a1b2c3', name: 'Selected', codingAgents: ['opencode'] };

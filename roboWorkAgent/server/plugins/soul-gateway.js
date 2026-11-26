@@ -87,3 +87,26 @@ export const SoulGateway = async () => {
         dispose: close,
     };
 };
+
+// The transport remains shared; V2 owns registration and disposal through setup.
+export default { id: 'robowork.soul-gateway', async setup(ctx) {
+    const { Model, Provider } = await import('@opencode/plugin');
+    const transport = await SoulGateway();
+    try {
+        const config = {};
+        await transport.config(config);
+        const gateway = config.provider['soul-gateway'];
+        const providerID = Provider.ID.make('soul-gateway');
+        const source = {
+            info: { ...Provider.Info.empty(providerID), name: 'Soul Gateway', activation: 'enabled',
+                package: '@opencode/ai/providers/openai-compatible', settings: gateway.options },
+            models: Object.entries(gateway.models).map(([id, model]) => ({
+                ...Model.Info.default(providerID, Model.ID.make(id)), name: model.name,
+                ...(model.limit ? { limit: model.limit } : {}),
+                ...(model.cost ? { cost: [{ ...model.cost, cache: { read: 0, write: 0 } }] } : {}),
+            })),
+        };
+        await ctx.provider.transform(editor => editor.add(source));
+        return transport.dispose;
+    } catch (error) { await transport.dispose(); throw error; }
+} };

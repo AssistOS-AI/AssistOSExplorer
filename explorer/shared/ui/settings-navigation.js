@@ -6,6 +6,8 @@ export function normalizeSettingsTab(tab) {
 
 export function buildSettingsUrl(location, tab) {
     const url = new URL(location.href);
+    url.searchParams.delete('panel');
+    url.searchParams.delete('panelPath');
     url.searchParams.set('settings', normalizeSettingsTab(tab));
     if (!url.hash.startsWith('#file-exp')) url.hash = '#file-exp/';
     return url.href;
@@ -13,6 +15,7 @@ export function buildSettingsUrl(location, tab) {
 
 export function readSettingsTab(location) {
     const url = new URL(location.href);
+    if (url.searchParams.has('panel')) return null;
     return url.searchParams.has('settings') ? normalizeSettingsTab(url.searchParams.get('settings')) : null;
 }
 

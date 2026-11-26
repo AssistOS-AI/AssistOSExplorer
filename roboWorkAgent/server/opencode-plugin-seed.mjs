@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-export const OPENCODE_PLUGIN_PACKAGE = '@opencode-ai/plugin';
+export const OPENCODE_PLUGIN_PACKAGE = '@opencode/plugin';
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
 
 // Read a regular file without following a link; the robot home is writable by the sandbox.
@@ -45,7 +45,8 @@ export async function openCodePluginState(directory, version) {
     const dependencies = manifest.value?.dependencies;
     // Only the manifest this module and OpenCode write: nothing but the plugin dependency.
     const managed = Boolean(manifest.value && dependencies && typeof dependencies === 'object'
-        && Object.keys(dependencies).length === 1 && dependencies[OPENCODE_PLUGIN_PACKAGE] !== undefined
+        && Object.keys(dependencies).length === 1
+        && (dependencies[OPENCODE_PLUGIN_PACKAGE] !== undefined || dependencies['@opencode-ai/plugin'] !== undefined)
         && ['devDependencies', 'peerDependencies', 'optionalDependencies'].every(key =>
             !manifest.value[key] || Object.keys(manifest.value[key]).length === 0));
     const current = managed

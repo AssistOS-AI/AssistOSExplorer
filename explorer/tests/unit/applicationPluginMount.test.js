@@ -68,6 +68,10 @@ class FakeNode {
 
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
 
+    contains(node) { return node === this || this.childNodes.some(child => child.contains(node)); }
+
+    closest(selector) { return this.matches(selector) ? this : this.parentNode?.closest(selector); }
+
     detach(child) {
         child.parentNode?.childNodes.splice(child.parentNode.childNodes.indexOf(child), 1);
         child.parentNode = null;
@@ -425,6 +429,36 @@ test('Tools mounts moved toolbar plugins once with dropdown context while Help s
         await renderApplicationPluginSlots(harness.fileExp);
         assert.equal(harness.dropdownContainer.querySelectorAll('plugin-git').length, 1);
         assert.equal(harness.events.filter(event => event === 'register-start:plugin-git').length, 1);
+    } finally {
+        harness.restore();
+    }
+});
+
+
+test('first-click toolbar mounting keeps Tools contributions out of the toolbar', async () => {
+    const harness = createHarness({
+        plugins: {
+            'file-exp:toolbar': [
+                plugin('scriptahub', 'plugin-scriptahub', 375, { agent: 'scriptahubAgent' }),
+                plugin('git', 'plugin-git', 400, { agent: 'gitAgent' }),
+            ],
+            'file-exp:toolbar-plugins-dropdown': [plugin('csv-mail', 'plugin-csv-mail', 410, { agent: 'csvMailAgent' })],
+        },
+    });
+    const listeners = new Map();
+    harness.fileExp.setElementListener = (key, _element, _type, listener) => listeners.set(key, listener);
+    try {
+        for (const component of ['plugin-git', 'plugin-csv-mail', 'plugin-scriptahub']) {
+            harness.gate('register', component).resolve();
+            harness.gate('render', component).resolve();
+        }
+        await renderApplicationPluginSlots(harness.fileExp);
+        const trigger = harness.toolbarContainer.querySelector('[data-app-plugin-trigger]');
+        listeners.get('lazy-toolbar-plugin-actions')({ target: trigger, preventDefault() {}, stopPropagation() {} });
+        await harness.fileExp.__toolbarPluginLoadPromises.get('scriptahubAgent/scriptahub');
+        assert.ok(harness.toolbarContainer.querySelector('plugin-scriptahub'));
+        assert.deepEqual(keysIn(harness.toolbarContainer), ['scriptahubAgent/scriptahub']);
+        assert.deepEqual(keysIn(harness.dropdownContainer), ['gitAgent/git', 'csvMailAgent/csv-mail']);
     } finally {
         harness.restore();
     }

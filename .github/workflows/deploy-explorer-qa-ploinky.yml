@@ -18,7 +18,7 @@ on:
         default: false
         type: boolean
       reset_explorer_checkout:
-        description: 'Hard-reset the kept AchillesIDE checkout to main in the first start (discards its local changes). Only when no Box exists, for a kept checkout that the current Ploinky refuses.'
+        description: 'Reset the kept AchillesIDE checkout to main in the first start after the unpublished-source check passes. Only when no Box exists, for a kept checkout that the current Ploinky refuses.'
         required: false
         default: false
         type: boolean
@@ -394,45 +394,137 @@ jobs:
             exit 1
           fi
           docker buildx imagetools inspect "$AGENT_REPO@$AGENT_INDEX" --format '{{json .Image}}' > "$RUNNER_TEMP/qa-scriptahub-agent-image.json"
+          # Exit 3 means the revision and assets labels are valid but the image carries no dependency fingerprint label on
+          # either platform, which is an image published before the skill sources were mounted.
+          LABEL_STATUS=0
           IMAGE_LABELS="$(node --input-type=module - "$RUNNER_TEMP/qa-scriptahub-agent-image.json" <<'NODE'
           import fs from 'node:fs';
           const image = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-          const keys = ['org.opencontainers.image.revision', 'io.assistos.scriptahub.skills-tree', 'io.assistos.scriptahub.deployment-tree', 'io.assistos.scriptahub.reader-css-blob'];
-          const values = keys.map((key) => {
-            const a = image?.['linux/amd64']?.config?.Labels?.[key];
-            const b = image?.['linux/arm64']?.config?.Labels?.[key];
-            if (typeof a !== 'string' || a.length !== 40 || !/^[0-9a-f]{40}$/.test(a) || a !== b) throw new Error(`Invalid or inconsistent image label ${key}`);
-            return a;
-          });
-          const assets = image?.['linux/amd64']?.config?.Labels?.['io.assistos.scriptahub.assets-image'];
-          if (typeof assets !== 'string' || assets.length !== 108 || !/^docker\.io\/assistos\/scriptahub-assets@sha256:[0-9a-f]{64}$/.test(assets) || assets !== image?.['linux/arm64']?.config?.Labels?.['io.assistos.scriptahub.assets-image']) throw new Error('Invalid or inconsistent assets image label');
-          process.stdout.write(values.join(' '));
+          const label = (platform, key) => image?.[platform]?.config?.Labels?.[key];
+          const revisionKey = 'org.opencontainers.image.revision';
+          const revision = label('linux/amd64', revisionKey);
+          if (typeof revision !== 'string' || revision.length !== 40 || !/^[0-9a-f]{40}$/.test(revision) || revision !== label('linux/arm64', revisionKey)) throw new Error(`Invalid or inconsistent image label ${revisionKey}`);
+          const assets = label('linux/amd64', 'io.assistos.scriptahub.assets-image');
+          if (typeof assets !== 'string' || assets.length !== 108 || !/^docker\.io\/assistos\/scriptahub-assets@sha256:[0-9a-f]{64}$/.test(assets) || assets !== label('linux/arm64', 'io.assistos.scriptahub.assets-image')) throw new Error('Invalid or inconsistent assets image label');
+          const fingerprintKey = 'io.assistos.scriptahub.dependency-fingerprint';
+          const a = label('linux/amd64', fingerprintKey);
+          const b = label('linux/arm64', fingerprintKey);
+          if (a === undefined && b === undefined) process.exit(3);
+          if (typeof a !== 'string' || !/^[0-9a-f]{64}$/.test(a) || a !== b) throw new Error(`Invalid or inconsistent image label ${fingerprintKey}`);
+          process.stdout.write(`${revision} ${a}`);
           NODE
-          )" || { echo "::error::Invalid ScriptaHub image labels. Nothing was changed."; exit 1; }
-          read -r AGENT_REVISION SKILLS_TREE DEPLOYMENT_TREE READER_BLOB <<< "$IMAGE_LABELS"
+          )" || LABEL_STATUS=$?
+          if [ "$LABEL_STATUS" -eq 3 ]; then
+            echo "::error::The agent image predates mounted skill sources: it carries no io.assistos.scriptahub.dependency-fingerprint label. Publish a matching agent image using publish-scriptahub-agent-image.yml. Nothing was changed."
+            exit 1
+          fi
+          if [ "$LABEL_STATUS" -ne 0 ]; then
+            echo "::error::Invalid ScriptaHub image labels. Nothing was changed."
+            exit 1
+          fi
+          read -r AGENT_REVISION DEPENDENCY_LABEL <<< "$IMAGE_LABELS"
+          [[ "$AGENT_REVISION" =~ ^[0-9a-f]{40}$ ]] && [[ "$DEPENDENCY_LABEL" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Invalid ScriptaHub image labels. Nothing was changed."; exit 1; }
           REFUSAL="Publish a matching agent image from a committed source lock using publish-scriptahub-agent-image.yml. Nothing was changed."
           if ! source_git cat-file -e "$AGENT_REVISION^{commit}" 2> /dev/null || ! source_git merge-base --is-ancestor "$AGENT_REVISION" "$HEAD_COMMIT"; then
             echo "::error::The agent image revision is not an ancestor of $BRANCH@$HEAD_COMMIT. $REFUSAL"
             exit 1
           fi
-          COPIED_TREES=''
-          for pair in "skills:$SKILLS_TREE" "scriptahubAgent/deployment:$DEPLOYMENT_TREE" "scriptahubAgent/site/reader/reader.css:$READER_BLOB"; do
-            path="${pair%%:*}"; expected="${pair#*:}"
-            at_head="$(source_git rev-parse "$HEAD_COMMIT:$path" 2> /dev/null)" || at_head=''
-            at_image="$(source_git rev-parse "$AGENT_REVISION:$path" 2> /dev/null)" || at_image=''
-            if [ "$at_head" != "$expected" ] || [ "$at_image" != "$expected" ]; then
-              echo "::error::$path differs from the agent image source labels. $REFUSAL"
-              exit 1
+          # BEGIN ScriptaHub dependency fingerprint
+          # Dependency fingerprint v1 of a commit: the sha256 of a header and one line, blob id and path, for every file that
+          # scriptahubAgent/deployment/dependency-inputs.txt lists. It runs Git with hooks off and executes nothing from the
+          # checkout. Usage: scripta_dependency_fingerprint <repository directory> <40-hex commit>. It prints 64 lowercase hex
+          # digits, or prints nothing and fails on every input that parseDependencyInputs of dependency-fingerprint.mjs
+          # rejects. The body is a subshell and checks every step itself, because errexit is off wherever a caller tests the result.
+          scripta_dependency_fingerprint() (
+            LC_ALL=C
+            export LC_ALL
+            repo=$1
+            rev=$2
+            inputs=scriptahubAgent/deployment/dependency-inputs.txt
+            fp_fail() { echo "dependency fingerprint: $1" >&2; exit 1; }
+            fp_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$repo" "$@"; }
+            case "$rev" in ""|*[!0-9a-f]*) fp_fail "invalid commit" ;; esac
+            [ "${#rev}" -eq 40 ] || fp_fail "invalid commit"
+            nl=$(printf "\nx")
+            nl=${nl%x}
+            tab=$(printf "\tx")
+            tab=${tab%x}
+            cr=$(printf "\rx")
+            cr=${cr%x}
+            list=$(fp_git cat-file blob "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            [ -n "$list" ] || fp_fail "dependency inputs are empty"
+            case "$list" in *"$cr"*) fp_fail "dependency inputs must use LF line endings" ;; esac
+            blob=$(fp_git rev-parse "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            hashed=$(printf "%s\n" "$list" | fp_git hash-object --no-filters --stdin) || fp_fail "cannot hash the dependency inputs"
+            case "$blob" in ""|*[!0-9a-f]*) fp_fail "invalid blob id" ;; esac
+            [ "${#blob}" -eq 40 ] || fp_fail "invalid blob id"
+            [ "$hashed" = "$blob" ] || fp_fail "dependency inputs must end with exactly one newline"
+            case "$nl$list$nl" in *"$nl$nl"*) fp_fail "dependency inputs contain a blank line" ;; esac
+            sorted=$(printf "%s\n" "$list" | sort -u) || fp_fail "cannot sort the dependency inputs"
+            [ "$sorted" = "$list" ] || fp_fail "dependency inputs must be strictly ascending"
+            data=
+            self=0
+            set -f
+            IFS=$nl
+            for p in $list; do
+              case "$p" in
+                ""|/*|*/|*//*|*[!A-Za-z0-9._/-]*) fp_fail "invalid dependency input path" ;;
+              esac
+              case "/$p/" in */./*|*/../*) fp_fail "invalid dependency input path" ;; esac
+              entry=$(fp_git ls-tree "$rev" -- "$p") || fp_fail "cannot list $p at $rev"
+              case "$entry" in
+                "100644 blob "*|"100755 blob "*) ;;
+                *) fp_fail "$p is not a regular file at $rev" ;;
+              esac
+              rest=${entry#* blob }
+              oid=${rest%%"$tab"*}
+              name=${rest#*"$tab"}
+              [ "$name" = "$p" ] || fp_fail "$p is not one tree entry at $rev"
+              case "$oid" in ""|*[!0-9a-f]*) fp_fail "invalid blob id of $p" ;; esac
+              [ "${#oid}" -eq 40 ] || fp_fail "invalid blob id of $p"
+              if [ "$p" = "$inputs" ]; then self=1; fi
+              data="$data$oid $p$nl"
+            done
+            [ "$self" -eq 1 ] || fp_fail "dependency inputs must list $inputs"
+            if command -v sha256sum > /dev/null 2>&1; then
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | sha256sum) || fp_fail "cannot hash"
+            else
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | shasum -a 256) || fp_fail "cannot hash"
             fi
-            COPIED_TREES="${COPIED_TREES:+$COPIED_TREES }$expected"
-          done
+            sum=${out%% *}
+            case "$sum" in ""|*[!0-9a-f]*) fp_fail "invalid digest" ;; esac
+            [ "${#sum}" -eq 64 ] || fp_fail "invalid digest"
+            printf "%s\n" "$sum"
+          )
+          # END ScriptaHub dependency fingerprint
+          # The image carries what the listed dependency inputs install; skill sources run from the mounted checkout.
+          # The label must equal the fingerprint at the image revision and at the selected head.
+          if ! REVISION_FINGERPRINT="$(scripta_dependency_fingerprint "$SOURCE" "$AGENT_REVISION")"; then
+            echo "::error::The dependency fingerprint of the agent image revision $AGENT_REVISION could not be computed. $REFUSAL"
+            exit 1
+          fi
+          if ! HEAD_FINGERPRINT="$(scripta_dependency_fingerprint "$SOURCE" "$HEAD_COMMIT")"; then
+            echo "::error::The dependency fingerprint of $BRANCH@$HEAD_COMMIT could not be computed. $REFUSAL"
+            exit 1
+          fi
+          if [ "$REVISION_FINGERPRINT" != "$DEPENDENCY_LABEL" ]; then
+            echo "::error::The agent image dependency fingerprint $DEPENDENCY_LABEL differs from the fingerprint $REVISION_FINGERPRINT of its revision $AGENT_REVISION. $REFUSAL"
+            exit 1
+          fi
+          if [ "$HEAD_FINGERPRINT" != "$DEPENDENCY_LABEL" ]; then
+            # The head list was just validated by the fingerprint function, so the paths below are plain.
+            CHANGED_INPUTS="$(source_git diff --name-only --no-renames "$AGENT_REVISION" "$HEAD_COMMIT" -- | grep -Fx -f <(source_git cat-file blob "$HEAD_COMMIT:scriptahubAgent/deployment/dependency-inputs.txt") | tr '\n' ' ' || true)"
+            CHANGED_INPUTS="${CHANGED_INPUTS% }"
+            echo "::error::Skill dependencies changed after the agent image revision: the dependency fingerprint of $BRANCH@$HEAD_COMMIT is $HEAD_FINGERPRINT, the image carries $DEPENDENCY_LABEL (changed inputs: ${CHANGED_INPUTS:-none found}). $REFUSAL"
+            exit 1
+          fi
           {
             printf 'SCRIPTA_HEAD=%s\n' "$HEAD_COMMIT"
             printf 'SCRIPTA_BRANCH=%s\n' "$BRANCH"
             printf 'SCRIPTA_AGENT_REVISION=%s\n' "$AGENT_REVISION"
             printf 'SCRIPTA_AGENT_INDEX=%s\n' "$AGENT_INDEX"
             printf 'SCRIPTA_ROBOTEAM_INDEX=%s\n' "$ROBOTEAM_INDEX"
-            printf 'SCRIPTA_COPIED_TREES=%s\n' "$COPIED_TREES"
+            printf 'SCRIPTA_DEPENDENCY_FINGERPRINT=%s\n' "$HEAD_FINGERPRINT"
           } >> "$GITHUB_ENV"
           echo "[deploy-qa-scriptahub] Resolved $BRANCH@$HEAD_COMMIT; agent image $AGENT_REPO@$AGENT_INDEX revision $AGENT_REVISION; RoboTeam $ROBOTEAM_REPO@$ROBOTEAM_INDEX"
 
@@ -442,6 +534,7 @@ jobs:
           repository: Axiologic/bizanso
           ssh-key: ${{ secrets.EXPLORER_QA_BIZANSO_DEPLOY_KEY }}
           path: .qa-bizanso-source
+          fetch-depth: 0
           persist-credentials: false
 
       # Same rule: the key stays on the runner. The full history is fetched because it is bundled for the Box.
@@ -462,6 +555,7 @@ jobs:
           repository: Axiologic/simpleCSVMailSend
           ssh-key: ${{ secrets.EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}
           path: .qa-csvmail-source
+          fetch-depth: 0
           persist-credentials: false
 
       # No SSH here: a source without the agent folder is refused before anything on the host changes.
@@ -480,6 +574,25 @@ jobs:
           fi
           printf 'CSVMAIL_COMMIT=%s\n' "$COMMIT" >> "$GITHUB_ENV"
           echo "[deploy-qa] simpleCSVMailSend resolved at $COMMIT."
+
+      - name: Test the unpublished-source check
+        run: node --test tests/smoke/lib/qa-unpublished-acceptance.test.mjs tests/smoke/lib/qa-predeploy.test.mjs tests/smoke/lib/qa-copy-manifest.test.mjs tests/smoke/lib/qa-source-inventory.test.mjs tests/smoke/lib/qa-publication.test.mjs
+
+      - name: Check for unpublished QA sources
+        id: source_check
+        env:
+          EXPLORER_QA_LAST_BIZANSO_COMMIT: ${{ vars.EXPLORER_QA_LAST_BIZANSO_COMMIT }}
+          EXPLORER_QA_LAST_CSVMAIL_COMMIT: ${{ vars.EXPLORER_QA_LAST_CSVMAIL_COMMIT }}
+          RESET_EXPLORER_CHECKOUT: ${{ inputs.reset_explorer_checkout }}
+        run: node .github/scripts/qaPredeploy.mjs check full
+
+      - name: Retain the blocked source report
+        if: ${{ failure() && steps.source_check.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qa-unpublished-report
+          path: ${{ runner.temp }}/qa-unpublished-report.md
+          retention-days: 7
 
       - name: Bootstrap the host and deploy through Ploinky commands
         env:
@@ -1414,16 +1527,42 @@ jobs:
           # so Bizanso keeps its predecessor, and a tree without the agent manifest leaves the live copy in place.
           CSVMAIL_PLACE_PROGRAM='set -eu
           stage=$PWD/.ploinky/.qa-csvmail-copy
-          mkdir -p "$stage"
-          for stale in "$stage"/*; do
-            if [ -e "$stale" ] || [ -L "$stale" ]; then rm -rf -- "$stale"; fi
-          done
+          repo=$PWD/simpleCSVMailSend
+          previous=$stage/previous
+          real_dir_or_absent() {
+            if [ -L "$1" ] || { [ -e "$1" ] && [ ! -d "$1" ]; }; then
+              echo "Expected a real directory or absent path: $1" >&2; exit 1
+            fi
+          }
+          real_dir_or_absent "$PWD/.ploinky"
+          real_dir_or_absent "$stage"
+          real_dir_or_absent "$repo"
+          real_dir_or_absent "$previous"
+          real_dir_or_absent "$repo/csvMailAgent"
+          real_dir_or_absent "$previous/csvMailAgent"
+          mkdir -p "$stage" "$repo" "$previous"
           incoming=$(mktemp -d "$stage/incoming.XXXXXX")
+          trap "rm -rf -- \"$incoming\"" EXIT
           tar -xf - -C "$incoming"
           test "$(ls -A "$incoming")" = csvMailAgent
+          test ! -L "$incoming/csvMailAgent"
+          test -d "$incoming/csvMailAgent"
+          test ! -L "$incoming/csvMailAgent/manifest.json"
           test -f "$incoming/csvMailAgent/manifest.json"
-          if [ -e simpleCSVMailSend ] || [ -L simpleCSVMailSend ]; then mv simpleCSVMailSend "$stage/previous"; fi
-          mv "$incoming" simpleCSVMailSend'
+          if [ -d "$repo/csvMailAgent" ]; then
+            rm -rf -- "$previous/csvMailAgent"
+            mv "$repo/csvMailAgent" "$previous/csvMailAgent"
+            if ! mv "$incoming/csvMailAgent" "$repo/csvMailAgent"; then
+              if [ ! -e "$repo/csvMailAgent" ] && [ ! -L "$repo/csvMailAgent" ]; then
+                mv "$previous/csvMailAgent" "$repo/csvMailAgent" || echo "Could not restore CSV Mail predecessor" >&2
+              else
+                echo "Cannot restore CSV Mail predecessor: destination exists" >&2
+              fi
+              exit 1
+            fi
+          else
+            mv "$incoming/csvMailAgent" "$repo/csvMailAgent"
+          fi'
           # A plain assignment, because a failed command in a `for` list would not stop the run.
           MANAGED_LOCATIONS="$(run_in_box "$MANAGED_PROGRAM" < /dev/null)"
           for repo in $MANAGED_LOCATIONS; do
@@ -1432,8 +1571,12 @@ jobs:
               *) echo "::error::Unexpected repository in the managed location check."; exit 1 ;;
             esac
           done
+          node .github/scripts/qaPredeploy.mjs prepare bizanso
           git -C "$GITHUB_WORKSPACE/.qa-bizanso-source" archive --format=tar HEAD | run_in_box "$COPY_PROGRAM"
+          node .github/scripts/qaPredeploy.mjs installed bizanso
+          node .github/scripts/qaPredeploy.mjs prepare simpleCSVMailSend
           git -C "$GITHUB_WORKSPACE/.qa-csvmail-source" archive --format=tar "$CSVMAIL_COMMIT" csvMailAgent | run_in_box "$CSVMAIL_PLACE_PROGRAM"
+          node .github/scripts/qaPredeploy.mjs installed simpleCSVMailSend
           PROMOTIONSCOUT_SOURCE="$GITHUB_WORKSPACE/.qa-promotionscout-source"
           PROMOTIONSCOUT_BRANCH="$(git -C "$PROMOTIONSCOUT_SOURCE" symbolic-ref --short HEAD)"
           git -C "$PROMOTIONSCOUT_SOURCE" bundle create - "refs/heads/$PROMOTIONSCOUT_BRANCH" | run_in_box "$BUNDLE_PROGRAM"
@@ -1509,16 +1652,89 @@ jobs:
           # Kept sources move forward here. The restart activates them and registers the MCP tools of newly
           # enabled agents with the Router.
           update_kept_repos
-          # Check the exact selected source and copied objects after repository updates and before restart.
-          if ! printf '%s\n%s\n' "$SCRIPTA_HEAD" "$SCRIPTA_COPIED_TREES" | run_in_box 'set -eu
+          # Check the exact selected source and its dependency fingerprint after repository updates and before restart.
+          # Both values arrive on stdin and are checked again inside the Box.
+          if ! printf '%s\n%s\n' "$SCRIPTA_HEAD" "$SCRIPTA_DEPENDENCY_FINGERPRINT" | run_in_box 'set -eu
           read -r head
           read -r expected
+          case "$head" in ""|*[!0-9a-f]*) exit 1 ;; esac
+          test "${#head}" -eq 40
+          case "$expected" in ""|*[!0-9a-f]*) exit 1 ;; esac
+          test "${#expected}" -eq 64
           g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C ScriptaHubAgent "$@"; }
           test -z "$(g status --porcelain)"
           test "$(g rev-parse HEAD)" = "$head"
-          actual=$(g rev-parse HEAD:skills HEAD:scriptahubAgent/deployment HEAD:scriptahubAgent/site/reader/reader.css)
-          test "$(echo $actual)" = "$expected"'; then
-            echo "::error::ScriptaHub checkout did not match the selected source; repositories and image tags may have changed, no restart has occurred."
+          # BEGIN ScriptaHub dependency fingerprint
+          # Dependency fingerprint v1 of a commit: the sha256 of a header and one line, blob id and path, for every file that
+          # scriptahubAgent/deployment/dependency-inputs.txt lists. It runs Git with hooks off and executes nothing from the
+          # checkout. Usage: scripta_dependency_fingerprint <repository directory> <40-hex commit>. It prints 64 lowercase hex
+          # digits, or prints nothing and fails on every input that parseDependencyInputs of dependency-fingerprint.mjs
+          # rejects. The body is a subshell and checks every step itself, because errexit is off wherever a caller tests the result.
+          scripta_dependency_fingerprint() (
+            LC_ALL=C
+            export LC_ALL
+            repo=$1
+            rev=$2
+            inputs=scriptahubAgent/deployment/dependency-inputs.txt
+            fp_fail() { echo "dependency fingerprint: $1" >&2; exit 1; }
+            fp_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$repo" "$@"; }
+            case "$rev" in ""|*[!0-9a-f]*) fp_fail "invalid commit" ;; esac
+            [ "${#rev}" -eq 40 ] || fp_fail "invalid commit"
+            nl=$(printf "\nx")
+            nl=${nl%x}
+            tab=$(printf "\tx")
+            tab=${tab%x}
+            cr=$(printf "\rx")
+            cr=${cr%x}
+            list=$(fp_git cat-file blob "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            [ -n "$list" ] || fp_fail "dependency inputs are empty"
+            case "$list" in *"$cr"*) fp_fail "dependency inputs must use LF line endings" ;; esac
+            blob=$(fp_git rev-parse "$rev:$inputs") || fp_fail "cannot read $inputs at $rev"
+            hashed=$(printf "%s\n" "$list" | fp_git hash-object --no-filters --stdin) || fp_fail "cannot hash the dependency inputs"
+            case "$blob" in ""|*[!0-9a-f]*) fp_fail "invalid blob id" ;; esac
+            [ "${#blob}" -eq 40 ] || fp_fail "invalid blob id"
+            [ "$hashed" = "$blob" ] || fp_fail "dependency inputs must end with exactly one newline"
+            case "$nl$list$nl" in *"$nl$nl"*) fp_fail "dependency inputs contain a blank line" ;; esac
+            sorted=$(printf "%s\n" "$list" | sort -u) || fp_fail "cannot sort the dependency inputs"
+            [ "$sorted" = "$list" ] || fp_fail "dependency inputs must be strictly ascending"
+            data=
+            self=0
+            set -f
+            IFS=$nl
+            for p in $list; do
+              case "$p" in
+                ""|/*|*/|*//*|*[!A-Za-z0-9._/-]*) fp_fail "invalid dependency input path" ;;
+              esac
+              case "/$p/" in */./*|*/../*) fp_fail "invalid dependency input path" ;; esac
+              entry=$(fp_git ls-tree "$rev" -- "$p") || fp_fail "cannot list $p at $rev"
+              case "$entry" in
+                "100644 blob "*|"100755 blob "*) ;;
+                *) fp_fail "$p is not a regular file at $rev" ;;
+              esac
+              rest=${entry#* blob }
+              oid=${rest%%"$tab"*}
+              name=${rest#*"$tab"}
+              [ "$name" = "$p" ] || fp_fail "$p is not one tree entry at $rev"
+              case "$oid" in ""|*[!0-9a-f]*) fp_fail "invalid blob id of $p" ;; esac
+              [ "${#oid}" -eq 40 ] || fp_fail "invalid blob id of $p"
+              if [ "$p" = "$inputs" ]; then self=1; fi
+              data="$data$oid $p$nl"
+            done
+            [ "$self" -eq 1 ] || fp_fail "dependency inputs must list $inputs"
+            if command -v sha256sum > /dev/null 2>&1; then
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | sha256sum) || fp_fail "cannot hash"
+            else
+              out=$(printf "scriptahub-dependency-fingerprint-v1\n%s" "$data" | shasum -a 256) || fp_fail "cannot hash"
+            fi
+            sum=${out%% *}
+            case "$sum" in ""|*[!0-9a-f]*) fp_fail "invalid digest" ;; esac
+            [ "${#sum}" -eq 64 ] || fp_fail "invalid digest"
+            printf "%s\n" "$sum"
+          )
+          # END ScriptaHub dependency fingerprint
+          actual=$(scripta_dependency_fingerprint ScriptaHubAgent "$head") || exit 1
+          test "$actual" = "$expected"'; then
+            echo "::error::ScriptaHub checkout did not match the selected source or its dependency fingerprint; repositories and image tags may have changed, no restart has occurred."
             exit 1
           fi
           ploinky_locked restart

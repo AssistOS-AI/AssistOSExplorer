@@ -1,3 +1,5 @@
+import { gitPanelPropsFromNavigation } from './git-panel-navigation.js';
+import { getReposRoot } from '/explorer/utils/reposRoot.js';
 import { createGitCommitActions } from "./git-panel-actions.js";
 import { createGitCommitDiff } from "./git-panel-diff.js";
 import { createGitCommitRepo } from "./git-panel-repo.js";
@@ -27,6 +29,7 @@ export class GitPanel {
     constructor(element, invalidate, props = {}) {
         this.element = element;
         this.invalidate = invalidate;
+        props = gitPanelPropsFromNavigation(props, getReposRoot());
         this.props = props || {};
         this.statusCache = { at: 0, payload: null };
         this.diffCache = new Map();
@@ -301,6 +304,10 @@ export class GitPanel {
         })().catch(() => {
             this.syncStaticUI();
         });
+    }
+
+    getPanelNavigationContext() {
+        return { path: this.state.selectedRepoPath || this.getPrimaryExplicitActionRepoPath() || '' };
     }
 
     async updateModalProps(props) {

@@ -50,8 +50,9 @@ export class RobotManager {
         return pending;
     }
 
-    async require(id) {
+    async require(id, { inspect = false } = {}) {
         robotId(id);
+        if (!inspect) this.migrationGuard?.(id);
         try {
             const metadata = JSON.parse(await fs.readFile(path.join(this.paths.robot(id), 'label'), 'utf8'));
             if (metadata.id !== id) throw new Error();
@@ -67,6 +68,7 @@ export class RobotManager {
     }
 
     async ensure(input) {
+        this.migrationGuard?.(input.robotId);
         return this.serialized(input.robotId, async () => {
             const codingAgents = normalizeCodingAgents(input.codingAgents);
             if (input.seed !== undefined && typeof input.seed !== 'boolean') throw fail('INVALID_INPUT', 'seed must be a boolean');
@@ -116,10 +118,12 @@ export class RobotManager {
                 const index = next++;
                 const id = ids[index];
                 // One registry entry RoboWork does not know must not take every other robot's status with it.
-                const record = await this.require(id).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; return null; });
+                const record = await this.require(id, { inspect: true }).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; return null; });
                 if (!record) continue;
                 const { alaUnavailable = false, ...status } = await this.readStatus(id, { includeLogins, codingAgents: record.codingAgents });
-                results[index] = { alaUnavailable, robot: { id, ...status, gui: this.gui ? await this.gui.status(id) : { state: 'stopped', mode: null, sessionUrl: null, cwd: null } } };
+                results[index] = { alaUnavailable, robot: { id, ...status,
+                    ...(this.migrationStatus ? { migration: this.migrationStatus(id) } : {}),
+                    gui: this.gui ? await this.gui.status(id) : { state: 'stopped', mode: null, sessionUrl: null, cwd: null } } };
             }
         };
         await Promise.all(Array.from({ length: Math.min(STATUS_CONCURRENCY, ids.length) }, worker));
