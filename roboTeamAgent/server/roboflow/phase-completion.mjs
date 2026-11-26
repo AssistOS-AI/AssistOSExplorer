@@ -5,7 +5,7 @@ import path from 'node:path';
 
 export function completionInstruction(step, runtimeTaskId) {
     return step
-        ? `Before ending phase ${step}, use the workflow completion helper with completionId=${runtimeTaskId}. This is the current attempt ID. Finish all required work in this phase. Await each native call before invoking the next. Incomplete work is a continuation: finish it here or yield normally so RoboTeam can resume this same phase. Report a blocker only for a specific failed operation that cannot be recovered and name its error and attempted recovery.`
+        ? `Before ending phase ${step}, use the workflow completion helper with completionId=${runtimeTaskId}. This is the current attempt ID. Finish all required work in this phase. Await each native call before invoking the next. Keep working while any required operation remains. Submit a final response only after the helper confirms completion. If the environment ends the turn early, RoboTeam checks any saved progress before continuing this phase. Report a blocker only for a specific failed operation that cannot be recovered and name its error and attempted recovery.`
         : '';
 }
 
@@ -47,6 +47,20 @@ async function matchesArtifact(root, artifact) {
         return size === stat.size && hash.digest('hex') === artifact.sha256;
     } finally {
         await handle.close();
+    }
+}
+
+export async function readPhaseProgress(folder, step, attempt) {
+    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(attempt)) return;
+    try {
+        const root = await fs.realpath(folder);
+        const record = JSON.parse(await readEvidence(root, `.workflow-completion/${attempt}.progress.json`));
+        if (record.step === step && record.completionId === attempt
+            && Number.isSafeInteger(record.completedUnits) && record.completedUnits > 0) {
+            return record.completedUnits;
+        }
+    } catch (error) {
+        if (error.code !== 'ENOENT' && error.name !== 'SyntaxError') throw error;
     }
 }
 
