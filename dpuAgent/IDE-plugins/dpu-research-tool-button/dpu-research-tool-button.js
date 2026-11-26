@@ -1,12 +1,3 @@
-export function buildDpuResearchWebchatUrl() {
-    const params = new URLSearchParams({
-        agent: 'dpuAgent',
-        'forward-envelope': '1',
-        'workspace-dir': '.'
-    });
-    return `/webchat?${params.toString()}`;
-}
-
 export class DpuResearchToolButton {
     constructor(element, invalidate) {
         this.element = element;
@@ -18,6 +9,8 @@ export class DpuResearchToolButton {
     beforeRender() {}
 
     afterRender() {
+        if (!this.element.isConnected) return;
+        this.button?.removeEventListener('click', this.boundOpen);
         this.button = this.element.querySelector('#dpuResearchToolButton');
         this.icon = this.element.querySelector('.app-plugin-tool-icon-image');
         this.label = this.element.querySelector('.app-plugin-tool-label');
@@ -50,7 +43,13 @@ export class DpuResearchToolButton {
         else delete this.element.dataset.hostOrientation;
     }
 
-    openWebchat() {
-        window.open(buildDpuResearchWebchatUrl(), '_blank', 'noopener,noreferrer');
+    openWebchat(event) {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        try {
+            return globalThis.assistOS.UI.openPluginPanel('dpuAgent/dpu-research-launcher');
+        } catch (error) {
+            globalThis.assistOS?.showToast?.(error.message, 'error', 6000);
+        }
     }
 }

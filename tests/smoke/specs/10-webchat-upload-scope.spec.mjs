@@ -1,4 +1,5 @@
 import { test, expect, attachPageDiagnostics } from '../lib/fixtures.mjs';
+import { requireRealSignIns } from '../lib/session-reuse.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import {
   expectWebchatSuggestion,
@@ -9,6 +10,9 @@ import {
   uploadOneFile,
   withWebchatUploadProject,
 } from '../lib/webchat.mjs';
+
+// The sibling WebChat context stands for a separate browser session of the same account.
+requireRealSignIns(test);
 
 test.describe('WebChat direct workspace uploads', () => {
   test('file uploads land in the selected working directory and are suggested in sibling sessions', async ({ page, browser }, testInfo) => {

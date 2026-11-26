@@ -14,6 +14,13 @@ import { GOOGLE_SIGN_IN_SCRIPT_URL, beginAuthNavigationDiagnostics } from './aut
 import { smokeConfig } from './config.mjs';
 import { getWithoutKeepAlive } from './api-probe.mjs';
 import {
+  SignInRateLimitedError,
+  accountRole,
+  realSignInRequired,
+  signInWithSessionReuse,
+  watchSignInRateLimit,
+} from './session-reuse.mjs';
+import {
   USERPERSISTO_LOGIN_PATH,
   bindAuthenticationDocument,
   clickInBoundDocument,
@@ -409,12 +416,45 @@ async function holdGoogleSignInScript(page) {
   };
 }
 
+function principalMatchesAccount(principal, account) {
+  try {
+    validateAuthenticatedPrincipal(principal, { expectedUsername: account?.username, expectedEmail: account?.loginEmail });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Signs the configured account in. A saved session (see session-reuse.mjs) is
+// restored and validated first, so one run spends one password sign-in per
+// account instead of one per browser context. `reuseSession: false`, or a
+// spec that called requireRealSignIns, always performs the real sign-in.
 export async function signIn(
+  page,
+  account = smokeConfig.primaryUser,
+  returnTo = '/',
+  options = {},
+) {
+  return signInWithSessionReuse(page, account, () => signInUnreused(page, account, returnTo, options), {
+    config: smokeConfig,
+    reuseSession: options.reuseSession !== false && !realSignInRequired(),
+    validate: (user, expected) => principalMatchesAccount(user, expected),
+    verifyPrincipal: (principal, expected) => principalMatchesAccount({
+      id: principal?.canonicalId,
+      username: principal?.canonicalUsername,
+      email: principal?.email,
+      roles: principal?.roles,
+    }, expected),
+  });
+}
+
+async function signInUnreused(
   page,
   account = smokeConfig.primaryUser,
   returnTo = '/',
   { requireConfiguredPrincipal = false, totpClock } = {},
 ) {
+  const rateLimit = watchSignInRateLimit(page, new URL(smokeConfig.baseURL).origin);
   const navigation = await beginAuthNavigationDiagnostics(page, account);
   // A page with attached diagnostics gets one checkpoint for this sign-in.
   // Only a proven navigation abort of the wizard's Google script is ever
@@ -501,12 +541,18 @@ export async function signIn(
       if (cancellation && acknowledgePageNavigationCancellation(page, checkpoint, cancellation)) checkpointOpen = false;
     }
     return principal;
-  } catch (error) {
+  } catch (caught) {
     failed = true;
+    // A 429 from UserPersisto is reported as such, with only the account role.
+    const limited = await rateLimit.limited();
+    const error = limited
+      ? new SignInRateLimitedError({ role: accountRole(account, smokeConfig), retryAfter: limited.retryAfter })
+      : caught;
     recordPageNavigationFailure(page, navigation.failure(error, stage));
     throw error;
   } finally {
     await googleScript?.dispose();
+    rateLimit.dispose();
     try {
       if (checkpointOpen) closePageDiagnosticsCheckpoint(page, checkpoint);
     } catch (closeError) {
@@ -518,11 +564,13 @@ export async function signIn(
   }
 }
 
-export async function trySignIn(page, account = smokeConfig.primaryUser, returnTo = '/') {
+export async function trySignIn(page, account = smokeConfig.primaryUser, returnTo = '/', signInFn = signIn) {
   try {
-    await signIn(page, account, returnTo);
+    await signInFn(page, account, returnTo);
     return true;
-  } catch (_) {
+  } catch (error) {
+    // A rate limit or a broken session store is not "this account cannot log in": callers must not skip on it.
+    if (error?.kind === 'rate_limited' || error?.kind === 'session-store') throw error;
     return false;
   }
 }

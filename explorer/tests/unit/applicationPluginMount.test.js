@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { renderApplicationPluginSlots } from '../../web-components/pages/file-exp/file-exp-application-plugins.js';
+import { renderApplicationPluginSlots, syncPluginNewTabLink } from '../../web-components/pages/file-exp/file-exp-application-plugins.js';
 
 // A DOM subset that covers what the application plugin host touches: attributes, class lists, child order,
 // tag, id and [attribute] selectors, and a connected-to-root check.
@@ -45,6 +45,8 @@ class FakeNode {
     }
 
     append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
+
+    addEventListener() {}
 
     setAttribute(name, value) { this.attrs.set(name, String(value)); }
     getAttribute(name) { return this.attrs.has(name) ? this.attrs.get(name) : null; }
@@ -164,6 +166,7 @@ function createHarness({ plugins }) {
     };
     globalThis.document = { createElement };
     globalThis.window = {
+        location: { href: 'https://workspace.example/explorer/index.html' },
         assistOS: {
             user: { id: 'u', roles: ['user'] },
             pluginSettings: {},
@@ -461,5 +464,40 @@ test('first-click toolbar mounting keeps Tools contributions out of the toolbar'
         assert.deepEqual(keysIn(harness.dropdownContainer), ['gitAgent/git', 'csvMailAgent/csv-mail']);
     } finally {
         harness.restore();
+    }
+});
+
+
+test('Tools new-tab links use panel identity or iframe page and never invoke the plugin button', () => {
+    const previous = globalThis.document;
+    globalThis.document = { createElement: tag => {
+        const node = new FakeNode(tag);
+        node.addEventListener = (type, handler) => { node[type] = handler; };
+        return node;
+    } };
+    try {
+        const location = { href: 'https://workspace.example/explorer/index.html' };
+        const mount = new FakeNode('div');
+        const plugin = { agent: 'gitAgent', id: 'git', label: 'Git', toolbarModal: { mode: 'component', component: 'git-panel' } };
+        syncPluginNewTabLink(mount, plugin, 'file-exp:toolbar-plugins-dropdown', location);
+        syncPluginNewTabLink(mount, plugin, 'file-exp:toolbar-plugins-dropdown', location);
+        const link = mount.querySelector('[data-plugin-new-tab]');
+        assert.equal(mount.childNodes.length, 1);
+        assert.equal(new URL(link.getAttribute('href')).searchParams.get('panel'), 'gitAgent/git');
+        assert.equal(link.getAttribute('target'), '_blank');
+        assert.equal(link.getAttribute('rel'), 'noopener noreferrer');
+        assert.equal(link.getAttribute('aria-label'), 'Open Git in new tab');
+        let stopped = 0;
+        link.click({ stopPropagation() { stopped++; }, preventDefault() { throw new Error('Native navigation must remain enabled'); } });
+        assert.equal(stopped, 1);
+        const framePlugin = { ...plugin, toolbarModal: { mode: 'iframe', url: '/agent/app.html' } };
+        syncPluginNewTabLink(mount, framePlugin, 'file-exp:toolbar-plugins-dropdown', location);
+        assert.equal(link.getAttribute('href'), 'https://workspace.example/agent/app.html');
+        const direct = new FakeNode('div');
+        syncPluginNewTabLink(direct, plugin, 'file-exp:toolbar', location);
+        assert.equal(direct.childNodes.length, 0);
+    } finally {
+        if (previous === undefined) delete globalThis.document;
+        else globalThis.document = previous;
     }
 });

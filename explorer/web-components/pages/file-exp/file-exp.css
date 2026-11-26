@@ -2721,3 +2721,60 @@ main {
 @media (prefers-reduced-motion: reduce) {
     #fileExpToolbarPlugins .toolbar-plugin-opening .app-plugin-tool-icon::after { animation: none; }
 }
+
+/* Separate tab launch is a sibling action, never nested inside a plugin button. */
+#fileExpToolbarPluginsDropdown .app-plugin-mount {
+    background: transparent;
+    border-radius: 0;
+}
+#fileExpToolbarPluginsDropdown .app-plugin-mount:has(> .app-plugin-new-tab) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 32px;
+    align-items: center;
+    gap: 4px;
+}
+#fileExpToolbarPluginsDropdown .app-plugin-tool-button {
+    border-radius: 0;
+}
+#fileExpToolbarPluginsDropdown .app-plugin-mount > .app-plugin-new-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 6px;
+    border: 0;
+    position: relative;
+    border-radius: 0;
+    color: inherit;
+    background: transparent;
+}
+#fileExpToolbarPluginsDropdown .app-plugin-new-tab:hover,
+#fileExpToolbarPluginsDropdown .app-plugin-new-tab:focus-visible {
+    background: var(--file-exp-subtle-surface);
+}
+#fileExpToolbarPluginsDropdown .app-plugin-new-tab img {
+    width: 16px;
+    height: 16px;
+}
+
+#fileExpToolbarPluginsDropdown .app-plugin-new-tab::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 1px;
+    background: var(--file-exp-border);
+    pointer-events: none;
+}
+
+#pluginsMenu.toolbar-dropdown-menu {
+    width: max-content;
+    min-width: min(200px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+}
+#fileExpToolbarPluginsDropdown {
+    width: 100%;
+    min-width: 0;
+}

@@ -54,3 +54,5 @@ The secure broker accepts decisions only from an installed backend adapter and c
 Stop [dpuAgent](wiki.html#definition-dpuagent), resolve the exact environment storage, archive or remove it by explicit operator decision, and start with an empty root. Recreate source configurations and secret references, then run health and end-to-end tests. No code automatically deletes or migrates storage.
 
 [dpuAgent](wiki.html#definition-dpuagent) must preserve the responsibilities, boundaries, and observable results stated in this specification.
+
+The DPU Research Tools launcher declares its WebChat route as an iframe `toolbarModal` with the existing `agent=dpuAgent`, `forward-envelope=1` and `workspace-dir=.` context. It uses Explorer’s shared plugin launcher rather than opening its own browser tab. The main menu action opens the shared panel; the separate new-tab icon uses that same WebChat destination. Explorer owns the two-action row, loading and window controls. DPU authorization and research execution are unchanged.

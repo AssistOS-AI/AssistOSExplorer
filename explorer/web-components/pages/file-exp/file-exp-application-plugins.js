@@ -1,4 +1,4 @@
-import { normalizePanelPath } from '../../../shared/ui/plugin-panel-navigation.js';
+import { normalizePanelPath, resolveExpandedPanelUrl } from '../../../shared/ui/plugin-panel-navigation.js';
 import { openToolbarPluginWithFeedback, isToolbarPluginOpening } from "../../../shared/ui/toolbar-plugin-feedback.js";
 const APP_PLUGIN_SLOTS = Object.freeze({
     toolbar: 'file-exp:toolbar',
@@ -342,6 +342,40 @@ export async function waitForPluginPresenterRender(pluginElement) {
     }
 }
 
+export function syncPluginNewTabLink(mount, plugin, slot, location = window.location) {
+    if (slot !== APP_PLUGIN_SLOTS.toolbarPluginsDropdown || !plugin.toolbarModal) return;
+    const descriptor = getPluginToolbarModalDescriptor(plugin);
+    const href = resolveExpandedPanelUrl({
+        location,
+        mode: descriptor.mode || (descriptor.component ? 'component' : 'iframe'),
+        frameUrl: descriptor.url || descriptor.iframeUrl,
+        pluginKey: descriptor.pluginKey,
+    });
+    if (!href) return;
+    let link = mount.querySelector('[data-plugin-new-tab]');
+    if (!link) {
+        link = document.createElement('a');
+        link.className = 'app-plugin-new-tab';
+        link.setAttribute('data-plugin-new-tab', '');
+        link.setAttribute('target', '_blank');
+        link.setAttribute('rel', 'noopener noreferrer');
+        link.setAttribute('role', 'menuitem');
+        const icon = document.createElement('img');
+        icon.className = 'app-plugin-tool-icon-image';
+        icon.src = '/explorer/assets/icons/open-in-new-tab.svg';
+        icon.alt = '';
+        icon.setAttribute('aria-hidden', 'true');
+        link.appendChild(icon);
+        // Keep the launch separate from the plugin control and the menu's click handler.
+        link.addEventListener('click', event => event.stopPropagation());
+        mount.appendChild(link);
+    }
+    link.setAttribute('href', href);
+    const label = `Open ${getPluginPresentation(plugin).label} in new tab`;
+    link.setAttribute('aria-label', label);
+    link.title = label;
+}
+
 function stageSlotMounts(container, slot, plugins, { deferMount = false } = {}) {
     if (!container) return new Map();
 
@@ -384,6 +418,7 @@ function stageSlotMounts(container, slot, plugins, { deferMount = false } = {}) 
             pluginElement.title = `Loading ${tooltip}`;
             mount.replaceChildren(pluginElement);
         }
+        syncPluginNewTabLink(mount, plugin, slot);
         stagedMounts.set(key, mount);
     }
 

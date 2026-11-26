@@ -2,12 +2,19 @@
   "pluginCategory": "application",
   "id": "dpu-research-launcher",
   "component": "dpu-research-tool-button",
-  "location": ["file-exp:toolbar-plugins-dropdown"],
+  "location": [
+    "file-exp:toolbar-plugins-dropdown"
+  ],
   "label": "DPU Research",
   "tooltip": "Open the DPU research agent",
   "icon": "./icon.svg",
   "presenter": "DpuResearchToolButton",
   "type": "embedded",
   "autoPin": false,
-  "dependencies": []
+  "dependencies": [],
+  "toolbarModal": {
+    "mode": "iframe",
+    "url": "/webchat?agent=dpuAgent&forward-envelope=1&workspace-dir=.",
+    "fullscreen": true
+  }
 }
