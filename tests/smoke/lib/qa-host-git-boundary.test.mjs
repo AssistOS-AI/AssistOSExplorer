@@ -129,4 +129,11 @@ test('Q1: full deploy ScriptaHub source checks run on the runner and inside the 
     const checks = workflow.match(/\| run_in_box '(set -eu\n\s+read -r head\n\s+read -r expected\n\s+case "\$head" in ""\|\*\[!0-9a-f\]\*\) exit 1 ;; esac\n\s+test "\$\{#head\}" -eq 40\n\s+case "\$expected" in ""\|\*\[!0-9a-f\]\*\) exit 1 ;; esac\n\s+test "\$\{#expected\}" -eq 64\n\s+g\(\) \{ git -c core\.hooksPath=\/dev\/null -c core\.fsmonitor=false -C ScriptaHubAgent "\$@"; \}\n\s+test -z "\$\(g status --porcelain\)"\n\s+test "\$\(g rev-parse HEAD\)" = "\$head"\n\s+# BEGIN ScriptaHub dependency fingerprint\n[\s\S]*?# END ScriptaHub dependency fingerprint\n\s+actual=\$\(scripta_dependency_fingerprint ScriptaHubAgent "\$head"\) \|\| exit 1\n\s+test "\$actual" = "\$expected")'; then/g) || [];
     assert.equal(checks.length, 1);
     assert.equal((workflow.match(/\bg /g) || []).length, 2);
+    // The fingerprint block only reads objects: fp_git runs no other subcommand, in either workflow.
+    for (const name of ['deploy-explorer-qa-ploinky.yml', 'deploy-explorer-qa-scriptahub.yml']) {
+        const text = fs.readFileSync(new URL(`.github/workflows/${name}`, ROOT), 'utf8');
+        const uses = [...text.matchAll(/\bfp_git (\S+)/g)].map(match => match[1]);
+        assert.equal(uses.length, 8, name);
+        assert.deepEqual([...new Set(uses)].sort(), ['cat-file', 'hash-object', 'ls-tree', 'rev-parse'], name);
+    }
 });
