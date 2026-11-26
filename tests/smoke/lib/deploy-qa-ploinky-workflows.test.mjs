@@ -734,6 +734,7 @@ test('deploy: a failed managed location check stops the run before anything move
 run_in_box() { case "$1" in MANAGED) ${stub} ;; *) cat > /dev/null; echo "box:$1" ;; esac; }
 ploinky_locked() { echo "ploinky:$*"; }
 git() { case "$*" in *symbolic-ref*) echo main ;; *) echo archive ;; esac; }
+node() { [[ "$1" = .github/scripts/qaPredeploy.mjs ]] && echo "receipt:$2:$3"; }
 MANAGED_PROGRAM=MANAGED COPY_PROGRAM=COPY CSVMAIL_PLACE_PROGRAM=CSVMAIL BUNDLE_PROGRAM=BUNDLE CLONE_PROGRAM=CLONE GITHUB_WORKSPACE=/w CSVMAIL_COMMIT=${'c'.repeat(40)}
 ${block.slice(start, end)}`], { encoding: 'utf8' });
     const refused = run('echo bizanso; exit 1');
@@ -742,9 +743,9 @@ ${block.slice(start, end)}`], { encoding: 'utf8' });
     const unexpected = run('echo other');
     assert.notEqual(unexpected.status, 0);
     assert.doesNotMatch(unexpected.stdout, /ploinky:|box:/);
-    assert.equal(run('echo bizanso').stdout, 'ploinky:uninstall repo bizanso\nbox:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
-    assert.equal(run('echo simpleCSVMailSend').stdout, 'ploinky:uninstall repo simpleCSVMailSend\nbox:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
-    assert.equal(run('true').stdout, 'box:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('echo bizanso').stdout, 'ploinky:uninstall repo bizanso\nreceipt:prepare:bizanso\nbox:COPY\nreceipt:installed:bizanso\nreceipt:prepare:simpleCSVMailSend\nbox:CSVMAIL\nreceipt:installed:simpleCSVMailSend\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('echo simpleCSVMailSend').stdout, 'ploinky:uninstall repo simpleCSVMailSend\nreceipt:prepare:bizanso\nbox:COPY\nreceipt:installed:bizanso\nreceipt:prepare:simpleCSVMailSend\nbox:CSVMAIL\nreceipt:installed:simpleCSVMailSend\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('true').stdout, 'receipt:prepare:bizanso\nbox:COPY\nreceipt:installed:bizanso\nreceipt:prepare:simpleCSVMailSend\nbox:CSVMAIL\nreceipt:installed:simpleCSVMailSend\nbox:BUNDLE\nbox:CLONE\n');
 });
 
 test('deploy: ScriptaHub is a workspace-root checkout of the exact public source', () => {

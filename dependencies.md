@@ -1,5 +1,9 @@
 # Deployment helper dependencies
 
+The QA unpublished-source check uses Node built-ins and the deployment's existing Git, SSH, tar, flock and rootless Podman installations. The read-only reader uses the local Ploinky Box image. When QA contains source and the reader image is missing, the check stops and identifies the missing prerequisite in the run summary.
+
+On a blocked deployment, GitHub Actions runs `actions/upload-artifact` at `ea165f8d65b6e75b540449e92b4886f43607fa02` to retain the complete path and commit report for seven days, including listings larger than a step summary. Actions resolves the upstream bundle on the runner. Its dependencies need no separate project installation. Update the pin in the three QA deploy workflows together after reviewing the upstream release. The action uses the MIT license, which requires its copyright and permission notices when redistributing a copy. [Pinned action and bundled notices](https://github.com/actions/upload-artifact/tree/ea165f8d65b6e75b540449e92b4886f43607fa02) · [License](https://github.com/actions/upload-artifact/blob/ea165f8d65b6e75b540449e92b4886f43607fa02/LICENSE).
+
 Live Sessions adds no package or runtime dependency. Source validation and aggregation use native URL, Fetch, AbortController and EventSource APIs. The agent stream view uses Explorer's existing WebSkel lifecycle and styles; its offline tests use Node's built-in test runner. Browser modules retain the repository's `.js` ES-module convention, and the shared URL validator uses `.mjs` because both Node discovery and browser modules import it.
 
 The Hardware limits panel adds no dependency. Browser modules retain Explorer's

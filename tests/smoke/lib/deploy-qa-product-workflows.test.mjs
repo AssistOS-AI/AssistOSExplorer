@@ -1,3 +1,4 @@
+import { sourceManifest } from '../../../.github/scripts/qaCopyManifest.mjs';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -843,6 +844,20 @@ function bizansoBox(t, { source = {}, live = {}, liveImage = hex('a'), pulledId 
     const box = makeBox(t);
     commitTree(path.join(box.github, '.qa-bizanso-source'), bizansoFiles(source));
     writeTree(path.join(box.ws, 'bizanso'), bizansoFiles(live));
+    // The product-flow cases start after the Actions preflight. Carry their
+    // known installed release into the real copy recorder using local I/O.
+    const receipt = path.join(box.stub, 'bizanso-receipt.json');
+    fs.writeFileSync(receipt, JSON.stringify({ installed: sourceManifest(path.join(box.ws, 'bizanso')) }));
+    const recorder = new URL('../../../.github/scripts/qaPredeploy.mjs', import.meta.url).href;
+    const reader = new URL('../../../.github/scripts/qaSourceInventory.mjs', import.meta.url).href;
+    fs.writeFileSync(path.join(box.bin, 'fixture-recorder.mjs'), `import fs from 'node:fs';
+import { copyChanged, recordCopy } from ${JSON.stringify(recorder)};
+import { inspectSources } from ${JSON.stringify(reader)};
+if (process.argv[2] === 'changed') console.log(copyChanged(process.argv[3], process.env) ? 'yes' : 'no');
+else recordCopy(process.argv[2], process.argv[3], process.env,
+    scope => ({ inventory: inspectSources({ scope, workspace: ${JSON.stringify(box.ws)}, tooling: '' }) }),
+    (_action, _scope, payload) => fs.writeFileSync(${JSON.stringify(receipt)}, payload));
+`);
     box.ps(BIZ_PREFIX, [`${liveImage} ${started} ${BIZ_PREFIX}abc`]);
     box.registry([[BIZ_REF, pulledId, '-', '-']]);
     const up = `printf '%s %s %s\\n' ${pulledId} "$(date +%s)" ${BIZ_PREFIX}new > "$STUB/ps.${BIZ_PREFIX}"; echo restarted`;
@@ -857,7 +872,12 @@ function resolveBizanso(box) {
 function runBizansoFlow(box, extra = {}) {
     const { result: resolved, env } = resolveBizanso(box);
     assert.equal(resolved.status, 0, logOf(resolved));
-    return box.exec(flowScript(box, 'bizanso'), { ...env, ...extra });
+    const receipt = JSON.parse(fs.readFileSync(path.join(box.stub, 'bizanso-receipt.json')));
+    fs.writeFileSync(path.join(box.runner, 'qa-copy-preflight-state.json'), JSON.stringify({
+        installed: { bizanso: receipt.installed }, incoming: { bizanso: sourceManifest(env.BIZANSO_INCOMING_DIR) },
+    }));
+    const script = flowScript(box, 'bizanso').replaceAll('node .github/scripts/qaPredeploy.mjs ', 'node "$STUB/../bin/fixture-recorder.mjs" ');
+    return box.exec(script, { ...env, ...extra });
 }
 const noMutation = (box, { pull = false } = {}) => {
     const calls = box.calls();
@@ -2423,4 +2443,19 @@ test('the dependency fingerprint block fails closed wherever parseDependencyInpu
         assert.notEqual(bad.status, 0, shell);
         assert.doesNotMatch(bad.stdout, /NOT-REACHED/, shell);
     }
+});
+
+test('Bizanso deploy places a published executable-mode change when the image and file bytes match', t => {
+    const box = bizansoBox(t, { liveImage: hex('b') });
+    const source = path.join(box.github, '.qa-bizanso-source');
+    const file = 'bizanso/src/runtime.mjs';
+    fs.chmodSync(path.join(source, file), 0o755);
+    vcs(source, 'add', file);
+    vcs(source, 'commit', '--quiet', '-m', 'Set runtime mode');
+    const result = runBizansoFlow(box);
+    assert.equal(result.status, 0, logOf(result));
+    assert.match(result.stdout, /restart scope: targeted/);
+    assert.ok(fs.statSync(path.join(box.ws, 'bizanso', file)).mode & 0o111);
+    const receipt = JSON.parse(fs.readFileSync(path.join(box.stub, 'bizanso-receipt.json')));
+    assert.equal(receipt.installed.find(item => item.path === file).executable, true);
 });
