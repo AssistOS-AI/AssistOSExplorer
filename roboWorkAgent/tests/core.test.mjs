@@ -407,7 +407,8 @@ test('an unavailable ALA leaves the status listing answering with every login ab
     process.env.ROBOWORK_ALA_ENTRY = path.join(paths.dataDir, 'missing', 'bin', 'ala.mjs');
     for (let round = 0; round < 2; round++) {
         assert.deepEqual((await robots.status({ robotIds: ['aaa'], includeLogins: true })).robots,
-            [{ id: 'aaa', activeAgent: 'pi', logins, gui: { state: 'stopped', mode: null, sessionUrl: null, cwd: null } }]);
+            [{ id: 'aaa', activeAgent: 'pi', activeModel: null, activeEffort: null,
+                logins, gui: { state: 'stopped', mode: null, sessionUrl: null, cwd: null } }]);
     }
     assert.equal(logged.length, 1);
     assert.deepEqual((await robots.status({ robotIds: ['aaa'] })).robots[0].logins, undefined);

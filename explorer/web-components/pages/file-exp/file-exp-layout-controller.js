@@ -10,6 +10,16 @@ function isMobileFileExplorerLayout() {
         && window.matchMedia('(max-width: 720px)').matches;
 }
 
+function bindDropdownSelection(fileExp, key, menu, setOpen) {
+    fileExp.setElementListener(key, menu, 'click', (event) => {
+        const action = event.target?.closest?.('[role="menuitem"], button, [role="button"], a[href], [data-local-action]');
+        if (menu.classList.contains('open') && action && menu.contains(action)
+            && !action.closest(':disabled, [aria-disabled="true"], [aria-busy="true"]')) {
+            setOpen(false);
+        }
+    }, true);
+}
+
 export async function runAfterRender(fileExp, options = {}) {
     const previewLinesFallback = Number.isFinite(options.previewLines) ? options.previewLines : 400;
 
@@ -298,19 +308,13 @@ export async function runAfterRender(fileExp, options = {}) {
             const isOpen = toolbarMenu.classList.contains('open');
             setToolbarMenuOpen(!isOpen);
         };
-        const onToolbarMenuClick = (event) => {
-            const item = event.target.closest('[role="menuitem"]');
-            if (item) {
-                setToolbarMenuOpen(false);
-            }
-        };
         const onToolbarOutsideClick = (event) => {
             if (!toolbarMenu.contains(event.target) && event.target !== toolbarMenuButton) {
                 setToolbarMenuOpen(false);
             }
         };
         fileExp.setElementListener('toolbar-menu-button', toolbarMenuButton, 'click', onToolbarButtonClick);
-        fileExp.setElementListener('toolbar-menu-container', toolbarMenu, 'click', onToolbarMenuClick);
+        bindDropdownSelection(fileExp, 'toolbar-menu-container', toolbarMenu, setToolbarMenuOpen);
         fileExp.setDocumentListener('toolbar-menu-outside', 'click', onToolbarOutsideClick);
         toolbarMenu.classList.toggle('open', Boolean(fileExp.state.toolbarMenuOpen));
         toolbarMenuButton.setAttribute('aria-expanded', fileExp.state.toolbarMenuOpen ? 'true' : 'false');
@@ -334,19 +338,13 @@ export async function runAfterRender(fileExp, options = {}) {
             const willOpen = !accountMenu.classList.contains('open');
             setAccountMenuOpen(willOpen);
         };
-        const onAccountMenuClick = (event) => {
-            const item = event.target.closest('[role="menuitem"]');
-            if (item) {
-                setAccountMenuOpen(false);
-            }
-        };
         const onAccountOutsideClick = (event) => {
             if (!accountMenu.contains(event.target) && event.target !== accountMenuButton) {
                 setAccountMenuOpen(false);
             }
         };
         fileExp.setElementListener('account-menu-button', accountMenuButton, 'click', onAccountButtonClick);
-        fileExp.setElementListener('account-menu-container', accountMenu, 'click', onAccountMenuClick);
+        bindDropdownSelection(fileExp, 'account-menu-container', accountMenu, setAccountMenuOpen);
         fileExp.setDocumentListener('account-menu-outside', 'click', onAccountOutsideClick);
         accountMenuButton.setAttribute('aria-expanded', accountMenu.classList.contains('open') ? 'true' : 'false');
     } else {
@@ -369,19 +367,13 @@ export async function runAfterRender(fileExp, options = {}) {
             const willOpen = !pluginsMenu.classList.contains('open');
             setPluginsMenuOpen(willOpen);
         };
-        const onPluginsMenuClick = (event) => {
-            const item = event.target.closest('[role="menuitem"]');
-            if (item) {
-                setPluginsMenuOpen(false);
-            }
-        };
         const onPluginsOutsideClick = (event) => {
             if (!pluginsMenu.contains(event.target) && event.target !== pluginsMenuButton) {
                 setPluginsMenuOpen(false);
             }
         };
         fileExp.setElementListener('plugins-menu-button', pluginsMenuButton, 'click', onPluginsButtonClick);
-        fileExp.setElementListener('plugins-menu-container', pluginsMenu, 'click', onPluginsMenuClick);
+        bindDropdownSelection(fileExp, 'plugins-menu-container', pluginsMenu, setPluginsMenuOpen);
         fileExp.setDocumentListener('plugins-menu-outside', 'click', onPluginsOutsideClick);
         pluginsMenuButton.setAttribute('aria-expanded', pluginsMenu.classList.contains('open') ? 'true' : 'false');
     } else {

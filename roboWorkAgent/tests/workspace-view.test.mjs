@@ -297,3 +297,29 @@ test('a grant under another spelling of a hidden entry is refused, whichever fil
     }
     assert.equal(await paths.grant(path.join(root, 'app'), 'cwd'), path.join(root, 'app'));
 });
+
+test('root terminal mounts omit duplicate roots and keep private masks for ALA and Podman', () => {
+    const root = '/srv/work';
+    const view = { root, masks: [{ path: `${root}/.data`, directory: true }, { path: `${root}/.env`, directory: false }], writableSubmounts: [] };
+    const options = { cwd: root, allowWorkspaceRoot: true };
+    assert.deepEqual(alaWorkspaceOptions(view, options), { folders: [], ignoredPaths: [`${root}/.roboteam`, `${root}/.data`, `${root}/.env`] });
+    const args = podmanWorkspaceArguments(view, options);
+    assert.ok(args.includes(`${root}/.data:ro,size=64k,mode=0555,nosuid,nodev,noexec,notmpcopyup`));
+    assert.ok(args.includes(`/dev/null:${root}/.env:ro`));
+    assert.ok(!args.some(value => value.startsWith(`${root}:${root}:`)));
+    assert.throws(() => alaWorkspaceOptions(view, { cwd: root }), /mask overlaps/);
+    assert.throws(() => podmanWorkspaceArguments(view, { cwd: `${root}/.data`, allowWorkspaceRoot: true }), /mask overlaps/);
+});
+
+test('only terminal grants admit the root and only when protected descendants have reserved masks', async t => {
+    const { root } = await fixture(t);
+    const paths = new RobotPaths({ workspaceRoot: root, dataDir: `${root}/.data/service`, robotsDir: `${root}/.data/robots` });
+    await fs.mkdir(paths.dataDir, { recursive: true }); await fs.mkdir(paths.robotsDir, { recursive: true });
+    assert.equal(await paths.interactiveCwd(root, { allowWorkspaceRoot: true }), root);
+    await assert.rejects(paths.grant(root, 'cwd'), { code: 'CWD_REFUSED' });
+    await assert.rejects(paths.grant(root), { code: 'FOLDER_REFUSED' });
+    await assert.rejects(paths.interactiveCwd(paths.dataDir, { allowWorkspaceRoot: true }), { code: 'CWD_REFUSED' });
+    paths.dataDir = `${root}/ordinary-service`;
+    await fs.mkdir(paths.dataDir);
+    await assert.rejects(paths.interactiveCwd(root, { allowWorkspaceRoot: true }), { code: 'CWD_REFUSED' });
+});

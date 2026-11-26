@@ -5,6 +5,7 @@ import {
     attachApplicationPluginHost,
     buildPluginContext,
     getApplicationPluginsForSlot,
+    getToolbarPluginLayout,
     waitForPluginPresenterRender
 } from '../../web-components/pages/file-exp/file-exp-application-plugins.js';
 
@@ -139,5 +140,30 @@ describe('application plugin host context', () => {
         assert.equal(entryRenderCalls, 1);
         assert.equal(toolbarRefreshCalls, 1);
         delete globalThis.window;
+    });
+});
+
+
+describe('toolbar plugin placement', () => {
+    const primary = [
+        { agent: 'webmeetAgent', id: 'webmeet', locationOrder: 300 },
+        { agent: 'bizanso', id: 'bizanso', locationOrder: 370 },
+        { agent: 'scriptahubAgent', id: 'scriptahub', locationOrder: 375 },
+        { agent: 'explorer', id: 'live-sessions', locationOrder: 380, mountOnStart: true },
+        { agent: 'explorer', id: 'help', locationOrder: 400 },
+    ];
+    const git = { agent: 'gitAgent', id: 'git', locationOrder: 100 };
+    const extra = { agent: 'custom', id: 'tool', locationOrder: 200 };
+
+    it('keeps WebMeet, Bizanso, ScriptaHub, Live Sessions and Help in the toolbar and sorts Tools without duplicates', () => {
+        const layout = getToolbarPluginLayout([git, ...primary, extra], [extra, primary[0]], false);
+        assert.deepEqual(layout.visibleToolbarPlugins, primary);
+        assert.deepEqual(layout.visibleToolbarDropdownPlugins, [git, extra]);
+    });
+
+    it('keeps Live Sessions in the toolbar even when also declared in Tools', () => {
+        const layout = getToolbarPluginLayout([git, ...primary], [git, extra, primary[3]], false);
+        assert.deepEqual(layout.visibleToolbarPlugins, primary);
+        assert.deepEqual(layout.visibleToolbarDropdownPlugins, [git, extra]);
     });
 });

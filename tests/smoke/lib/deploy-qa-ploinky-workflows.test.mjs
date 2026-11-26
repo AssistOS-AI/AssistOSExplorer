@@ -11,8 +11,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const read = (name) => fs.readFileSync(path.join(ROOT, '.github/workflows', name), 'utf8');
 const deploy = read('deploy-explorer-qa-ploinky.yml');
 const destroy = read('destroy-explorer-qa-ploinky.yml');
-const legacyDeploy = read('deploy-explorer-qa.yml');
-const legacyDestroy = read('destroy-explorer-qa.yml');
 
 const WORKSPACE_REPOSITORIES_BLOCK = /# BEGIN QA workspace repositories[\s\S]*# END QA workspace repositories/;
 const IMAGE_PRUNE_BLOCK = /# BEGIN QA image cleanup[\s\S]*# END QA image cleanup/;
@@ -54,7 +52,7 @@ for (const [name, source] of [['deploy', deploy], ['destroy', destroy]]) {
         }
     });
 
-    test(`${name}: targets the pinned QA identity and shares the older workflows' serialization`, () => {
+    test(`${name}: targets the pinned QA identity and shares the other QA workflows' serialization`, () => {
         for (const line of [
             "SSH_USER: 'admin'",
             "SSH_HOST: '45.136.70.141'",
@@ -69,7 +67,7 @@ for (const [name, source] of [['deploy', deploy], ['destroy', destroy]]) {
         }
     });
 
-    test(`${name}: refuses to run over the older workflows' parked state`, () => {
+    test(`${name}: refuses to run over the removed workflows' parked state`, () => {
         assert.match(source, /STATE_DIR=\/home\/admin\/\.qa-deployment-state\n/);
         assert.match(source, /if \[ -e "\$STATE_DIR" \] && \[ -n "\$\(ls -A "\$STATE_DIR"\)" \]; then/);
     });
@@ -119,16 +117,20 @@ test('deploy: the order sets values, updates sources, saves the publication, the
         '# BEGIN QA workspace repositories',
         'ploinky_locked uninstall repo "$repo"',
         '| run_in_box "$COPY_PROGRAM"',
+        '| run_in_box "$CSVMAIL_PLACE_PROGRAM"',
         '| run_in_box "$BUNDLE_PROGRAM"',
         'run_in_box "$CLONE_PROGRAM"',
         'ploinky_locked var BIZANSO_PUBLIC_LINK_BASE --stdin',
+        'ploinky_locked add repo https://github.com/Axiologic/simpleCSVMailSend.git simpleCSVMailSend',
         'ploinky_locked add repo https://github.com/Axiologic/bizanso.git bizanso',
         'ploinky_locked add repo https://github.com/AssistOS-AI/PromotionScoutV2.git PromotionScoutV2',
         'ploinky_locked add repo https://github.com/Axiologic/ScriptaHubAgent.git ScriptaHubAgent',
+        'ploinky_locked enable agent simpleCSVMailSend/csvMailAgent',
         'ploinky_locked enable agent bizanso/bizanso',
         'ploinky_locked enable agent PromotionScoutV2/promotionScout',
         'ploinky_locked enable agent ScriptaHubAgent/scriptahubAgent',
         'GRAPH_RUNTIMES="$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"',
+        'GRAPH_RUNTIMES="$GRAPH_RUNTIMES csvMailAgent"',
         'podman pull -q "$agent"',
         'podman pull -q "$robot"',
         'podman tag "$robot" docker.io/assistos/roboteam-agent:runtime',
@@ -154,8 +156,8 @@ test('deploy: the added agents are enabled only when missing and are awaited onl
     const graph = body.match(/GRAPH_RUNTIMES='([^']*)'/);
     assert.ok(graph);
     // The first start waits for this list before these agents have been enabled.
-    assert.doesNotMatch(graph[1], /bizanso|promotionScout|scriptahubAgent/);
-    for (const [runtime, agent] of [['bizanso', 'bizanso/bizanso'], ['promotionScout', 'PromotionScoutV2/promotionScout'], ['scriptahubAgent', 'ScriptaHubAgent/scriptahubAgent']]) {
+    assert.doesNotMatch(graph[1], /bizanso|promotionScout|scriptahubAgent|csvMailAgent/);
+    for (const [runtime, agent] of [['csvMailAgent', 'simpleCSVMailSend/csvMailAgent'], ['bizanso', 'bizanso/bizanso'], ['promotionScout', 'PromotionScoutV2/promotionScout'], ['scriptahubAgent', 'ScriptaHubAgent/scriptahubAgent']]) {
         assert.ok(body.includes(`if ! grep -q '^${runtime} ' <<< "$ENABLED_STATES"; then\n            ploinky_locked enable agent ${agent}\n          fi\n`), runtime);
     }
     assert.ok(deploy.indexOf('- name: Verify public URL') < deploy.indexOf('- name: Verify Bizanso and ScriptaHub'));
@@ -167,6 +169,51 @@ test('deploy: the added agents are enabled only when missing and are awaited onl
     // promotionScout declares MCP readiness and no web surface, so its proof is the awaited runtime state alone.
     assert.doesNotMatch(verify, /promotionScout/);
     assert.match(body, /GRAPH_RUNTIMES="\$GRAPH_RUNTIMES bizanso promotionScout scriptahubAgent"\n[\s\S]*ploinky_locked restart\n\s+wait_ready/);
+    // CSV Mail is awaited from its own line, so the line shared with the product workflows stays as it is.
+    assert.equal(body.split('GRAPH_RUNTIMES="$GRAPH_RUNTIMES csvMailAgent"\n').length - 1, 1);
+    assert.match(body, /GRAPH_RUNTIMES="\$GRAPH_RUNTIMES csvMailAgent"\n[\s\S]*ploinky_locked restart\n\s+wait_ready/);
+    for (const name of ['deploy-explorer-qa-bizanso.yml', 'deploy-explorer-qa-scriptahub.yml']) {
+        assert.doesNotMatch(read(name), /csvMailAgent|simpleCSVMailSend/, name);
+    }
+});
+
+test('deploy: CSV Mail passes only when its route is published behind sign-in, after the Bizanso check', (t) => {
+    assert.ok(deploy.indexOf('- name: Verify Bizanso and ScriptaHub') < deploy.indexOf('- name: Verify CSV Mail'));
+    assert.ok(deploy.indexOf('- name: Verify CSV Mail') < deploy.indexOf('- name: Verify dedicated connector and protected Cloudflare topology'));
+    const verify = step(deploy, 'Verify CSV Mail');
+    assert.doesNotMatch(verify, /\n {8}if: /, 'it runs only after a successful deploy');
+    const script = runBlocks(verify)[0];
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-csvmail-verify-'));
+    t.after(() => fs.rmSync(bin, { recursive: true, force: true }));
+    fs.writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const run = (replies) => {
+        // Each call prints the next reply; the last one repeats.
+        fs.writeFileSync(path.join(bin, 'replies'), replies.join('\n') + '\n');
+        fs.writeFileSync(path.join(bin, 'count'), '0');
+        fs.writeFileSync(path.join(bin, 'curl'), `#!/bin/bash
+echo "$*" >> "${bin}/args"
+n=$(( $(cat "${bin}/count") + 1 )); echo "$n" > "${bin}/count"
+total=$(wc -l < "${bin}/replies")
+[ "$n" -le "$total" ] || n=$total
+sed -n "\${n}p" "${bin}/replies" | tr -d '\\n'
+`, { mode: 0o755 });
+        const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PUBLIC_URL: 'https://explorer-qa.axiologic.dev' } });
+        return { ...result, calls: Number(fs.readFileSync(path.join(bin, 'count'), 'utf8')) };
+    };
+    const signIn = '302 /auth/login?returnTo=%2Fbase-agent-additional-server%2FcsvMailAgent%2F3100%2F';
+    const passed = run(['404 ', '502 ', signIn]);
+    assert.equal(passed.status, 0, passed.stdout + passed.stderr);
+    assert.equal(passed.calls, 3);
+    assert.match(fs.readFileSync(path.join(bin, 'args'), 'utf8'), /https:\/\/explorer-qa\.axiologic\.dev\/base-agent-additional-server\/csvMailAgent\/3100\/\n/);
+    // An unpublished route, a page served without sign-in, or a redirect elsewhere never passes.
+    for (const reply of ['404 ', '200 ', '302 /auth/login?returnTo=%2F', '302 https://elsewhere.test/auth/login?returnTo=%2Fbase-agent-additional-server%2FcsvMailAgent%2F3100%2F']) {
+        const failed = run([reply]);
+        assert.equal(failed.status, 1, reply);
+        assert.equal(failed.calls, 60, reply);
+        assert.match(failed.stdout, /::error::\/base-agent-additional-server\/csvMailAgent\/3100\/ was not published behind sign-in; last reply: /, reply);
+    }
+    const summary = step(deploy, 'Create summary');
+    assert.match(summary, /CSV Mail: .*csvMailAgent\/3100\/.*\$\{CSVMAIL_COMMIT:-not-resolved\}/);
 });
 
 test('deploy: the retiring second agent is not enabled, awaited, required or probed by any QA deploy workflow', () => {
@@ -434,6 +481,66 @@ test('deploy: the Bizanso key stays on the runner and reaches only its checkout'
     assert.doesNotMatch(destroy, /BIZANSO/);
 });
 
+test('deploy: the CSV Mail key stays on the runner and reaches only its checkout', () => {
+    const uses = deploy.split('\n').filter((line) => line.includes('EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}'));
+    assert.deepEqual(uses.map((line) => line.trim()), [
+        'CSVMAIL_DEPLOY_KEY: ${{ secrets.EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}',
+        'ssh-key: ${{ secrets.EXPLORER_QA_CSVMAIL_DEPLOY_KEY }}',
+    ]);
+    assert.match(step(deploy, 'Validate GitHub configuration'), /Missing required repository secret EXPLORER_QA_CSVMAIL_DEPLOY_KEY/);
+    const checkout = step(deploy, 'Check out simpleCSVMailSend');
+    for (const line of ['repository: Axiologic/simpleCSVMailSend', 'path: .qa-csvmail-source', 'persist-credentials: false']) {
+        assert.ok(checkout.includes(line), line);
+    }
+    assert.ok(deploy.indexOf('- name: Check out simpleCSVMailSend') < deploy.indexOf('- name: Resolve the CSV Mail source'));
+    assert.ok(deploy.indexOf('- name: Resolve the CSV Mail source') < deploy.indexOf('- name: Bootstrap the host and deploy through Ploinky commands'));
+    assert.doesNotMatch(step(deploy, 'Bootstrap the host and deploy through Ploinky commands'), /CSVMAIL_DEPLOY_KEY/);
+    assert.doesNotMatch(destroy, /CSVMAIL|csvMail/);
+});
+
+// A throwaway Git repository standing in for the simpleCSVMailSend checkout.
+function csvMailSource(root, { agent = true } = {}) {
+    const source = path.join(root, '.qa-csvmail-source');
+    const git = (...args) => {
+        const result = spawnSync('git', ['-C', source, ...args], { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        return result.stdout.trim();
+    };
+    fs.mkdirSync(path.join(source, 'data/projects/default'), { recursive: true });
+    fs.writeFileSync(path.join(source, 'data/projects/default/activity.json'), '{"recipients":["someone@example.test"]}\n');
+    fs.writeFileSync(path.join(source, 'README.md'), 'CSV Mail\n');
+    if (agent) {
+        fs.mkdirSync(path.join(source, 'csvMailAgent/src'), { recursive: true });
+        fs.writeFileSync(path.join(source, 'csvMailAgent/manifest.json'), '{"name":"csvMailAgent"}\n');
+        fs.writeFileSync(path.join(source, 'csvMailAgent/src/ploinky.mjs'), '// agent\n');
+    }
+    git('init', '--quiet');
+    git('add', '-A');
+    git('-c', 'user.name=QA', '-c', 'user.email=qa@example.test', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '-m', 'fixture');
+    return { source, commit: git('rev-parse', 'HEAD') };
+}
+
+test('deploy: the CSV Mail source is resolved on the runner and refused without the agent manifest', (t) => {
+    const script = runBlocks(step(deploy, 'Resolve the CSV Mail source'))[0];
+    assert.doesNotMatch(script, /\bssh\b|SSH\[|run_in_box|ploinky/);
+    const resolve = (options) => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-csvmail-resolve-'));
+        t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+        const { commit } = csvMailSource(root, options);
+        const env = path.join(root, 'github-env');
+        fs.writeFileSync(env, '');
+        const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, GITHUB_WORKSPACE: root, GITHUB_ENV: env } });
+        return { ...result, commit, env: fs.readFileSync(env, 'utf8') };
+    };
+    const resolved = resolve();
+    assert.equal(resolved.status, 0, resolved.stdout + resolved.stderr);
+    assert.equal(resolved.env, `CSVMAIL_COMMIT=${resolved.commit}\n`);
+    const refused = resolve({ agent: false });
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stdout, /::error::simpleCSVMailSend@[0-9a-f]{40} has no csvMailAgent\/manifest\.json\. Nothing was changed\./);
+    assert.equal(refused.env, '');
+});
+
 function workspaceRepositoriesBlock() {
     return step(deploy, 'Bootstrap the host and deploy through Ploinky commands').match(WORKSPACE_REPOSITORIES_BLOCK)[0];
 }
@@ -479,6 +586,117 @@ test('deploy: the private copy replaces the workspace-root repository and keeps 
     }
 });
 
+test('deploy: CSV Mail arrives as its agent folder alone, in a stage of its own, and keeps one predecessor', (t) => {
+    const block = workspaceRepositoriesBlock();
+    const program = block.match(/CSVMAIL_PLACE_PROGRAM='([^']*)'/)[1];
+    // The runner streams only csvMailAgent/ of the resolved commit, never the data/ the repository tracks.
+    const archive = 'git -C "$GITHUB_WORKSPACE/.qa-csvmail-source" archive --format=tar "$CSVMAIL_COMMIT" csvMailAgent | run_in_box "$CSVMAIL_PLACE_PROGRAM"\n';
+    assert.equal(block.split(archive).length - 1, 1);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-csvmail-place-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const workspace = path.join(root, 'workspace');
+    fs.mkdirSync(path.join(workspace, '.ploinky/.qa-private-copy/previous'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.ploinky/.qa-private-copy/previous/bizanso-file'), 'x');
+    const place = (input) => spawnSync('sh', ['-c', program, 'sh'], { cwd: workspace, input });
+    const repo = path.join(workspace, 'simpleCSVMailSend');
+    const previous = path.join(workspace, '.ploinky/.qa-csvmail-copy/previous');
+    // The archive line itself, run against a real checkout that also tracks data/.
+    const { commit } = csvMailSource(root);
+    const runner = spawnSync('bash', ['-c', `set -euo pipefail\nrun_in_box() { sh -c "$1" sh; }\ncd '${workspace}'\n${archive}`], {
+        encoding: 'utf8', env: { ...process.env, GITHUB_WORKSPACE: root, CSVMAIL_COMMIT: commit, CSVMAIL_PLACE_PROGRAM: program },
+    });
+    assert.equal(runner.status, 0, runner.stderr);
+    assert.deepEqual(fs.readdirSync(repo), ['csvMailAgent']);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/manifest.json')));
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/src/ploinky.mjs')));
+    assert.ok(!fs.existsSync(path.join(repo, 'data')) && !fs.existsSync(path.join(repo, '.git')));
+    const tarOf = (files) => {
+        const source = fs.mkdtempSync(path.join(root, 'source-'));
+        for (const [file, text] of Object.entries(files)) {
+            fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
+            fs.writeFileSync(path.join(source, file), text);
+        }
+        const result = spawnSync('tar', ['-cf', '-', '-C', source, ...Object.keys(files).map((file) => file.split('/')[0]).filter((v, i, a) => a.indexOf(v) === i)]);
+        assert.equal(result.status, 0);
+        return result.stdout;
+    };
+    fs.mkdirSync(previous, { recursive: true });
+    fs.mkdirSync(path.join(repo, '.roboteam'));
+    fs.writeFileSync(path.join(repo, '.roboteam/marker'), 'live sibling');
+    const rootInode = fs.statSync(repo).ino;
+    fs.writeFileSync(path.join(previous, 'legacy-data'), 'previous sibling');
+    assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/two': 'x' })).status, 0);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/two')));
+    assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/src/ploinky.mjs')));
+    assert.equal(fs.statSync(repo).ino, rootInode);
+    assert.equal(fs.readFileSync(path.join(repo, '.roboteam/marker'), 'utf8'), 'live sibling');
+    assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/three': 'x' })).status, 0);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')) && !fs.existsSync(path.join(repo, 'csvMailAgent/two')));
+    assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/two')));
+    assert.equal(fs.statSync(repo).ino, rootInode);
+    assert.equal(fs.readFileSync(path.join(repo, '.roboteam/marker'), 'utf8'), 'live sibling');
+    assert.equal(fs.readFileSync(path.join(previous, 'legacy-data'), 'utf8'), 'previous sibling');
+    assert.deepEqual(fs.readdirSync(path.dirname(previous)), ['previous']);
+    // Each refusal leaves the live copy in place: data or Git metadata beside the agent, no manifest, nothing at all.
+    for (const [name, input] of [
+        ['data beside the agent', tarOf({ 'csvMailAgent/manifest.json': '{}', 'data/activity.json': '{}' })],
+        ['Git metadata beside the agent', tarOf({ 'csvMailAgent/manifest.json': '{}', '.git/HEAD': 'ref' })],
+        ['no agent manifest', tarOf({ 'csvMailAgent/other': 'x' })],
+        ['an empty input', ''],
+    ]) {
+        assert.notEqual(place(input).status, 0, name);
+        assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')), name);
+    }
+    // Refuse symlinks in either the incoming agent or its manifest.
+    for (const target of ['csvMailAgent', 'csvMailAgent/manifest.json']) {
+        const source = fs.mkdtempSync(path.join(root, 'symlink-'));
+        if (target.includes('/')) fs.mkdirSync(path.join(source, 'csvMailAgent'));
+        fs.symlinkSync('/tmp', path.join(source, target));
+        const archive = spawnSync('tar', ['-cf', '-', '-C', source, 'csvMailAgent']);
+        assert.equal(archive.status, 0);
+        assert.notEqual(place(archive.stdout).status, 0, target);
+        assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/three')));
+    }
+    // An interrupted rotation leaves its predecessor intact on the next placement.
+    fs.rmSync(path.join(repo, 'csvMailAgent'), { recursive: true });
+    assert.equal(place(tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/retry': 'x' })).status, 0);
+    assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/two')));
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/retry')));
+
+    // Fail only the incoming publish; the rotated live agent must be restored.
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'mv'), '#!/bin/sh\ncase "$1" in */incoming.*/csvMailAgent) exit 1;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+    const failedPublish = spawnSync('sh', ['-c', program, 'sh'], {
+        cwd: workspace, input: tarOf({ 'csvMailAgent/manifest.json': '{}', 'csvMailAgent/fail': 'x' }),
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    assert.notEqual(failedPublish.status, 0);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/retry')));
+    assert.equal(fs.readFileSync(path.join(previous, 'legacy-data'), 'utf8'), 'previous sibling');
+    assert.deepEqual(fs.readdirSync(path.dirname(previous)), ['previous']);
+
+    // If a destination appears during a failed publish, retain the backup rather than nesting it.
+    fs.writeFileSync(path.join(bin, 'mv'), '#!/bin/sh\ncase "$1" in */incoming.*/csvMailAgent) mkdir "$2"; exit 1;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+    const occupied = spawnSync('sh', ['-c', program, 'sh'], {
+        cwd: workspace, input: tarOf({ 'csvMailAgent/manifest.json': '{}' }),
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    assert.notEqual(occupied.status, 0);
+    assert.ok(fs.existsSync(path.join(previous, 'csvMailAgent/retry')));
+    assert.deepEqual(fs.readdirSync(path.join(repo, 'csvMailAgent')), []);
+    fs.rmSync(path.join(repo, 'csvMailAgent'), { recursive: true });
+    fs.renameSync(path.join(previous, 'csvMailAgent'), path.join(repo, 'csvMailAgent'));
+
+    // A symlink at a protected child path is rejected without following it.
+    fs.rmSync(path.join(previous, 'csvMailAgent'), { recursive: true, force: true });
+    fs.symlinkSync(repo, path.join(previous, 'csvMailAgent'));
+    assert.notEqual(place(tarOf({ 'csvMailAgent/manifest.json': '{}' })).status, 0);
+    assert.ok(fs.existsSync(path.join(repo, 'csvMailAgent/retry')));
+    // The Bizanso predecessor in its own stage is never touched.
+    assert.ok(fs.existsSync(path.join(workspace, '.ploinky/.qa-private-copy/previous/bizanso-file')));
+});
+
 test('deploy: only a repository solely in its managed location is uninstalled', () => {
     const block = workspaceRepositoriesBlock();
     const program = block.match(/MANAGED_PROGRAM='([^']*)'/)[1];
@@ -499,6 +717,10 @@ test('deploy: only a repository solely in its managed location is uninstalled', 
         fs.rmSync(path.join(workspace, 'PromotionScoutV2'), { recursive: true });
         fs.mkdirSync(path.join(workspace, '.ploinky/repos/PromotionScoutV2'), { recursive: true });
         assert.equal(run().stdout, 'bizanso\nPromotionScoutV2\n');
+        fs.mkdirSync(path.join(workspace, '.ploinky/repos/simpleCSVMailSend'), { recursive: true });
+        assert.equal(run().stdout, 'bizanso\nPromotionScoutV2\nsimpleCSVMailSend\n');
+        fs.mkdirSync(path.join(workspace, 'simpleCSVMailSend'));
+        assert.notEqual(run().status, 0, 'CSV Mail in both locations stops the run too');
     } finally {
         fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -512,7 +734,7 @@ test('deploy: a failed managed location check stops the run before anything move
 run_in_box() { case "$1" in MANAGED) ${stub} ;; *) cat > /dev/null; echo "box:$1" ;; esac; }
 ploinky_locked() { echo "ploinky:$*"; }
 git() { case "$*" in *symbolic-ref*) echo main ;; *) echo archive ;; esac; }
-MANAGED_PROGRAM=MANAGED COPY_PROGRAM=COPY BUNDLE_PROGRAM=BUNDLE CLONE_PROGRAM=CLONE GITHUB_WORKSPACE=/w
+MANAGED_PROGRAM=MANAGED COPY_PROGRAM=COPY CSVMAIL_PLACE_PROGRAM=CSVMAIL BUNDLE_PROGRAM=BUNDLE CLONE_PROGRAM=CLONE GITHUB_WORKSPACE=/w CSVMAIL_COMMIT=${'c'.repeat(40)}
 ${block.slice(start, end)}`], { encoding: 'utf8' });
     const refused = run('echo bizanso; exit 1');
     assert.notEqual(refused.status, 0, refused.stdout);
@@ -520,8 +742,9 @@ ${block.slice(start, end)}`], { encoding: 'utf8' });
     const unexpected = run('echo other');
     assert.notEqual(unexpected.status, 0);
     assert.doesNotMatch(unexpected.stdout, /ploinky:|box:/);
-    assert.equal(run('echo bizanso').stdout, 'ploinky:uninstall repo bizanso\nbox:COPY\nbox:BUNDLE\nbox:CLONE\n');
-    assert.equal(run('true').stdout, 'box:COPY\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('echo bizanso').stdout, 'ploinky:uninstall repo bizanso\nbox:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('echo simpleCSVMailSend').stdout, 'ploinky:uninstall repo simpleCSVMailSend\nbox:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
+    assert.equal(run('true').stdout, 'box:COPY\nbox:CSVMAIL\nbox:BUNDLE\nbox:CLONE\n');
 });
 
 test('deploy: ScriptaHub is a workspace-root checkout of the exact public source', () => {
@@ -623,11 +846,149 @@ test('deploy: every installed repository except the private copy moves on its ow
     const result = spawnSync('bash', ['-c', `${definition}\n}\ninstalled_repos`], { input: sample, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, 'AchillesIDE\nbizanso\n');
-    assert.match(body, /if \[ "\$repo" != bizanso \] && \[ "\$repo" != PromotionScoutV2 \]; then\n\s+ploinky_locked update repo "\$repo"\n/);
+    // The Box holds no credential for the private sources, and the two copies have no Git metadata at all.
+    assert.match(body, /if \[ "\$repo" != bizanso \] && \[ "\$repo" != PromotionScoutV2 \] && \[ "\$repo" != simpleCSVMailSend \]; then\n\s+ploinky_locked update repo "\$repo"\n/);
     assert.doesNotMatch(body, /ploinky_locked update\n/);
     // The loop lives only in update_kept_repos, called once, after the workspace repositories are placed.
     assert.equal(body.split('ploinky_locked update repo').length - 1, 1);
     assert.equal(body.split(/\n\s+update_kept_repos\n/).length - 1, 1);
+});
+
+test('deploy: the link-install checkouts AdvancedLanguageAgent and DocumentationSkills are updated with the installed repositories, before the restart', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const start = body.indexOf('update_kept_repos() {');
+    const fn = body.slice(start, body.indexOf('\n          }\n', start));
+    // Ploinky cannot update them: they hold no agent folder, so `update repo` finds no installed repository.
+    assert.match(fn, /ploinky_locked update repo "\$repo"[\s\S]*run_in_box "\$LINK_INSTALL_PROGRAM" < \/dev\/null/);
+    assert.match(fn, /if ! run_in_box "\$LINK_INSTALL_PROGRAM" < \/dev\/null; then[\s\S]*exit 1/);
+    assert.ok(body.indexOf("LINK_INSTALL_PROGRAM='") < start);
+    assert.ok(start < body.indexOf('\n          update_kept_repos\n'));
+    assert.ok(body.indexOf('\n          update_kept_repos\n') < body.indexOf('ploinky_locked restart\n'));
+    assert.equal(body.split('run_in_box "$LINK_INSTALL_PROGRAM"').length - 1, 1);
+    const program = body.match(/LINK_INSTALL_PROGRAM='([^']*)'/)[1];
+    assert.match(program, /for name in AdvancedLanguageAgent DocumentationSkills; do/);
+    assert.match(program, /merge --quiet --ff-only/);
+    assert.doesNotMatch(program, /reset|checkout|stash|clean/);
+});
+
+test('deploy: the link-install program fast-forwards a clean checkout and leaves every other state untouched', () => {
+    const body = step(deploy, 'Bootstrap the host and deploy through Ploinky commands');
+    const program = body.match(/LINK_INSTALL_PROGRAM='([^']*)'/)[1];
+    assert.match(program, /^set -eu\n\s+export GIT_ALLOW_PROTOCOL=https\n/);
+    assert.match(program, /remote get-url origin\) \|\| \{ echo "\$name has no origin/);
+    assert.match(program, /fetch --quiet "\$url" /);
+    assert.doesNotMatch(program, /config --get|fetch --quiet origin/);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-link-install-'));
+    const names = ['AdvancedLanguageAgent', 'DocumentationSkills'];
+    const upstream = (name) => path.join(root, 'upstream', name);
+    const url = (name) => `https://github.com/AssistOS-AI/${name}.git`;
+    const git = (cwd, ...args) => {
+        const result = spawnSync('git', ['-c', 'user.email=t@example.test', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        return result.stdout.trim();
+    };
+    try {
+        // The seam: a PATH shim that rewrites only the URL a fetch is given, so `remote get-url` still reports the real
+        // URL and the program is the unchanged text. The shim lifts GIT_ALLOW_PROTOCOL only for this local transport.
+        const bin = path.join(root, 'bin');
+        const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+        fs.mkdirSync(bin);
+        fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh
+unset GIT_ALLOW_PROTOCOL
+fetching=0
+for arg in "$@"; do [ "$arg" = fetch ] && fetching=1; done
+if [ "$fetching" = 1 ]; then
+  count=$#
+  while [ "$count" -gt 0 ]; do
+    arg=$1; shift; count=$((count - 1))
+    case "$arg" in
+    ${names.map((name) => `"${url(name)}") set -- "$@" "${upstream(name)}" ;;`).join('\n    ')}
+    *) set -- "$@" "$arg" ;;
+    esac
+  done
+fi
+exec "${realGit}" "$@"
+`, { mode: 0o755 });
+        const workspace = path.join(root, 'workspace');
+        fs.mkdirSync(workspace);
+        const commit = (name, text) => {
+            fs.writeFileSync(path.join(upstream(name), 'file'), `${text}\n`);
+            git(upstream(name), 'add', 'file');
+            git(upstream(name), 'commit', '--quiet', '-m', text);
+        };
+        for (const name of names) {
+            fs.mkdirSync(upstream(name), { recursive: true });
+            git(upstream(name), 'init', '--quiet', '-b', 'trunk');
+            commit(name, 'one');
+        }
+        const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+        const run = () => spawnSync('sh', ['-c', program, 'sh'], { cwd: workspace, encoding: 'utf8', env, input: '' });
+        const checkout = (name) => path.join(workspace, name);
+        const text = (name) => fs.readFileSync(path.join(checkout(name), 'file'), 'utf8');
+        const head = (name) => git(checkout(name), 'rev-parse', 'HEAD');
+        const clone = (name) => {
+            git(workspace, 'clone', '--quiet', '--branch', 'trunk', upstream(name), name);
+            git(checkout(name), 'remote', 'set-url', 'origin', url(name));
+        };
+        const none = run();
+        assert.equal(none.status, 0, none.stderr);
+        assert.match(none.stdout, /AdvancedLanguageAgent is not at the workspace root; skipped\./);
+        assert.match(none.stdout, /DocumentationSkills is not at the workspace root; skipped\./);
+        for (const name of names) clone(name);
+        for (const name of names) commit(name, 'two');
+        const moved = run();
+        assert.equal(moved.status, 0, moved.stderr);
+        for (const name of names) assert.equal(text(name), 'two\n', `${name} fast-forwards`);
+        assert.match(moved.stdout, /AdvancedLanguageAgent [0-9a-f]+ on trunk\./);
+        assert.equal(run().status, 0, 'an equal checkout is a no-op');
+        // Each refusal leaves the checkout exactly as it was.
+        const refuses = (name, pattern, label) => {
+            const before = head(name);
+            const result = run();
+            assert.notEqual(result.status, 0, label);
+            assert.match(result.stderr, pattern, label);
+            assert.equal(head(name), before, `${label}: HEAD unchanged`);
+        };
+        const ala = 'AdvancedLanguageAgent';
+        const docs = 'DocumentationSkills';
+        commit(ala, 'three');
+        fs.writeFileSync(path.join(checkout(docs), 'file'), 'edited\n');
+        // The alphabetical order makes AdvancedLanguageAgent move before the refusal.
+        refuses(docs, /DocumentationSkills has uncommitted or untracked changes; left untouched/, 'dirty');
+        assert.equal(text(docs), 'edited\n');
+        assert.equal(text(ala), 'three\n', 'the checkout before the refused one still moved');
+        git(checkout(docs), 'checkout', '--quiet', 'file');
+        fs.writeFileSync(path.join(checkout(docs), 'stray'), 'x\n');
+        refuses(docs, /uncommitted or untracked changes/, 'untracked file');
+        fs.rmSync(path.join(checkout(docs), 'stray'));
+        git(checkout(docs), 'commit', '--quiet', '--allow-empty', '-m', 'local');
+        refuses(docs, /DocumentationSkills has commits that trunk lacks; left untouched/, 'diverged');
+        git(checkout(docs), 'reset', '--quiet', '--hard', 'HEAD~1');
+        git(checkout(docs), 'remote', 'set-url', 'origin', 'https://example.test/other.git');
+        refuses(docs, /DocumentationSkills has an unexpected origin; left untouched/, 'foreign origin');
+        git(checkout(docs), 'remote', 'remove', 'origin');
+        refuses(docs, /DocumentationSkills has no origin; left untouched/, 'missing origin');
+        git(checkout(docs), 'remote', 'add', 'origin', url(docs));
+        // A repo-local insteadOf makes `remote get-url` report the redirected URL, so it never matches.
+        git(checkout(docs), 'config', `url.${path.join(root, 'foreign')}.insteadOf`, url(docs));
+        refuses(docs, /DocumentationSkills has an unexpected origin; left untouched/, 'repo-local insteadOf');
+        git(checkout(docs), 'config', '--remove-section', `url.${path.join(root, 'foreign')}`);
+        git(checkout(docs), 'checkout', '--quiet', '--detach');
+        refuses(docs, /detached HEAD; left untouched/, 'detached HEAD');
+        git(checkout(docs), 'checkout', '--quiet', 'trunk');
+        // A checkout whose upstream branch is gone cannot be compared; that is a different message from a divergence.
+        git(checkout(docs), 'branch', '--quiet', 'gone');
+        git(checkout(docs), 'checkout', '--quiet', 'gone');
+        const missingRef = run();
+        assert.notEqual(missingRef.status, 0);
+        assert.doesNotMatch(missingRef.stderr, /commits that gone lacks/);
+        git(checkout(docs), 'checkout', '--quiet', 'trunk');
+        fs.renameSync(checkout(docs), path.join(root, 'docs-real'));
+        fs.symlinkSync(path.join(root, 'docs-real'), checkout(docs));
+        refuses(ala, /DocumentationSkills is a symlink; left untouched/, 'symlink');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });
 
 // Runs a slice of the deploy step with stubs for every command, so only its shell logic is proven. The status texts
@@ -739,14 +1100,501 @@ test('destroy: maps delete_data to exactly the two Ploinky forms before the Clou
     assert.match(step(destroy, 'Delete the dedicated Cloudflare publication'), /if: success\(\) && inputs\.delete_data\n/);
 });
 
-test('the runner-side Cloudflare and public checks stay identical to the older workflows', () => {
-    for (const name of ['Verify public URL', 'Verify dedicated connector and protected Cloudflare topology']) {
-        assert.equal(step(deploy, name), step(legacyDeploy, name), name);
+// The steps below ran under the removed non-Ploinky workflows too, and their behavioural cases are kept here against
+// the text these workflows hold. Only the workflow they read changed; the assertions are the ones of those cases.
+const NODE_HEREDOC = (script) => script.match(/<<'NODE'[^\n]*\n([\s\S]*?)\nNODE(?:\n|$)/)?.[1];
+const cloudflareScript = () => {
+    const found = NODE_HEREDOC(runBlocks(step(destroy, 'Delete the dedicated Cloudflare publication'))[0]);
+    assert.ok(found, 'the Cloudflare step has an embedded program');
+    return found;
+};
+
+test('destroy: the Cloudflare deletion runs on the runner after the Box is destroyed and refuses the protected tunnel', () => {
+    const cloudflare = step(destroy, 'Delete the dedicated Cloudflare publication');
+    assert.ok(destroy.indexOf('- name: Destroy the Box through') < destroy.indexOf('- name: Delete the dedicated Cloudflare publication'));
+    assert.match(cloudflare, /\n {8}if: success\(\) && inputs\.delete_data\n/);
+    assert.doesNotMatch(runBlocks(cloudflare)[0], /\bssh\b|\bscp\b|flock/);
+    assert.match(cloudflare, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.EXPLORER_QA_CLOUDFLARE_API_TOKEN \}\}/);
+    const script = cloudflareScript();
+    assert.match(script, /if \(protectedTunnelId !== '091c4096-d1c8-4dbc-bb12-0c6357431d96'\)/);
+    assert.match(script, /if \(tunnelId === protectedTunnelId\) \{\n {2}throw new Error\('refusing to delete the protected shared Cloudflare tunnel'\);/);
+    const guard = script.indexOf('tunnelId === protectedTunnelId');
+    assert.ok(guard > script.indexOf('/^[a-f0-9-]{36}$/.test(tunnelId)'));
+    assert.ok(guard < script.indexOf('request(`/accounts/${accountId}/cfd_tunnel/${tunnelId}`)'), 'the guard precedes any request that uses the tunnel id');
+    const dns = script.indexOf("request(`/zones/${zoneId}/dns_records/${records[0].id}`, { method: 'DELETE' })");
+    const connections = script.indexOf('/cfd_tunnel/${tunnelId}/connections');
+    const tunnel = script.indexOf("request(`/accounts/${accountId}/cfd_tunnel/${tunnelId}`, { method: 'DELETE' })");
+    assert.ok(dns > 0 && dns < connections && connections < tunnel, 'DNS is deleted before the tunnel');
+    assert.match(script, /Exact Explorer QA Cloudflare publication was already absent/);
+    assert.match(script, /Exact Explorer QA Cloudflare publication deletion verified/);
+    assert.match(step(destroy, 'Cleanup'), /if: always\(\)/);
+});
+
+const FETCH_STUB = (statePath, logPath) => `import fs from 'node:fs';
+const state = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, 'utf8'));
+const log = entry => fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(entry) + '\\n');
+const json = (result, status = 200) => new Response(JSON.stringify({ success: status === 200, result, errors: [] }), { status });
+globalThis.fetch = async (url, init = {}) => {
+    const { pathname, search } = new URL(url);
+    const method = init.method || 'GET';
+    const route = pathname.replace('/client/v4', '');
+    log({ method, route });
+    const tunnelId = state.tunnels[0]?.id;
+    if (method === 'GET' && /\\/cfd_tunnel$/.test(route)) return json(state.tunnelDeleted ? [] : state.tunnels);
+    if (method === 'GET' && /\\/dns_records$/.test(route)) return json(state.dnsDeleted ? [] : state.records);
+    if (method === 'GET' && /\\/cfd_tunnel\\/[^/]+\\/configurations$/.test(route)) return json({ config: { ingress: state.ingress } });
+    if (method === 'GET' && /\\/cfd_tunnel\\/[^/]+$/.test(route)) return json({ id: tunnelId, name: state.tunnels[0].name, deleted_at: null });
+    if (method === 'DELETE' && /\\/dns_records\\//.test(route)) { state.dnsDeleted = true; return json({}); }
+    if (method === 'DELETE' && /\\/connections$/.test(route)) return json({});
+    if (method === 'DELETE' && /\\/cfd_tunnel\\/[^/]+$/.test(route)) {
+        if (!state.dnsDeleted && state.records.length) return json({}, 400);
+        state.tunnelDeleted = true; return json({});
     }
-    assert.equal(
-        step(destroy, 'Delete the dedicated Cloudflare publication').replace(' && inputs.delete_data', ''),
-        step(legacyDestroy, 'Delete the dedicated Cloudflare publication'),
+    return json(null, 404);
+};
+`;
+
+const PROTECTED_TUNNEL = '091c4096-d1c8-4dbc-bb12-0c6357431d96';
+const TUNNEL_ID = '12345678-1234-1234-1234-123456789abc';
+const dedicatedTunnel = (id = TUNNEL_ID) => ({ id, name: 'explorer-qa', deleted_at: null });
+const dedicatedRecord = (id = TUNNEL_ID) => ({
+    id: 'c'.repeat(32), name: 'explorer-qa.axiologic.dev', type: 'CNAME', content: `${id}.cfargotunnel.com`, proxied: true,
+});
+const OWN_INGRESS = [{ hostname: 'explorer-qa.axiologic.dev', service: 'http://127.0.0.1:8080' }, { service: 'http_status:404' }];
+
+function runCloudflare(t, state, env = {}) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-destroy-cloudflare-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const statePath = path.join(root, 'state.json');
+    const logPath = path.join(root, 'requests.jsonl');
+    fs.writeFileSync(statePath, JSON.stringify({ ingress: OWN_INGRESS, ...state }));
+    const preload = path.join(root, 'fetch.mjs');
+    fs.writeFileSync(preload, FETCH_STUB(statePath, logPath));
+    const result = spawnSync(process.execPath, ['--import', preload, '--input-type=module'], {
+        input: cloudflareScript(),
+        encoding: 'utf8',
+        timeout: 30000,
+        env: {
+            PATH: process.env.PATH,
+            CLOUDFLARE_API_TOKEN: 'scoped-token',
+            CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32),
+            CLOUDFLARE_ZONE_ID: 'b'.repeat(32),
+            CLOUDFLARE_TUNNEL_NAME: 'explorer-qa',
+            PUBLIC_HOST: 'explorer-qa.axiologic.dev',
+            CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: PROTECTED_TUNNEL,
+            ...env,
+        },
+    });
+    const requests = fs.existsSync(logPath)
+        ? fs.readFileSync(logPath, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+        : [];
+    return { result, requests, deletes: requests.filter(request => request.method === 'DELETE').map(request => request.route.replace(/^\/(?:accounts|zones)\/[a-f0-9]+\//, '')) };
+}
+
+test('Cloudflare deletion removes DNS, then the connections, then the tunnel, and verifies', t => {
+    const run = runCloudflare(t, { tunnels: [dedicatedTunnel()], records: [dedicatedRecord()] });
+    assert.equal(run.result.status, 0, run.result.stderr + run.result.stdout);
+    assert.deepEqual(run.deletes, [`dns_records/${'c'.repeat(32)}`, `cfd_tunnel/${TUNNEL_ID}/connections`, `cfd_tunnel/${TUNNEL_ID}`]);
+    assert.match(run.result.stdout, /deletion verified/);
+});
+
+test('Cloudflare deletion is idempotent when the publication is already absent', t => {
+    const run = runCloudflare(t, { tunnels: [], records: [] });
+    assert.equal(run.result.status, 0, run.result.stderr);
+    assert.match(run.result.stdout, /already absent/);
+    assert.deepEqual(run.deletes, []);
+    const tunnelOnly = runCloudflare(t, { tunnels: [dedicatedTunnel()], records: [] });
+    assert.equal(tunnelOnly.result.status, 0, tunnelOnly.result.stderr);
+    assert.deepEqual(tunnelOnly.deletes, [`cfd_tunnel/${TUNNEL_ID}/connections`, `cfd_tunnel/${TUNNEL_ID}`]);
+});
+
+test('Cloudflare deletion refuses the protected shared tunnel before any detail request or deletion', t => {
+    const run = runCloudflare(t, { tunnels: [dedicatedTunnel(PROTECTED_TUNNEL)], records: [dedicatedRecord(PROTECTED_TUNNEL)] });
+    assert.notEqual(run.result.status, 0);
+    assert.match(run.result.stderr, /refusing to delete the protected shared Cloudflare tunnel/);
+    assert.deepEqual(run.deletes, []);
+    assert.equal(run.requests.every(request => request.method === 'GET' && /(?:cfd_tunnel|dns_records)$/.test(request.route)), true, 'only the two inventory listings ran');
+});
+
+test('Cloudflare deletion refuses a moved protected-tunnel pin, ambiguous inventory and foreign DNS or routes', t => {
+    const pinMoved = runCloudflare(t, { tunnels: [dedicatedTunnel()], records: [dedicatedRecord()] }, { CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: TUNNEL_ID });
+    assert.notEqual(pinMoved.result.status, 0);
+    assert.deepEqual(pinMoved.requests, [], 'the pin is checked before any request');
+    const cases = {
+        'two tunnels': { tunnels: [dedicatedTunnel(), dedicatedTunnel('87654321-1234-1234-1234-123456789abc')], records: [] },
+        'DNS without a tunnel': { tunnels: [], records: [dedicatedRecord()] },
+        'DNS pointing elsewhere': { tunnels: [dedicatedTunnel()], records: [dedicatedRecord(PROTECTED_TUNNEL)] },
+        'unproxied DNS': { tunnels: [dedicatedTunnel()], records: [{ ...dedicatedRecord(), proxied: false }] },
+        'unrelated route': { tunnels: [dedicatedTunnel()], records: [], ingress: [{ hostname: 'other.example', service: 'http://127.0.0.1:1' }, { service: 'http_status:404' }] },
+        'wrong tunnel name': { tunnels: [{ ...dedicatedTunnel(), name: 'proxies' }], records: [] },
+    };
+    for (const [label, state] of Object.entries(cases)) {
+        const run = runCloudflare(t, state);
+        assert.notEqual(run.result.status, 0, label);
+        assert.deepEqual(run.deletes, [], `${label}: nothing is deleted`);
+    }
+    const wrongIdentity = runCloudflare(t, { tunnels: [], records: [] }, { PUBLIC_HOST: 'proxies.axiologic.dev' });
+    assert.notEqual(wrongIdentity.result.status, 0);
+    assert.deepEqual(wrongIdentity.requests, []);
+});
+
+test('destroy: the pinned identity and the shared-tunnel pin are fixed before the host is touched', () => {
+    const validate = runBlocks(step(destroy, 'Validate GitHub configuration'))[0];
+    assert.match(validate, /\[ "\$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" != '091c4096-d1c8-4dbc-bb12-0c6357431d96' \]/);
+    assert.match(validate, /case "\$\{DELETE_DATA:-\}" in\n {2}true\|false\) ;;/);
+    assert.equal(destroy.match(/ssh-keyscan/g)?.length, 1, 'destroy host key must be scanned only in pinned preflight');
+    assert.ok(
+        destroy.indexOf('SSH_ED25519_FINGERPRINT') < destroy.indexOf('- name: Destroy the Box through Ploinky commands'),
+        'destroy target fingerprint must be established before remote mutation',
     );
+    assert.match(destroy, /install -m 600 "\$RUNNER_TEMP\/explorer_qa_known_hosts"/);
+    assert.match(destroy, /CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: '091c4096-d1c8-4dbc-bb12-0c6357431d96'/);
+    assert.doesNotMatch(destroy, /EXPLORER_QA_CLOUDFLARE_TUNNEL_(?:TOKEN|ID)/);
+    assert.doesNotMatch(destroy, /vars\.EXPLORER_QA_(?:SSH_USER|SSH_HOST|WORKSPACE)/);
+});
+
+test('deploy: the public URL check always runs after a successful step and the topology check runs even after a failure', () => {
+    assert.doesNotMatch(step(deploy, 'Verify public URL'), /^ {8}if:/m);
+    assert.match(step(deploy, 'Verify dedicated connector and protected Cloudflare topology'), /^ {8}if: always\(\)$/m);
+});
+
+function runValidate(t, env = {}) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-destroy-validate-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.mkdirSync(path.join(root, 'tmp'));
+    fs.writeFileSync(path.join(bin, 'ssh-keyscan'), `#!/bin/bash\necho scanned >> '${path.join(root, 'scan.log')}'\necho '45.136.70.141 ssh-ed25519 AAAA'\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'ssh-keygen'), '#!/bin/bash\necho "256 SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA 45.136.70.141 (ED25519)"\n', { mode: 0o755 });
+    const result = spawnSync('bash', ['-c', runBlocks(step(destroy, 'Validate GitHub configuration'))[0]], {
+        encoding: 'utf8',
+        env: {
+            PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+            RUNNER_TEMP: path.join(root, 'tmp'),
+            SSH_KEY: 'key',
+            SSH_USER: 'admin',
+            SSH_HOST: '45.136.70.141',
+            WORKSPACE: 'explorerQaWorkspace',
+            SOUL_GATEWAY_WORKSPACE: 'soulGateway',
+            SSH_ED25519_FINGERPRINT: 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA',
+            CLOUDFLARE_API_TOKEN: 'scoped-token',
+            CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32),
+            CLOUDFLARE_ZONE_ID: 'b'.repeat(32),
+            CLOUDFLARE_TUNNEL_NAME: 'explorer-qa',
+            CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: PROTECTED_TUNNEL,
+            PUBLIC_HOST: 'explorer-qa.axiologic.dev',
+            ROUTER_PORT: '8097',
+            DELETE_DATA: 'false',
+            ...env,
+        },
+    });
+    return { result, scanned: fs.existsSync(path.join(root, 'scan.log')) };
+}
+
+test('destroy: validation accepts both delete_data values and rejects other values, a moved shared-tunnel pin and a Global API Key', t => {
+    for (const value of ['true', 'false']) {
+        const run = runValidate(t, { DELETE_DATA: value });
+        assert.equal(run.result.status, 0, run.result.stderr + run.result.stdout);
+        assert.equal(run.scanned, true);
+    }
+    for (const env of [
+        { DELETE_DATA: 'maybe' },
+        { DELETE_DATA: '' },
+        { CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: 'f'.repeat(8) + PROTECTED_TUNNEL.slice(8) },
+        { CLOUDFLARE_API_TOKEN: 'cfk_global' },
+        { WORKSPACE: 'soulGateway' },
+        { SSH_HOST: '203.0.113.9' },
+    ]) {
+        const run = runValidate(t, env);
+        assert.notEqual(run.result.status, 0, JSON.stringify(env));
+        assert.equal(run.scanned, false, `${JSON.stringify(env)} must fail before the host key is scanned`);
+    }
+});
+
+test('deploy: the dedicated tunnel provisioning is fail-closed and preserves the shared tunnel', () => {
+    for (const required of [
+        "CLOUDFLARE_TUNNEL_CREATED='true'",
+        "if (created === 'true' && (ingress.length > 1 || records.length !== 0))",
+        'named.length !== 1 || named[0]?.id !== selectedId',
+        "ingress[0]?.service !== 'http://127.0.0.1:8080'",
+        'records[0]?.content !== expectedTarget',
+        'config?.config?.ingress ?? config?.ingress ?? []',
+        'cleanup_local_files() {',
+        'trap cleanup_local_files EXIT',
+        'echo "::add-mask::$CLOUDFLARE_TUNNEL_TOKEN"',
+        'publication/explorer-qa-api',
+        'publication/explorer-qa-tunnel',
+        'beforeJson !== afterJson',
+        'digest(after) !== process.env.PROTECTED_CLOUDFLARE_DIGEST',
+        'result.filter((record) => record?.name !== publicHost)',
+        'records.filter((record) => record?.name !== process.env.PUBLIC_HOST)',
+        'dedicated Explorer QA connector has no active Cloudflare connection',
+    ]) {
+        assert.equal(deploy.includes(required), true, `missing dedicated tunnel invariant: ${required}`);
+    }
+    assert.doesNotMatch(deploy, /EXPLORER_QA_CLOUDFLARE_TUNNEL_TOKEN/);
+    assert.doesNotMatch(deploy, /cfd_tunnel\/091c4096-d1c8-4dbc-bb12-0c6357431d96(?:\/token|\"\s*,\s*\{\s*method:\s*['\"](?:PUT|POST|DELETE))/);
+    assert.equal(
+        deploy.match(/config\?\.config\?\.ingress \?\? config\?\.ingress \?\? \[\]/g)?.length,
+        2,
+        'both existing-tunnel inventories must normalize Cloudflare missing configuration to empty ingress',
+    );
+});
+
+test('deploy: the dedicated tunnel validator rejects malformed, shared, ambiguous, and wrong-DNS fixtures', () => {
+    const source = deploy;
+    const marker = 'const [listPath, detailPath, configPath, dnsPath, selectedId, created]';
+    const markerIndex = source.indexOf(marker);
+    assert.ok(markerIndex > 0, 'dedicated tunnel validator marker must exist');
+    const heredocStart = source.lastIndexOf("<<'NODE'\n", markerIndex);
+    const scriptStart = heredocStart + "<<'NODE'\n".length;
+    const scriptEnd = source.indexOf('\n          NODE', markerIndex);
+    assert.ok(heredocStart > 0 && scriptEnd > scriptStart, 'dedicated tunnel validator heredoc must close');
+    const script = source.slice(scriptStart, scriptEnd).replace(/^          /gm, '');
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'explorer-qa-tunnel-validator-'));
+    const selectedId = '11111111-2222-4333-8444-555555555555';
+    const accountId = 'a'.repeat(32);
+    const hostname = 'explorer-qa.axiologic.dev';
+    const response = (result) => ({ success: true, result });
+    const run = ({
+        named = [{ id: selectedId, name: 'explorer-qa' }],
+        detail = { id: selectedId, name: 'explorer-qa', deleted_at: null, account_tag: accountId },
+        ingress = [],
+        dns = [],
+        created = 'false',
+    } = {}) => {
+        const documents = [response(named), response(detail), response({ config: { ingress } }), response(dns)];
+        const files = documents.map((document, index) => {
+            const file = path.join(temporary, `${index}.json`);
+            fs.writeFileSync(file, JSON.stringify(document));
+            return file;
+        });
+        return spawnSync(
+            process.execPath,
+            ['--input-type=module', '-', ...files, selectedId, created],
+            {
+                encoding: 'utf8',
+                env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId, PUBLIC_HOST: hostname },
+                input: script,
+            },
+        );
+    };
+    try {
+        assert.equal(run({ created: 'true' }).status, 0, 'a newly created empty dedicated tunnel is accepted');
+        assert.notEqual(run({ created: 'maybe' }).status, 0, 'the creation marker must be a literal boolean');
+        assert.notEqual(run({
+            created: 'true',
+            ingress: [
+                { hostname, service: 'http://127.0.0.1:8080' },
+                { service: 'http_status:404' },
+            ],
+        }).status, 0, 'a newly created tunnel must not already carry routes');
+        assert.notEqual(run({ named: [] }).status, 0, 'the created or reused tunnel must be listed before token retrieval');
+        assert.equal(
+            run({ ingress: null }).status,
+            0,
+            'existing selected tunnel with no configuration object may have empty ingress',
+        );
+        assert.notEqual(run({ ingress: { unexpected: true } }).status, 0);
+        assert.equal(run({
+            ingress: [
+                { hostname, service: 'http://127.0.0.1:8080' },
+                { service: 'http_status:404' },
+            ],
+            dns: [{
+                id: 'dns_1',
+                type: 'CNAME',
+                name: hostname,
+                content: `${selectedId}.cfargotunnel.com`,
+                proxied: true,
+            }],
+        }).status, 0, 'exact reusable dedicated tunnel must pass');
+        assert.notEqual(run({ named: [{ id: selectedId }, { id: 'other' }] }).status, 0);
+        assert.notEqual(run({ detail: { id: selectedId, name: 'explorer-qa', account_tag: 'b'.repeat(32) } }).status, 0);
+        assert.notEqual(run({
+            ingress: [
+                { hostname: 'unrelated.example.test', service: 'http://127.0.0.1:8080' },
+                { service: 'http_status:404' },
+            ],
+        }).status, 0);
+        assert.notEqual(run({
+            dns: [{ type: 'CNAME', name: hostname, content: 'wrong.cfargotunnel.com', proxied: true }],
+        }).status, 0);
+        assert.notEqual(run({ created: 'true', dns: [{ type: 'CNAME' }] }).status, 0);
+    } finally {
+        fs.rmSync(temporary, { recursive: true, force: true });
+    }
+});
+
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const publicUrl = 'https://explorer-qa.axiologic.dev';
+const userPersistoService = '/base-agent-additional-server/userPersistoAgent/7000/service';
+const issuer = `${publicUrl}${userPersistoService}/oidc`;
+function publicVerificationBlock() {
+    const match = deploy.match(/\/\/ BEGIN QA public email-first verification\n([\s\S]*?)\/\/ END QA public email-first verification/);
+    assert.ok(match, 'the public verification block');
+    return match[1].replace(/^ {10}/gm, '');
+}
+
+async function verifyPublic(overrides = {}) {
+    const login = `${publicUrl}${userPersistoService}/auth/?requestId=request&state=state`;
+    const responses = {
+        [login]: '<main id="auth_content"></main><script type="module" src="main.js"></script>',
+        [`${publicUrl}${userPersistoService}/auth/setup`]: { ok: true, setupComplete: false, registration: true, methods: { password: true, emailCode: true } },
+        [`${issuer}/.well-known/openid-configuration`]: {
+            issuer, code_challenge_methods_supported: ['S256'], authorization_endpoint: `${issuer}/auth`,
+            token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/jwks`, userinfo_endpoint: `${issuer}/me`,
+        },
+        ...overrides.responses,
+    };
+    const requests = [];
+    const logs = [];
+    await new AsyncFunction('body', 'headers', 'mismatchBody', 'mismatchHeaders', 'fetch', 'process', 'console', publicVerificationBlock())(
+        overrides.body ?? `Continue with Single Sign-On<script>window.location.replace(${JSON.stringify(login)})</script>`,
+        overrides.headers ?? 'cf-ray: test', { ok: false, error: 'auth_route_context_mismatch' }, 'cf-ray: test',
+        async (url, options) => {
+            requests.push(url);
+            assert.equal(options.redirect, 'error');
+            assert.equal(options.method, undefined, 'verification must never submit sign-in or registration');
+            assert(Object.hasOwn(responses, url));
+            return { ok: true, headers: new Map([['cf-ray', 'test']]), text: async () => responses[url], json: async () => responses[url] };
+        },
+        { exit: () => { throw new Error('verification rejected'); } },
+        { log: (label, details) => logs.push({ label, details: JSON.parse(details) }) },
+    );
+    return { requests, logs };
+}
+
+test('deploy: the public verification checks the SSO wizard and OIDC metadata without claiming an unclaimed installation', async () => {
+    const result = await verifyPublic();
+    assert.equal(result.requests.length, 3);
+    assert.deepEqual(result.logs[0].details.methods, { password: true, emailCode: true, passkey: false, totp: false, google: false });
+    await assert.rejects(verifyPublic({ body: '<form data-auth-login-form><input type="password"></form>' }), /rejected/);
+    // Current Routers redirect with 303 and no page body.
+    const login = `${publicUrl}${userPersistoService}/auth/?requestId=request&state=state`;
+    const redirected = await verifyPublic({ body: '', headers: `HTTP/2 303\r\nLocation: ${login}\r\ncf-ray: test\r\n` });
+    assert.equal(redirected.requests[0], login);
+    await assert.rejects(verifyPublic({ body: '', headers: 'HTTP/2 303\r\nLocation: https://other.example/auth/?state=x&requestId=y\r\ncf-ray: test\r\n' }), /rejected/);
+    await assert.rejects(verifyPublic({ body: '', headers: 'HTTP/2 303\r\ncf-ray: test\r\n' }), /rejected/);
+    await assert.rejects(verifyPublic({ body: 'Continue with Single Sign-On<script>window.location.replace("https://other.example/auth/?state=x&requestId=y")</script>' }), /rejected/);
+    await assert.rejects(verifyPublic({ responses: {
+        [`${issuer}/.well-known/openid-configuration`]: { issuer: 'https://other.example' },
+    } }), /rejected/);
+});
+
+test('the default Explorer graph the QA deploy waits for includes UserPersisto and its email dependency', () => {
+    const explorer = JSON.parse(fs.readFileSync(path.join(ROOT, 'explorer/manifest.json'), 'utf8'));
+    const provider = JSON.parse(fs.readFileSync(path.join(ROOT, 'userPersistoAgent/manifest.json'), 'utf8'));
+    assert.equal(explorer.sso.providerAgent, 'userPersistoAgent');
+    // An enable entry is a spec string or an object carrying the spec and its profile.
+    const enabled = manifest => manifest.enable.map(entry => String(typeof entry === 'string' ? entry : entry.agent).split(/\s+/)[0]);
+    assert.ok(enabled(explorer).includes('userPersistoAgent'));
+    assert.ok(enabled(provider).includes('emailAgent'));
+});
+
+test('the four QA workflows neither provision nor inspect the retired local model runtime, nor manage retired stack repositories', () => {
+    const retiredRepositoryPattern = new RegExp(`\\b(?:${['basic', ['webmeet', 'Infra'].join('')].join('|')})\\b`);
+    for (const name of ['deploy-explorer-qa-ploinky.yml', 'destroy-explorer-qa-ploinky.yml', 'deploy-explorer-qa-bizanso.yml', 'deploy-explorer-qa-scriptahub.yml']) {
+        const source = read(name);
+        assert.doesNotMatch(source, retiredRepositoryPattern, `${name} must not manage a retired stack repository`);
+        assert.doesNotMatch(source, /DEFAULT_LOCAL_LLM/, `${name} must not define or forward a local model image`);
+        assert.doesNotMatch(source, /default-local-llm/i, `${name} must not pull, start, or inspect the retired local model agent`);
+        assert.doesNotMatch(source, /default local LLM image/i, `${name} must not inspect a local model image`);
+    }
+});
+
+// The isolated Node runtime block is the same text in the Ploinky deploy and both product workflows
+// (deploy-qa-product-workflows.test.mjs pins it byte for byte); the Ploinky destroy has none. These cases run it from the deploy.
+const NODE_SECTION = deploy.match(/# BEGIN QA isolated Node runtime\n([\s\S]*?)# END QA isolated Node runtime/)[1].replace(/^ {10}/gm, '');
+const NODE_SHA = '14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647';
+const NODE_DIST = 'node-v24.19.0-linux-x64';
+
+// The extracted deployment block intentionally uses GNU utilities. Resolve their g-prefixed macOS installations too,
+// but never replace a deadline or checksum operation with a no-op fixture command.
+const gnuTools = Object.fromEntries(['timeout', 'mv', 'sha256sum'].map(name => {
+    for (const binary of [name, `g${name}`]) {
+        for (const directory of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+            const executable = path.join(directory, binary);
+            const result = spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: 2000 });
+            if (result.status === 0 && /GNU coreutils/.test(result.stdout || '')) return [name, executable];
+        }
+    }
+    return [name, null];
+}));
+const missingGnuTools = Object.entries(gnuTools).filter(([, executable]) => !executable).map(([name]) => name);
+const runtimeOptions = missingGnuTools.length
+    ? { skip: `Requires GNU ${missingGnuTools.join(', ')}; run these workflow behavior tests on Linux or with GNU coreutils on PATH.` }
+    : {};
+
+function nodeFixture(t) {
+    const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-node-runtime-')));
+    t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+    const root = path.join(folder, 'tools');
+    const shims = path.join(folder, 'shims');
+    const archiveRoot = path.join(folder, 'archive');
+    const archive = path.join(folder, 'node.tar.xz');
+    fs.mkdirSync(shims);
+    for (const [name, executable] of Object.entries(gnuTools)) fs.symlinkSync(executable, path.join(shims, name));
+    fs.mkdirSync(path.join(archiveRoot, NODE_DIST, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(archiveRoot, NODE_DIST, 'bin/node'), '#!/bin/sh\nif [ "$1" = --version ]; then echo v24.19.0; else exec "$QA_REAL_NODE" "$@"; fi\n', { mode: 0o755 });
+    assert.equal(spawnSync('tar', ['-cJf', archive, '-C', archiveRoot, NODE_DIST]).status, 0);
+    fs.writeFileSync(path.join(shims, 'uname'), '#!/bin/sh\necho x86_64\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(shims, 'curl'), '#!/bin/sh\nfor argument do destination="$argument"; done\necho fetch >> "$QA_FETCH_LOG"\ncp "$QA_FIXTURE_ARCHIVE" "$destination"\n', { mode: 0o755 });
+    const checksum = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
+    const source = 'set -euo pipefail\n' + NODE_SECTION.replaceAll('/home/admin/.qa-deployment-tools', root).replaceAll(NODE_SHA, checksum);
+    const run = (script = source) => spawnSync('bash', ['-c', script], {
+        encoding: 'utf8', timeout: 10000,
+        env: { ...process.env, PATH: `${shims}:${path.dirname(process.execPath)}:${process.env.PATH}`,
+            QA_REAL_NODE: process.execPath, QA_FIXTURE_ARCHIVE: archive, QA_FETCH_LOG: path.join(folder, 'fetches') },
+    });
+    return { folder, root, source, run, node: path.join(root, NODE_DIST, 'bin/node'), archive: path.join(root, `${NODE_DIST}.tar.xz`) };
+}
+
+test('QA scoped Node installs a verified archive and reuses the exact validated binary', runtimeOptions, t => {
+    const f = nodeFixture(t);
+    const installed = f.run();
+    assert.equal(installed.status, 0, installed.stderr);
+    assert.equal(fs.statSync(f.root).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(f.archive).mode & 0o777, 0o600);
+    const inode = fs.statSync(f.node).ino;
+    const reused = f.run();
+    assert.equal(reused.status, 0, reused.stderr);
+    assert.equal(fs.statSync(f.node).ino, inode);
+    assert.equal(fs.readFileSync(path.join(f.folder, 'fetches'), 'utf8'), 'fetch\n');
+    assert.equal(fs.readdirSync(f.root).some(name => name.startsWith('.node-install-')), false);
+});
+
+test('QA scoped Node refuses a tampered cached binary before executing it', runtimeOptions, t => {
+    const f = nodeFixture(t);
+    assert.equal(f.run().status, 0);
+    const marker = path.join(f.folder, 'executed');
+    fs.writeFileSync(f.node, `#!/bin/sh\ntouch '${marker}'\necho v24.19.0\n`);
+    const result = f.run();
+    assert.notEqual(result.status, 0);
+    assert.equal(fs.existsSync(marker), false);
+    assert.equal(fs.readdirSync(f.root).some(name => name.startsWith('.node-install-')), false);
+});
+
+test('QA scoped Node refuses checksum mismatch and unsafe tool roots without publishing a runtime', runtimeOptions, t => {
+    const f = nodeFixture(t);
+    const badChecksum = f.source.replace(/QA_NODE_SHA=[a-f0-9]{64}/, `QA_NODE_SHA=${'0'.repeat(64)}`);
+    assert.notEqual(f.run(badChecksum).status, 0);
+    assert.equal(fs.existsSync(f.node), false);
+    assert.equal(fs.existsSync(f.archive), false);
+    fs.rmSync(f.root, { recursive: true });
+    fs.symlinkSync(path.join(f.folder, 'archive'), f.root);
+    assert.notEqual(f.run().status, 0);
+    assert.equal(fs.existsSync(path.join(f.folder, 'archive', `${NODE_DIST}.tar.xz`)), false);
+});
+
+test('QA Node pinning is the pinned archive, never replaces the shared host installation, and is installed once', () => {
+    assert.match(NODE_SECTION, /https:\/\/nodejs\.org\/dist\/v24\.19\.0\//);
+    assert.ok(NODE_SECTION.includes(NODE_SHA));
+    assert.ok(NODE_SECTION.includes('01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc'));
+    assert.match(NODE_SECTION, /export PATH="\$QA_NODE_HOME\/bin:\$PATH"/);
+    assert.match(NODE_SECTION, /cmp -s/);
+    assert.doesNotMatch(NODE_SECTION, /sudo|apt-get|\/usr\/bin\/node|\/usr\/local\/bin\/node/);
+    assert.equal(deploy.match(/# BEGIN QA isolated Node runtime/g).length, 1, 'the QA Node is installed once');
 });
 
 test('deploy: the image prune removes only listed, validated IDs with `podman image rm` and never forces', () => {

@@ -137,6 +137,8 @@ test('official GIS button sends one credential to the same-origin endpoint with 
     assert.equal(options.ux_mode, 'popup');
     assert.equal(options.use_fedcm_for_button, false);
     assert.equal(h.renders[0].target, h.node('button'));
+    // A large button would be personalized as "Sign in as <name>"; medium keeps the plain label.
+    assert.deepEqual(h.renders[0].options, { type: 'standard', theme: 'outline', size: 'medium', text: 'signin_with' });
     assert.equal(h.document.head.children.length, 0);
     h.credential();
     h.credential('duplicate.id.token');

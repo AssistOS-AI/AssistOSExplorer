@@ -20,6 +20,9 @@ async function realDirectory(directory) {
 
 const present = file => fs.lstat(file).then(() => true, error => { if (error.code !== 'ENOENT') throw error; return false; });
 
+// Coding agents whose model list comes from the signed-in account, with the name a refusal shows.
+const MODELS_NEED_LOGIN = Object.freeze({ agy: 'Antigravity CLI' });
+
 export class RobotManager {
     constructor({ paths, toolCache, homeOperation, soulGateway, alaEntry, captureLaunch = capturePrivateLaunch, readStatus = null,
         gitCredentials = null, log = message => console.log(message) }) {
@@ -47,8 +50,9 @@ export class RobotManager {
         return pending;
     }
 
-    async require(id) {
+    async require(id, { inspect = false } = {}) {
         robotId(id);
+        if (!inspect) this.migrationGuard?.(id);
         try {
             const metadata = JSON.parse(await fs.readFile(path.join(this.paths.robot(id), 'label'), 'utf8'));
             if (metadata.id !== id) throw new Error();
@@ -64,6 +68,7 @@ export class RobotManager {
     }
 
     async ensure(input) {
+        this.migrationGuard?.(input.robotId);
         return this.serialized(input.robotId, async () => {
             const codingAgents = normalizeCodingAgents(input.codingAgents);
             if (input.seed !== undefined && typeof input.seed !== 'boolean') throw fail('INVALID_INPUT', 'seed must be a boolean');
@@ -113,10 +118,12 @@ export class RobotManager {
                 const index = next++;
                 const id = ids[index];
                 // One registry entry RoboWork does not know must not take every other robot's status with it.
-                const record = await this.require(id).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; return null; });
+                const record = await this.require(id, { inspect: true }).catch(error => { if (error.code !== 'UNKNOWN_ROBOT') throw error; return null; });
                 if (!record) continue;
                 const { alaUnavailable = false, ...status } = await this.readStatus(id, { includeLogins, codingAgents: record.codingAgents });
-                results[index] = { alaUnavailable, robot: { id, ...status, gui: this.gui ? await this.gui.status(id) : { state: 'stopped', mode: null, sessionUrl: null, cwd: null } } };
+                results[index] = { alaUnavailable, robot: { id, ...status,
+                    ...(this.migrationStatus ? { migration: this.migrationStatus(id) } : {}),
+                    gui: this.gui ? await this.gui.status(id) : { state: 'stopped', mode: null, sessionUrl: null, cwd: null } } };
             }
         };
         await Promise.all(Array.from({ length: Math.min(STATUS_CONCURRENCY, ids.length) }, worker));
@@ -135,6 +142,14 @@ export class RobotManager {
         // The settings dialog lists models for a draft selection before it is saved (DS006), so any
         // known coding agent is accepted here; prepareCodingAgents installs the requested one.
         if (!CODING_AGENT_NAMES.includes(agent)) throw fail('INVALID_INPUT', 'Coding agent is unavailable');
+        // An agent whose catalog belongs to the signed-in account cannot list models without a login. The robot's stored
+        // login is read first, so the caller learns why instead of receiving a failed discovery.
+        if (MODELS_NEED_LOGIN[agent]) {
+            const status = await this.readStatus(id, { includeLogins: true });
+            if (!status.alaUnavailable && status.logins?.[agent] === false) {
+                throw fail('CODING_AGENT_NOT_LOGGED_IN', `${MODELS_NEED_LOGIN[agent]} is not logged in on this robot. Log in to list its models.`, 409);
+            }
+        }
         const workingDirectory = cwd !== undefined ? await this.paths.grant(cwd, 'cwd') : this.paths.home(id);
         const identity = cwd !== undefined ? await this.paths.identity(workingDirectory, 'cwd') : undefined;
         const tools = await this.toolCache.prepareCodingAgents([agent]);

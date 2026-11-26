@@ -8,14 +8,6 @@ WebSkel lifecycle, and shared Explorer styles. Policy and lifecycle authority
 remain in Ploinky. Its unit checks use `node:test`; offline screenshot checks
 reuse the repository's existing Playwright test installation and Chromium cache.
 
-The QA in-place update helper adds no npm dependency. It uses Node.js built-ins,
-the existing QA-scoped Node 24.19.0 runtime, Git, the installed container engine,
-util-linux `flock`, and the exact already-deployed Ploinky targeted-restart CLI.
-These tools are inherited deployment prerequisites described below; the helper
-does not install tools, update dependencies, or pull images. Missing prerequisites
-or incompatible source/runtime state fail before the source checkout changes.
-The existing recovery helper supplies Box, AgentLib and workspace-lock checks.
-
 Explorer's browser UUID compatibility uses `createSecureUuid` from its existing
 WebSkel dependency. The implementation is maintained in the WebSkel source
 repository (`utils/uuid.mjs`, exported by `index.js`) and compiled with its
@@ -50,13 +42,9 @@ Explorer's plugin catalog reuses the existing Git executable to read each select
 
 The Roles administration page and domain reuse the same native browser controls, Node.js runtime, Persisto store, signed dashboard transport and existing MCP dispatcher. Role CRUD, capability selection and their tests add no dependency or installation step.
 
-The QA shutdown, recovery and Soul settings helpers add no npm packages. They use Node.js built-ins and the exact deployed Ploinky checkout. The ordinary helpers require the Node runtime already supplied by the deployment host and Box. Soul snapshot reconciliation additionally requires `node:sqlite` with `DatabaseSync` and `backup`; it fails with `SOUL_SQLITE_UNAVAILABLE` before opening a database or creating output if those APIs are absent. Use a compatible reviewed Node runtime for that optional operation. Do not install packages during recovery startup.
+The QA Soul settings helper, `.github/scripts/reconcile-qa-soul-settings.mjs`, adds no npm packages and is run by no tracked workflow. It uses Node.js built-ins and requires `node:sqlite` with `DatabaseSync` and `backup`; it fails with `SOUL_SQLITE_UNAVAILABLE` before opening a database or creating output if those APIs are absent. Use a compatible reviewed Node runtime for that optional operation.
 
-Recovery reuses the host's Git, Podman or Docker, sudo, GNU `cp` and `cmp`, and util-linux `flock`. The workflow also uses GNU `du` for capacity admission. These are existing deployment prerequisites. Git verifies the exact clean source revisions; the container engine verifies and controls the selected runtime; sudo preserves mixed database ownership; GNU copy preserves filesystem metadata; flock serializes host operations without leaking its lock descriptor into containers. Node filesystem copying cannot preserve all required ownership and extended metadata. Missing tools or failed commands stop the operation with a nonzero status. Install or update them through the deployment host's existing operating-system package process, then rerun admission checks before mutation.
-
-The host distribution supplies these tools and their license notices; this repository does not vendor or redistribute them. Git, GNU coreutils and sudo retain their upstream licenses, and util-linux has component-specific licenses. Exact distribution package revisions and bundled license-file paths belong in each deployment's host inventory and are not pinned by these scripts. Container engine versions and immutable Box images remain governed by Ploinky's runtime checks. No new global installation is authorized by this document.
-
-Existing component dependencies are documented in [OnlyOffice's dependency record](https://github.com/AssistOS-AI/OnlyOfficeAgent/blob/main/onlyOffice/dependencies.md) and [the smoke-suite dependency record](tests/smoke/dependencies.md). Soul uses SQLite's standard backup and transaction implementation rather than a custom database or WAL parser. Remove these optional recovery dependencies only when the corresponding preservation requirement is replaced and verified.
+Existing component dependencies are documented in [OnlyOffice's dependency record](https://github.com/AssistOS-AI/OnlyOfficeAgent/blob/main/onlyOffice/dependencies.md) and [the smoke-suite dependency record](tests/smoke/dependencies.md). Soul uses SQLite's standard backup and transaction implementation rather than a custom database or WAL parser. Remove the `node:sqlite` requirement only together with the Soul settings helper.
 
 ## UserPersisto Google Identity Services
 

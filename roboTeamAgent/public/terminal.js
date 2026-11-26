@@ -55,17 +55,20 @@ export async function prepareRobotTerminal(id, { fetchImpl = fetch, cookie = doc
     return result;
 }
 
+// With `codingAgent` the terminal opens that coding agent in the robot's sandbox instead of the shell, which is how
+// an agent that is not logged in is signed in.
 export async function openRobotTerminal(robot, api, { windowRef = window, discover = discoverRobotTerminal,
-    prepare = prepareRobotTerminal } = {}) {
+    prepare = prepareRobotTerminal, codingAgent = null, label = '' } = {}) {
     const popup = windowRef.open('about:blank', '_blank');
     if (!popup) throw new Error('Allow popups to open the robot terminal.');
     let launch;
     try {
         popup.opener = null;
         if (popup.opener !== null) throw new Error('Could not isolate the terminal window.');
-        popup.document.title = `${robot.name} terminal`;
-        popup.document.body.textContent = 'Opening robot terminal…';
-        const id = `${robot.id}.default`;
+        popup.document.title = `${robot.name} ${label || 'terminal'}`;
+        popup.document.body.textContent = `Opening ${label || 'robot terminal'}…`;
+        if (codingAgent !== null && !/^[a-z][a-z0-9-]{0,31}$/u.test(codingAgent)) throw new Error('Unknown coding agent.');
+        const id = codingAgent ? `${robot.id}.default.${codingAgent}` : `${robot.id}.default`;
         const result = await prepare(id);
         if (result?.id !== id || typeof result.root !== 'string' || !result.root) throw new Error('RoboWork returned an unexpected terminal home.');
         launch = await discover(result.root, id);

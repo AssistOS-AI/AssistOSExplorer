@@ -1,7 +1,6 @@
 name: Destroy Explorer QA Box (Ploinky commands)
 
-# The same target as destroy-explorer-qa.yml, driven through `ploinky destroy`, with the differences listed in
-# docs/deploy-explorer-qa.md.
+# The QA target destroyed through `ploinky destroy`, as docs/deploy-explorer-qa.md describes.
 
 on:
   workflow_dispatch:
@@ -160,11 +159,11 @@ jobs:
             echo "[qa] ERROR: the workspace path is not a real directory: $WORK_DIR"
             exit 1
           fi
-          # The older workflows park the router access policy and an install marker here, and only they
-          # restore them. Running over that state would silently lose the policy.
+          # The removed non-Ploinky workflows parked the router access policy and an install marker here, and only
+          # they restored them. Running over that state would silently lose the policy.
           STATE_DIR=/home/admin/.qa-deployment-state
           if [ -e "$STATE_DIR" ] && [ -n "$(ls -A "$STATE_DIR")" ]; then
-            echo "[qa] ERROR: $STATE_DIR holds state from deploy-explorer-qa.yml. Dispatch that workflow to finish it first."
+            echo "[qa] ERROR: $STATE_DIR holds state parked by the removed non-Ploinky QA workflows. No tracked workflow finishes it: restore that workflow from history through the reviewed change process first."
             exit 1
           fi
           if [ ! -e "$WORK_DIR" ] || [ -z "$(ls -A "$WORK_DIR")" ]; then

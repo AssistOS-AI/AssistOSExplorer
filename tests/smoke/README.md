@@ -1429,15 +1429,6 @@ Allow known browser noise temporarily while triaging:
 SMOKE_ALLOW_BROWSER_ERRORS=1 npm test
 ```
 
-### QA tooling opt-ins
-
-Two environment variables widen the QA lock-adapter and source-sandbox library tests. Without them the lock adapter test uses a fake lock module and the live sandbox test is skipped; a skip is not a pass.
-
-| Variable | Effect |
-| --- | --- |
-| `QA_REAL_LOCK_MODULE=<absolute path of ploinky-box/locks.mjs>` | The workspace lock adapter test in `qa-rollback.test.mjs` runs against Ploinky's own lock module through a recording shim with a short `timeoutMs`. Read-only: nothing in that checkout is edited. |
-| `QA_SOURCE_SANDBOX_LIVE_IMAGE=<full ID of a local Box image>` | `qa-source-sandbox-live.test.mjs` runs the sandboxed source checks and fast-forward against real rootless Podman. Nothing is pulled; a stopped Podman machine must be started and stopped again by the operator. |
-
 ## Sibling checkouts for the Explorer graph helper
 
 `lib/explorer-graph.mjs` walks every manifest reachable from
@@ -1448,7 +1439,7 @@ names this repository itself. The known siblings are `legacy-agents`, `webmeet`,
 repository's parent directory. The default graph does not cross into `legacy-agents`,
 which Explorer no longer installs; it stays a known sibling so that a reintroduced
 legacy edge resolves and fails the explicit legacy-agents guards instead of being
-reported as an unknown repository. `lib/deploy-qa-userpersisto.test.mjs` and
+reported as an unknown repository. `lib/explorer-graph.test.mjs` and
 `explorer/tests/unit/retiredLocalModelGraph.test.js` (which runs under
 `cd explorer && npm test`) both use the helper.
 

@@ -105,3 +105,20 @@ test('the marker makes later calls a no-op even if the trees reappear', async ()
     assert.equal(await exists(path.join(dataDir, 'podman/x')), true);
     assert.equal(await exists(path.join(dataDir, 'tool-cache/y')), true);
 });
+
+test('a data directory cleaned under the v1 marker still loses its npm cache once, and the v2 marker is written', async () => {
+    const dataDir = await tmp();
+    await fs.writeFile(path.join(dataDir, 'roboteam-runtime-v1.cleaned'), 'old\n');
+    await fs.mkdir(path.join(dataDir, '.npm/_cacache'), { recursive: true });
+    await fs.writeFile(path.join(dataDir, '.npm/_cacache/f'), 'x');
+    await fs.mkdir(path.join(dataDir, 'robots/x'), { recursive: true });
+    await fs.writeFile(path.join(dataDir, 'robots/x/metadata.json'), '{}');
+    assert.deepEqual(await removeLegacyRuntimeData({ dataDir }), [path.join(dataDir, '.npm')]);
+    assert.equal(await exists(path.join(dataDir, '.npm')), false);
+    assert.equal(await exists(path.join(dataDir, LEGACY_RUNTIME_MARKER)), true);
+    assert.equal(LEGACY_RUNTIME_MARKER, 'roboteam-runtime-v2.cleaned');
+    assert.equal(await exists(path.join(dataDir, 'robots/x/metadata.json')), true);
+    await fs.mkdir(path.join(dataDir, '.npm'));
+    assert.deepEqual(await removeLegacyRuntimeData({ dataDir }), [], 'the v2 marker makes later calls a no-op');
+    assert.equal(await exists(path.join(dataDir, '.npm')), true);
+});

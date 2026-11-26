@@ -79,20 +79,25 @@ export class RobotPaths {
     soul(id) { return path.join(this.robot(id), 'run', 'soul'); }
     run(robot, id) { return path.join(this.robot(robot), 'runs', runId(id)); }
 
-    async grant(value, kind = 'folder') {
+    async grant(value, kind = 'folder', { allowWorkspaceRoot = false } = {}) {
         const code = kind === 'cwd' ? 'CWD_REFUSED' : 'FOLDER_REFUSED';
         if (typeof value !== 'string' || !path.isAbsolute(value) || value.includes('\0')) throw fail(code, 'An absolute directory is required');
         let resolved;
         try { resolved = await fs.realpath(value); }
         catch { throw fail(code, 'Directory is unavailable'); }
         if (!(await fs.stat(resolved)).isDirectory()) throw fail(code, 'A directory is required');
-        // The root holds every project; a robot receives a folder below it.
+        // Only terminal callers may explicitly grant the workspace root, whose private entries remain masked.
         const root = await fs.realpath(this.workspaceRoot).catch(() => this.workspaceRoot);
-        if (resolved === root) throw fail(code, 'The workspace root is not available to a robot');
+        const terminalRoot = allowWorkspaceRoot && kind === 'cwd' && resolved === root;
+        if (resolved === root && !terminalRoot) throw fail(code, 'The workspace root is not available to a robot');
         if (kind === 'cwd' && !within(root, resolved)) throw fail(code, 'Directory is outside the workspace');
         for (const requestedRoot of [this.dataDir, this.robotsDir, '/root', '/robots']) {
             const protectedRoot = await fs.realpath(requestedRoot).catch(() => requestedRoot);
-            if (within(protectedRoot, resolved) || within(resolved, protectedRoot)) throw fail(code, 'Directory contains protected storage');
+            const maskedChild = terminalRoot && within(root, protectedRoot)
+                && isHiddenWorkspaceEntry(path.relative(root, protectedRoot).split(path.sep)[0]);
+            if (within(protectedRoot, resolved) || (within(resolved, protectedRoot) && !maskedChild)) {
+                throw fail(code, 'Directory contains protected storage');
+            }
         }
         // On a filesystem that ignores case, `.DATA` is `.data`, and a path keeps the spelling it was given inside a Linux guest.
         const first = within(root, resolved) ? path.relative(root, resolved).split(path.sep)[0] : null;
@@ -117,8 +122,8 @@ export class RobotPaths {
 
     // A terminal, Browser or Desktop opens in the folder itself. The private project data inside it is hidden by a mask, which
     // cannot cover the directory a session starts in. A run is different: RoboTeam starts one in a folder it prepared there.
-    async interactiveCwd(value) {
-        const resolved = await this.grant(value, 'cwd');
+    async interactiveCwd(value, options = {}) {
+        const resolved = await this.grant(value, 'cwd', options);
         if (resolved.split(path.sep).includes('.roboteam')) throw fail('CWD_REFUSED', 'Directory is private project data');
         return resolved;
     }

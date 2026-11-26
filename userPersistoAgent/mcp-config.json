@@ -263,9 +263,9 @@
             "env": { "TOOL_NAME": "userpersisto_totp_setup_verify" }
         },
         {
-            "name": "userpersisto_scriptahub_points_apply",
-            "title": "Apply ScriptaHub points operation",
-            "description": "Apply a ScriptaHub contribution reward, debit or compensating refund.",
+            "name": "credits_apply",
+            "title": "Apply service credit operation",
+            "description": "Apply a grant, debit or matching refund, or inspect an expiring grant, within the verified service agent's credit namespace.",
             "command": "sh",
             "args": [
                 "tools/userpersisto_tool.sh"
@@ -279,51 +279,41 @@
                     "operation": {
                         "type": "string",
                         "enum": [
-                            "reward",
+                            "grant",
                             "debit",
                             "refund",
-                            "expiry"
+                            "inspect-expiry"
                         ]
                     },
                     "expiresAt": {
                         "type": "string",
                         "maxLength": 24
                     },
-                    "requestId": {
+                    "referenceId": {
                         "type": "string",
-                        "minLength": 36,
-                        "maxLength": 36
+                        "minLength": 1
                     },
-                    "attempt": { "type": "integer", "minimum": 1 },
                     "amount": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 1000000
                     },
-                    "kind": {
+                    "reason": {
                         "type": "string",
-                        "enum": [
-                            "book-proposal",
-                            "manuscript",
-                            "edit",
-                            "edition",
-                            "fork"
-                        ]
+                        "minLength": 1,
+                        "maxLength": 256
                     }
                 },
                 "required": [
                     "userId",
                     "operation",
-                    "requestId",
-                    "attempt",
-                    "amount",
-                    "kind"
+                    "referenceId"
                 ],
                 "additionalProperties": false
             },
             "tags": ["internal"],
             "env": {
-                "TOOL_NAME": "userpersisto_scriptahub_points_apply"
+                "TOOL_NAME": "credits_apply"
             }
         },
         {

@@ -21,7 +21,6 @@ function requireUserId(userId) {
 function requireReference(referenceId, type) {
     const normalized = String(referenceId || '').trim();
     if (!normalized) throw Object.assign(new Error(`${type} requires a stable referenceId.`), { code: 'reference_id_required', statusCode: 400 });
-    if (normalized.length > 256) throw Object.assign(new Error('referenceId is too long.'), { code: 'invalid_reference_id', statusCode: 400 });
     return normalized;
 }
 
