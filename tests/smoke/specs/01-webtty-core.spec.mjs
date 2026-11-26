@@ -13,6 +13,7 @@ import {
   expect,
   test,
 } from '../lib/fixtures.mjs';
+import { requireRealSignIns } from '../lib/session-reuse.mjs';
 import { assertDistinctAuthenticatedPrincipals, hasAuthenticatedSession, readAuthenticatedPrincipal, signIn } from '../lib/auth.mjs';
 import { USERPERSISTO_LOGIN_PATH } from '../lib/auth-wizard.mjs';
 import { acknowledgeRouterRecovery, armRouterRecoveryObservation, finalizeRouterRecoveryFailure, captureRouterRecoveryAuthentication, RouterRecoveryProofError } from '../lib/webtty-router-recovery.mjs';
@@ -1020,6 +1021,9 @@ async function runWhileObservingNoAgentShell(evidence, agent, baselineExecIds, b
   expect(samples, 'stale launch observation must span before, during, and after the request').toBeGreaterThanOrEqual(3);
   return { value, samples, exactEventCount: exactEvents.length };
 }
+
+// This gate logs out for real and drives browsers that must hold independent sessions.
+requireRealSignIns(test);
 
 test.describe('Ploinky core WebTTY release gate', () => {
   test.skip(!smokeConfig.flags.webttyCore, 'Run with npm run test:webtty.');

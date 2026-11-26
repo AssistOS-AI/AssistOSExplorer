@@ -5,6 +5,7 @@ import {
   expect,
   test,
 } from '../lib/fixtures.mjs';
+import { requireRealSignIns } from '../lib/session-reuse.mjs';
 import {
   assertDistinctAuthenticatedPrincipals,
   readAuthenticatedPrincipal,
@@ -259,6 +260,9 @@ async function deleteConfidentialDoc(page, documentPath) {
   await deleteButton.click();
   await expect(row).toHaveCount(0, { timeout: smokeConfig.timeouts.navigation });
 }
+
+// This gate signs accounts up and in through the wizard itself; every sign-in is the behaviour under test.
+requireRealSignIns(test);
 
 test.describe('Explorer QA acceptance', () => {
   test.describe.configure({ mode: 'serial' });

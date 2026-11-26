@@ -2,6 +2,31 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { configureFreeCopilotRobots, requireFreeCopilotSetup } from './copilot-free-model.mjs';
 
+// Errors whose text is fixed by this module and carries no private input.
+function safeFailure(kind, message) {
+    return Object.assign(new Error(message), { kind });
+}
+
+const NETWORK_FAILURE = /net::ERR_|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|fetch failed|Timeout \d+ms exceeded/i;
+
+// Maps any failure to a safe, classified message. Only a rate limit (role and
+// a numeric wait) and this module's fixed role messages are forwarded; every
+// other message may embed an account name, an alert text or a command error
+// and is replaced by its class.
+export function classifyPreflightFailure(error) {
+    if (error?.kind === 'rate_limited') return { kind: 'rate_limited', detail: error.message };
+    if (error?.kind === 'roles' || error?.kind === 'fixture') return { kind: error.kind, detail: error.message };
+    if (NETWORK_FAILURE.test(`${error?.code || ''} ${error?.message || ''}`)) {
+        return { kind: 'network', detail: 'The deployment was unreachable or timed out during sign-in.' };
+    }
+    return { kind: 'sign-in', detail: 'Sign-in or the required setup did not complete.' };
+}
+
+export function preflightError(error) {
+    const { kind, detail } = classifyPreflightFailure(error);
+    return Object.assign(new Error(`Smoke account preflight failed (${kind}): ${detail} Private inputs are withheld.`), { kind });
+}
+
 export async function configureRequiredCopilotModels(page, requirements, env = process.env) {
     if (!requirements.freeCopilotSetup) return;
     requireFreeCopilotSetup(env);
@@ -15,18 +40,18 @@ export async function configureRequiredCopilotModels(page, requirements, env = p
 export function assertAccountRoles(primary, secondary, requirements) {
     if (!primary?.canonicalId || !Array.isArray(primary.roles)
         || requirements.primaryAdmin && !primary.roles.includes('admin')) {
-        throw new Error('Smoke account preflight requires a verified administrator principal.');
+        throw safeFailure('roles', 'Smoke account preflight requires a verified administrator principal.');
     }
     if (requirements.secondary && (!secondary?.canonicalId || !Array.isArray(secondary.roles)
         || primary.canonicalId === secondary.canonicalId || !secondary.roles.includes('user')
         || secondary.roles.includes('admin') || secondary.roles.includes('guest'))) {
-        throw new Error('Smoke account preflight requires a distinct verified ordinary user.');
+        throw safeFailure('roles', 'Smoke account preflight requires a distinct verified ordinary user.');
     }
 }
 
 export function assertMarketplaceLifecycleFixture(payload) {
     const matches = payload?.marketplace?.agents?.filter(agent => agent.ref === 'UmamiAgent/umamiAgent');
-    if (matches?.length !== 1) throw new Error('Smoke Marketplace preflight requires exactly one installed UmamiAgent/umamiAgent catalog fixture.');
+    if (matches?.length !== 1) throw safeFailure('fixture', 'Smoke Marketplace preflight requires exactly one installed UmamiAgent/umamiAgent catalog fixture.');
 }
 
 export default async function accountPreflight() {
@@ -51,13 +76,13 @@ export default async function accountPreflight() {
                 }
                 if (principals.length === 1 && requirements.marketplaceLifecycleFixture) {
                     const response = await page.request.get('/api/marketplace/agents');
-                    if (!response.ok()) throw new Error('Marketplace catalog preflight failed.');
+                    if (!response.ok()) throw safeFailure('fixture', 'Marketplace catalog preflight failed.');
                     assertMarketplaceLifecycleFixture(await response.json());
                 }
             } finally { await context.close(); }
         }
         assertAccountRoles(principals[0], principals[1], requirements);
-    } catch {
-        throw new Error('Smoke account preflight failed to establish required authenticated roles; private inputs are withheld.');
+    } catch (error) {
+        throw preflightError(error);
     } finally { await browser.close(); }
 }
