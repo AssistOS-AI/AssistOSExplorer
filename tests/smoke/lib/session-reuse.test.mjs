@@ -6,8 +6,16 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { classifyPreflightFailure, preflightError } from './account-preflight.mjs';
+import { signIn, trySignIn } from './auth.mjs';
+import { smokeConfig } from './config.mjs';
 import {
+    SessionStoreError,
     SignInRateLimitedError,
+    ensurePrivateDirectory,
+    prepareSessionStore,
+    restoreSavedSession,
+    realSignInRequired,
+    requireRealSignIns,
     accountRole,
     defaultSessionDir,
     sessionFile,
@@ -108,7 +116,7 @@ test('invalid saved state falls back to exactly one fresh sign-in and is replace
     assert.equal(deps.state.passwordSignIns, 2, 'the replacement state is valid');
 });
 
-test('saved state for a different account, a loose file or a foreign origin is never used', async () => {
+test('saved state for a different account, a loose file or another deployment is never used', async () => {
     const deps = fixture();
     const dir = path.join(privateRoot(), 'sessions');
     await run(deps.newPage(), 'primary', deps, { dir, env: {} });
@@ -228,4 +236,135 @@ test('the default session directory is under the untracked test-artifact tree', 
     assert.match(defaultSessionDir({}), /[\\/]\.ploinky[\\/]test-artifacts[\\/]headless-smoke[\\/]sessions$/);
     assert.equal(defaultSessionDir({ SMOKE_SESSION_DIR: '/private/sessions-x' }), '/private/sessions-x');
     assert.throws(() => defaultSessionDir({ SMOKE_SESSION_DIR: 'relative/dir' }), /absolute/);
+});
+
+test('requireRealSignIns raises the depth for two calls and returns it to zero', async () => {
+    const hooks = { beforeAll: [], afterAll: [] };
+    const fakeTest = { beforeAll: (fn) => hooks.beforeAll.push(fn), afterAll: (fn) => hooks.afterAll.push(fn) };
+    assert.equal(realSignInRequired(), false);
+    requireRealSignIns(fakeTest);
+    requireRealSignIns(fakeTest);
+    assert.equal(realSignInRequired(), false, 'registering hooks changes nothing until the file runs');
+    for (const hook of hooks.beforeAll) await hook();
+    assert.equal(realSignInRequired(), true);
+    await hooks.afterAll[0]();
+    assert.equal(realSignInRequired(), true, 'one file still requires real sign-ins');
+    await hooks.afterAll[1]();
+    assert.equal(realSignInRequired(), false);
+});
+
+test('trySignIn rethrows a rate limit or a session-store error and returns false for other failures', async () => {
+    const failing = (error) => async () => { throw error; };
+    await assert.rejects(trySignIn({}, config.primaryUser, '/', failing(new SignInRateLimitedError({ role: 'primary' }))), { kind: 'rate_limited' });
+    await assert.rejects(trySignIn({}, config.primaryUser, '/', failing(new SessionStoreError('fixed'))), { kind: 'session-store' });
+    assert.equal(await trySignIn({}, config.primaryUser, '/', failing(new Error('cannot log in'))), false);
+    assert.equal(await trySignIn({}, config.primaryUser, '/', async () => ({})), true);
+});
+
+test('signIn converts a 429 seen during the sign-in into the classified rate-limit error', async () => {
+    const page = new EventEmitter();
+    page.off = page.removeListener;
+    page.request = { get: async () => ({ ok: () => false }) };
+    page.url = () => 'about:blank';
+    page.goto = async () => {
+        page.emit('response', {
+            url: () => new URL('/base-agent-additional-server/userPersistoAgent/7000/service/auth/password/login',
+                new URL(smokeConfig.baseURL).origin).href,
+            status: () => 429,
+            headers: () => ({ 'retry-after': '90' }),
+            json: async () => ({}),
+        });
+        throw new Error('Login failed for admin-person@example.test with hunter2');
+    };
+    const account = { username: 'run-created', loginEmail: 'run-created@example.test', signInMethod: 'password' };
+    await assert.rejects(signIn(page, account, '/'), (error) => {
+        assert.equal(error.kind, 'rate_limited');
+        assert.equal(error.retryAfter, 90);
+        assert.match(error.message, /rate limited by UserPersisto \(429\); retry after 90 s/);
+        assert.equal(/hunter2|admin-person|run-created/.test(error.message), false);
+        return true;
+    });
+    const plain = new EventEmitter();
+    plain.off = plain.removeListener;
+    plain.request = page.request;
+    plain.url = () => 'about:blank';
+    plain.goto = async () => { throw new Error('plain failure'); };
+    await assert.rejects(signIn(plain, account, '/'), /plain failure/);
+});
+
+test('signInWithSessionReuse works with the real principal closures from auth.mjs', async () => {
+    // Real closures: principal matching goes through validateAuthenticatedPrincipal, as in signIn.
+    const { validateAuthenticatedPrincipal } = await import('./auth.mjs');
+    const matches = (principal, account) => {
+        try {
+            validateAuthenticatedPrincipal(principal, { expectedUsername: account?.username, expectedEmail: account?.loginEmail });
+            return true;
+        } catch { return false; }
+    };
+    const realValidate = (user, account) => matches(user, account);
+    const realVerify = (principal, account) => matches({
+        id: principal?.canonicalId, username: principal?.canonicalUsername, email: principal?.email, roles: principal?.roles,
+    }, account);
+    const deps = fixture();
+    const dir = path.join(privateRoot(), 'sessions');
+    const options = { config, validate: realValidate, verifyPrincipal: realVerify, dir, env: {} };
+    const first = deps.newPage();
+    await signInWithSessionReuse(first, config.primaryUser, deps.signInRun(first, 'primary'), options);
+    const second = deps.newPage();
+    const principal = await signInWithSessionReuse(second, config.primaryUser, deps.signInRun(second, 'primary'), options);
+    assert.equal(deps.state.passwordSignIns, 1);
+    assert.equal(principal.canonicalUsername, 'admin-label');
+    // A guest principal is never saved.
+    const guest = deps.newPage();
+    await signInWithSessionReuse(guest, config.secondaryUser, async () => ({ canonicalId: 'guest', canonicalUsername: 'member-label', email: 'member-person@example.test', roles: ['guest'] }), options);
+    assert.equal(fs.readdirSync(dir).some((name) => name.startsWith('secondary-')), false);
+});
+
+test('state saved for another origin is refused, deleted and replaced by one fresh sign-in', async () => {
+    const deps = fixture();
+    const dir = path.join(privateRoot(), 'sessions');
+    await run(deps.newPage(), 'primary', deps, { dir, env: {} });
+    const file = sessionFile(dir, { origin: ORIGIN, role: 'primary', account: config.primaryUser });
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify({ ...saved, origin: 'https://other.example.test' }), { mode: 0o600 });
+    const checksBefore = deps.state.tokenChecks;
+    await run(deps.newPage(), 'primary', deps, { dir, env: {} });
+    assert.equal(deps.state.passwordSignIns, 2, 'a foreign-origin file is not restored');
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).origin, ORIGIN, 'the replacement is for the current origin');
+    assert.ok(deps.state.tokenChecks > checksBefore);
+});
+
+test('a symlinked or foreign-owned session store is a session-store error before any sign-in', async () => {
+    const deps = fixture();
+    const root = privateRoot();
+    const real = path.join(root, 'real');
+    fs.mkdirSync(real, { mode: 0o700 });
+    const link = path.join(root, 'link');
+    fs.symlinkSync(real, link);
+    let signIns = 0;
+    const attempt = (options) => signInWithSessionReuse(deps.newPage(), config.primaryUser, async () => { signIns += 1; return {}; },
+        { config, validate, verifyPrincipal, env: {}, ...options });
+    await assert.rejects(attempt({ dir: link }), { kind: 'session-store', message: /real directory/ });
+    await assert.rejects(attempt({ dir: real, getuid: () => (process.getuid?.() ?? 0) + 1 }), { kind: 'session-store', message: /owned by the current user/ });
+    assert.equal(signIns, 0, 'a misconfiguration costs no sign-in');
+    assert.throws(() => prepareSessionStore({ SMOKE_SESSION_DIR: 'relative' }), { kind: 'session-store' });
+    assert.throws(() => ensurePrivateDirectory(link), SessionStoreError);
+    // A foreign-owned saved file is discarded unread and never restored.
+    const dir = path.join(root, 'sessions');
+    await run(deps.newPage(), 'primary', deps, { dir, env: {} });
+    const file = sessionFile(dir, { origin: ORIGIN, role: 'primary', account: config.primaryUser });
+    const page = deps.newPage();
+    const restored = await restoreSavedSession({
+        context: page.context(), request: page.request, account: config.primaryUser, role: 'primary', origin: ORIGIN, dir, validate,
+        getuid: () => (process.getuid?.() ?? 0) + 1,
+    });
+    assert.equal(restored, false);
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(page.jar.length, 0, 'no cookie of a foreign-owned file reaches the context');
+});
+
+test('preflight keeps the session-store class and its fixed text', () => {
+    const error = new SessionStoreError('SMOKE_SESSION_DIR must be an absolute path.');
+    assert.equal(classifyPreflightFailure(error).kind, 'session-store');
+    assert.match(preflightError(error).message, /^Smoke account preflight failed \(session-store\): SMOKE_SESSION_DIR must be an absolute path\. Private inputs are withheld\.$/);
 });

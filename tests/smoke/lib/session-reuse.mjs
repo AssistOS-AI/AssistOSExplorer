@@ -20,6 +20,16 @@ const MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60;
 
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
 
+// A misconfigured session store is reported as such, with fixed text that
+// holds no path, account or cookie. It must never read as a failed sign-in.
+export class SessionStoreError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'SessionStoreError';
+        this.kind = 'session-store';
+    }
+}
+
 export function sessionReuseEnabled(env = process.env) {
     return !/^(?:0|false|off|no)$/i.test(String(env.SMOKE_REUSE_SESSIONS ?? '1').trim());
 }
@@ -27,7 +37,7 @@ export function sessionReuseEnabled(env = process.env) {
 export function defaultSessionDir(env = process.env) {
     const override = String(env.SMOKE_SESSION_DIR || '').trim();
     if (override) {
-        if (!path.isAbsolute(override)) throw new Error('SMOKE_SESSION_DIR must be an absolute path.');
+        if (!path.isAbsolute(override)) throw new SessionStoreError('SMOKE_SESSION_DIR must be an absolute path.');
         return path.resolve(override);
     }
     return path.join(repoRoot, '.ploinky', 'test-artifacts', 'headless-smoke', 'sessions');
@@ -93,14 +103,39 @@ export function watchSignInRateLimit(page, origin) {
     };
 }
 
-export function ensurePrivateDirectory(dir) {
-    fs.mkdirSync(dir, { recursive: true, mode: DIRECTORY_MODE });
-    const stat = fs.lstatSync(dir);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('The session directory must be a real directory.');
-    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
-        throw new Error('The session directory must be owned by the current user.');
+const currentUid = () => (typeof process.getuid === 'function' ? process.getuid() : null);
+
+// Creates (or tightens) the private session directory. Anything that is not a
+// real directory owned by the current user is refused before a sign-in.
+export function ensurePrivateDirectory(dir, { getuid = currentUid } = {}) {
+    let stat = null;
+    try { stat = fs.lstatSync(dir); } catch { /* created below */ }
+    if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) {
+        throw new SessionStoreError('The session directory must be a real directory, not a symlink or file.');
     }
-    fs.chmodSync(dir, DIRECTORY_MODE);
+    if (!stat) {
+        try { fs.mkdirSync(dir, { recursive: true, mode: DIRECTORY_MODE }); } catch {
+            throw new SessionStoreError('The session directory cannot be created.');
+        }
+        stat = fs.lstatSync(dir);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) {
+            throw new SessionStoreError('The session directory must be a real directory, not a symlink or file.');
+        }
+    }
+    const uid = getuid();
+    if (uid !== null && stat.uid !== uid) {
+        throw new SessionStoreError('The session directory must be owned by the current user.');
+    }
+    try { fs.chmodSync(dir, DIRECTORY_MODE); } catch {
+        throw new SessionStoreError('The session directory permissions cannot be restricted to the owner.');
+    }
+}
+
+// Resolves and validates the store once, before the first password sign-in.
+export function prepareSessionStore(env = process.env, { dir, getuid } = {}) {
+    const directory = dir || defaultSessionDir(env);
+    ensurePrivateDirectory(directory, { getuid });
+    return directory;
 }
 
 export function sessionFile(dir, { origin, role, account }) {
@@ -114,11 +149,11 @@ export function discardSavedSession(file) {
     try { fs.rmSync(file, { force: true }); } catch { /* best effort */ }
 }
 
-function readSavedCookies(file, origin) {
+function readSavedCookies(file, origin, getuid = currentUid) {
     let stat;
     try { stat = fs.lstatSync(file); } catch { return null; }
     const unsafe = !stat.isFile() || (stat.mode & 0o077) !== 0
-        || (typeof process.getuid === 'function' && stat.uid !== process.getuid());
+        || (getuid() !== null && stat.uid !== getuid());
     if (unsafe) { discardSavedSession(file); return null; }
     try {
         const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -135,8 +170,8 @@ function readSavedCookies(file, origin) {
     }
 }
 
-export function writeSavedCookies(dir, file, { origin, role, cookies }) {
-    ensurePrivateDirectory(dir);
+export function writeSavedCookies(dir, file, { origin, role, cookies }, { getuid } = {}) {
+    ensurePrivateDirectory(dir, { getuid });
     const temporary = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify({ version: STATE_VERSION, origin, role, savedAt: new Date().toISOString(), cookies }),
         { flag: 'wx', mode: FILE_MODE });
@@ -154,9 +189,9 @@ async function authenticatedUser(request) {
 // Restores the saved session of `account` into `context` only when the live
 // deployment accepts it for exactly that account. Anything else leaves the
 // context as it was, deletes the saved file and returns false.
-export async function restoreSavedSession({ context, request, account, role, origin, dir, validate }) {
+export async function restoreSavedSession({ context, request, account, role, origin, dir, validate, getuid }) {
     const file = sessionFile(dir, { origin, role, account });
-    const cookies = readSavedCookies(file, origin);
+    const cookies = readSavedCookies(file, origin, getuid);
     if (!cookies) return false;
     await context.addCookies(cookies);
     let accepted = false;
@@ -174,10 +209,10 @@ export async function restoreSavedSession({ context, request, account, role, ori
     return false;
 }
 
-export async function saveSession({ context, account, role, origin, dir }) {
+export async function saveSession({ context, account, role, origin, dir, getuid }) {
     const cookies = await context.cookies(origin);
     if (!cookies.length) return false;
-    writeSavedCookies(dir, sessionFile(dir, { origin, role, account }), { origin, role, cookies });
+    writeSavedCookies(dir, sessionFile(dir, { origin, role, account }), { origin, role, cookies }, { getuid });
     return true;
 }
 
@@ -192,17 +227,19 @@ export async function signInWithSessionReuse(page, account, run, {
     validate,
     verifyPrincipal,
     reuseSession = true,
+    getuid,
 }) {
     const role = accountRole(account, config);
     const context = typeof page?.context === 'function' ? page.context() : null;
     if (!sessionReuseEnabled(env) || reuseSession === false || !role || !context || !page.request) return run();
     const origin = new URL(config.baseURL).origin;
-    const directory = dir || defaultSessionDir(env);
+    // A misconfigured store fails here, before any password sign-in is spent.
+    const directory = prepareSessionStore(env, { dir, getuid });
     const existing = await authenticatedUser(page.request);
-    const restored = existing ? false : await restoreSavedSession({ context, request: page.request, account, role, origin, dir: directory, validate });
+    const restored = existing ? false : await restoreSavedSession({ context, request: page.request, account, role, origin, dir: directory, validate, getuid });
     const principal = await run();
     if (!restored && verifyPrincipal(principal, account)) {
-        await saveSession({ context, account, role, origin, dir: directory });
+        await saveSession({ context, account, role, origin, dir: directory, getuid });
     }
     return principal;
 }

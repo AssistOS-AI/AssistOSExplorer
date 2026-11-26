@@ -15,7 +15,7 @@ const NETWORK_FAILURE = /net::ERR_|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|E
 // and is replaced by its class.
 export function classifyPreflightFailure(error) {
     if (error?.kind === 'rate_limited') return { kind: 'rate_limited', detail: error.message };
-    if (error?.kind === 'roles' || error?.kind === 'fixture') return { kind: error.kind, detail: error.message };
+    if (error?.kind === 'roles' || error?.kind === 'fixture' || error?.kind === 'session-store') return { kind: error.kind, detail: error.message };
     if (NETWORK_FAILURE.test(`${error?.code || ''} ${error?.message || ''}`)) {
         return { kind: 'network', detail: 'The deployment was unreachable or timed out during sign-in.' };
     }
@@ -58,6 +58,11 @@ export default async function accountPreflight() {
     const requirements = JSON.parse(process.env.SMOKE_PREFLIGHT_ACCOUNT_REQUIREMENTS || '{}');
     if (requirements.freeCopilotSetup) requireFreeCopilotSetup();
     if (!requirements.enabled) return;
+    // Refuse a misconfigured session store before any browser or sign-in.
+    try {
+        const reuse = await import('./session-reuse.mjs');
+        if (reuse.sessionReuseEnabled()) reuse.prepareSessionStore();
+    } catch (error) { throw preflightError(error); }
     const { chromium } = await import('@playwright/test');
     const { smokeConfig } = await import('./config.mjs');
     const { signIn, readAuthenticatedPrincipal } = await import('./auth.mjs');

@@ -518,13 +518,13 @@ async function signInUnreused(
   }
 }
 
-export async function trySignIn(page, account = smokeConfig.primaryUser, returnTo = '/') {
+export async function trySignIn(page, account = smokeConfig.primaryUser, returnTo = '/', signInFn = signIn) {
   try {
-    await signIn(page, account, returnTo);
+    await signInFn(page, account, returnTo);
     return true;
   } catch (error) {
-    // A rate limit is not "this account cannot log in": callers must not skip on it.
-    if (error?.kind === 'rate_limited') throw error;
+    // A rate limit or a broken session store is not "this account cannot log in": callers must not skip on it.
+    if (error?.kind === 'rate_limited' || error?.kind === 'session-store') throw error;
     return false;
   }
 }
