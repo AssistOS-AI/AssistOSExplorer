@@ -39,7 +39,10 @@
         "3001:3001"
       ],
       "install": "sh /code/scripts/install.sh"
-    }
+    },
+    "dev": {},
+    "qa": {},
+    "prod": {}
   },
   "link-install": [
     "https://github.com/AssistOS-AI/AdvancedLanguageAgent.git",

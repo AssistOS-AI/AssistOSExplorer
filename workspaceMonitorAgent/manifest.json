@@ -11,5 +11,11 @@
         "WORKSPACE_MONITOR_DATA_ROOT": "/root"
       }
     }
+  },
+  "profiles": {
+    "default": {},
+    "dev": {},
+    "qa": {},
+    "prod": {}
   }
 }

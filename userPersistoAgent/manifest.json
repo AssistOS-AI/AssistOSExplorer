@@ -147,6 +147,8 @@
       "env": {
         "USERPERSISTO_DEV_BOOTSTRAP": ""
       }
-    }
+    },
+    "qa": {},
+    "prod": {}
   }
 }

@@ -22,7 +22,10 @@
                 }
             }
         },
-        "embedded": {}
+        "embedded": {},
+        "dev": {},
+        "qa": {},
+        "prod": {}
     },
     "runtime": {
         "resources": {
