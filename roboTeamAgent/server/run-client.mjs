@@ -5,7 +5,10 @@ import { PassThrough, Writable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
-const STARTUP_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 2000];
+// One window for the whole startup, not one per call: a long outage must not be waited out again for every robot.
+// It stays well inside the launcher's ROBOTEAM_STARTUP_WAIT_SECONDS (600 by default).
+export const STARTUP_RETRY_WINDOW_MS = 5 * 60_000;
+const STARTUP_RETRY_MAX_DELAY_MS = 5000;
 // RoboWork answers robot home operations with OPENCODE_MIGRATING while its own startup upgrades homes to OpenCode V2;
 // a fresh deployment, with no homes yet, spent about 40 seconds there preparing OpenCode. Only startup calls that cannot
 // be deferred wait, and they share one budget that stays well inside the 600 seconds startAgent.sh gives the service by
@@ -14,6 +17,10 @@ const STARTUP_MIGRATION_WAIT_MS = 300000;
 const STARTUP_MIGRATION_DELAYS_MS = [1000, 2000, 4000, 5000];
 const CONNECTION_ERRORS = new Set(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT',
     'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET']);
+// While Ploinky replaces RoboWork, its Router answers a draining route through cookie access, so an agent call gets
+// 401 not_authenticated; a gateway answers 502, 503 or 504; and RoboWork's AgentServer answers before its service
+// listens, so the tool reports SERVICE_UNAVAILABLE. Retried only during startup, where every call is idempotent.
+const STARTUP_TRANSIENT_STATUSES = new Set([401, 502, 503, 504]);
 
 function unavailable(error) {
     if (error?.statusCode !== undefined || error?.status !== undefined) {
@@ -42,48 +49,83 @@ function toolFailure(result) {
     try { return JSON.parse(text.slice(start)); } catch { return {}; }
 }
 
+function toolError(result) {
+    const failure = { ...toolFailure(result), ...result };
+    return Object.assign(new Error(failure.message || failure.error || 'RoboWork request failed'), {
+        code: failure.code || 'ROBOWORK_FAILED', statusCode: failure.statusCode || 502,
+    });
+}
+
+// Only the status and code reach the log, never a message or payload.
+function describe(error) {
+    const status = error?.statusCode ?? error?.status;
+    const code = typeof error?.code === 'string' ? error.code : null;
+    return [status !== undefined ? `status ${status}` : null, code].filter(Boolean).join(' ') || 'connection failure';
+}
+
 export class RoboWorkClient {
     constructor({ createClient = null, agentName = 'roboWorkAgent', startupRetry = false, wait = delay,
-        log = message => console.log(message) } = {}) {
+        startupRetryWindowMs = STARTUP_RETRY_WINDOW_MS, now = Date.now, log = line => console.error(line) } = {}) {
         this.createClient = createClient;
         this.agentName = agentName;
         this.startupRetry = startupRetry;
         this.wait = wait;
+        this.now = now;
         this.log = log;
+        this.startupDeadline = now() + startupRetryWindowMs;
         this.migrationWaitMs = 0;
     }
 
     finishStartup() { this.startupRetry = false; }
 
+    // One request. A transport failure is transient when RoboWork is being replaced; a tool failure only when the
+    // tool reports that RoboWork's service is not listening. Every other tool failure is RoboWork's real answer.
+    async #attempt(create, tool, input, timeoutMs) {
+        let result;
+        try {
+            const client = await create(this.agentName);
+            result = await client.callTool(tool, input, { timeoutMs });
+        } catch (error) {
+            return { error, unavailable: unavailable(error),
+                transient: unavailable(error) || STARTUP_TRANSIENT_STATUSES.has(error?.statusCode ?? error?.status) };
+        }
+        if (!(result?.isError || result?.ok === false)) return { result };
+        const error = toolError(result);
+        return { error, unavailable: false, transient: error.code === 'SERVICE_UNAVAILABLE' };
+    }
+
     // waitForMigration applies only before finishStartup().
     async call(tool, input = {}, { timeoutMs = 120000, waitForMigration = false } = {}) {
         const create = this.createClient || await loadAgentClient();
-        for (let attempt = 0, migrating = 0; ;) {
-            let result;
-            try {
-                const client = await create(this.agentName);
-                result = await client.callTool(tool, input, { timeoutMs });
-            } catch (error) {
-                if (!unavailable(error)) throw error;
-                if (this.startupRetry && attempt < STARTUP_RETRY_DELAYS_MS.length) {
-                    await this.wait(STARTUP_RETRY_DELAYS_MS[attempt++]);
-                    continue;
+        let since = null;
+        for (let attempt = 0, migrating = 0; ; attempt++) {
+            const outcome = await this.#attempt(create, tool, input, timeoutMs);
+            if (!outcome.error) {
+                if (since !== null) this.log(`[roboTeamAgent] RoboWork answered ${tool} again after ${Math.round((this.now() - since) / 1000)} s`);
+                if (migrating) this.log(`[roboTeamAgent] ${tool} succeeded after RoboWork's OpenCode V2 migration`);
+                return outcome.result;
+            }
+            const remaining = this.startupDeadline - this.now();
+            if (this.startupRetry && outcome.transient && remaining > 0) {
+                if (since === null) {
+                    since = this.now();
+                    this.log(`[roboTeamAgent] RoboWork is unavailable during startup (${describe(outcome.error)}); retrying ${tool} until it answers`);
                 }
-                throw Object.assign(new Error('RoboWork is temporarily unavailable; retry this request.', { cause: error }), {
+                await this.wait(Math.min(STARTUP_RETRY_MAX_DELAY_MS, 250 * 2 ** Math.min(attempt, 5), remaining));
+                continue;
+            }
+            if (outcome.unavailable) {
+                throw Object.assign(new Error('RoboWork is temporarily unavailable; retry this request.', { cause: outcome.error }), {
                     code: 'ROBOWORK_UNAVAILABLE', statusCode: 503, retryable: true,
                 });
             }
-            if (!result?.isError && result?.ok !== false) {
-                if (migrating) this.log(`[roboTeamAgent] ${tool} succeeded after RoboWork's OpenCode V2 migration`);
-                return result;
-            }
-            const failure = { ...toolFailure(result), ...result };
             // A migration still in progress is waited for; OPENCODE_MIGRATION_FAILED needs an operator and fails at once.
-            if (failure.code === 'OPENCODE_MIGRATING' && waitForMigration && this.startupRetry) {
-                const remaining = STARTUP_MIGRATION_WAIT_MS - this.migrationWaitMs;
-                if (remaining > 0) {
+            // The migration budget is separate from the outage window above: OPENCODE_MIGRATING is never transient.
+            if (outcome.error.code === 'OPENCODE_MIGRATING' && waitForMigration && this.startupRetry) {
+                const left = STARTUP_MIGRATION_WAIT_MS - this.migrationWaitMs;
+                if (left > 0) {
                     if (!migrating) this.log(`[roboTeamAgent] ${tool} waits while RoboWork upgrades robot homes to OpenCode V2`);
-                    const ms = Math.min(remaining, STARTUP_MIGRATION_DELAYS_MS[Math.min(migrating++, STARTUP_MIGRATION_DELAYS_MS.length - 1)]);
+                    const ms = Math.min(left, STARTUP_MIGRATION_DELAYS_MS[Math.min(migrating++, STARTUP_MIGRATION_DELAYS_MS.length - 1)]);
                     this.migrationWaitMs += ms;
                     await this.wait(ms);
                     continue;
@@ -91,9 +133,8 @@ export class RoboWorkClient {
                 throw Object.assign(new Error('RoboWork was still upgrading robot homes to OpenCode V2 after RoboTeam '
                     + `waited ${STARTUP_MIGRATION_WAIT_MS / 1000} seconds during startup`), { code: 'OPENCODE_MIGRATING', statusCode: 503 });
             }
-            throw Object.assign(new Error(failure.message || failure.error || 'RoboWork request failed'), {
-                code: failure.code || 'ROBOWORK_FAILED', statusCode: failure.statusCode || 502,
-            });
+            // Anything else, including a 401 that outlasts the startup window, surfaces unchanged.
+            throw outcome.error;
         }
     }
 }

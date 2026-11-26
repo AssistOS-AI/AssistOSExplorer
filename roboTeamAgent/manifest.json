@@ -13,14 +13,14 @@
     "forwardEnvelope": true
   },
   "readiness": {
-    "protocol": "mcp",
-    "timeoutSeconds": 45
+    "protocol": "tcp",
+    "port": 3001
   },
   "health": {
     "readiness": {
       "interval": 1,
       "timeout": 1,
-      "failureThreshold": 45,
+      "failureThreshold": 300,
       "successThreshold": 1
     }
   },

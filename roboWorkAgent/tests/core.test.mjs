@@ -780,6 +780,34 @@ test('a refused tool reports its status, so RoboTeam can pass the reason on', as
     assert.deepEqual(JSON.parse(stderr), { code: 'UNKNOWN_RUN', error: 'Unknown runId', statusCode: 404 });
 });
 
+test('a tool call while the service is not listening reports a typed unavailable service, not invalid input', async () => {
+    // AgentServer answers MCP before the service listens, so a restarted RoboWork receives calls it cannot serve yet.
+    const closed = http.createServer();
+    await new Promise(resolve => closed.listen(0, '127.0.0.1', resolve));
+    const port = closed.address().port;
+    await new Promise(resolve => closed.close(resolve));
+    const tool = fileURLToPath(new URL('../tools/robowork.mjs', import.meta.url));
+    const child = spawn(process.execPath, [tool, 'robot_status'], { stdio: ['pipe', 'ignore', 'pipe'],
+        env: { PATH: process.env.PATH, ROBOWORK_INTERNAL_TOKEN: 'private', ROBOWORK_SERVICE_PORT: String(port) } });
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.stdin.end(JSON.stringify({ ...grant(), input: {} }));
+    assert.equal(await new Promise(resolve => child.once('close', resolve)), 1);
+    assert.deepEqual(JSON.parse(stderr), { code: 'SERVICE_UNAVAILABLE', error: 'RoboWork service is unavailable', statusCode: 503 });
+
+    const { invoke } = await import('../tools/robowork.mjs');
+    const env = { ROBOWORK_INTERNAL_TOKEN: 'private' };
+    const reset = new TypeError('fetch failed', { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) });
+    await assert.rejects(invoke(grant(), 'robot_status', { env, fetchImpl: async () => { throw reset; } }),
+        { code: 'SERVICE_UNAVAILABLE', statusCode: 503 });
+    // A service that stops while its answer is read is reported the same way.
+    await assert.rejects(invoke(grant(), 'robot_status', { env, fetchImpl: async () => ({ ok: true, json: async () => { throw reset; } }) }),
+        { code: 'SERVICE_UNAVAILABLE', statusCode: 503 });
+    // A slow service is not a down one: the timeout keeps its own error.
+    const slow = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+    await assert.rejects(invoke(grant(), 'robot_status', { env, fetchImpl: async () => { throw slow; } }), error => error === slow);
+});
+
 test('resident HTTP service refuses missing token and returns stable operation errors', async t => {
     const { manager } = await fixture(t);
     const server = createRoboWorkServer({ robots: {}, runs: manager, environment: {}, internalToken: 'private' });

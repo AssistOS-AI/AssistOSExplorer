@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import test from 'node:test';
-import { RoboWorkClient } from '../server/run-client.mjs';
+import { RoboWorkClient, STARTUP_RETRY_WINDOW_MS } from '../server/run-client.mjs';
 import { RuntimeManager } from '../server/runtime-manager.mjs';
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
 import { createRoboTeamServer } from '../server/http-server.mjs';
@@ -55,18 +55,63 @@ test('startup isolates per-robot preparation failures and logs only the robot id
     assert.doesNotMatch(JSON.stringify(log), /private diagnostic/u);
 });
 
-test('startup still fails when resident initialization cannot reach RoboWork', async () => {
-    const log = [];
-    let finished = false, snapshots = 0;
-    const unavailable = Object.assign(new Error('RoboWork is unavailable; retry'), { code: 'ROBOWORK_UNAVAILABLE', retryable: true });
-    const runtime = new RuntimeManager({ workspaceRoot: os.tmpdir(), roboWork: { call: async () => {
-        snapshots++; throw unavailable;
-    } }, robotStore: { list: async () => [] } });
-    runtime.prepareOpenCode = async () => { throw Object.assign(new Error('individual failure'), { code: 'UNSAFE_STORAGE' }); };
-    await assert.rejects(startupPreparation({ list: async () => [{ id: 'robot-bad' }] }, runtime,
-        { finishStartup: () => { finished = true; } }, log), error => error === unavailable);
-    assert.ok(snapshots > 0);
-    assert.equal(finished, false);
+// What Ploinky's AgentMcpClient throws when the Router answers a draining route with 401 not_authenticated.
+const draining = () => Object.assign(new Error('agent-to-agent call failed'), { statusCode: 401 });
+// What RoboWork's AgentServer returns while RoboWork's own service is not listening yet.
+const serviceStarting = () => ({ isError: true, content: [{ type: 'text',
+    text: 'MCP error -32603: {"code":"SERVICE_UNAVAILABLE","error":"RoboWork service is unavailable","statusCode":503}\n' }] });
+
+function fakeClock() {
+    const clock = { ms: 0, waits: [], now: () => clock.ms, wait: async ms => { clock.waits.push(ms); clock.ms += ms; } };
+    return clock;
+}
+
+test('a RoboWork restart while RoboTeam starts delays startup until RoboWork answers, and every robot is still prepared', async () => {
+    const clock = fakeClock(), lines = [], log = [], ensured = [];
+    const robots = ['robot-one', 'robot-two', 'robot-three', 'robot-four'].map(id => ({ id, name: id }));
+    // The restart begins while the third robot is prepared: the route drains (401), the successor activates (503),
+    // then AgentServer answers before the service listens. A second restart catches the resident snapshot.
+    const outages = new Map([
+        ['robot_ensure:robot-three', [draining, draining, draining, inactive, inactive, serviceStarting, serviceStarting]],
+        ['robot_status', [draining, draining, inactive]],
+        ['run_list', [serviceStarting]],
+    ]);
+    const roboWork = new RoboWorkClient({ startupRetry: true, now: clock.now, wait: clock.wait, log: line => lines.push(line),
+        createClient: async () => ({ callTool: async (tool, input) => {
+            const failure = outages.get(tool === 'robot_ensure' ? `${tool}:${input.robotId}` : tool)?.shift();
+            if (failure) { const outcome = failure(); if (outcome instanceof Error) throw outcome; return outcome; }
+            if (tool === 'robot_ensure') { ensured.push(input); return { ok: true }; }
+            if (tool === 'robot_status') return { robots: [] };
+            assert.equal(tool, 'run_list');
+            return [{ runId: 'run-one', robotId: 'robot-two', state: 'running', tag: { kind: 'task', taskId: 'task-one', type: 'simple',
+                request: { cwd: os.tmpdir() } } }];
+        } }) });
+    const store = { list: async () => robots, get: async id => robots.find(robot => robot.id === id) };
+    const runtime = new RuntimeManager({ workspaceRoot: os.tmpdir(), roboWork, robotStore: store });
+    await startupPreparation(store, runtime, roboWork, log);
+    assert.deepEqual(log, [], 'no robot was skipped and startup did not fail');
+    assert.deepEqual(ensured.map(input => [input.robotId, input.seed]), robots.map(robot => [robot.id, false]));
+    assert.equal(runtime.recoveredTask('task-one').attachRun, 'run-one');
+    assert.equal(roboWork.startupRetry, false, 'startup finished');
+    assert.equal(lines.filter(line => /unavailable during startup/.test(line)).length, 3);
+    assert.equal(lines.filter(line => /answered .* again/.test(line)).length, 3);
+    assert.ok(clock.waits.length === 11 && clock.waits.every(ms => ms > 0 && ms <= 5000));
+});
+
+test('startup still fails when RoboWork stays unreachable past the startup window', async () => {
+    const clock = fakeClock(), log = [];
+    let calls = 0;
+    const roboWork = new RoboWorkClient({ startupRetry: true, startupRetryWindowMs: 60_000, now: clock.now, wait: clock.wait, log: () => {},
+        createClient: async () => ({ callTool: async () => { calls++; throw draining(); } }) });
+    const runtime = new RuntimeManager({ workspaceRoot: os.tmpdir(), roboWork, robotStore: { list: async () => [], get: async () => null } });
+    // The 401 outlasting the window surfaces unchanged, so a real authorization fault is not disguised as an outage.
+    await assert.rejects(startupPreparation({ list: async () => [{ id: 'robot-one' }, { id: 'robot-two' }] }, runtime, roboWork, log),
+        { statusCode: 401, message: 'agent-to-agent call failed' });
+    assert.equal(roboWork.startupRetry, true, 'startup did not finish');
+    assert.deepEqual(log.map(entry => entry.slice(1)), [['robot-one', 'PREPARATION_FAILED'], ['robot-two', 'PREPARATION_FAILED']]);
+    // One window for the whole startup: once spent, later calls fail at once instead of waiting it out again.
+    assert.equal(clock.ms, 60_000);
+    assert.equal(calls, clock.waits.length + 3);
 });
 
 test('RoboTeam waits for its direct RoboWork dependency while Explorer keeps the no-wait path', async () => {
@@ -105,16 +150,34 @@ test('the same startup client recovers activation lag and typed connection failu
     assert.equal(waits.length, 2);
 });
 
-test('startup retries are bounded and exhaustion returns a clear retryable error', async () => {
-    const waits = [];
+test('startup retries are bounded by the startup window and exhaustion returns a clear retryable error', async () => {
+    const clock = fakeClock();
     let calls = 0;
-    const client = new RoboWorkClient({ startupRetry: true, wait: async ms => { waits.push(ms); },
+    const client = new RoboWorkClient({ startupRetry: true, now: clock.now, wait: clock.wait, log: () => {},
         createClient: async () => ({ callTool: async () => { calls++; throw inactive(); } }) });
     await assert.rejects(client.call('run_list', {}), error => error.code === 'ROBOWORK_UNAVAILABLE'
         && error.retryable === true && error.statusCode === 503 && /retry/i.test(error.message));
-    assert.ok(calls > 1 && calls <= 8);
-    assert.equal(waits.length, calls - 1);
-    assert.ok(waits.reduce((sum, ms) => sum + ms, 0) <= 6000);
+    assert.equal(waits(clock), STARTUP_RETRY_WINDOW_MS);
+    assert.ok(clock.waits.every(ms => ms > 0 && ms <= 5000));
+    assert.equal(calls, clock.waits.length + 1);
+    // The window covers RoboWork's restart, which took about 12 seconds on bizanso.com, many times over.
+    assert.ok(STARTUP_RETRY_WINDOW_MS >= 120_000 && STARTUP_RETRY_WINDOW_MS < 600_000);
+});
+
+function waits(clock) { return clock.waits.reduce((sum, ms) => sum + ms, 0); }
+
+test('a 401 is retried only during startup and surfaces at once afterwards', async () => {
+    const clock = fakeClock();
+    let failures = 2, calls = 0;
+    const client = new RoboWorkClient({ startupRetry: true, now: clock.now, wait: clock.wait, log: () => {},
+        createClient: async () => ({ callTool: async () => { calls++; if (failures-- > 0) throw draining(); return { robots: [] }; } }) });
+    assert.deepEqual(await client.call('robot_status', {}), { robots: [] });
+    assert.equal(calls, 3);
+    client.finishStartup();
+    failures = 1;
+    await assert.rejects(client.call('robot_status', {}), { statusCode: 401, message: 'agent-to-agent call failed' });
+    assert.equal(calls, 4);
+    assert.equal(clock.waits.length, 2);
 });
 
 test('a refused tool call keeps its code and reason through the MCP error wrapper', async () => {
@@ -127,9 +190,26 @@ test('a refused tool call keeps its code and reason through the MCP error wrappe
     await assert.rejects(client.call('run_start', {}), { code: 'ROBOWORK_FAILED', message: 'RoboWork request failed' });
 });
 
+test('a replaced RoboWork\'s gateway answers and starting service are retried during startup', async () => {
+    for (const failure of [() => Object.assign(new Error('other service failure'), { statusCode: 503, code: 'OTHER_ERROR' }),
+        () => Object.assign(new Error('bad gateway'), { statusCode: 502 }), () => Object.assign(new Error('gateway timeout'), { status: 504 }),
+        draining, serviceStarting]) {
+        const clock = fakeClock();
+        let first = true;
+        const client = new RoboWorkClient({ startupRetry: true, now: clock.now, wait: clock.wait, log: () => {},
+            createClient: async () => ({ callTool: async () => {
+                if (!first) return { robots: [] };
+                first = false;
+                const outcome = failure(); if (outcome instanceof Error) throw outcome; return outcome;
+            } }) });
+        assert.deepEqual(await client.call('robot_status', {}), { robots: [] });
+        assert.equal(clock.waits.length, 1);
+    }
+});
+
 test('auth, tool and unrelated HTTP failures fail immediately without startup retries', async () => {
     for (const failure of [Object.assign(new Error('forbidden'), { statusCode: 403, code: 'TARGET_INACTIVE' }),
-        Object.assign(new Error('other service failure'), { statusCode: 503, code: 'OTHER_ERROR' }),
+        Object.assign(new Error('not found'), { statusCode: 404 }), Object.assign(new Error('server error'), { statusCode: 500 }),
         new Error('503 TARGET_INACTIVE'), Object.assign(new Error('invalid input'), { code: 'INVALID_INPUT' })]) {
         let calls = 0;
         const client = new RoboWorkClient({ startupRetry: true, wait: () => assert.fail('nonretryable error must not wait'),
@@ -137,11 +217,15 @@ test('auth, tool and unrelated HTTP failures fail immediately without startup re
         await assert.rejects(client.call('robot_status', {}), error => error === failure);
         assert.equal(calls, 1);
     }
-    let calls = 0;
-    const client = new RoboWorkClient({ startupRetry: true, wait: () => assert.fail('tool error must not wait'),
-        createClient: async () => ({ callTool: async () => { calls++; return { isError: true, code: 'INVALID_INPUT', message: 'bad input' }; } }) });
-    await assert.rejects(client.call('robot_status', {}), { code: 'INVALID_INPUT' });
-    assert.equal(calls, 1);
+    // Only a tool reporting that RoboWork's service is not listening is transient; any other refusal is RoboWork's answer.
+    for (const refusal of [{ isError: true, code: 'INVALID_INPUT', message: 'bad input' },
+        { isError: true, code: 'ROBOT_BUSY', statusCode: 503, message: 'busy' }, { isError: true, message: 'no code' }]) {
+        let calls = 0;
+        const client = new RoboWorkClient({ startupRetry: true, wait: () => assert.fail('tool error must not wait'),
+            createClient: async () => ({ callTool: async () => { calls++; return refusal; } }) });
+        await assert.rejects(client.call('robot_status', {}), { code: refusal.code || 'ROBOWORK_FAILED' });
+        assert.equal(calls, 1);
+    }
 });
 
 test('startup creation of the default robot waits while RoboWork migrates OpenCode homes, then succeeds', async t => {
