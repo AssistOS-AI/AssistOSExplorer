@@ -36,7 +36,10 @@
       "openPorts": ["17100:7000", "13101:3001"],
       "install": "sh /code/scripts/install.sh",
       "env": ["ROBOTEAM_CODEX_VERSION", "ROBOTEAM_OPENCODE_VERSION", "ROBOTEAM_PI_VERSION", "ROBOTEAM_OMP_VERSION", "ROBOTEAM_CLAUDE_VERSION", "ROBOTEAM_VIBE_VERSION", "ROBOTEAM_AGY_VERSION"]
-    }
+    },
+    "dev": {},
+    "qa": {},
+    "prod": {}
   },
   "link-install": ["https://github.com/AssistOS-AI/AdvancedLanguageAgent.git"]
 }

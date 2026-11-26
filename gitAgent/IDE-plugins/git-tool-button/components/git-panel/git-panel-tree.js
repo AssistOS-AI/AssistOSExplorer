@@ -60,7 +60,8 @@ export function renderRepoChangesTree(repo, {
     getAncestorCoveringPrefix,
     getCoveringPrefix,
     isFolderExpanded,
-    initialDepth = 1
+    initialDepth = 1,
+    canRestore = true
 } = {}) {
     const ignoredPaths = toArray(repo?.ignored);
     const ignoredHints = toArray(repo?.ignoredHints);
@@ -375,15 +376,17 @@ export function renderRepoChangesTree(repo, {
                 menuList.appendChild(removeIgnoreItem);
             }
 
-            const rollbackItem = document.createElement('div');
-            rollbackItem.className = 'git-file-menu-item';
-            rollbackItem.setAttribute('role', 'menuitem');
-            rollbackItem.setAttribute('tabindex', '0');
-            rollbackItem.dataset.repoPath = repo.path;
-            rollbackItem.dataset.filePath = file.path;
-            rollbackItem.setAttribute('data-local-action', 'rollbackFile');
-            rollbackItem.textContent = 'Rollback changes';
-            menuList.appendChild(rollbackItem);
+            if (canRestore) {
+                const rollbackItem = document.createElement('div');
+                rollbackItem.className = 'git-file-menu-item';
+                rollbackItem.setAttribute('role', 'menuitem');
+                rollbackItem.setAttribute('tabindex', '0');
+                rollbackItem.dataset.repoPath = repo.path;
+                rollbackItem.dataset.filePath = file.path;
+                rollbackItem.setAttribute('data-local-action', 'rollbackFile');
+                rollbackItem.textContent = 'Rollback changes';
+                menuList.appendChild(rollbackItem);
+            }
 
             const deleteItem = document.createElement('div');
             deleteItem.className = 'git-file-menu-item';

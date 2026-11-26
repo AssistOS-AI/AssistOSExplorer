@@ -1575,3 +1575,8 @@ git-panel {
     background: var(--file-exp-border);
     margin: 4px 6px;
 }
+
+.git-conflict-mutations-hidden .git-conflict-choice,
+.git-conflict-mutations-hidden .git-conflict-save {
+    display: none;
+}

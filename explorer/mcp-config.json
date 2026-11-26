@@ -1192,6 +1192,7 @@
     },
     {
       "name": "add_skills_manifest_repo",
+      "tags": ["prod-disabled"],
       "description": "Add a skill repository to ploinky-skills-manifest.json, cache it, and install all of its skills.",
       "command": "tools/explorer_tool.sh",
       "cwd": "workspace",
@@ -1219,6 +1220,7 @@
     },
     {
       "name": "set_skills_manifest_skill_enabled",
+      "tags": ["prod-disabled"],
       "description": "Enable or disable a named skillset as a batch, or one skill for repositories without skillsets.md.",
       "command": "tools/explorer_tool.sh",
       "cwd": "workspace",
@@ -1247,6 +1249,7 @@
     },
     {
       "name": "remove_skills_manifest_repo",
+      "tags": ["prod-disabled"],
       "description": "Remove a repository entry from ploinky-skills-manifest.json and resync installed skills.",
       "command": "tools/explorer_tool.sh",
       "cwd": "workspace",

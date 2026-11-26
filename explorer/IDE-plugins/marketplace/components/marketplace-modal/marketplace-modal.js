@@ -278,6 +278,7 @@ export class MarketplaceModal {
     const {repositories, agents} = getVisibleMarketplaceCatalog(marketplace);
     return JSON.stringify({
       canManage: marketplace?.permissions?.canManage === true,
+      production: marketplace?.permissions?.production === true,
       repositories: repositories.map(({name, displayName, url, description, kind, installed}) => ({name, displayName, url, description, kind, installed})),
       agents: agents.map(({ref, repo, name, about, enableModes}) => ({ref, repo, name, about, enableModes})),
     });
@@ -678,7 +679,7 @@ export class MarketplaceModal {
     if (this.agentSearchInput && this.agentSearchInput.value !== this.state.agentSearchInput) {
       this.agentSearchInput.value = this.state.agentSearchInput;
     }
-    this.element.querySelector('.marketplace-repo-tools')?.classList.toggle('hidden', !canManage);
+    this.element.querySelector('.marketplace-repo-tools')?.classList.toggle('hidden', !canManage || this.state.marketplace?.permissions?.production === true);
     this.renderRepoKindTabs();
     this.renderRepositories();
     this.renderAgents();
@@ -757,7 +758,7 @@ export class MarketplaceModal {
       this.updateRepositoryCount(note, repo);
       info.append(title, description, note);
       row.append(info);
-      if (canManage) {
+      if (canManage && this.state.marketplace?.permissions?.production !== true) {
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = `marketplace-repo-toggle${repo.installed ? ' active' : ''}`;

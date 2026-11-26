@@ -30,6 +30,8 @@ import {
 } from "/explorer/utils/appEvents.js";
 import { GIT_PANEL_CLOSED_EVENT } from "./git-tool-button-events.js";
 
+import { canSyncGit } from './utils/git-sync-permission.mjs';
+
 export function attachGitController(fileExp) {
     const reposRoot = getReposRoot();
     const AUTOCOMMIT_MESSAGE = 'chore: autocommit';
@@ -107,7 +109,15 @@ export function attachGitController(fileExp) {
         autocommit.scheduledIntervalMinutes = null;
     };
 
-    const ensureAutocommitTimer = () => {
+    let permissionRevision = 0;
+    const ensureAutocommitTimer = async () => {
+        const revision = ++permissionRevision;
+        const allowed = await canSyncGit(assistOS.appServices);
+        if (revision !== permissionRevision) return;
+        if (!allowed) {
+            clearAutocommitTimer();
+            return;
+        }
         const { enabled, intervalMinutes, repos } = getAutocommitSettings();
         if (enabled === false) {
             clearAutocommitTimer();
@@ -423,6 +433,10 @@ export function attachGitController(fileExp) {
     };
 
     const runAutocommitTick = async () => {
+        if (!await canSyncGit(assistOS.appServices)) {
+            clearAutocommitTimer();
+            return;
+        }
         if (autocommit.running) return;
         const { repos } = getAutocommitSettings();
         if (getConflictFlag() && !isAutoresolveEnabled()) return;
@@ -663,6 +677,7 @@ export function attachGitController(fileExp) {
     setWindowListener('git-file-exp-refresh', FILE_EXP_REFRESH_EVENT, handleFileExpRefresh);
     setWindowListener('git-panel-closed', GIT_PANEL_CLOSED_EVENT, handleGitPanelClosed);
     fileExp.registerCleanup?.(() => {
+        permissionRevision++;
         clearAutocommitTimer();
     });
 

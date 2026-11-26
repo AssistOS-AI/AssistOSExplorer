@@ -26,6 +26,9 @@
           "default": "/root/settings.enc.json"
         }
       }
-    }
+    },
+    "dev": {},
+    "qa": {},
+    "prod": {}
   }
 }

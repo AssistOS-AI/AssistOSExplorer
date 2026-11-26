@@ -231,6 +231,7 @@ test('executed menu reports connected or created, refreshes once and releases lo
         let refreshes = 0;
         const action = vm.runInNewContext(`${menuSource}\nexecuteMenuAction;`, {
             callAgentTool: async (_agent, name) => name === 'git_info' ? { ok: false } : { ok: true, reconciled, repository: { fullName: 'Example/new-app' } },
+            hasGitTools: async () => true,
             parseToolResult: (raw) => raw,
             beginRepositoryLoader: () => { loaders += 1; },
             endRepositoryLoader: () => { loaders -= 1; },
@@ -250,6 +251,7 @@ test('executed menu releases loader after unknown creation outcome without refre
     let loaders = 0;
     const action = vm.runInNewContext(`${menuSource}\nexecuteMenuAction;`, {
         callAgentTool: async (_agent, name) => name === 'git_info' ? { ok: false } : { ok: false, error: unknownOutcome },
+        hasGitTools: async () => true,
         parseToolResult: (raw) => raw,
         beginRepositoryLoader: () => { loaders += 1; },
         endRepositoryLoader: () => { loaders -= 1; },

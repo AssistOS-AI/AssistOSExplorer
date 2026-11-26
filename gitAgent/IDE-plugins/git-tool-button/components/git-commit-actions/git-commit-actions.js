@@ -6,7 +6,8 @@ export class GitCommitActions {
             commitMessage: '',
             actionsMenuOpen: false,
             actionsDisabled: false,
-            hiddenActions: []
+            hiddenActions: [],
+            syncAvailable: false
         };
         this.invalidate();
     }
@@ -15,6 +16,7 @@ export class GitCommitActions {
 
     afterRender() {
         this.commitMessageInput = this.element.querySelector('#gitCommitMessage');
+        this.syncButton = this.element.querySelector('.git-sync-button');
         this.actionsMenu = this.element.querySelector('#gitActionsMenu');
         this.actionsButton = this.element.querySelector('#gitActionsButton');
         this.actionsSplit = this.element.querySelector('#gitActionsSplit');
@@ -95,6 +97,10 @@ export class GitCommitActions {
         if (Object.prototype.hasOwnProperty.call(next, 'actionsDisabled')) {
             this.state.actionsDisabled = Boolean(next.actionsDisabled);
         }
+        if (Object.prototype.hasOwnProperty.call(next, 'syncAvailable')) {
+            this.state.syncAvailable = next.syncAvailable === true;
+        }
+        if (this.syncButton) this.syncButton.hidden = !this.state.syncAvailable;
         if (Object.prototype.hasOwnProperty.call(next, 'hiddenActions')) {
             this.state.hiddenActions = Array.isArray(next.hiddenActions) ? [...next.hiddenActions] : [];
         }
@@ -108,10 +114,12 @@ export class GitCommitActions {
             this.actionsButton.disabled = this.state.actionsDisabled;
         }
         const hiddenActions = new Set(this.state.hiddenActions);
-        for (const item of this.actionsMenu?.querySelectorAll?.('.git-menu-item[data-local-action^="runGitAction"]') || []) {
+        const items = Array.from(this.actionsMenu?.querySelectorAll?.('.git-menu-item[data-local-action^="runGitAction"]') || []);
+        for (const item of items) {
             const mode = (item.getAttribute('data-local-action') || '').split(/\s+/)[1] || '';
             item.hidden = hiddenActions.has(mode);
         }
+        if (this.actionsSplit) this.actionsSplit.hidden = items.length > 0 && items.every((item) => item.hidden);
     }
 
     updateCommitMessage(_element, value) {

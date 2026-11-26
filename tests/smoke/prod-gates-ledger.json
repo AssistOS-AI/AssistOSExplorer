@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "identity": "62-prod-gates.spec.mjs::captured production policy controls Git and Marketplace",
+      "file": "62-prod-gates.spec.mjs",
+      "title": "captured production policy controls Git and Marketplace",
+      "cohort": "prod-gates",
+      "selection": { "spec": "specs/62-prod-gates.spec.mjs", "title": "captured production policy controls Git and Marketplace" },
+      "requiredFlags": {},
+      "disposition": "separate-profile",
+      "expectedExecutionOutcome": "passed"
+    }
+  ]
+}

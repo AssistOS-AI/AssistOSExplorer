@@ -1,3 +1,4 @@
+import { hasGitTools } from '../git-tool-button/utils/git-sync-permission.mjs';
 import { callAgentTool, parseToolResult } from "/explorer/services/infrastructure/explorerApi.js";
 import { beginRepositoryLoader, endRepositoryLoader } from "../git-tool-button/components/git-repository-modal-shared/repository-loader.js";
 
@@ -17,6 +18,7 @@ export async function getMenuItems({ context, plugin }) {
     if (context?.isConfidential || !context?.currentFsPath) {
         return [];
     }
+    if (!await hasGitTools(assistOS.appServices, ["git_clone_repository","git_submodule_add"])) return [];
     return [{
         id: 'git:clone-repository',
         label: 'Clone repository',
@@ -30,6 +32,7 @@ export async function executeMenuAction({ action, context, host }) {
         return;
     }
 
+    if (!await hasGitTools(assistOS.appServices, ["git_clone_repository","git_submodule_add"])) return;
     const basePath = String(context?.currentFsPath || context?.currentDirectory || context?.currentPath || '').trim();
     if (!basePath) {
         throw new Error('Missing target directory for repository clone.');

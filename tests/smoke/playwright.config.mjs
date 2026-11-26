@@ -20,6 +20,7 @@ export const playwrightOutputPaths = Object.freeze({
 
 export default defineConfig({
   testDir: './specs',
+  testIgnore: ['true', 'false'].includes(process.env.SMOKE_EXPECT_PROD) ? [] : ['**/62-prod-gates.spec.mjs'],
   globalSetup: fileURLToPath(new URL('./lib/account-preflight.mjs', import.meta.url)),
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),

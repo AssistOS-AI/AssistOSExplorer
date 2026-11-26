@@ -61,6 +61,7 @@ export function createGitCommitUI(ctx) {
                 || Boolean(state.authPrompt?.visible);
             modalRoot.classList.toggle('git-credentials-only', gateActive);
             modalRoot.classList.toggle('git-credentials-open', credentialsVisible);
+            modalRoot.classList.toggle('git-conflict-mutations-hidden', !(state.availableGitTools || []).includes('git_checkout_conflict'));
         }
 
         updateConflictHelper();
@@ -163,6 +164,7 @@ export function createGitCommitUI(ctx) {
             authRequired: Boolean(authState.visible),
             credentialsDirty: Boolean(state.credentialsDirty),
             credentialsAuthAction: pendingTokenRemoval ? state.credentialsAuthAction : null,
+            syncAvailable: state.syncAvailable === true,
             autocommitDirty: Boolean(state.autocommitDirty),
             autoresolveDirty: Boolean(state.autoresolveDirty),
             tokenStored,
@@ -235,6 +237,7 @@ export function createGitCommitUI(ctx) {
         const presenter = getRepoTreePresenter();
         if (!presenter?.setState) return;
         presenter.setState({
+            availableGitTools: state.availableGitTools || [],
             reposRoot: state.reposRoot || '',
             repos: getVisibleRepoOverviews(state.repoOverviews, state.showAgentRepos),
             loading: Boolean(state.repoOverviewsLoading && !state.suppressInlineLoading),
@@ -498,8 +501,14 @@ export function createGitCommitUI(ctx) {
         const presenter = getCommitActionsPresenter();
         if (presenter?.setState) {
             presenter.setState({
+                syncAvailable: state.syncAvailable === true,
                 actionsDisabled: disabled,
-                hiddenActions: actionHasPendingMerge ? ['push', 'stash', 'unstash'] : [],
+                hiddenActions: [...new Set([
+                    ...(actionHasPendingMerge ? ['push', 'stash', 'unstash'] : []),
+                    ...Object.entries({ commit: ['git_commit'], commitPush: ['git_commit', 'git_push'], push: ['git_push'], stash: ['git_stash'], unstash: ['git_stash_pop'], pull: ['git_pull'], pullRebase: ['git_pull'] })
+                        .filter(([, required]) => Array.isArray(state.availableGitTools) && !required.every((name) => state.availableGitTools.includes(name)))
+                        .map(([action]) => action)
+                ])],
                 commitMessage: state.commitMessage || ''
             });
         } else if (actionsButton) {

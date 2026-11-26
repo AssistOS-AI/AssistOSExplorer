@@ -17,7 +17,10 @@
         "ASSISTOS_FS_ROOT",
         "WORKSPACE_ROOT"
       ]
-    }
+    },
+    "dev": {},
+    "qa": {},
+    "prod": {}
   },
   "cli": "node /code/src/index.mjs",
   "webchat": {
