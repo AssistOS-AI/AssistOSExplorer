@@ -148,8 +148,8 @@ test('Q1: full deploy ScriptaHub source checks run on the runner and inside the 
     assert.match(checkout, /uses: actions\/checkout@v4\n\s+with:\n\s+repository: Axiologic\/ScriptaHubAgent\n\s+path: \.qa-scriptahub-source\n\s+persist-credentials: false\n\s+fetch-depth: 0/);
     const resolve = workflow.split('      - name: Resolve the ScriptaHub source and the published images\n')[1].split('\n      - name: ')[0];
     assert.match(resolve, /SOURCE="\$GITHUB_WORKSPACE\/\.qa-scriptahub-source"\n[\s\S]*?source_git\(\) \{ git -C "\$SOURCE" "\$@"; \}/);
-    const calls = [...resolve.matchAll(/\bsource_git (?:rev-parse HEAD|symbolic-ref --short HEAD|cat-file -e "\$AGENT_REVISION\^\{commit\}"|merge-base --is-ancestor "\$AGENT_REVISION" "\$HEAD_COMMIT"|rev-parse "\$(?:HEAD_COMMIT|AGENT_REVISION):\$path")/g)];
-    assert.equal(calls.length, 4);
+    const calls = [...resolve.matchAll(/\bsource_git (?:rev-parse HEAD|symbolic-ref --short HEAD|cat-file -e "\$AGENT_REVISION\^\{commit\}"|merge-base --is-ancestor "\$AGENT_REVISION" "\$HEAD_COMMIT"|diff --name-only --no-renames "\$AGENT_REVISION" "\$HEAD_COMMIT" --|cat-file blob "\$HEAD_COMMIT:scriptahubAgent\/deployment\/dependency-inputs\.txt")/g)];
+    assert.equal(calls.length, 6);
     assert.equal((workflow.match(/\bsource_git /g) || []).length, 6);
     assert.ok(workflow.indexOf('      - name: Check out ScriptaHub\n') < workflow.indexOf('      - name: Resolve the ScriptaHub source and the published images\n'));
     // The registry check defines it once more, identically, before its first use there.
@@ -159,6 +159,8 @@ test('Q1: full deploy ScriptaHub source checks run on the runner and inside the 
     assert.match(preRestart, /g\(\) \{ git -c core\.hooksPath=\/dev\/null -c core\.fsmonitor=false -C ScriptaHubAgent "\$@"; \}/);
     assert.match(preRestart, /test -z "\$\(g status --porcelain\)"\s+test "\$\(g rev-parse HEAD\)" = "\$head"/);
     assert.match(preRestart, /actual=\$\(scripta_dependency_fingerprint ScriptaHubAgent "\$head"\) \|\| exit 1\s+test "\$actual" = "\$expected"/);
+    const checks = workflow.match(/\| run_in_box '(set -eu\n\s+read -r head\n\s+read -r expected\n\s+case "\$head" in ""\|\*\[!0-9a-f\]\*\) exit 1 ;; esac\n\s+test "\$\{#head\}" -eq 40\n\s+case "\$expected" in ""\|\*\[!0-9a-f\]\*\) exit 1 ;; esac\n\s+test "\$\{#expected\}" -eq 64\n\s+g\(\) \{ git -c core\.hooksPath=\/dev\/null -c core\.fsmonitor=false -C ScriptaHubAgent "\$@"; \}\n\s+test -z "\$\(g status --porcelain\)"\n\s+test "\$\(g rev-parse HEAD\)" = "\$head"\n\s+# BEGIN ScriptaHub dependency fingerprint\n[\s\S]*?# END ScriptaHub dependency fingerprint\n\s+actual=\$\(scripta_dependency_fingerprint ScriptaHubAgent "\$head"\) \|\| exit 1\n\s+test "\$actual" = "\$expected")'; then/g) || [];
+    assert.equal(checks.length, 1);
     assert.equal((workflow.match(/\bg /g) || []).length, 2);
     // The fingerprint block only reads objects: fp_git runs no other subcommand, in either workflow.
     for (const name of ['deploy-explorer-qa-ploinky.yml', 'deploy-explorer-qa-scriptahub.yml']) {
