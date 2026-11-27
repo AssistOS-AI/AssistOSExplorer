@@ -250,6 +250,15 @@ export function getBuiltInContextMenuItems(fileExp, target) {
                 disabled: false
             });
         }
+        if (isAdminUser(globalThis.window?.assistOS?.user)) {
+            items.push({ id: 'host:open-coding-sessions-here', source: 'host', slot: FILE_EXP_MENU_SLOTS.contextDirectory,
+                action: 'openCodingSessionsHere', label: 'Open Coding Sessions Here', entryPath, entryType: type,
+                targetPath: entryPath, icon: '/explorer/assets/icons/terminal.svg',
+                disabled: fileExp.codingSessionsReadiness?.ready !== true,
+                loading: fileExp.codingSessionsReadiness?.ready !== true,
+                title: fileExp.codingSessionsReadiness?.ready === true ? 'Open coding sessions'
+                    : fileExp.codingSessionsReadiness?.message || 'Waiting for coding-session services…' });
+        }
         items.push(
             {
                 id: 'host:upload-here',
@@ -305,15 +314,17 @@ export function getBuiltInContextMenuItems(fileExp, target) {
         disabled: !canDelete
     });
 
-    return items.filter((item) => item.disabled !== true);
+    return items.filter((item) => item.disabled !== true || item.loading === true);
 }
 
 export function resolveFileExpMenuItems(slot, target = null, builtInItems = []) {
     const pluginItems = getPluginMenuItems(slot, target);
-    return [
-        ...(Array.isArray(builtInItems) ? builtInItems : []),
-        ...pluginItems
-    ];
+    const items = [...(Array.isArray(builtInItems) ? builtInItems : [])];
+    const copilot = slot === FILE_EXP_MENU_SLOTS.contextDirectory
+        ? pluginItems.find(item => item.pluginId === 'achilles-cli-copilot') : null;
+    const terminal = items.findIndex(item => item.action === 'openTerminalHere');
+    if (copilot && terminal >= 0) items.splice(terminal + 1, 0, copilot);
+    return [...items, ...pluginItems.filter(item => item !== copilot || terminal < 0)];
 }
 
 export async function executeFileExpMenuItem(fileExp, item, context = null, options = {}) {
