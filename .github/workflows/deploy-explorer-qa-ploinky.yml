@@ -1915,13 +1915,14 @@ jobs:
           done
 
       # CSV Mail accepts only signed-in users, so without a session the Router answers its route with a redirect to
-      # the sign-in page. An unknown route answers 404 instead, so the redirect proves that the route is published.
+      # the sign-in page. On the published QA host the Router leaves `agent=` out of that redirect, and it sends
+      # unknown paths there too, so this only shows that the route asks for sign-in, not that it is published.
       # The runtime itself is proven by the awaited `csvMailAgent running` state of the deploy step.
       - name: Verify CSV Mail
         run: |
           set -euo pipefail
-          route='/base-agent-additional-server/csvMailAgent/3100/'
-          expected="/auth/login?returnTo=%2Fbase-agent-additional-server%2FcsvMailAgent%2F3100%2F"
+          route='/csvMailAgent/public/'
+          expected="/auth/login?returnTo=%2FcsvMailAgent%2Fpublic%2F"
           for attempt in $(seq 1 60); do
             reply="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code} %header{location}' "${PUBLIC_URL%/}$route" || true)"
             if [ "$reply" = "302 $expected" ]; then
@@ -2062,7 +2063,7 @@ jobs:
             echo "- Public URL: \`${PUBLIC_URL}\`"
             echo "- Bizanso: \`${PUBLIC_URL}/base-agent-additional-server/bizanso/8787/\`"
             echo "- ScriptaHub: \`${PUBLIC_URL}/base-agent-additional-server/scriptahubAgent/3002/\`"
-            echo "- CSV Mail: \`${PUBLIC_URL}/base-agent-additional-server/csvMailAgent/3100/\` from simpleCSVMailSend \`${CSVMAIL_COMMIT:-not-resolved}\`"
+            echo "- CSV Mail: \`${PUBLIC_URL}/csvMailAgent/public/\` from simpleCSVMailSend \`${CSVMAIL_COMMIT:-not-resolved}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup

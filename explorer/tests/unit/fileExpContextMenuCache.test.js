@@ -5,7 +5,7 @@ import { FileExp } from '../../web-components/pages/file-exp/file-exp.js';
 import { canonicalTerminalDirectoryPath } from '../../web-components/pages/file-exp/file-exp-utils.js';
 import {
     FILE_EXP_MENU_SLOTS,
-    getBuiltInContextMenuItems
+    getBuiltInContextMenuItems, resolveFileExpMenuItems
 } from '../../web-components/pages/file-exp/file-exp-menu-contributions.js';
 
 test('Paste into is rendered only when the host action is available', () => {
@@ -54,6 +54,7 @@ test('Open Terminal Here opens the Explorer target chooser with only a canonical
     const modalCalls = [];
     const opened = [];
     globalThis.window = {
+        assistOS: { user: { roles: ['admin'] } },
         location: {
             origin: 'https://explorer.example.test',
             href: 'https://explorer.example.test/#file-exp/'
@@ -182,4 +183,34 @@ test('context menu renders plugin metadata synchronously without loading plugin 
     } finally {
         globalThis.window = previousWindow;
     }
+});
+
+
+test('folder launchers group Terminal, Copilot and Coding Sessions and protect both host actions', async () => {
+    const previous = globalThis.window;
+    const slot = FILE_EXP_MENU_SLOTS.contextDirectory;
+    globalThis.window = { assistOS: { user: { roles: ['admin'] }, workspace: { appPlugins: { [slot]: [
+        { id: 'achilles-cli-copilot', agent: 'roboTeamAgent', contributionType: 'menu', label: 'Open Copilot here' },
+    ] } } } };
+    try {
+        const host = { state: { clipboard: null }, normalizePath: value => value };
+        const target = { path: '/project', type: 'directory' };
+        const items = resolveFileExpMenuItems(slot, target, getBuiltInContextMenuItems(host, target));
+        const start = items.findIndex(item => item.action === 'openTerminalHere');
+        assert.deepEqual(items.slice(start, start + 3).map(item => item.label),
+            ['Open Terminal Here', 'Open Copilot here', 'Open Coding Sessions Here']);
+        const waiting = items.find(item => item.action === 'openCodingSessionsHere');
+        assert.equal(waiting.disabled, true);
+        assert.equal(waiting.loading, true);
+        host.codingSessionsReadiness = { ready: true };
+        const ready = getBuiltInContextMenuItems(host, target).find(item => item.action === 'openCodingSessionsHere');
+        assert.equal(ready.disabled, false);
+        assert.equal(ready.loading, false);
+        window.assistOS.user = { roles: ['user'] };
+        const restricted = getBuiltInContextMenuItems(host, target);
+        assert.equal(restricted.some(item => ['openTerminalHere', 'openCodingSessionsHere'].includes(item.action)), false);
+        const element = { dataset: { entryPath: '/project' } };
+        assert.equal(await FileExp.prototype.openTerminalHere.call(host, element), false);
+        assert.equal(await FileExp.prototype.openCodingSessionsHere.call(host, element), false);
+    } finally { globalThis.window = previous; }
 });

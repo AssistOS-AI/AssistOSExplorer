@@ -137,6 +137,11 @@
       "presenterClassName": "TerminalTargetModal"
     },
     {
+      "name": "coding-sessions-modal",
+      "type": "modals",
+      "presenterClassName": "CodingSessionsModal"
+    },
+    {
       "name": "show-error-modal",
       "type": "modals",
       "presenterClassName": "ShowErrorModal"

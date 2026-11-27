@@ -1786,3 +1786,16 @@ test('a panel closed by any code leaves nothing to signal: the shell notices the
     assert.equal(third.calls.length, 1);
     assert.equal(third.calls[0].url, `/webtty/sessions/${ID}/close-intents`);
 });
+
+test('WebTTY output timestamps do not hide browser-created coding sessions from Live Sessions', async () => {
+    for (const lastOutputAt of [null, 2500]) {
+        const session = row({ lastOutputAt, profileProvider: 'provider', profileId: 'robot.default.vibe.p-launch', cwd: 'project' });
+        const result = await listLiveSessionsDetailed({ fetchImpl: async () => ({ ok: true, json: async () => payload([session]) }) });
+        assert.equal(result.rows.length, 1);
+        assert.equal(result.rows[0].id, ID);
+        assert.equal(result.rows[0].lastOutputAt, lastOutputAt);
+    }
+    for (const lastOutputAt of ['2500', -1, 0, 1.5, {}]) {
+        assert.throws(() => normalizeLiveSessionsPayload(payload([row({ lastOutputAt })])), /Invalid live session row/u);
+    }
+});

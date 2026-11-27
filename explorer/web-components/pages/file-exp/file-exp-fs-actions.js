@@ -483,6 +483,7 @@ export function attachFsActions(fileExp) {
         },
 
         closeActionMenu(shouldInvalidate = true) {
+            this.stopCodingReadiness?.(); this.stopCodingReadiness = null;
             if (!this.state.openMenuPath) return false;
             const openPath = this.state.openMenuPath;
             const container = this.element?.querySelector(`[data-action-menu="true"][data-entry-path="${openPath}"]`);
@@ -517,6 +518,7 @@ export function attachFsActions(fileExp) {
             this.setDocumentListener?.('open-menu-outside', 'pointerdown', this.boundOutsideMenuClick, true);
             this.setDocumentListener?.('open-menu-keydown', 'keydown', this.boundMenuKeydown);
             this.setOpenMenuPath(path, { invalidate: false });
+            this.startCodingReadiness?.(path);
             try {
                 this.refreshContextMenuItems?.(path);
             } catch (error) {
