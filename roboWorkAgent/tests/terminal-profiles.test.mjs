@@ -593,7 +593,7 @@ test('the coding session routes admit administrators with exact bodies and list 
         return res;
     };
     assert.equal((await request('robots', {}, { ...ADMIN, canAdmin: false })).status, 403);
-    assert.deepEqual((await request('robots', {})).body, { ok: true, robots: [{ id: 'robot-a', name: 'Robot A', default: false }] });
+    assert.deepEqual((await request('robots', {})).body, { ok: true, robots: [{ id: 'robot-a', name: 'Robot A', default: false }], codingAgents: [...CODING_AGENT_NAMES] });
     f.robot.codingAgents = ['codex', 'opencode'];
     f.robot.activeAgent = 'opencode';
     assert.deepEqual((await request('agents', { robot: 'robot-a' })).body,
@@ -742,4 +742,34 @@ test('same-robot instruction launches have separate immutable descriptors, inclu
     }
     const normal = await f.api.launch({ robot: 'robot-a', codingAgent: 'codex', directory: '', resume: null });
     assert.equal((await read(normal.profile)).systemPrompt, undefined);
+});
+
+test('persistent index routes are administrator-only and reuse history associations', async t => {
+    const f = await fixture(t);
+    f.homeSessions.push({ id: 'ses_index', title: 'Indexed conversation' });
+    await fs.mkdir(path.join(f.paths.workspaceRoot, 'project'));
+    const request = async (route, body, access = ADMIN) => {
+        const res = { writeHead(status) { this.status = status; }, end(text) { this.body = JSON.parse(text); } };
+        await f.api.handle({ method: 'POST' }, res, new URL(`/base-agent-additional-server/roboWorkAgent/3001/api/coding-sessions/${route}`, 'http://fixture'),
+            { ...access, body: Buffer.from(JSON.stringify(body)) });
+        return res;
+    };
+    assert.equal((await request('sync-history', { robot: 'robot-a', codingAgent: 'opencode', directory: 'project' })).status, 200);
+    assert.equal(f.calls.home.at(-1)[2].all, true);
+    assert.equal((await request('sync-history', { robot: 'robot-a', codingAgent: 'opencode', directory: 'project' }, { ...ADMIN, canAdmin: false })).status, 403);
+    await f.api.sessionHistory({ robot: 'robot-a', codingAgent: 'opencode', directory: 'project' });
+    const listed = await request('index', { directory: 'project' });
+    assert.equal(listed.status, 200);
+    assert.equal(listed.body.sessions[0].robotId, 'robot-a');
+    assert.equal(listed.body.sessions[0].codingAgent, 'opencode');
+    await f.api.sessionIndex.idle();
+    const calls = f.calls.home.length;
+    const cached = await request('index', { directory: 'project' });
+    assert.equal(cached.body.refreshing, false);
+    assert.equal(f.calls.home.length, calls);
+    assert.equal((await request('index', { directory: '../escape' })).status, 400);
+    assert.equal((await request('index', { directory: 'project', robot: 'robot-a' })).status, 400);
+    assert.equal((await request('index', { directory: 'project' }, { ok: true, canAdmin: false })).status, 403);
+    assert.equal((await request('index-rebuild', { directory: 'project' })).status, 404);
+    await f.api.sessionIndex.idle();
 });

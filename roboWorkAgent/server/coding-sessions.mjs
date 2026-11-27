@@ -26,7 +26,7 @@ export async function listCodingSessions(home, input, { alaRoot }) {
     if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.length > 4096) throw fail('INVALID_INPUT', 'Invalid folder');
     const catalog = await loadSessionCatalog(alaRoot, codingAgent);
     if (!catalog) return { sessions: [] };
-    const sessions = await catalog.listInteractiveSessions({ home, cwd, limit: SESSION_LIST_LIMIT });
+    const sessions = await catalog.listInteractiveSessions({ home, cwd, limit: SESSION_LIST_LIMIT, ...(input.all === true ? { all: true } : {}) });
     return { sessions: sessions.filter(session => NATIVE_SESSION_ID.test(session.id)),
         ...(catalog.sessionBindingSupported ? { sessionBindingSupported: true } : {}) };
 }

@@ -1,3 +1,5 @@
+import { readCodingSessionsReadiness, watchCodingSessionsReadiness } from '../../../services/infrastructure/codingSessionsReadiness.js';
+import { isAdminUser } from '../../../services/auth/adminUser.js';
 import {
     normalizePath,
     canonicalTerminalDirectoryPath,
@@ -236,6 +238,7 @@ export class FileExp {
 
 
     beforeUnload() {
+        this.stopCodingReadiness?.(); this.stopCodingReadiness = null;
         this.detachPreviewAnchorHandler();
         this.previewDom = null;
         this.clearEditorAutoSaveTimer();
@@ -564,6 +567,22 @@ export class FileExp {
         });
     }
 
+    startCodingReadiness(entryPath) {
+        this.stopCodingReadiness?.();
+        this.stopCodingReadiness = null;
+        if (!isAdminUser(globalThis.window?.assistOS?.user) || this.getEntryByPath(entryPath)?.type !== 'directory') return;
+        this.codingSessionsReadiness = { ready: false, message: 'Checking coding-session services…' };
+        if (!this.stopCodingReadiness) this.stopCodingReadiness = watchCodingSessionsReadiness({
+            allowed: () => isAdminUser(globalThis.window?.assistOS?.user),
+            onChange: result => {
+                if (this.element?.isConnected === false) return;
+                const changed = this.codingSessionsReadiness?.ready !== result.ready || this.codingSessionsReadiness?.message !== result.message;
+                this.codingSessionsReadiness = result;
+                if (changed && this.state.openMenuPath) this.refreshContextMenuItems(this.state.openMenuPath);
+            },
+        });
+    }
+
     getEntryByPath(entryPath) {
         const normalizedTarget = this.normalizePath(entryPath || '');
         if (!normalizedTarget) {
@@ -687,6 +706,8 @@ export class FileExp {
                 return this.openEntryInNewTab(element);
             case 'downloadEntry':
                 return this.downloadEntry(element);
+            case 'openCodingSessionsHere':
+                return this.openCodingSessionsHere(element);
             case 'openTerminalHere':
                 return this.openTerminalHere(element);
             case 'copyEntry':
@@ -1769,7 +1790,25 @@ export class FileExp {
         }
     }
 
+    async openCodingSessionsHere(element) {
+        if (!isAdminUser(globalThis.window?.assistOS?.user)) return false;
+        const dir = canonicalTerminalDirectoryPath(element?.dataset?.entryPath);
+        if (dir === null) return false;
+        const readiness = await readCodingSessionsReadiness();
+        this.codingSessionsReadiness = readiness;
+        if (!readiness.ready) {
+            if (this.state.openMenuPath) this.refreshContextMenuItems(this.state.openMenuPath);
+            this.showStatus(readiness.message);
+            return false;
+        }
+        this.closeActionMenu?.(false);
+        this.stopCodingReadiness?.(); this.stopCodingReadiness = null;
+        await assistOS.UI.showModal('coding-sessions-modal', { dir });
+        return true;
+    }
+
     async openTerminalHere(element) {
+        if (!isAdminUser(globalThis.window?.assistOS?.user)) return false;
         const relativePath = canonicalTerminalDirectoryPath(element?.dataset?.entryPath);
         if (relativePath === null) {
             return false;

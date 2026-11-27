@@ -1,0 +1,26 @@
+<div class="modal-container coding-sessions-shell">
+    <div class="modal-header">
+        <div class="coding-session-heading">
+            <div class="modal-title">Coding sessions</div>
+            <div class="coding-session-directory"><img src="/explorer/assets/icons/folder-fill.svg" alt=""><span id="codingDirectory"></span></div>
+        </div>
+        <button type="button" class="close" data-local-action="closeModal" aria-label="Close coding sessions"></button>
+    </div>
+    <div class="modal-body">
+        <div class="coding-session-navigation">
+            <button type="button" class="coding-session-back" data-local-action="goBack"><span aria-hidden="true">←</span> Back</button>
+            <div class="coding-session-tabs" role="tablist" aria-label="Session type">
+                <button type="button" role="tab" id="codingTab" aria-selected="true" aria-controls="codingPanel" data-local-action="codingMode">Coding sessions</button>
+                <button type="button" role="tab" id="supervisedTab" aria-selected="false" aria-controls="codingPanel" tabindex="-1" data-local-action="supervisedMode">Supervised sessions</button>
+            </div>
+        </div>
+        <div id="codingPanel" role="tabpanel" aria-labelledby="codingTab">
+            <div class="coding-session-section">
+                <h3 id="codingStep"></h3>
+                <button type="button" class="coding-session-refresh" data-local-action="refresh"><span aria-hidden="true">↻</span> Refresh</button>
+            </div>
+            <p id="codingStatus" role="status" aria-live="polite"></p>
+            <div id="codingList" class="coding-session-list"></div>
+        </div>
+    </div>
+</div>
