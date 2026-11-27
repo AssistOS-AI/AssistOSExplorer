@@ -385,3 +385,21 @@ test('plugin-free probe waits for plugins that OpenCode loads in the background,
     // A plugin that turns out failed once the host has loaded it fails the probe.
     assertProbeFails(runPluginFreeProbe('latefailed'), /\/api\/plugin reports failed plugins/u);
 });
+
+test('plugin-free --offline picks the first wrapper whose namespace has loopback and no route, and fails when none does', async () => {
+    const { chooseOfflineWrapper, OFFLINE_WRAPPERS } = await import('./opencode-plugin-free.mjs');
+    assert.deepEqual(OFFLINE_WRAPPERS.map(wrapper => wrapper.command), ['unshare', 'bwrap']);
+    const tried = [];
+    const answers = table => wrapper => { tried.push(wrapper.command); return table[wrapper.command]; };
+    // unshare works: bwrap is never tried.
+    assert.equal(chooseOfflineWrapper(OFFLINE_WRAPPERS, answers({ unshare: { ok: true }, bwrap: { ok: true } })).command, 'unshare');
+    assert.deepEqual(tried.splice(0), ['unshare']);
+    // The RoboWork container: unshare exists but cannot raise loopback (no ip, no ifconfig); bwrap raises it itself.
+    const noLoopback = { ok: false, reason: 'FAIL: Loopback could not be raised inside the network namespace (ip and ifconfig both failed)' };
+    assert.equal(chooseOfflineWrapper(OFFLINE_WRAPPERS, answers({ unshare: noLoopback, bwrap: { ok: true } })).command, 'bwrap');
+    assert.deepEqual(tried.splice(0), ['unshare', 'bwrap']);
+    // Neither works: an explicit failure naming both reasons, never a wrapper to run with network.
+    assert.throws(() => chooseOfflineWrapper(OFFLINE_WRAPPERS, answers({ unshare: noLoopback, bwrap: { ok: false, reason: 'bwrap: No permissions to create new namespace' } })),
+        /none worked \(unshare -rn: FAIL: Loopback could not be raised.*; bwrap --unshare-net: bwrap: No permissions/u);
+    assert.throws(() => chooseOfflineWrapper([], () => ({ ok: true })), /none worked/u);
+});

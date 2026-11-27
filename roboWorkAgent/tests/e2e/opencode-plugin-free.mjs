@@ -7,11 +7,11 @@
 // Prints exactly one line `ROBOWORK_OPENCODE_PLUGIN_FREE_V1 <json>` and exits 0 only when every check passed; any failure prints its
 // reason (and the raw evidence) to stderr, prints no sentinel and exits non-zero.
 //
-// `--offline` re-runs this script in a new network namespace that has no interface and no route: `unshare -rn`, or when that is
-// refused, `bwrap --unshare-net` (the RoboWork container requires bwrap; bubblewrap raises loopback itself). A new namespace made by
-// `unshare` starts with its loopback down, so the script raises `lo` itself (`ip` or `ifconfig`) unless it is already up. It then
-// asserts that no non-loopback interface exists and that a connect to a documentation address is refused for lack of a route, before
-// it starts the server. When neither tool can make the namespace, loopback cannot be raised or the assertion fails, the probe fails;
+// `--offline` re-runs this script in a new network namespace that has no interface and no route: `unshare -rn`, or when that does not
+// give a working loopback, `bwrap --unshare-net` (the RoboWork container requires bwrap; bubblewrap raises loopback itself). A bare
+// `unshare` namespace starts with its loopback down, so the script raises `lo` itself (`ip` or `ifconfig`) unless it is already up.
+// Each wrapper first runs this script's own check (`--netns-selfcheck`): loopback up, no non-loopback interface, and a connect to a
+// documentation address refused for lack of a route. The first wrapper that passes runs the probe. When none passes the probe fails;
 // it never falls back to a run with network.
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -62,7 +62,7 @@ const after = ms => new Promise(resolve => setTimeout(resolve, ms).unref());
 const active = { server: undefined, home: undefined, keep: false };
 
 export function parseArguments(argv) {
-    const options = { offline: false, keep: false, inNetns: false, timeoutMs: 120000, recordWaitMs: 15000, pluginWaitMs: 30000 };
+    const options = { offline: false, keep: false, inNetns: false, selfcheck: false, timeoutMs: 120000, recordWaitMs: 15000, pluginWaitMs: 30000 };
     const numeric = (name, value) => {
         if (!/^[1-9]\d{0,7}$/u.test(value ?? '')) throw fail(`${name} needs a positive integer`);
         return Number(value);
@@ -73,6 +73,7 @@ export function parseArguments(argv) {
         else if (argument === '--offline') options.offline = true;
         else if (argument === '--keep') options.keep = true;
         else if (argument === '--in-netns') options.inNetns = true;
+        else if (argument === '--netns-selfcheck') options.selfcheck = true;
         else if (argument === '--timeout-ms') options.timeoutMs = numeric(argument, argv[++index]);
         else if (argument === '--record-wait-ms') options.recordWaitMs = numeric(argument, argv[++index]);
         else if (argument === '--plugin-wait-ms') options.pluginWaitMs = numeric(argument, argv[++index]);
@@ -84,22 +85,36 @@ export function parseArguments(argv) {
 
 // ---- offline: a namespace with no route -----------------------------------------------------------------------------------
 
-function offlineCommand() {
-    if (process.platform !== 'linux') throw fail(`--offline needs Linux and unshare or bwrap; this host is ${process.platform}`);
-    const forwarded = process.argv.slice(2).filter(argument => argument !== '--in-netns');
-    const inner = [process.execPath, fileURLToPath(import.meta.url), ...forwarded, '--in-netns'];
-    // Each wrapper is tried with a harmless command first, so a refusal is reported and never turns into a run with network.
-    const wrappers = [
-        { name: 'unshare -rn', command: 'unshare', args: ['-rn', '--'] },
-        { name: 'bwrap --unshare-net', command: 'bwrap', args: ['--dev-bind', '/', '/', '--proc', '/proc', '--unshare-net', '--die-with-parent', '--'] },
-    ];
+export const OFFLINE_WRAPPERS = Object.freeze([
+    { name: 'unshare -rn', command: 'unshare', args: ['-rn', '--'] },
+    { name: 'bwrap --unshare-net', command: 'bwrap', args: ['--dev-bind', '/', '/', '--proc', '/proc', '--unshare-net', '--die-with-parent', '--'] },
+]);
+
+// The first wrapper whose namespace passes `attempt` (loopback up, no outside route) wins; a wrapper that is missing, refused or
+// cannot raise loopback is reported and skipped, and when none passes the probe fails, never running with network.
+export function chooseOfflineWrapper(wrappers, attempt) {
     const refusals = [];
     for (const wrapper of wrappers) {
-        const check = spawnSync(wrapper.command, [...wrapper.args, 'true'], { encoding: 'utf8' });
-        if (!check.error && check.status === 0) return { command: wrapper.command, args: [...wrapper.args, ...inner] };
-        refusals.push(`${wrapper.name}: ${check.error?.message || check.stderr.trim() || `exit ${check.status}`}`);
+        const result = attempt(wrapper);
+        if (result.ok) return wrapper;
+        refusals.push(`${wrapper.name}: ${result.reason}`);
     }
-    throw fail(`--offline needs a network namespace and none could be made (${refusals.join('; ')})`);
+    throw fail(`--offline needs a network namespace with loopback and no outside route, and none worked (${refusals.join('; ')})`);
+}
+
+function offlineCommand(options) {
+    if (process.platform !== 'linux') throw fail(`--offline needs Linux and unshare or bwrap; this host is ${process.platform}`);
+    const self = [process.execPath, fileURLToPath(import.meta.url)];
+    const forwarded = process.argv.slice(2).filter(argument => argument !== '--in-netns');
+    // Each wrapper runs this script's own namespace check first (`--netns-selfcheck`), so a namespace in which loopback cannot be
+    // raised (`unshare` without `ip` or `ifconfig`) is skipped in favour of one that raises it itself (`bwrap`).
+    const wrapper = chooseOfflineWrapper(OFFLINE_WRAPPERS, candidate => {
+        const check = spawnSync(candidate.command, [...candidate.args, ...self, '--binary', options.binary, '--offline', '--in-netns', '--netns-selfcheck'],
+            { encoding: 'utf8', timeout: 30000 });
+        if (!check.error && check.status === 0) return { ok: true };
+        return { ok: false, reason: check.error?.message || check.stderr.trim().split('\n').pop() || `exit ${check.status}` };
+    });
+    return { command: wrapper.command, args: [...wrapper.args, ...self, ...forwarded, '--in-netns'] };
 }
 
 async function assertNoNetwork() {
@@ -319,13 +334,14 @@ async function runProbe(options) {
 async function main() {
     const options = parseArguments(process.argv.slice(2));
     if (options.offline && !options.inNetns) {
-        const { command, args } = offlineCommand();
+        const { command, args } = offlineCommand(options);
         const result = spawnSync(command, args, { stdio: 'inherit' });
         if (result.error) throw fail(`The offline wrapper could not run: ${result.error.message}`);
         process.exitCode = result.status === 0 ? 0 : (result.status || 1);
         return;
     }
     if (options.offline) await assertNoNetwork();
+    if (options.selfcheck) return;
     const evidence = await runProbe(options);
     process.stdout.write(`${SENTINEL} ${JSON.stringify(evidence)}\n`);
 }
