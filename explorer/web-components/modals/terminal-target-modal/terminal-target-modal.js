@@ -1,3 +1,4 @@
+import { bindRobotCombobox } from './robot-combobox.js';
 import { normalizeTerminalProfileSource } from '../../../utils/liveSessionSource.mjs';
 import { retryOnStaleBrowserProof } from '../../../services/infrastructure/browserMutationRetry.js';
 
@@ -440,12 +441,14 @@ export class TerminalTargetModal {
         this.robotsLoaded = false;
         this.profileController = null;
         this.selectedRobotKey = '';
-        this.selectedEnvironmentKey = 'default';
         this.selectedLaunch = '';
         this.opening = false;
         this.prepareController = null;
         this.boundKeydown = this.handleKeydown.bind(this);
         this.boundChange = this.handleChange.bind(this);
+        this.boundRobotSearch = event => {
+            if (event.target?.id === 'terminalTargetRobotSearch' && !this.closed && !this.opening) this.renderRobotOptions();
+        };
         this.invalidate();
     }
 
@@ -462,8 +465,14 @@ export class TerminalTargetModal {
         this.retryButton = this.element.querySelector('#terminalTargetRetry');
         this.refreshButton = this.element.querySelector('#terminalTargetRefresh');
         this.robotSelect = this.element.querySelector('#terminalTargetRobot');
-        this.environmentSelect = this.element.querySelector('#terminalTargetEnvironment');
-        this.environmentLabel = this.element.querySelector('#terminalTargetEnvironmentLabel');
+        this.robotSearch = this.element.querySelector('#terminalTargetRobotSearch');
+        this.robotCombobox?.dispose();
+        const robotOptions = this.element.querySelector('#terminalTargetRobotOptions');
+        if (this.robotSearch && robotOptions) this.robotCombobox = bindRobotCombobox({
+            input: this.robotSearch, list: robotOptions, robots: () => this.robots,
+            selected: () => this.selectedRobot(), choose: key => this.chooseRobot(key),
+            busy: () => this.opening || this.closed,
+        });
         this.robotNote = this.element.querySelector('#terminalTargetRobotNote');
         this.disclosureElement = this.element.querySelector('#terminalTargetDisclosure');
         this.openButton = this.element.querySelector('#terminalTargetOpen');
@@ -471,6 +480,8 @@ export class TerminalTargetModal {
         this.element.addEventListener('keydown', this.boundKeydown);
         this.element.removeEventListener('change', this.boundChange);
         this.element.addEventListener('change', this.boundChange);
+        this.element.removeEventListener('input', this.boundRobotSearch);
+        this.element.addEventListener('input', this.boundRobotSearch);
         this.directoryElement.textContent = this.directory ? `/${this.directory}` : '/';
         this.renderRobotOptions();
         if (this.viewState === 'ready' && this.currentDiscovery) {
@@ -482,12 +493,14 @@ export class TerminalTargetModal {
         }
         if (!this.started) {
             this.started = true;
-            void this.loadRobots();
-            void this.discoverTargets();
+            void this.loadRobots().then(() => {
+                if (!this.closed && !this.selectedRobotKey) return this.discoverTargets();
+            });
         }
     }
 
     async afterUnload() {
+        this.robotCombobox?.dispose();
         this.closed = true;
         this.requestSequence += 1;
         this.discoveryController?.abort();
@@ -499,6 +512,7 @@ export class TerminalTargetModal {
         this.clearExpiryTimer();
         this.element?.removeEventListener?.('keydown', this.boundKeydown);
         this.element?.removeEventListener?.('change', this.boundChange);
+        this.element?.removeEventListener?.('input', this.boundRobotSearch);
         if (!this.handedOff && this.discoveryId) {
             const discoveryId = this.discoveryId;
             this.discoveryId = '';
@@ -524,14 +538,10 @@ export class TerminalTargetModal {
     selectedProfile() {
         const robot = this.selectedRobot();
         if (!robot) return null;
-        if (robot.liveAgents && this.selectedEnvironmentKey === 'live-agents') {
-            return { provider: robot.agent, id: `${robot.id}.default`, mode: 'live-agent' };
-        }
-        if (!robot.environments) return { provider: robot.agent, id: robot.id };
-        const environment = robot.environments.find(entry => entry.key === this.selectedEnvironmentKey
-            && (entry.available || entry.reason === 'image cannot be pulled'));
-        const id = environment ? `${robot.id}.${environment.key}` : '';
-        return PROFILE_ID_PATTERN.test(id) ? { provider: robot.agent, id } : null;
+        if (robot.liveAgents) return { provider: robot.agent, id: `${robot.id}.default`, mode: 'live-agent' };
+        // Older profile-only providers remain supported; environment-only providers
+        // cannot launch temporary containers through this chooser.
+        return robot.environments ? null : { provider: robot.agent, id: robot.id };
     }
 
     async loadRobots() {
@@ -582,25 +592,37 @@ export class TerminalTargetModal {
         this.robots = robots;
         this.robotErrors = errors;
         this.robotsLoaded = true;
+        if (!this.selectedRobotKey) {
+            const preferred = robots.find(robot => robot.label.toLowerCase() === 'default');
+            if (preferred) this.chooseRobot(preferred.key);
+        }
         this.renderRobotOptions();
         this.updateControls();
     }
 
     renderRobotOptions() {
+        this.robotCombobox?.sync();
         if (!this.robotSelect) return;
         const placeholder = document.createElement('option');
         placeholder.value = '';
         placeholder.disabled = true;
         placeholder.selected = !this.selectedRobotKey;
         placeholder.textContent = 'Choose a robot';
-        const options = this.robots.map((robot) => {
+        const query = (this.robotSearch?.value || '').trim().toLocaleLowerCase();
+        const matches = this.robots.filter(robot => robot.display.toLocaleLowerCase().includes(query));
+        if (!matches.length) placeholder.textContent = 'No robots found';
+        const selected = this.selectedRobot();
+        const choices = selected && !matches.includes(selected) ? [selected, ...matches] : matches;
+        const options = choices.map((robot) => {
             const option = document.createElement('option');
             option.value = robot.key;
             option.textContent = robot.display;
             option.selected = robot.key === this.selectedRobotKey;
+            option.hidden = !matches.includes(robot);
             return option;
         });
         this.robotSelect.replaceChildren(placeholder, ...options);
+
     }
 
     robotAvailabilityMessage() {
@@ -615,14 +637,6 @@ export class TerminalTargetModal {
     rowState(target) {
         const robot = this.selectedRobot();
         if (!robot) return { disabled: true, reason: 'Choose a robot first' };
-        const isolated = robot.environments && this.selectedProfile()?.mode !== 'live-agent';
-        if (isolated && (!this.selectedProfile() || target.kind !== 'agent'
-            || target.detail !== `AchillesIDE/${robot.agent}`)) return { disabled: true, reason: 'Choose the robot environment' };
-        if (isolated && target.access !== 'rw') return { disabled: true, reason: 'This terminal can only read the robot home' };
-        if (isolated && this.currentDiscovery?.targets.filter(row => row.kind === 'agent'
-            && row.detail === `AchillesIDE/${robot.agent}` && row.access === 'rw').length !== 1) {
-            return { disabled: true, reason: 'No unique RoboWork terminal is available' };
-        }
         if (target.unavailable === 'home-unreachable') {
             return { disabled: true, reason: `This container cannot see ${robot.label}'s home folder` };
         }
@@ -641,7 +655,7 @@ export class TerminalTargetModal {
         const discovery = this.currentDiscovery;
         const profile = this.selectedProfile();
         if (this.closed || this.handedOff || this.opening || this.viewState !== 'ready' || !robot || !target
-            || !profile || !discovery?.profile || discovery.profile.provider !== profile.provider || discovery.profile.id !== profile.id
+            || !profile || !discovery?.profile || discovery.profile.provider !== profile.provider || (!this.pendingRobotProfile && discovery.profile.id !== profile.id)
             || discovery.profile.mode !== profile.mode
             || this.rowState(target).disabled
             || Date.now() >= discovery.expiresAt) {
@@ -651,14 +665,11 @@ export class TerminalTargetModal {
     }
 
     updateControls() {
+        this.robotCombobox?.sync();
         const robot = this.selectedRobot();
         const target = this.targetsByLaunch.get(this.selectedLaunch) || null;
         if (this.robotSelect) this.robotSelect.disabled = this.opening || !this.robots.length;
-        if (this.environmentSelect) {
-            this.environmentSelect.hidden = !(robot?.environments || robot?.liveAgents);
-            this.environmentSelect.disabled = this.opening || !(robot?.environments || robot?.liveAgents);
-        }
-        if (this.environmentLabel) this.environmentLabel.hidden = !(robot?.environments || robot?.liveAgents);
+        if (this.robotSearch) this.robotSearch.disabled = this.opening || !this.robots.length;
         if (this.openButton) this.openButton.disabled = !this.openGate();
         if (this.refreshButton) this.refreshButton.disabled = this.opening || this.viewState !== 'ready';
         if (this.retryButton) this.retryButton.disabled = this.opening;
@@ -667,23 +678,7 @@ export class TerminalTargetModal {
             this.robotNote.textContent = message;
             this.robotNote.hidden = !message;
         }
-        if (!this.disclosureElement) return;
-        this.disclosureElement.hidden = !robot;
-        if (!robot) {
-            this.disclosureElement.replaceChildren();
-            return;
-        }
-        const sentences = [`HOME will be ${robot.label}'s home folder. Settings the robot wrote there (git, ssh, coding-agent configuration) can run commands when you use those tools here, and logins, history and files you create there are stored where the robot can read them.`];
-        if (this.selectedProfile()?.mode === 'live-agent') sentences.push('Ordinary processes in the selected agent can access this robot home.');
-        if (target?.kind === 'box') {
-            sentences.push('The Box runs the Ploinky router and controls every agent container.');
-        }
-        // The robot's own tool setup is loaded only inside the agent that declares the profile.
-        if (target && (this.selectedProfile()?.mode === 'live-agent'
-            || !(target.kind === 'agent' && target.detail.split('/').pop() === robot.agent))) {
-            sentences.push("The robot's tool setup is not loaded here.");
-        }
-        this.disclosureElement.replaceChildren(...sentences.map((sentence) => createTextElement('p', '', sentence)));
+
     }
 
     renderLoading(message) {
@@ -694,10 +689,10 @@ export class TerminalTargetModal {
         this.listElement.replaceChildren();
         this.listElement.setAttribute('aria-busy', 'true');
         this.warningElement.hidden = true;
-        this.noticeElement.hidden = true;
-        this.retryButton.hidden = true;
-        this.refreshButton.hidden = true;
-        this.refreshButton.disabled = true;
+        if (this.noticeElement) this.noticeElement.hidden = true;
+        if (this.retryButton) this.retryButton.hidden = true;
+        if (this.refreshButton) this.refreshButton.hidden = true;
+        if (this.refreshButton) this.refreshButton.disabled = true;
         this.statusElement.textContent = message;
         this.updateControls();
     }
@@ -709,16 +704,16 @@ export class TerminalTargetModal {
         this.targetsByLaunch.clear();
         this.listElement.replaceChildren();
         this.listElement.setAttribute('aria-busy', 'false');
-        this.noticeElement.hidden = true;
+        if (this.noticeElement) this.noticeElement.hidden = true;
         this.warningElement.textContent = message;
         this.warningElement.dataset.state = 'error';
         this.warningElement.hidden = false;
-        this.retryButton.hidden = false;
-        this.refreshButton.hidden = true;
-        this.refreshButton.disabled = true;
+        if (this.retryButton) this.retryButton.hidden = false;
+        if (this.refreshButton) this.refreshButton.hidden = true;
+        if (this.refreshButton) this.refreshButton.disabled = true;
         this.statusElement.textContent = 'No terminal was opened.';
         this.updateControls();
-        this.retryButton.focus?.();
+        this.retryButton?.focus?.();
     }
 
     renderTarget(target) {
@@ -753,8 +748,7 @@ export class TerminalTargetModal {
         ));
         button.appendChild(heading);
         button.appendChild(createTextElement('span', 'terminal-target-detail', target.detail));
-        button.appendChild(createTextElement('span', 'terminal-target-cwd', target.cwdDisplay));
-        if (reason) button.appendChild(createTextElement('span', 'terminal-target-reason', reason));
+        if (reason && this.selectedRobot()) button.appendChild(createTextElement('span', 'terminal-target-reason', reason));
         item.appendChild(button);
         return item;
     }
@@ -766,10 +760,8 @@ export class TerminalTargetModal {
         this.targetsByLaunch.clear();
         this.listElement.replaceChildren();
         const fragment = document.createDocumentFragment();
-        const robot = this.selectedRobot();
         const live = this.selectedProfile()?.mode === 'live-agent';
-        const targets = robot?.environments && !live ? discovery.targets.filter(target =>
-            target.kind === 'agent' && target.detail === `AchillesIDE/${robot.agent}`) : discovery.targets;
+        const targets = discovery.targets;
         for (const target of targets) {
             if (target.launch) this.targetsByLaunch.set(target.launch, target);
             fragment.appendChild(this.renderTarget(target));
@@ -779,7 +771,7 @@ export class TerminalTargetModal {
         this.listElement.setAttribute('aria-busy', 'false');
 
         const agentCount = discovery.targets.filter((target) => target.kind === 'agent').length;
-        this.noticeElement.hidden = agentCount === 0;
+        if (this.noticeElement) this.noticeElement.hidden = agentCount === 0;
         if (live && (!agentCount || !discovery.agentTargetsAvailable)) {
             this.warningElement.textContent = discovery.agentTargetsAvailable
                 ? 'No eligible running agents are available for this folder.'
@@ -797,9 +789,9 @@ export class TerminalTargetModal {
         } else {
             this.warningElement.hidden = true;
         }
-        this.retryButton.hidden = true;
-        this.refreshButton.hidden = false;
-        this.refreshButton.disabled = false;
+        if (this.retryButton) this.retryButton.hidden = true;
+        if (this.refreshButton) this.refreshButton.hidden = false;
+        if (this.refreshButton) this.refreshButton.disabled = false;
         const enabled = discovery.targets.filter((target) => !this.rowState(target).disabled).length;
         this.statusElement.textContent = !this.selectedRobot()
             ? 'Choose a robot to enable the terminal targets.'
@@ -838,6 +830,7 @@ export class TerminalTargetModal {
                 return;
             }
             this.discoveryController = null;
+            this.pendingRobotProfile = false;
             this.discoveryId = discovery.id;
             this.discoveryExpiresAt = discovery.expiresAt;
             this.selectedLaunch = '';
@@ -900,31 +893,25 @@ export class TerminalTargetModal {
         const field = event?.target;
         if (field?.id === 'terminalTargetRobot') {
             this.chooseRobot(String(field.value || ''));
-        } else if (field?.id === 'terminalTargetEnvironment') {
-            this.selectedEnvironmentKey = String(field.value || '');
-            void this.refreshTargets();
+
         }
     }
 
-    // Choosing or changing the robot replaces every prior launch choice with a discovery for that robot.
+    // Live container choices depend on the folder. Bind a changed robot only when Open is pressed.
     chooseRobot(key) {
         if (this.closed || this.handedOff || this.opening) return false;
         const robot = this.robots.find((candidate) => candidate.key === key) || null;
         this.selectedRobotKey = robot ? robot.key : '';
-        this.selectedEnvironmentKey = robot?.liveAgents ? 'live-agents' : 'default';
-        if (this.environmentSelect) {
-            const choices = [...(robot?.liveAgents ? [{ key: 'live-agents', label: 'Running agents', available: true, reason: '' }] : []), ...(robot?.environments || [])];
-            this.environmentSelect.replaceChildren(...choices.map(entry => {
-                const option = document.createElement('option');
-                option.value = entry.key;
-                const retry = !entry.available && entry.reason === 'image cannot be pulled';
-                option.textContent = entry.reason ? `${entry.label} (${entry.reason}${retry ? '; retry download' : ''})` : entry.label;
-                option.disabled = !entry.available && !retry;
-                option.selected = entry.key === this.selectedEnvironmentKey;
-                return option;
-            }));
+        this.renderRobotOptions();
+        const profile = this.selectedProfile();
+        if (profile?.mode === 'live-agent' && this.currentDiscovery?.profile?.mode === 'live-agent'
+            && profile.provider === this.currentDiscovery.profile.provider && this.viewState === 'ready') {
+            this.pendingRobotProfile = profile.id !== this.currentDiscovery.profile.id;
+            this.updateControls();
+        } else {
+            this.pendingRobotProfile = false;
+            void this.refreshTargets();
         }
-        void this.refreshTargets();
         return Boolean(robot);
     }
 
@@ -949,9 +936,10 @@ export class TerminalTargetModal {
             this.statusElement.textContent = 'Choose a robot and an available terminal target first.';
             return false;
         }
-        const { robot, target } = gate;
+        const { robot } = gate;
+        let target = gate.target;
         // The launch belongs to this exact discovery and row; anything that replaces them while the robot is prepared voids it.
-        const discoveryId = this.currentDiscovery.id;
+        let discoveryId = this.currentDiscovery.id;
         // Reserve the isolated tab in the click event, before any await, so popup blocking stays detectable.
         let popup = null;
         try {
@@ -977,6 +965,23 @@ export class TerminalTargetModal {
         const timer = setTimeout(() => controller.abort(), PREPARE_TIMEOUT_MS);
         let failure = '';
         try {
+            if (this.pendingRobotProfile) {
+                const discovery = await requestTerminalTargetDiscovery(this.directory, { signal: controller.signal, profile: this.selectedProfile() });
+                const matches = discovery.targets.filter(row => row.kind === target.kind && row.detail === target.detail
+                    && row.label === target.label && row.cwdDisplay === target.cwdDisplay && row.launch && !this.rowState(row).disabled);
+                if (this.closed || matches.length !== 1) {
+                    await cancelTerminalTargetDiscovery(discovery.id, { keepalive: this.closed }).catch(() => {});
+                    throw new Error('The selected container is no longer available for this robot. Reopen the chooser.');
+                }
+                const previous = this.discoveryId;
+                target = matches[0]; discoveryId = discovery.id;
+                this.discoveryId = discovery.id; this.discoveryExpiresAt = discovery.expiresAt;
+                this.currentDiscovery = discovery;
+                this.targetsByLaunch = new Map(discovery.targets.filter(row => row.launch).map(row => [row.launch, row]));
+                this.selectedLaunch = target.launch; this.pendingRobotProfile = false;
+                this.scheduleExpiry(discovery.expiresAt);
+                await cancelTerminalTargetDiscovery(previous).catch(() => {});
+            }
             if (this.selectedProfile().mode !== 'live-agent') await prepareTerminalProfile(robot, this.selectedProfile().id, { signal: controller.signal });
         } catch (error) {
             failure = prepareFailure(error, robot);
@@ -1007,6 +1012,7 @@ export class TerminalTargetModal {
         } else {
             closePopup(popup);
         }
+        if (this.currentDiscovery) this.renderReady(this.currentDiscovery);
         this.warningElement.textContent = failure;
         this.warningElement.dataset.state = 'error';
         this.warningElement.hidden = false;
