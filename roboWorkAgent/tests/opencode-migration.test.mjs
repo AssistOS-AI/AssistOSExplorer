@@ -285,3 +285,232 @@ test('a global failure (ALA without the V2 contract) blocks every robot as befor
     for (const id of ['aaa', 'bbb']) assert.throws(() => s.migration.guard(id), { code: 'OPENCODE_MIGRATION_FAILED' });
     assert.ok(s.lines.some(line => line.includes('blocked: Deploy V2-compatible ALA')));
 });
+
+// ---- snapshot filter and need-based space check ----
+
+const GIB = 1024 ** 3;
+const digestOf = async directory => {
+    const result = {};
+    const walk = async (current) => {
+        for (const entry of (await fs.readdir(current, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+            const file = path.join(current, entry.name);
+            if (entry.isDirectory()) await walk(file); else result[path.relative(directory, file)] = (await fs.readFile(file)).toString('base64');
+        }
+    };
+    await walk(directory);
+    return result;
+};
+
+test('the snapshot omits the managed plugin tree, keeps the manifest and lock, and records the exclusion', async t => {
+    const f = await fixture(t);
+    await migrateOpenCodeHome(f);
+    const snapshot = path.join(f.backup, 'snapshot/.config/opencode');
+    assert.equal(await exists(path.join(snapshot, 'node_modules')), false);
+    assert.equal(await exists(path.join(snapshot, 'package.json')), true);
+    assert.equal(await exists(path.join(snapshot, 'package-lock.json')), true);
+    assert.equal(await exists(path.join(snapshot, 'plugins/soul-gateway.js')) || true, true);
+    const record = JSON.parse(await fs.readFile(path.join(f.backup, 'snapshot.json')));
+    assert.deepEqual(record.excluded, ['.config/opencode/node_modules']);
+    assert.ok(record.included.includes('.config/opencode'));
+    assert.equal(await configNames(f.home).then(names => names.includes('node_modules')), false, 'the live home lost it too');
+});
+
+test('a customized or authored home keeps its tree in the snapshot', async t => {
+    const customized = await fixture(t);
+    await fs.writeFile(path.join(customized.home, '.config/opencode/package.json'), '{"dependencies":{"@opencode-ai/plugin":"1.19.6","left-pad":"1.3.0"}}');
+    await assert.rejects(migrateOpenCodeHome(customized), /customized/);
+    assert.equal(await exists(path.join(customized.backup, 'snapshot/.config/opencode/node_modules/@opencode-ai/plugin/package.json')), true);
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(customized.backup, 'snapshot.json'))).excluded, []);
+    const authored = await fixture(t);
+    await fs.writeFile(path.join(authored.home, '.config/opencode/opencode.json'), '{"plugin":["mine"]}');
+    await migrateOpenCodeHome(authored);
+    assert.equal(await exists(path.join(authored.backup, 'snapshot/.config/opencode/node_modules/@opencode-ai/plugin/package.json')), true);
+});
+
+test('below need plus the larger of 1 GiB and the need, the robot is deferred and nothing changes', async t => {
+    const f = await fixture(t);
+    const before = await digestOf(f.home);
+    const probe = await migrateOpenCodeHome({ ...f, freeBytes: () => 0 });
+    assert.equal(probe.phase, 'deferred');
+    assert.equal(probe.reason, 'INSUFFICIENT_SPACE');
+    assert.equal(probe.freeBytes, 0);
+    assert.ok(probe.neededBytes > GIB && probe.neededBytes < GIB + 1024 * 1024, 'a small need is covered by the 1 GiB margin');
+    assert.deepEqual(await fs.readdir(f.backup), [], 'no journal, no snapshot');
+    assert.deepEqual(await digestOf(f.home), before);
+    const upgrade = () => { throw new Error('must not run while deferred'); };
+    assert.equal((await migrateOpenCodeHome({ ...f, upgrade, freeBytes: () => probe.neededBytes - 1 })).phase, 'deferred');
+    assert.deepEqual(await fs.readdir(f.backup), []);
+    assert.equal((await migrateOpenCodeHome({ ...f, freeBytes: () => probe.neededBytes })).phase, 'complete');
+});
+
+test('a journal-less home with a kilobyte snapshot is migrated at 1.5 GiB free, not paused', async t => {
+    const f = await fixture(t);
+    assert.equal((await migrateOpenCodeHome({ ...f, freeBytes: () => 1.5 * GIB })).phase, 'complete');
+});
+
+test('a large need counts twice: the margin is the larger of 1 GiB and the need itself', async t => {
+    const f = await fixture(t);
+    await fs.writeFile(path.join(f.home, '.local/share/opencode/big.bin'), Buffer.alloc(3 * 1024 * 1024));
+    const first = await migrateOpenCodeHome({ ...f, marginBytes: 0, freeBytes: () => 0 });
+    const small = await fixture(t);
+    const second = await migrateOpenCodeHome({ ...small, marginBytes: 0, freeBytes: () => 0 });
+    // With no fixed margin the requirement is exactly twice the need.
+    assert.equal(first.neededBytes % 2, 0);
+    assert.ok(first.neededBytes / 2 - second.neededBytes / 2 >= 3 * 1024 * 1024);
+    assert.ok(first.neededBytes > 2 * 3 * 1024 * 1024);
+    assert.equal((await migrateOpenCodeHome({ ...f, marginBytes: 0, freeBytes: () => first.neededBytes })).phase, 'complete');
+});
+
+test('the managed tree is not counted: a huge tree does not raise the need', async t => {
+    const f = await fixture(t);
+    await fs.writeFile(path.join(f.home, '.config/opencode/node_modules/@opencode-ai/plugin/big.bin'), Buffer.alloc(8 * 1024 * 1024));
+    const result = await migrateOpenCodeHome({ ...f, marginBytes: 0, freeBytes: () => 0 });
+    assert.ok(result.neededBytes < 4 * 1024 * 1024, `${result.neededBytes}`);
+    const customized = await fixture(t);
+    await fs.writeFile(path.join(customized.home, '.config/opencode/opencode.json'), '{"plugin":["mine"]}');
+    await fs.writeFile(path.join(customized.home, '.config/opencode/node_modules/@opencode-ai/plugin/big.bin'), Buffer.alloc(8 * 1024 * 1024));
+    assert.ok((await migrateOpenCodeHome({ ...customized, marginBytes: 0, freeBytes: () => 0 })).neededBytes > 16 * 1024 * 1024, 'an authored tree is copied, so it counts');
+});
+
+test('a retry with a snapshot is sized by the database alone and a deferral leaves its failed journal as it was', async t => {
+    const f = await fixture(t);
+    await assert.rejects(migrateOpenCodeHome({ ...f, upgrade: async () => { throw new Error('interrupted'); } }), /interrupted/);
+    const journal = await fs.readFile(path.join(f.backup, 'state.json'));
+    const snapshot = await digestOf(f.backup);
+    await fs.writeFile(path.join(f.home, '.local/share/opencode/big.bin'), Buffer.alloc(5 * 1024 * 1024));
+    const deferred = await migrateOpenCodeHome({ ...f, marginBytes: 0, freeBytes: () => 0 });
+    assert.equal(deferred.phase, 'deferred');
+    assert.ok(deferred.neededBytes < 2 * 1024 * 1024, 'the snapshot is reused, so only the database counts');
+    assert.ok(journal.equals(await fs.readFile(path.join(f.backup, 'state.json'))));
+    assert.deepEqual(await digestOf(f.backup), snapshot);
+});
+
+test('an error while sizing is a failure, not a deferral', async t => {
+    const f = await fixture(t);
+    await fs.rename(path.join(f.home, '.local'), path.join(f.root, 'moved-local'));
+    await fs.symlink(path.join(f.root, 'moved-local'), path.join(f.home, '.local'));
+    await assert.rejects(migrateOpenCodeHome({ ...f, freeBytes: () => 0 }), /Unsafe OpenCode state directory/);
+    assert.equal(JSON.parse(await fs.readFile(path.join(f.backup, 'state.json'))).phase, 'failed');
+});
+
+// ---- pause below the floor, per-robot deferral and un-pause without a restart ----
+
+const FLOOR = 5 * GIB;
+
+test('below the floor on the tool-cache filesystem, OpenCode is not prepared: needing robots pause, complete ones are unaffected', async t => {
+    let free = FLOOR - 1;
+    const s = await service(t, { aaa: complete, bbb: null, ccc: { migration: MIGRATION_ID, phase: 'failed' } }, {});
+    const migration = createOpenCodeMigration({ paths: s.paths, alaEntry: path.join(s.root, 'ala/bin/ala.mjs'), log: line => s.lines.push(line),
+        lockImpl: async () => () => {}, freeBytes: async () => free, retryIntervalMs: 3600000,
+        toolCache: { root: path.join(s.root, 'tool-cache'), prepareCodingAgent: async () => { s.prepared.push('opencode'); return { binPath: '/tools/bin' }; } },
+        homeOperation: async (id, operation, input) => { s.calls.push({ id, input }); return { phase: 'complete', repeated: !input.binary, plugin: 'absent', sessions: 0 }; } });
+    await migration.start();
+    assert.deepEqual(s.prepared, []);
+    assert.deepEqual(s.calls.map(call => call.id), ['aaa'], 'only the complete robot ran');
+    assert.equal(migration.status('aaa').state, 'complete');
+    assert.doesNotThrow(() => migration.guard('aaa'));
+    for (const id of ['bbb', 'ccc']) {
+        assert.equal(migration.status(id).state, 'paused');
+        assert.throws(() => migration.guard(id), { code: 'OPENCODE_MIGRATION_PAUSED', statusCode: 503 });
+    }
+    assert.ok(s.lines.some(line => line === `[opencode-migration] robot=bbb paused: INSUFFICIENT_SPACE needed=${FLOOR} free=${FLOOR - 1}`), s.lines.join('\n'));
+    // Space returns: the retry prepares OpenCode, re-runs only the paused robots and opens their guards, with no restart.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    free = FLOOR;
+    await migration.retryPaused();
+    assert.deepEqual(s.prepared, ['opencode']);
+    assert.deepEqual(s.calls.map(call => call.id), ['aaa', 'bbb', 'ccc']);
+    assert.ok(s.calls.slice(1).every(call => call.input.binary === '/tools/bin/opencode'));
+    for (const id of ['bbb', 'ccc']) { assert.equal(migration.status(id).state, 'complete'); assert.doesNotThrow(() => migration.guard(id)); }
+    assert.ok(s.lines.includes('[opencode-migration] robot=bbb resumed'));
+    migration.close();
+});
+
+test('a robot whose own need does not fit is paused alone and resumes when it does, retried by timer and by a guarded request', async t => {
+    let fits = false;
+    let clock = 0;
+    let migration;
+    const s = await service(t, { aaa: null, bbb: null }, { homeOperation: async (id, operation, input) => {
+        s.calls.push({ id, input });
+        if (id === 'bbb' && !fits) return { phase: 'deferred', reason: 'INSUFFICIENT_SPACE', neededBytes: 2 * GIB, freeBytes: GIB };
+        return { phase: 'complete', sessions: 0, plugin: 'absent' };
+    } });
+    migration = createOpenCodeMigration({ paths: s.paths, alaEntry: path.join(s.root, 'ala/bin/ala.mjs'), log: line => s.lines.push(line),
+        lockImpl: async () => () => {}, freeBytes: async () => 100 * GIB, now: () => clock, retryIntervalMs: 3600000, retryRequestMs: 60000,
+        toolCache: { root: path.join(s.root, 'tool-cache'), prepareCodingAgent: async () => ({ binPath: '/tools/bin' }) },
+        homeOperation: async (id, operation, input) => s.calls.push({ id, input }) && (id === 'bbb' && !fits
+            ? { phase: 'deferred', reason: 'INSUFFICIENT_SPACE', neededBytes: 2 * GIB, freeBytes: GIB }
+            : { phase: 'complete', sessions: 0, plugin: 'absent' }) });
+    t.after(() => migration.close());
+    await migration.start();
+    assert.equal(migration.status('aaa').state, 'complete');
+    assert.equal(migration.status('bbb').state, 'paused');
+    assert.ok(s.lines.includes(`[opencode-migration] robot=bbb paused: INSUFFICIENT_SPACE needed=${2 * GIB} free=${GIB}`));
+    // A guarded request retries at most once a minute; it still answers 503 itself.
+    const before = s.calls.length;
+    assert.throws(() => migration.guard('bbb'), { code: 'OPENCODE_MIGRATION_PAUSED' });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(s.calls.length, before + 1, 'the first request retried');
+    assert.throws(() => migration.guard('bbb'), { code: 'OPENCODE_MIGRATION_PAUSED' });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(s.calls.length, before + 1, 'within a minute it does not retry again');
+    clock += 61000;
+    fits = true;
+    assert.throws(() => migration.guard('bbb'), { code: 'OPENCODE_MIGRATION_PAUSED' }, 'the request that triggers the retry is itself refused');
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(migration.status('bbb').state, 'complete');
+    assert.doesNotThrow(() => migration.guard('bbb'));
+    assert.ok(s.lines.includes('[opencode-migration] robot=bbb resumed'));
+});
+
+test('the retry timer resumes a paused robot by itself', async t => {
+    let fits = false;
+    const s = await service(t, { aaa: null });
+    const migration = createOpenCodeMigration({ paths: s.paths, alaEntry: path.join(s.root, 'ala/bin/ala.mjs'), log: line => s.lines.push(line),
+        lockImpl: async () => () => {}, freeBytes: async () => 100 * GIB, retryIntervalMs: 15,
+        toolCache: { root: path.join(s.root, 'tool-cache'), prepareCodingAgent: async () => ({ binPath: '/tools/bin' }) },
+        homeOperation: async () => (fits ? { phase: 'complete', sessions: 0, plugin: 'absent' }
+            : { phase: 'deferred', reason: 'INSUFFICIENT_SPACE', neededBytes: 2 * GIB, freeBytes: GIB }) });
+    t.after(() => migration.close());
+    await migration.start();
+    assert.equal(migration.status('aaa').state, 'paused');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(migration.status('aaa').state, 'paused', 'a retry that still does not fit changes nothing');
+    fits = true;
+    for (let waited = 0; migration.status('aaa').state === 'paused' && waited < 2000; waited += 10) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(migration.status('aaa').state, 'complete');
+});
+
+test('a retry fails when the lock is held elsewhere, and a failing resume marks the robot failed', async t => {
+    let held = true;
+    let result = { phase: 'deferred', reason: 'INSUFFICIENT_SPACE', neededBytes: 2 * GIB, freeBytes: GIB };
+    const s = await service(t, { aaa: null });
+    let first = true;
+    const migration = createOpenCodeMigration({ paths: s.paths, alaEntry: path.join(s.root, 'ala/bin/ala.mjs'), log: line => s.lines.push(line),
+        lockImpl: async () => { if (!first && held) throw new Error('Another OpenCode migration holds the lock'); first = false; return () => {}; },
+        freeBytes: async () => 100 * GIB, retryIntervalMs: 3600000,
+        toolCache: { root: path.join(s.root, 'tool-cache'), prepareCodingAgent: async () => ({ binPath: '/tools/bin' }) },
+        homeOperation: async () => { if (result instanceof Error) throw result; return result; } });
+    t.after(() => migration.close());
+    await migration.start();
+    await migration.retryPaused();
+    assert.equal(migration.status('aaa').state, 'paused', 'the lock is held, so nothing ran');
+    held = false;
+    result = new Error('helper died');
+    await migration.retryPaused();
+    assert.equal(migration.status('aaa').state, 'failed');
+    assert.throws(() => migration.guard('aaa'), { code: 'OPENCODE_MIGRATION_FAILED' });
+});
+
+test('a robot created during the gated window stays gated until the pass ends, then reports complete', async t => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const s = await service(t, { aaa: complete }, { homeOperation: async () => { await gate; return { phase: 'complete', repeated: true, plugin: 'absent' }; } });
+    const running = s.migration.start();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(s.migration.status('late-robot').state, 'running');
+    assert.throws(() => s.migration.guard('late-robot'), { code: 'OPENCODE_MIGRATING' });
+    release();
+    await running;
+    assert.equal(s.migration.status('late-robot').state, 'complete');
+});

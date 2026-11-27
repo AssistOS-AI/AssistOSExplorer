@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { createWorkerControl } from './worker-control.mjs';
 import { RobotPaths } from './robot-paths.mjs';
-import { ToolCache } from './tool-cache.mjs';
+import { ToolCache, toolCacheInternals } from './tool-cache.mjs';
 import { RuntimeBundle } from './runtime-bundle.mjs';
 import { RobotManager } from './robot-manager.mjs';
 import { RunManager } from './run-manager.mjs';
@@ -19,6 +19,8 @@ import { ProxyAgentClient } from './proxy-pool/proxy-client.mjs';
 import { createTerminalProfiles } from './terminal-profiles.mjs';
 import { refreshImages } from './image-refresh.mjs';
 import { createOpenCodeMigration } from './opencode-migration.mjs';
+import { MIGRATION_ID } from './opencode-home-migration.mjs';
+import { retainV1OpenCode } from './opencode-v1-tools.mjs';
 
 const internalToken = process.env.ROBOWORK_INTERNAL_TOKEN;
 if (!internalToken) throw new Error('ROBOWORK_INTERNAL_TOKEN is required');
@@ -59,8 +61,20 @@ robots.migrationStatus = id => migration.status(id);
 // Superseded tool generations are collected exactly here: leftover runs are already killed (runs.initialize) and Browser and
 // Desktop containers are already removed (gui.initialize), and the container, with its terminals, ends when this service
 // exits, so nothing can still use a generation. Only the renames are awaited; deleting the trash happens after listen.
+// The OpenCode 1 generation is the migration's rollback target, so it moves into the migration backup first. When that fails,
+// collection keeps every OpenCode generation, because it could otherwise delete the only copy.
+let keepBundles = [];
+try {
+    const retained = await retainV1OpenCode({ cacheRoot: toolCache.root, cacheSchema: toolCacheInternals.CACHE_SCHEMA,
+        root: path.join(paths.dataDir, 'server-state', 'migrations', MIGRATION_ID) });
+    if (retained.generation) console.log(`[opencode-v1-tools] ${retained.action} generation ${retained.generation.slice(0, 12)}`);
+} catch (error) {
+    keepBundles = ['opencode'];
+    console.error(`[opencode-v1-tools] retention failed (${error.consecutiveFailures ?? 1} consecutive starts): ${error?.code || error?.message}; `
+        + 'every OpenCode generation stays in the tool cache until it succeeds');
+}
 const collection = await toolCache.collectGarbage({ terminalStateDir: path.join(paths.dataDir, 'server-state', 'terminal'),
-    legacyNpmCache: path.join(DATA_DIR, '.npm') }).catch(error => {
+    legacyNpmCache: path.join(DATA_DIR, '.npm'), ...(keepBundles.length ? { keepBundles } : {}) }).catch(error => {
     console.error(`[tool-cache] garbage collection failed: ${error?.code || 'FAILED'}`);
     return { cleanup: async () => {} };
 });

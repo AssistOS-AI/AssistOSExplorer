@@ -468,7 +468,17 @@ async function runMain(t, mode) {
     const overrides = {
         './robot-paths.mjs': 'export class RobotPaths { dataDir = "/root"; robotsDir = "/robots"; workspaceRoot = "/workspace"; soul() { return "/soul"; } }',
         './constants.mjs': 'export const DATA_DIR = "/root"; export const PUBLIC_BASE_PATH = "/public/";',
-        './tool-cache.mjs': `export class ToolCache {
+        './opencode-home-migration.mjs': 'export const MIGRATION_ID = "opencode-v2-1";',
+        './opencode-v1-tools.mjs': `export async function retainV1OpenCode(options) {
+            trace('retain.start', options);
+            await new Promise(resolve => setTimeout(resolve, 40));
+            if (process.env.STUB_MODE === 'retain-fail') throw Object.assign(new Error('boom'), { code: 'ERETAIN', consecutiveFailures: 3 });
+            trace('retain.done');
+            return { generation: 'a'.repeat(64), action: 'moved' };
+        }`,
+        './tool-cache.mjs': `export const toolCacheInternals = { CACHE_SCHEMA: 'schema-x' };
+        export class ToolCache {
+            root = '/root/tool-cache';
             async collectGarbage(options) {
                 trace('collect.start', options);
                 await new Promise(resolve => setTimeout(resolve, 40));
@@ -505,12 +515,27 @@ test('T17: the startup entry point collects after both kill steps, before listen
     const { code, stderr, events, order } = await runMain(t, 'ok');
     assert.equal(code, 0, stderr);
     const at = name => order.indexOf(name);
-    for (const name of ['runs.initialize', 'gui.initialize', 'collect.start', 'collect.done', 'listen', 'cleanup', 'runtimeBundle.warmup', 'toolCache.warmup']) assert.notEqual(at(name), -1, `${name} in ${order}`);
+    for (const name of ['runs.initialize', 'gui.initialize', 'retain.start', 'retain.done', 'collect.start', 'collect.done', 'listen', 'cleanup', 'runtimeBundle.warmup', 'toolCache.warmup']) assert.notEqual(at(name), -1, `${name} in ${order}`);
     assert.ok(at('runs.initialize') < at('collect.start') && at('gui.initialize') < at('collect.start'), order.join(' '));
+    assert.ok(at('gui.initialize') < at('retain.start') && at('retain.done') < at('collect.start'), `the V1 generation is retained before collection: ${order}`);
     assert.ok(at('collect.done') < at('listen'), 'the rename phase is awaited before listen');
     assert.ok(at('gui.initialize') < at('migration.start') && at('migration.done') < at('toolCache.warmup'));
     for (const name of ['cleanup', 'runtimeBundle.warmup', 'toolCache.warmup']) assert.ok(at('listen') < at(name), `${name} runs after listen`);
-    assert.deepEqual(events.find(event => event[0] === 'collect.start')[1], { terminalStateDir: '/root/server-state/terminal', legacyNpmCache: '/root/.npm' });
+    assert.deepEqual(events.find(event => event[0] === 'collect.start')[1], { terminalStateDir: '/root/server-state/terminal', legacyNpmCache: '/root/.npm' },
+        'a successful retention passes no keepBundles');
+    assert.deepEqual(events.find(event => event[0] === 'retain.start')[1], { cacheRoot: '/root/tool-cache', cacheSchema: 'schema-x',
+        root: '/root/server-state/migrations/opencode-v2-1' });
+});
+
+test('T17: a failing V1 retention keeps every OpenCode generation through keepBundles, says so loudly, and does not stop startup', async (t) => {
+    const { code, stderr, events, order } = await runMain(t, 'retain-fail');
+    assert.equal(code, 0, stderr);
+    assert.equal(order.includes('retain.done'), false);
+    assert.match(stderr, /\[opencode-v1-tools\] retention failed \(3 consecutive starts\): ERETAIN; every OpenCode generation stays in the tool cache until it succeeds/u);
+    assert.ok(order.indexOf('retain.start') < order.indexOf('collect.start'));
+    assert.deepEqual(events.find(event => event[0] === 'collect.start')[1], { terminalStateDir: '/root/server-state/terminal', legacyNpmCache: '/root/.npm',
+        keepBundles: ['opencode'] });
+    for (const name of ['listen', 'migration.start', 'toolCache.warmup']) assert.ok(order.includes(name), `${name} in ${order}`);
 });
 
 test('T17: a failing collection does not prevent startup', async (t) => {

@@ -8,6 +8,9 @@ export const TOOL_SESSION_CHECK_MS = 5 * 60 * 1000;
 // A preparation that fell back to the last valid generation (registry unreachable, install failed) is retried after
 // this, not after the full refresh interval.
 export const TOOL_FALLBACK_RETRY_MS = 5 * 60 * 1000;
+// OpenCode preparation downloads a generation (about 1.3 GB on x64) and is not attempted below this much free space on the
+// tool-cache filesystem. It never applies to a single home: each home's step sizes its own need (opencode-home-migration.mjs).
+export const OPENCODE_MIGRATION_MIN_FREE_BYTES = 5 * 1024 ** 3;
 export const MAX_ACTIVE_GUI_ROBOTS = 8;
 export const BROWSER_IMAGE = 'docker.io/assistos/roboteam-browser:runtime';
 export const DESKTOP_IMAGE = 'docker.io/assistos/roboteam-desktop:runtime';

@@ -6,10 +6,14 @@ import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { installSoulGatewayPlugin } from './soul-gateway-service.mjs';
-import { checkedPath, retireOpenCodePlugin } from './opencode-plugin-retire.mjs';
+import { checkedPath, pluginTreeDisposition, retireOpenCodePlugin } from './opencode-plugin-retire.mjs';
 
 export const MIGRATION_ID = 'opencode-v2-1';
 const STATE_PATHS = ['.config/opencode', '.local/share/opencode', '.local/state/opencode', '.opencode', '.ala'];
+const MANAGED_TREE = '.config/opencode/node_modules';
+const DATABASE_DIRECTORY = '.local/share/opencode';
+// What a home's step must leave free beyond its own need, so a snapshot never fills the disk to the last byte.
+const MARGIN_BYTES = 1024 ** 3;
 
 async function atomic(file, value) {
     const temporary = `${file}.${randomUUID()}.tmp`;
@@ -104,8 +108,44 @@ export async function upgradeDatabase(binary, home, env = process.env, expected 
     });
 }
 
-// `backup` is a server-owned, per-robot directory mounted only for this helper.
-export async function migrateOpenCodeHome({ home, backup, binary, upgrade = upgradeDatabase }) {
+// Bytes below a path, counted without following a link; `skip` names paths that are not counted.
+async function treeBytes(file, skip = new Set()) {
+    if (skip.has(file)) return 0;
+    const stat = await fs.lstat(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    if (!stat) return 0;
+    if (!stat.isDirectory()) return stat.size;
+    let total = 0;
+    for (const entry of await fs.readdir(file)) total += await treeBytes(path.join(file, entry), skip);
+    return total;
+}
+
+// What the upgrade can add on top of the database it reads.
+async function databaseBytes(home) {
+    if (!await checkedPath(home, DATABASE_DIRECTORY)) return 0;
+    let total = 0;
+    for (const name of ['opencode.db', 'opencode.db-wal', 'opencode.db-shm']) {
+        total += await treeBytes(path.join(home, DATABASE_DIRECTORY, name));
+    }
+    return total;
+}
+
+// What the snapshot will copy. A link or a special file anywhere on the way to a state directory throws, as the copy would.
+async function snapshotBytes(home, excluded) {
+    const skipped = new Set(excluded.map(relative => path.join(home, relative)));
+    let total = 0;
+    for (const relative of STATE_PATHS) {
+        if (await checkedPath(home, relative)) total += await treeBytes(path.join(home, relative), skipped);
+    }
+    return total;
+}
+
+async function freeBytesAt(directory) {
+    const stat = await fs.statfs(directory);
+    return stat.bavail * stat.bsize;
+}
+
+// `backup` is a server-owned, per-robot directory mounted only for this helper. `freeBytes` and `marginBytes` exist for tests.
+export async function migrateOpenCodeHome({ home, backup, binary, upgrade = upgradeDatabase, freeBytes = freeBytesAt, marginBytes = MARGIN_BYTES }) {
     const stateFile = path.join(backup, 'state.json');
     let state = await fs.readFile(stateFile, 'utf8').then(JSON.parse).catch(error => {
         if (error.code !== 'ENOENT') throw error;
@@ -116,22 +156,34 @@ export async function migrateOpenCodeHome({ home, backup, binary, upgrade = upgr
     if (state.phase === 'complete') return { phase: 'complete', repeated: true, plugin: (await retireOpenCodePlugin(home)).status };
     const snapshot = path.join(backup, 'snapshot');
     try {
-        if (!await exists(path.join(backup, 'snapshot.json'))) {
+        const snapshotted = await exists(path.join(backup, 'snapshot.json'));
+        // The tree OpenCode 2 never reads stays out of the backup; OpenCode 1 reinstalls it from the manifest and lock.
+        const disposition = snapshotted ? null : await pluginTreeDisposition(home);
+        const excluded = disposition?.status === 'managed' && disposition.hasTree ? [MANAGED_TREE] : [];
+        // Sized to this home's own work, before anything is written: a state that cannot fit pauses the robot and leaves
+        // its journal and home untouched, so a later run starts from the same place.
+        const need = (snapshotted ? 0 : await snapshotBytes(home, excluded)) + await databaseBytes(home);
+        const required = need + Math.max(marginBytes, need);
+        const free = await freeBytes(backup);
+        if (free < required) return { phase: 'deferred', reason: 'INSUFFICIENT_SPACE', neededBytes: required, freeBytes: free };
+        if (!snapshotted) {
             // An interrupted copy has never been a valid backup; source has not been touched yet.
             await fs.rm(snapshot, { recursive: true, force: true });
             await fs.mkdir(snapshot, { mode: 0o700 });
             const included = [];
+            const skipped = new Set(excluded.map(relative => path.join(home, relative)));
             for (const relative of STATE_PATHS) {
                 if (!await checkedPath(home, relative)) continue;
                 await fs.mkdir(path.dirname(path.join(snapshot, relative)), { recursive: true, mode: 0o700 });
                 await fs.cp(path.join(home, relative), path.join(snapshot, relative), {
                     recursive: true, verbatimSymlinks: true, preserveTimestamps: true, mode: constants.COPYFILE_FICLONE,
+                    filter: source => !skipped.has(source),
                 });
                 included.push(relative);
             }
             // Inspect the backup first, never the unprotected live database.
             const before = await inventory(snapshot);
-            await atomic(path.join(backup, 'snapshot.json'), { included, before, createdAt: new Date().toISOString() });
+            await atomic(path.join(backup, 'snapshot.json'), { included, excluded, before, createdAt: new Date().toISOString() });
         }
         state = { ...state, phase: 'migrating' };
         await atomic(stateFile, state);
