@@ -2,7 +2,8 @@ import { createCacheApi, cacheAccessDenied } from '../../../services/infrastruct
 import { escapeHtml } from '../admin-settings-panel/admin-settings-utils.js';
 
 const minutes = [1, 2, 5];
-const ACTION_LABELS = { off: 'Switch off', page: 'Allow caching', default: 'Reset' };
+// The only settings a route change may send; an action outside this record is never acted on.
+const ROUTE_SETTINGS = Object.freeze({ off: 'off', page: 'page', default: 'default' });
 
 // Refusals the Router answers for a route change; the panel states them in plain words and re-reads.
 const REFUSALS = {
@@ -15,16 +16,16 @@ const REFUSALS = {
 };
 
 const CHECK_ERRORS = {
-    wildcard_path: 'Only an exact path can be checked, not a path pattern.',
+    wildcard_path: 'Only an exact path can be tested, not a path pattern.',
     unknown_route: 'This route is no longer a public route of the application.',
-    no_published_host: 'No published host sends this path to the application, so it cannot be checked.',
-    cache_unavailable: 'The Router could not fetch this page to check it. Try again later.',
+    no_published_host: 'No published host sends this path to the application, so it cannot be tested.',
+    cache_unavailable: 'The Router could not fetch this page to test it. Try again later.',
 };
 
 export function describeCacheError(error, table = REFUSALS) {
     if (error?.code === 'rate_limited') {
         const seconds = Number.isFinite(error.retryAfterSeconds) ? error.retryAfterSeconds : 1;
-        return `Checks are limited to one per second. Try again in ${seconds} ${seconds === 1 ? 'second' : 'seconds'}.`;
+        return `Tests are limited to one per second. Try again in ${seconds} ${seconds === 1 ? 'second' : 'seconds'}.`;
     }
     return table[error?.code] || '';
 }
@@ -41,86 +42,105 @@ export function routeKey(agent, path) {
 
 const isNever = (route) => route.manifest === 'never' || route.source === 'never';
 
-// The one place that decides which actions a row offers: stale rows only Reset (even on a route
-// that has since become `never`, so the saved setting can always be removed), never rows none.
+// The one place that decides what a route offers, and so which rows are shown at all. A stale row
+// (even one whose entry has since become `never`) offers only `default`, so the saved setting can
+// always be removed. A never route, a route under a never wildcard, a publicProtocol route and a
+// route with no choice offer nothing and are not rendered.
 export function offeredActions(route) {
     if (route.stale) return ['default'];
-    if (isNever(route)) return [];
-    const choices = Array.isArray(route.choices) ? route.choices.filter((choice) => Object.hasOwn(ACTION_LABELS, choice)) : [];
+    if (isNever(route) || route.neverBy || route.publicProtocol) return [];
+    const choices = Array.isArray(route.choices) ? route.choices.filter((choice) => Object.hasOwn(ROUTE_SETTINGS, choice)) : [];
+    if (!choices.length) return [];
     return [...choices, ...(route.checkable === true ? ['check'] : [])];
 }
 
-function describeMark(route) {
+// Which way a route's switch is set and the one action that turning it sends, taken from the actions
+// the row offers: a saved setting is removed (`default`), a manifest class is switched `off`, an
+// unmarked choosable route is allowed `page`.
+export function routeSwitch(route) {
+    const actions = offeredActions(route);
+    if (actions.includes('default')) return { on: route.setting?.setting === 'page', action: 'default' };
+    if (actions.includes('off')) return { on: true, action: 'off' };
+    if (actions.includes('page')) return { on: false, action: 'page' };
+    return null;
+}
+
+function describeMinutes(seconds) {
+    const count = Number.isFinite(seconds) ? Math.max(1, Math.round(seconds / 60)) : 5;
+    return `${count} ${count === 1 ? 'minute' : 'minutes'}`;
+}
+
+function describeApplication(app) {
+    if (!app.enabled) return 'Caching is off. Cloudflare keeps no copies of this application.';
+    if (app.held) return 'Page caching is held, so pages are not kept. Release files are still kept for a year. Visitors who are signed in always get a fresh answer.';
+    return `Pages are kept for ${describeMinutes(app.pageSeconds)} and release files for a year. Visitors who are signed in always get a fresh answer.`;
+}
+
+function describeStatus(app, route) {
+    if (!route.effective) return 'Not cached';
+    if (!app.enabled) return 'Not cached while the application is off';
+    if (route.effective === 'immutable') return 'Cached for a year';
+    if (app.held) return 'Not cached while held';
+    return `Cached for ${describeMinutes(app.pageSeconds)}`;
+}
+
+function describeSource(route) {
     const setting = route.setting?.setting;
-    if (route.stale) {
-        return { label: 'Stale', tone: 'warning', notes: [`The saved ${setting === 'page' ? '“allow caching”' : '“switch off”'} setting no longer matches this route and has no effect.`] };
-    }
-    if (route.manifest === 'never' || route.source === 'never') {
-        return { label: 'Never', tone: 'locked', notes: [route.neverBy && route.neverBy !== route.path ? `Covered by ${route.neverBy}` : 'The application forbids caching this route.'] };
-    }
-    if (route.source === 'off' || setting === 'off') {
-        return { label: 'Switched off', tone: 'off', notes: route.manifest ? [`Manifest ${route.manifest}`] : [] };
-    }
-    if (route.source === 'administrator' || setting === 'page') return { label: 'Added by administrator', tone: 'success', notes: [] };
-    if (route.source === 'manifest' || route.manifest) return { label: `Manifest ${route.manifest || route.effective}`, tone: 'success', notes: [] };
-    return { label: 'Not cached', tone: '', notes: [] };
+    if (route.source === 'off' || setting === 'off') return 'switched off by an administrator';
+    if (route.source === 'administrator' || setting === 'page') return 'added by an administrator';
+    if (route.source === 'manifest' || route.manifest) return 'from the application';
+    return 'not marked by the application';
+}
+
+function describeStale(route) {
+    return `The saved ${route.setting?.setting === 'page' ? '“allow caching”' : '“switch off”'} setting no longer matches this route and has no effect.`;
 }
 
 function renderCheck(entry) {
     if (!entry) return '';
     if (entry.error) return `<p class="cache-check error" role="status">${escapeHtml(entry.error)}</p>`;
-    if (!entry.check || typeof entry.check !== 'object') return '<p class="cache-check error" role="status">The Router returned no check result.</p>';
+    if (!entry.check || typeof entry.check !== 'object') return '<p class="cache-check error" role="status">The Router returned no test result.</p>';
     const { host, path, status, cdnHeader, cacheControl } = entry.check;
-    return `<p class="cache-check" role="status"><strong>Checked now:</strong> HTTP ${escapeHtml(status)} from ${escapeHtml(host)}${escapeHtml(path)}. Cloudflare header sent: <code>${escapeHtml(cdnHeader || 'none')}</code>. Application header: <code>${escapeHtml(cacheControl || 'none')}</code>.</p>`;
+    return `<p class="cache-check" role="status"><strong>Tested now:</strong> HTTP ${escapeHtml(status)} from ${escapeHtml(host)}${escapeHtml(path)}. Cloudflare header sent: <code>${escapeHtml(cdnHeader || 'none')}</code>. Application header: <code>${escapeHtml(cacheControl || 'none')}</code>.</p>`;
 }
 
-function renderActions(app, route, ui, disabled) {
-    const key = routeKey(app.agent, route.path);
+const settingNote = (route) => (route.setting ? ` title="Set by ${escapeHtml(route.setting.by)} at ${escapeHtml(route.setting.at)}"` : '');
+
+function renderRoute(app, route, ui, disabled) {
     const attributes = `data-cache-agent="${escapeHtml(app.agent)}" data-cache-path="${escapeHtml(route.path)}"`;
-    // A stale row can share its path with the live row; only the live row carries confirm and check state.
-    if (!route.stale && ui.confirming && routeKey(ui.confirming.agent, ui.confirming.path) === key) {
-        const prompt = ui.confirming.setting === 'off'
-            ? 'Switch off caching for this route? Cached copies on the application’s hosts may be cleared.'
-            : `Allow Cloudflare to cache this route for ${app.pageSeconds / 60} ${app.pageSeconds === 60 ? 'minute' : 'minutes'}? Every visitor can then get the same copy, so allow it only for pages that do not differ by visitor.`;
-        return `<p class="cache-confirm" role="alert">${escapeHtml(prompt)}</p><div class="cache-actions">
-            <button type="button" class="general-button" data-cache-route-action="confirm" ${attributes}${disabled ? ' disabled' : ''}>Confirm</button>
-            <button type="button" class="gray-button" data-cache-route-action="cancel" ${attributes}>Cancel</button></div>`;
+    const path = `<code class="cache-path" title="${escapeHtml(route.path)}">${escapeHtml(route.path)}</code>`;
+    if (route.stale) {
+        return `<li class="cache-route cache-route-stale" data-cache-route>${path}
+            <div class="cache-route-state"><span class="status-badge warning">Stale</span><span class="cache-route-source"${settingNote(route)}>${escapeHtml(describeStale(route))}</span></div>
+            <div class="cache-route-controls"><button type="button" class="gray-button" data-cache-route-action="default" ${attributes}${disabled ? ' disabled' : ''}>Remove</button></div></li>`;
     }
-    const actions = offeredActions(route);
-    if (!actions.length) {
-        if (!isNever(route)) return '';
-        const reason = escapeHtml(route.neverBy && route.neverBy !== route.path ? `Never cached (covered by ${route.neverBy})` : 'Never cached');
-        return `<span class="cache-locked" title="${reason}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Locked</span>`;
-    }
-    return `<div class="cache-actions">${actions.map((action) => action === 'check'
-        ? `<button type="button" class="gray-button" data-cache-route-action="check" ${attributes}${disabled || ui.checking ? ' disabled' : ''}>${ui.checking === key ? 'Checking…' : 'Check'}</button>`
-        : `<button type="button" class="gray-button" data-cache-route-action="${action}" ${attributes}${disabled ? ' disabled' : ''}>${ACTION_LABELS[action]}</button>`).join('')}</div>`;
+    const key = routeKey(app.agent, route.path);
+    const toggle = routeSwitch(route);
+    const switchHtml = toggle ? `<button type="button" role="switch" aria-checked="${toggle.on ? 'true' : 'false'}" aria-label="Caching for ${escapeHtml(route.path)}" title="${toggle.on ? 'Switch off' : 'Switch on'}" class="plugin-settings-toggle cache-route-switch${toggle.on ? ' enabled' : ''}" data-cache-route-action="${toggle.action}" ${attributes}${disabled ? ' disabled' : ''}><span class="plugin-settings-switch-track" aria-hidden="true"><span class="plugin-settings-switch-thumb"></span></span></button>` : '';
+    const testHtml = offeredActions(route).includes('check')
+        ? `<button type="button" class="gray-button cache-test" data-cache-route-action="check" ${attributes}${disabled || ui.checking ? ' disabled' : ''}>${ui.checking === key ? 'Testing…' : 'Test'}</button>` : '';
+    return `<li class="cache-route" data-cache-route>${path}
+        <span class="cache-route-status">${escapeHtml(describeStatus(app, route))}</span>
+        <span class="cache-route-source"${settingNote(route)}>${escapeHtml(describeSource(route))}</span>
+        <div class="cache-route-controls">${testHtml}${switchHtml}</div>
+        ${renderCheck(ui.checks.get(key))}</li>`;
 }
 
-function renderRouteRow(app, route, ui, disabled) {
-    const mark = describeMark(route);
-    const setting = route.setting;
-    const notes = [...mark.notes, ...(setting ? [`Set by ${setting.by} at ${setting.at}`] : [])];
-    return `<tr data-cache-route>
-        <td data-label="Path"><code class="cache-path" title="${escapeHtml(route.path)}">${escapeHtml(route.path)}</code></td>
-        <td data-label="Mark"><span class="status-badge cache-mark ${mark.tone}">${escapeHtml(mark.label)}</span>${notes.map((note) => `<span class="cache-note">${escapeHtml(note)}</span>`).join('')}</td>
-        <td data-label="Cloudflare header for an anonymous request"><code>${escapeHtml(route.cdnHeader)}</code>${renderCheck(route.stale ? null : ui.checks.get(routeKey(app.agent, route.path)))}</td>
-        <td data-label="Actions" class="cache-actions-cell">${renderActions(app, route, ui, disabled)}</td>
-    </tr>`;
-}
-
-function renderRoutesTable(app, ui, disabled) {
-    if (!Array.isArray(app.publicRoutes)) {
+function renderRoutes(app, ui, disabled) {
+    let rows;
+    if (Array.isArray(app.publicRoutes)) {
+        rows = app.publicRoutes.filter((route) => offeredActions(route).length).map((route) => renderRoute(app, route, ui, disabled));
+        if (!rows.length) return '<p class="cache-card-meta">No routes can be changed here.</p>';
+    } else {
         // An older Router sends only the manifest-marked routes: show them read-only.
         const marked = Array.isArray(app.routes) ? app.routes : [];
-        if (!marked.length) return '<p class="settings-card-meta">This application marks no cacheable paths.</p>';
-        return `<table class="cache-routes-table cache-routes-plain" aria-label="Cacheable paths of ${escapeHtml(app.agent)}"><thead><tr><th scope="col">Path</th><th scope="col">Mark</th></tr></thead><tbody>${marked.map((route) =>
-            `<tr><td data-label="Path"><code class="cache-path" title="${escapeHtml(route.path)}">${escapeHtml(route.path)}</code></td><td data-label="Mark"><span class="status-badge cache-mark success">Manifest ${escapeHtml(route.cache)}</span></td></tr>`).join('')}</tbody></table>`;
+        if (!marked.length) return '<p class="cache-card-meta">This application marks no cacheable paths.</p>';
+        rows = marked.map((route) => `<li class="cache-route"><code class="cache-path" title="${escapeHtml(route.path)}">${escapeHtml(route.path)}</code>
+            <span class="cache-route-status">${escapeHtml(describeStatus(app, { effective: route.cache }))}</span>
+            <span class="cache-route-source">from the application</span></li>`);
     }
-    const note = app.adminChoices === false
-        ? '<p class="settings-card-meta">Caching can be allowed on other routes only after the application marks at least one route as never cached.</p>' : '';
-    if (!app.publicRoutes.length) return `<p class="settings-card-meta">This application has no public routes.</p>${note}`;
-    return `<table class="cache-routes-table" aria-label="Public routes of ${escapeHtml(app.agent)}"><thead><tr><th scope="col">Path</th><th scope="col">Mark</th><th scope="col">Cloudflare header for an anonymous request</th><th scope="col">Actions</th></tr></thead><tbody>${app.publicRoutes.map((route) => renderRouteRow(app, route, ui, disabled)).join('')}</tbody></table>${note}`;
+    return `<div class="cache-routes${Array.isArray(app.publicRoutes) ? '' : ' cache-routes-plain'}"><div class="cache-routes-head"><span>Routes</span><span class="status-badge">${rows.length}</span></div>
+        <ul class="cache-route-list" aria-label="Routes of ${escapeHtml(app.agent)}">${rows.join('')}</ul></div>`;
 }
 
 function renderApplication(app, ui, disabled) {
@@ -129,17 +149,19 @@ function renderApplication(app, ui, disabled) {
         ? `<span class="status-badge warning">Held since ${escapeHtml(app.held.since)} by ${escapeHtml(app.held.by)}</span>`
         : `<span class="status-badge${app.enabled ? ' success' : ''}">${app.enabled ? 'On' : 'Off'}</span>`;
     const hosts = Array.isArray(app.hosts) && app.hosts.length ? `Published on ${app.hosts.map(escapeHtml).join(', ')}` : 'No published hosts';
-    return `<article class="settings-card settings-card-static cache-app">
-        <div class="cache-app-heading">
-            <div class="cache-app-title"><h3 class="settings-card-title">${agent}</h3>${state}<span class="settings-card-meta">${hosts}</span></div>
-            <div class="cache-app-controls">
-                <button type="button" role="switch" aria-checked="${app.enabled ? 'true' : 'false'}" class="plugin-settings-toggle${app.enabled ? ' enabled' : ''}" data-cache-toggle="${agent}"${disabled || app.held ? ' disabled' : ''}><span class="plugin-settings-switch-track" aria-hidden="true"><span class="plugin-settings-switch-thumb"></span></span><span class="plugin-settings-switch-text">Caching</span></button>
+    return `<article class="settings-card settings-card-static cache-card cache-app">
+        <div class="cache-card-top">
+            <div class="cache-card-title-row"><h3 class="cache-card-title">${agent}</h3>${state}</div>
+            <div class="cache-card-controls">
                 <label class="cache-freshness"><span class="form-label">Page freshness</span><select class="form-input" data-cache-minutes="${agent}"${disabled ? ' disabled' : ''}>
                     ${minutes.map((value) => `<option value="${value}"${value * 60 === app.pageSeconds ? ' selected' : ''}>${value} ${value === 1 ? 'minute' : 'minutes'}</option>`).join('')}
                 </select></label>
+                <button type="button" role="switch" aria-checked="${app.enabled ? 'true' : 'false'}" class="plugin-settings-toggle${app.enabled ? ' enabled' : ''}" data-cache-toggle="${agent}"${disabled || app.held ? ' disabled' : ''}><span class="plugin-settings-switch-track" aria-hidden="true"><span class="plugin-settings-switch-thumb"></span></span><span class="plugin-settings-switch-text">Caching</span></button>
             </div>
+            <div class="cache-card-text"><p>${escapeHtml(describeApplication(app))}</p><p class="cache-card-meta">${hosts}</p></div>
         </div>
-        ${renderRoutesTable(app, ui, disabled)}
+        <hr class="cache-divider">
+        ${renderRoutes(app, ui, disabled)}
     </article>`;
 }
 
@@ -148,31 +170,44 @@ function renderHosts(snapshot, apps, disabled) {
     for (const app of apps) {
         for (const name of app.hosts || []) if (!hosts.some((entry) => entry.host === name)) hosts.push({ host: name, purgeConfigured: false, lastPurge: null });
     }
-    if (!hosts.length) return '<p class="settings-card-meta">No published hosts.</p>';
-    return `<section class="cache-hosts" aria-label="Published hosts">${hosts.map((host) => {
+    if (!hosts.length) return '<p class="cache-card-meta">No published hosts.</p>';
+    return `<ul class="cache-list cache-hosts" aria-label="Published hosts">${hosts.map((host) => {
         const last = host.lastPurge;
-        return `<div class="cache-host">
+        return `<li class="cache-host">
             <div class="cache-host-main"><strong class="cache-host-name">${escapeHtml(host.host)}</strong><span class="status-badge${host.purgeConfigured ? ' success' : ''}">${host.purgeConfigured ? 'Purge configured' : 'Purge unconfigured'}</span></div>
-            <span class="settings-card-meta cache-host-history">${last ? `Last recorded clear: ${describePurge(last)} at ${escapeHtml(last.at)} by ${escapeHtml(last.by)}` : 'No recorded clear'}</span>
+            <span class="cache-card-meta cache-host-history">${last ? `Last recorded clear: ${describePurge(last)} at ${escapeHtml(last.at)} by ${escapeHtml(last.by)}` : 'No recorded clear'}</span>
             <button type="button" class="gray-button" data-purge-host="${escapeHtml(host.host)}"${disabled || !host.purgeConfigured ? ' disabled' : ''}>Clear cache now</button>
-        </div>`;
-    }).join('')}</section>`;
+        </li>`;
+    }).join('')}</ul>`;
 }
 
-export function renderCachePanel({ snapshot = null, busy = false, unconfirmed = false, error = '', results = [], receivedAt = '', confirming = null, checks = new Map(), checking = '' } = {}) {
+function renderClearCard(snapshot, apps, disabled, messages) {
+    return `<section class="settings-card settings-card-static cache-card cache-clear" aria-label="Clear cache">
+        <div class="cache-card-top">
+            <div class="cache-card-title-row"><h3 class="cache-card-title">Clear cache</h3><span class="cache-help" role="img" tabindex="0" aria-label="Hosts without purge configured cannot be cleared here." title="Hosts without purge configured cannot be cleared here.">?</span></div>
+            <div class="cache-card-text"><p>Removes Cloudflare’s copies for a host, so the next visitor gets a fresh answer. Cleared at most once every 15 seconds per host.</p></div>
+        </div>
+        ${messages}
+        ${renderHosts(snapshot, apps, disabled)}
+    </section>`;
+}
+
+export function renderCachePanel({ snapshot = null, busy = false, unconfirmed = false, error = '', results = [], receivedAt = '', checks = new Map(), checking = '' } = {}) {
     const disabled = busy || unconfirmed;
     const apps = Array.isArray(snapshot?.applications) ? snapshot.applications : null;
-    const ui = { confirming, checks, checking };
-    return `<div class="cache-toolbar"><div class="settings-card-info"><h2 class="settings-section-title">Cache</h2><p class="settings-section-description">Cloudflare keeps copies of public answers the Router marks. Release files are kept a year; pages for the minutes you choose. This page cannot see Cloudflare’s rules or cached objects.</p></div>
+    const ui = { checks, checking };
+    // Results and errors belong to the Clear cache card; before the first read there is no card, so the error stands alone.
+    const messages = `${error ? `<p class="settings-status error cache-message" role="alert">${escapeHtml(error)}</p>` : ''}
+        ${results.length ? `<div class="settings-status success cache-results" role="status"><strong>Clear request results</strong> <span class="cache-card-meta">Response received at ${escapeHtml(receivedAt)}</span><ul>${results.map((item) =>
+            `<li>${escapeHtml(item.host)} · ${describePurge(item)}</li>`).join('')}</ul></div>` : ''}`;
+    return `<div class="cache-head"><div class="cache-head-text"><h2 class="settings-section-title cache-title">Cache</h2><p class="settings-section-description">Choose what Cloudflare keeps copies of, and clear them. This page cannot see Cloudflare’s rules or cached objects.</p></div>
         <div class="settings-card-actions"><button type="button" class="gray-button" data-cache-refresh${busy ? ' disabled' : ''}>Refresh</button></div></div>
-        ${error ? `<p class="settings-status error cache-message" role="alert">${escapeHtml(error)}</p>` : ''}
-        ${results.length ? `<div class="settings-status success cache-results" role="status"><strong>Clear request results</strong> <span class="settings-card-meta">Response received at ${escapeHtml(receivedAt)}</span><ul>${results.map((item) =>
-            `<li>${escapeHtml(item.host)} · ${describePurge(item)}</li>`).join('')}</ul></div>` : ''}
-        ${apps ? renderHosts(snapshot, apps, disabled) : ''}
+        ${apps ? renderClearCard(snapshot, apps, disabled, messages) : messages}
         ${apps ? apps.map((app) => renderApplication(app, ui, disabled)).join('') : ''}
         ${apps?.length === 0 ? '<p class="settings-empty-state">No applications have cacheable paths.</p>' : ''}
         ${!apps && !error ? '<p class="settings-status loading" role="status">Loading cache settings…</p>' : ''}`;
 }
+
 
 export class CachePanel {
     constructor(element, invalidate, props = {}) {
@@ -183,7 +218,6 @@ export class CachePanel {
         this.snapshot = element.cacheSnapshot || null;
         this.results = [];
         this.checks = new Map();
-        this.confirming = null;
         this.checking = '';
         this.error = '';
         this.unconfirmed = false;
@@ -248,7 +282,6 @@ export class CachePanel {
         const { enabled = app.enabled, pageSeconds = app.pageSeconds } = patch;
         if ((app.held && enabled !== app.enabled) || !minutes.includes(pageSeconds / 60)) return;
         if (enabled === app.enabled && pageSeconds === app.pageSeconds) return;
-        this.confirming = null;
         return this.run(async (options) => {
             this.acceptReply(agent, await this.api.setApplication({ agent, enabled, pageSeconds }, options));
         });
@@ -259,27 +292,12 @@ export class CachePanel {
         this.results = reply.purges || [];
     }
 
-    // Only an action the row offers is ever acted on; the path is the Router's normalized one.
+    // Only an action the row offers is ever acted on; the path is the Router's normalized one. A switch
+    // acts at once, like the application switch: the Router's reply carries the purge results.
     routeAction(action, agent, path) {
-        if (action === 'cancel') {
-            this.confirming = null;
-            this.render();
-            return;
-        }
-        if (action === 'confirm') {
-            if (!this.confirming) return;
-            ({ agent, path } = this.confirming);
-            action = this.confirming.setting;
-        }
         const route = this.findRoute(agent, path, action);
         if (!route || this.busy || this.unconfirmed || this.denied) return;
         if (action === 'check') return this.check(agent, path);
-        if (action !== 'default' && !(this.confirming?.agent === agent && this.confirming.path === path && this.confirming.setting === action)) {
-            this.confirming = { agent, path, setting: action };
-            this.render();
-            return;
-        }
-        this.confirming = null;
         return this.run(async (options) => {
             this.acceptReply(agent, await this.api.setRoute({ agent, path, setting: action }, options));
         });
@@ -294,7 +312,6 @@ export class CachePanel {
     }
 
     refresh() {
-        this.confirming = null;
         return this.run();
     }
 
@@ -312,7 +329,7 @@ export class CachePanel {
         } catch (error) {
             if (signal.aborted) return;
             if (cacheAccessDenied(error)) this.deny();
-            else this.checks.set(key, { error: describeCacheError(error, CHECK_ERRORS) || 'The check could not be completed. Try again.' });
+            else this.checks.set(key, { error: describeCacheError(error, CHECK_ERRORS) || 'The test could not be completed. Try again.' });
         } finally {
             this.busy = false;
             this.checking = '';
