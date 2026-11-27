@@ -297,7 +297,7 @@ test('lightweight robot ensure completes on a cold cache without downloads and r
     const homes = [], sockets = [];
     const never = () => { downloads++; return new Promise(() => {}); };
     const robots = new RobotManager({ paths, toolCache: { root: path.join(paths.dataDir, 'tool-cache'),
-        prepareShellTools: never, prepareOpenCodePlugin: never },
+        prepareShellTools: never },
     homeOperation: async (id, operation, input) => { homes.push({ id, operation, input }); return homeOperation(operation, input, paths.home(id)); },
     soulGateway: { prepare: async directory => { sockets.push(directory); } } });
     await robots.initialize();
@@ -314,7 +314,7 @@ test('lightweight robot ensure completes on a cold cache without downloads and r
     assert.deepEqual(await robots.require('aaa'), record);
     assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), config);
     assert.equal(homes.length, 3);
-    assert.ok(homes.every(entry => entry.operation === 'ensure' && !entry.input.openCodePlugin));
+    assert.ok(homes.every(entry => entry.operation === 'ensure' && !Object.hasOwn(entry.input, 'openCodePlugin')));
     assert.ok(sockets.every(directory => directory === paths.soul('aaa')));
     const shell = await fs.readFile(path.join(paths.home('aaa'), '.roboteam-env.sh'), 'utf8');
     assert.ok(shell.includes(path.join(paths.dataDir, 'tool-cache', 'shell-selections', 'shell', 'bin')));
@@ -331,24 +331,22 @@ test('lightweight robot ensure completes on a cold cache without downloads and r
     assert.deepEqual(await robots.require('aaa'), record);
 });
 
-test('full robot ensure still prepares native tools and plugin templates before home preparation', async t => {
+test('full robot ensure still prepares native tools before home preparation and passes no plugin template', async t => {
     const { paths } = await fixture(t);
     await fs.mkdir(path.join(paths.workspaceRoot, '.data'), { recursive: true });
     const calls = [];
     const cacheRoot = path.join(paths.dataDir, 'tool-cache');
     const tools = { binPath: path.join(cacheRoot, 'shell-selections', 'shell-opencode', 'bin'),
         agents: { opencode: { binPath: path.join(cacheRoot, 'opencode', 'bin'), versions: { opencode: '1.2.3' } } } };
-    const template = { path: path.join(cacheRoot, 'plugin'), version: '1.2.3' };
     const robots = new RobotManager({ paths, toolCache: { root: cacheRoot,
-        prepareShellTools: async agents => { calls.push(['tools', agents]); return tools; },
-        prepareOpenCodePlugin: async version => { calls.push(['plugin', version]); return template; } },
+        prepareShellTools: async agents => { calls.push(['tools', agents]); return tools; } },
     homeOperation: async (id, operation, input) => { calls.push(['home', id, operation, input]); },
     soulGateway: { prepare: async () => {} } });
     await robots.initialize();
     await robots.ensure({ robotId: 'aaa', name: 'default', codingAgents: ['opencode'] });
-    assert.deepEqual(calls.slice(0, 2), [['tools', ['opencode']], ['plugin', '1.2.3']]);
-    assert.equal(calls[2][3].openCodePlugin, template);
-    assert.equal(calls[2][3].binPath, tools.binPath);
+    assert.deepEqual(calls.map(call => call[0]), ['tools', 'home']);
+    assert.equal(Object.hasOwn(calls[1][3], 'openCodePlugin'), false);
+    assert.equal(calls[1][3].binPath, tools.binPath);
 });
 
 test('a robot home replaced by a link to another robot home is refused and that home is left untouched', async t => {
@@ -438,7 +436,7 @@ test('an unavailable ALA leaves the status listing answering with every login ab
     assert.equal(logged.length, 2);
 });
 
-test('only a robot with OpenCode is seeded, and deleting a robot waits for the setup in flight', async t => {
+test('a robot ensure prepares only the shell tools and passes no plugin template, and deleting a robot waits for the setup in flight', async t => {
     const { paths } = await fixture(t);
     await fs.mkdir(path.join(paths.workspaceRoot, '.data'), { recursive: true });
     const cacheRoot = path.join(paths.dataDir, 'tool-cache');
@@ -448,18 +446,17 @@ test('only a robot with OpenCode is seeded, and deleting a robot waits for the s
     const tools = names => ({ binPath: path.join(cacheRoot, 'bin'), agents: Object.fromEntries(names.map(name =>
         [name, { binPath: path.join(cacheRoot, name), versions: { [name]: '1.2.3' } }])) });
     const robots = new RobotManager({ paths, toolCache: { root: cacheRoot,
-        prepareShellTools: async names => { calls.push(['tools', names]); await gate; return tools(names); },
-        prepareOpenCodePlugin: async version => { calls.push(['plugin', version]); return { path: path.join(cacheRoot, 'plugin'), version }; } },
-    homeOperation: async (id, operation, input) => { calls.push([operation, id, input.openCodePlugin ? 'template' : 'none']); return {}; },
+        prepareShellTools: async names => { calls.push(['tools', names]); await gate; return tools(names); } },
+    homeOperation: async (id, operation, input) => { calls.push([operation, id, Object.hasOwn(input, 'openCodePlugin') ? 'template' : 'none']); return {}; },
     soulGateway: { prepare: async () => {}, remove: async () => {} } });
     robots.runs = { list: () => [] };
     await robots.initialize();
     release();
     await robots.ensure({ robotId: 'aaa', name: 'plain', codingAgents: ['codex', 'pi'] });
-    assert.deepEqual(calls, [['tools', ['codex', 'pi']], ['ensure', 'aaa', 'none']], 'no plugin template without OpenCode');
+    assert.deepEqual(calls, [['tools', ['codex', 'pi']], ['ensure', 'aaa', 'none']]);
     calls.length = 0;
     await robots.ensure({ robotId: 'aaa', name: 'plain', codingAgents: ['codex', 'opencode'] });
-    assert.deepEqual(calls, [['tools', ['codex', 'opencode']], ['plugin', '1.2.3'], ['ensure', 'aaa', 'template']]);
+    assert.deepEqual(calls, [['tools', ['codex', 'opencode']], ['ensure', 'aaa', 'none']], 'OpenCode adds no plugin template');
     // A slow setup holds the robot's queue, so the removal starts only after it ends.
     calls.length = 0;
     let open;
@@ -471,7 +468,7 @@ test('only a robot with OpenCode is seeded, and deleting a robot waits for the s
     assert.deepEqual(calls, [['tools', ['opencode']]], 'the removal has not touched the home');
     open();
     await setup; await removal;
-    assert.deepEqual(calls.map(call => call[0]), ['tools', 'plugin', 'ensure', 'delete']);
+    assert.deepEqual(calls.map(call => call[0]), ['tools', 'ensure', 'delete']);
     await assert.rejects(fs.lstat(paths.robot('aaa')), { code: 'ENOENT' });
 });
 

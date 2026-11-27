@@ -127,7 +127,7 @@ test('T2b: the plain shell view and a selection alone keep their generations; a 
     assert.equal(f.lines.some(line => line.includes('skipped')), false, f.lines.join('\n'));
 });
 
-test('T3: an OpenCode plugin template stays for the version of each retained OpenCode generation', async (t) => {
+test('T3: every generation of a retired bundle is collected, whatever OpenCode generations stay', async (t) => {
     const f = await fixture(t);
     await makeGeneration(f.root, 'opencode', gen(1), { versions: { opencode: '1.2.0' } });
     await makeGeneration(f.root, 'opencode', gen(2), { versions: { opencode: '1.1.0' } });
@@ -137,22 +137,34 @@ test('T3: an OpenCode plugin template stays for the version of each retained Ope
     await makeShell(f.root, gen(10), { opencode: ['opencode', gen(2)] });
     await selectionLink(f.root, 'shell', gen(10));
     const plugin = (n, version) => makeGeneration(f.root, 'opencode-plugin', gen(n), { identity: { package: PLUGIN, version } });
-    const p12 = await plugin(21, '1.2.0'), p11 = await plugin(22, '1.1.0'), p10 = await plugin(23, '1.0.0'), p09 = await plugin(24, '0.9.0');
+    const p12 = await plugin(21, '1.2.0'), p11 = await plugin(22, '1.1.0'), p10 = await plugin(23, '1.0.0');
+    // Even a stored terminal descriptor cannot hold a retired generation.
+    await fs.mkdir(f.terminals, { recursive: true });
+    await fs.writeFile(path.join(f.terminals, 'robot-a.default.json'), JSON.stringify({ alaEntry: path.join(p10, 'bin', 'ala.mjs') }));
     await (await collect(f))();
-    assert.equal(await exists(p12), true);
-    assert.equal(await exists(p11), true);
-    assert.equal(await exists(p10), false);
-    assert.equal(await exists(p09), false, 'the 0.9.0 OpenCode generation is superseded, so its template goes too');
+    for (const victim of [p12, p11, p10]) assert.equal(await exists(victim), false, victim);
+    assert.equal(await exists(path.join(f.root, 'opencode', 'generations', gen(1))), true);
+    assert.equal(await exists(path.join(f.root, 'opencode', 'generations', gen(2))), true);
     assert.equal(await exists(path.join(f.root, 'opencode', 'generations', gen(3))), false);
 });
 
-test('T3b: a retained OpenCode generation with an unreadable version keeps every plugin template', async (t) => {
+test('T3b: keepBundles keeps every generation of the named bundle and nothing else', async (t) => {
     const f = await fixture(t);
-    await makeGeneration(f.root, 'opencode', gen(1), { stamp: false });
-    await setCurrent(f.root, 'opencode', gen(1));
+    const openCode = [await makeGeneration(f.root, 'opencode', gen(1), { versions: { opencode: '1.2.0' } }),
+        await makeGeneration(f.root, 'opencode', gen(2), { versions: { opencode: '1.1.0' } }),
+        await makeGeneration(f.root, 'opencode', gen(3), { versions: { opencode: '2.4.2' } })];
+    await setCurrent(f.root, 'opencode', gen(3));
+    const codexOld = await makeGeneration(f.root, 'codex', gen(4));
+    await makeGeneration(f.root, 'codex', gen(5));
+    await setCurrent(f.root, 'codex', gen(5));
     const plugin = await makeGeneration(f.root, 'opencode-plugin', gen(21), { identity: { package: PLUGIN, version: '0.0.1' } });
-    await collect(f);
-    assert.equal(await exists(plugin), true);
+    await (await collect(f, { keepBundles: ['opencode'] }))();
+    for (const kept of openCode) assert.equal(await exists(kept), true, kept);
+    assert.equal(await exists(codexOld), false, 'another bundle is still collected');
+    assert.equal(await exists(plugin), false, 'a retired bundle is still collected');
+    // Without the option the superseded OpenCode generations go.
+    await (await collect(f))();
+    assert.deepEqual([await exists(openCode[0]), await exists(openCode[1]), await exists(openCode[2])], [false, false, true]);
 });
 
 test('T8: generations a terminal descriptor names stay, and bad or hidden descriptors do not stop the pass', async (t) => {
@@ -190,10 +202,7 @@ test('T12: every host npm call uses its own throwaway cache below the tool cache
         if (args[0] === 'view') return { stdout: '"1.2.3"\n', stderr: '' };
         if (args[0] === 'install') {
             const prefix = args[args.indexOf('--prefix') + 1];
-            const manifest = JSON.parse(await fs.readFile(path.join(prefix, 'package.json'), 'utf8').catch(() => '{"dependencies":{}}'));
-            const version = manifest.dependencies?.[PLUGIN];
-            if (version) await writePluginInstall(prefix, version);
-            else await fs.mkdir(path.join(prefix, 'bin'), { recursive: true });
+            await fs.mkdir(path.join(prefix, 'bin'), { recursive: true });
         }
         return { stdout: '', stderr: '' };
     };
@@ -201,8 +210,7 @@ test('T12: every host npm call uses its own throwaway cache below the tool cache
     await f.cache._npmInstallHost(path.join(f.base, 'install'), ['codex-pkg@1.0.0', 'bun@2.0.0'], null, { global: true });
     await fs.mkdir(path.join(f.base, 'install-two'));
     await f.cache._npmInstallHost(path.join(f.base, 'install-two'), 'plain', '3.0.0');
-    await f.cache.prepareOpenCodePlugin('1.18.35');
-    assert.deepEqual(calls.map(call => call.args[0]), ['view', 'install', 'install', 'install']);
+    assert.deepEqual(calls.map(call => call.args[0]), ['view', 'install', 'install']);
     const caches = new Set();
     for (const call of calls) {
         assert.ok(call.cache, `no --cache in ${call.args.join(' ')}`);
@@ -218,22 +226,12 @@ test('T12: every host npm call uses its own throwaway cache below the tool cache
     assert.equal(calls[1].args.at(-1), 'bun@2.0.0');
     assert.deepEqual(calls[1].args.slice(calls[1].args.indexOf('--prefix') + 2), ['codex-pkg@1.0.0', 'bun@2.0.0']);
     assert.equal(calls[2].args.at(-1), 'plain@3.0.0');
-    assert.ok(calls[3].args.includes('--ignore-scripts') && !calls[3].args.includes('--no-package-lock'));
     assert.deepEqual((await names(f.root)).filter(name => name.startsWith('.npm-')), []);
     // A failing npm leaves nothing behind either.
     f.cache.execFileImpl = async () => { throw new Error('registry unreachable'); };
     await assert.rejects(f.cache._npmVersion('semver'), /registry unreachable/u);
     assert.deepEqual((await names(f.root)).filter(name => name.startsWith('.npm-')), []);
 });
-
-// What `npm install @opencode-ai/plugin@<version>` leaves in a directory.
-async function writePluginInstall(directory, version) {
-    await fs.mkdir(path.join(directory, 'node_modules', PLUGIN), { recursive: true });
-    await fs.writeFile(path.join(directory, 'node_modules', PLUGIN, 'package.json'), JSON.stringify({ name: PLUGIN, version }));
-    await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify({ dependencies: { [PLUGIN]: version } }));
-    await fs.writeFile(path.join(directory, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3,
-        packages: { '': { dependencies: { [PLUGIN]: version } }, [`node_modules/${PLUGIN}`]: { version } } }));
-}
 
 test('T13: abandoned leftovers older than thirty minutes go; fresh ones, a fresh lock with its target, and unknown names stay', async (t) => {
     const f = await fixture(t);

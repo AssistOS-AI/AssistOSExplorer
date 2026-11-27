@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { CODING_AGENT_NAMES, normalizeCodingAgents, codingAgentEnvironment, openCodeVersion } from './coding-agents.mjs';
+import { CODING_AGENT_NAMES, normalizeCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
 import { fail, robotId, homeTarget } from './robot-paths.mjs';
 import { buildPrivateLaunch, capturePrivateLaunch } from './launch.mjs';
 import { ensureTerminalStub, removeTerminalState } from './terminal-profiles.mjs';
@@ -77,10 +77,8 @@ export class RobotManager {
                 path.join(this.paths.robot(input.robotId), 'run'), this.paths.soul(input.robotId)]) await realDirectory(directory);
             const record = { id: input.robotId, name: input.name.trim(), codingAgents };
             const tools = input.seed === false ? null : await this.toolCache.prepareShellTools(codingAgents);
-            const version = tools ? openCodeVersion(tools) : null;
-            const template = version ? await this.toolCache.prepareOpenCodePlugin(version) : null;
             await this.homeOperation(input.robotId, 'ensure', { codingAgents, binPath: tools?.binPath,
-                cacheRoot: this.toolCache.root, openCodePlugin: template,
+                cacheRoot: this.toolCache.root,
                 runtimeEnv: codingAgentEnvironment(tools?.agents || {}, { PATH: '/usr/local/bin:/usr/bin:/bin' }, this.toolCache.root) });
             await this.write(record);
             await this.soulGateway.prepare(this.paths.soul(input.robotId));

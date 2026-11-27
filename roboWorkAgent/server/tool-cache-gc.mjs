@@ -13,7 +13,6 @@ const CURRENT_TEMPORARY = /^current\.json\..+\.tmp$/u;
 const TRASH = '.trash';
 const SHELL_GENERATIONS = 'shell-generations';
 const SHELL_SELECTIONS = 'shell-selections';
-const OPENCODE = 'opencode';
 const DESCRIPTOR_LIMIT = 32768;
 
 async function lstatOrNull(target) {
@@ -68,20 +67,23 @@ async function linkTarget(link) {
 const sizeOf = (map, key) => map.get(key)?.size || 0;
 
 // Selects what to remove. Throws on any unreadable or unexpected reference; changes nothing on disk.
-export async function planCollection({ root: rawRoot, bundles, pluginBundle, cacheSchema, terminalPaths = [], now, leftoverMs }) {
+export async function planCollection({ root: rawRoot, bundles, retiredBundles = [], keepBundles = [], cacheSchema, terminalPaths = [], now, leftoverMs }) {
     const root = path.resolve(rawRoot);
     const plan = { remove: [], leftovers: [], retained: 0 };
     if (!await realDirectoryOrNull(root, 'tool cache root')) return plan;
     await realDirectoryOrNull(path.join(root, TRASH), 'tool cache trash');
-    const bundleNames = [...bundles, pluginBundle];
+    const bundleNames = [...bundles, ...retiredBundles];
+    const retired = new Set(retiredBundles);
     const names = new Set(bundleNames);
     const candidates = new Map();
     const keep = new Map();
-    const keepAll = new Set();
+    // `keepBundles`: the caller could not secure something that lives only in these bundles, so every generation stays.
+    const keepAll = new Set(keepBundles);
     const current = new Map();
     const leftover = (target) => plan.leftovers.push(target);
     const retain = (bundle, generation, into = keep) => {
-        if (candidates.get(bundle)?.has(generation)) (into.get(bundle) || into.set(bundle, new Set()).get(bundle)).add(generation);
+        // A retired bundle has no keep rule: nothing prepares it, so nothing may hold one of its generations.
+        if (!retired.has(bundle) && candidates.get(bundle)?.has(generation)) (into.get(bundle) || into.set(bundle, new Set()).get(bundle)).add(generation);
     };
     const isOld = async (target) => {
         const stat = await lstatOrNull(target);
@@ -174,22 +176,6 @@ export async function planCollection({ root: rawRoot, bundles, pluginBundle, cac
         if (reached) retain(reached.bundle, reached.generation);
     }
 
-    // K3: the OpenCode plugin template for each version of a retained OpenCode generation.
-    const openCodeCandidates = candidates.get(OPENCODE) || new Set();
-    const retainedOpenCode = keepAll.has(OPENCODE) ? openCodeCandidates : [...(keep.get(OPENCODE) || [])].filter(generation => openCodeCandidates.has(generation));
-    const versions = new Set();
-    // A retained OpenCode generation whose version cannot be read keeps every template.
-    let versionUnknown = false;
-    for (const generation of retainedOpenCode) {
-        const stamp = await readJson(path.join(root, OPENCODE, 'generations', generation, 'stamp.json'));
-        const version = stamp?.versions?.[OPENCODE];
-        if (typeof version === 'string') versions.add(version); else versionUnknown = true;
-    }
-    for (const generation of candidates.get(pluginBundle) || []) {
-        const stamp = await readJson(path.join(root, pluginBundle, 'generations', generation, 'stamp.json'));
-        if (versionUnknown || versions.has(stamp?.identity?.version)) retain(pluginBundle, generation);
-    }
-
     for (const [bundle, found] of candidates) {
         if (keepAll.has(bundle)) { plan.retained += found.size - sizeOf(current, bundle); continue; }
         for (const generation of [...found].sort()) {
@@ -241,13 +227,13 @@ async function emptyTrash(root, trash, log) {
 
 // Plans and renames; resolves with the cleanup that deletes the trash and the legacy npm cache. Never rejects: a failure
 // is logged, and the cleanup it returns never rejects either.
-export async function collectToolCache({ root: rawRoot, bundles, pluginBundle, cacheSchema, terminalStateDir, legacyNpmCache = null,
+export async function collectToolCache({ root: rawRoot, bundles, retiredBundles, keepBundles, cacheSchema, terminalStateDir, legacyNpmCache = null,
     now, leftoverMs, log = () => {} }) {
     const root = path.resolve(rawRoot);
     const trash = path.join(root, TRASH);
     try {
         const terminalPaths = terminalStateDir ? await terminalDescriptorPaths(terminalStateDir) : [];
-        const plan = await planCollection({ root, bundles, pluginBundle, cacheSchema, terminalPaths, now, leftoverMs });
+        const plan = await planCollection({ root, bundles, retiredBundles, keepBundles, cacheSchema, terminalPaths, now, leftoverMs });
         const victims = [...plan.remove.map(target => ({ target, generation: true })), ...plan.leftovers.map(target => ({ target, generation: false }))];
         if (victims.length) {
             await fs.mkdir(trash, { recursive: true, mode: 0o700 });

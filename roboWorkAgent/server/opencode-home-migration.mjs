@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { installSoulGatewayPlugin } from './soul-gateway-service.mjs';
-import { seedOpenCodePlugin } from './opencode-plugin-seed.mjs';
+import { checkedPath, retireOpenCodePlugin } from './opencode-plugin-retire.mjs';
 
 export const MIGRATION_ID = 'opencode-v2-1';
 const STATE_PATHS = ['.config/opencode', '.local/share/opencode', '.local/state/opencode', '.opencode', '.ala'];
@@ -19,17 +19,6 @@ async function atomic(file, value) {
 
 async function exists(file) {
     return fs.lstat(file).then(() => true, error => { if (error.code !== 'ENOENT') throw error; return false; });
-}
-
-async function checkedPath(home, relative) {
-    let current = home;
-    for (const segment of relative.split('/')) {
-        current = path.join(current, segment);
-        const stat = await fs.lstat(current).catch(error => { if (error.code !== 'ENOENT') throw error; });
-        if (!stat) return false;
-        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe OpenCode state directory');
-    }
-    return true;
 }
 
 async function inventory(home) {
@@ -116,14 +105,15 @@ export async function upgradeDatabase(binary, home, env = process.env, expected 
 }
 
 // `backup` is a server-owned, per-robot directory mounted only for this helper.
-export async function migrateOpenCodeHome({ home, backup, binary, template, upgrade = upgradeDatabase }) {
+export async function migrateOpenCodeHome({ home, backup, binary, upgrade = upgradeDatabase }) {
     const stateFile = path.join(backup, 'state.json');
     let state = await fs.readFile(stateFile, 'utf8').then(JSON.parse).catch(error => {
         if (error.code !== 'ENOENT') throw error;
         return { migration: MIGRATION_ID, phase: 'pending' };
     });
     if (state.migration !== MIGRATION_ID) throw new Error('Unknown migration journal');
-    if (state.phase === 'complete') return { phase: 'complete', repeated: true };
+    // A finished migration only retires what an earlier run left behind; that never fails the robot.
+    if (state.phase === 'complete') return { phase: 'complete', repeated: true, plugin: (await retireOpenCodePlugin(home)).status };
     const snapshot = path.join(backup, 'snapshot');
     try {
         if (!await exists(path.join(backup, 'snapshot.json'))) {
@@ -150,9 +140,9 @@ export async function migrateOpenCodeHome({ home, backup, binary, template, upgr
             await fs.mkdir(path.join(home, directory), { recursive: true, mode: 0o700 });
             if (!await checkedPath(home, directory)) throw new Error('OpenCode state is unavailable');
         }
-        const seeded = await seedOpenCodePlugin(home, template);
-        if (!['seeded', 'reseeded', 'current'].includes(seeded.status)) {
-            throw new Error(`OpenCode plugin dependencies require attention: ${seeded.status}`);
+        const retired = await retireOpenCodePlugin(home);
+        if (!['retired', 'absent', 'authored'].includes(retired.status)) {
+            throw new Error(`OpenCode plugin dependencies require attention: ${retired.status}`);
         }
         await installSoulGatewayPlugin(home);
         await upgrade(binary, home, process.env, before);
@@ -175,7 +165,7 @@ export async function migrateOpenCodeHome({ home, backup, binary, template, upgr
         }
         await atomic(stateFile, { migration: MIGRATION_ID, phase: 'complete', completedAt: new Date().toISOString(),
             sessions: after.sessions.length });
-        return { phase: 'complete', sessions: after.sessions.length };
+        return { phase: 'complete', sessions: after.sessions.length, plugin: retired.status };
     } catch (error) {
         await atomic(stateFile, { ...state, phase: 'failed', error: error.message, failedAt: new Date().toISOString() });
         throw error;
