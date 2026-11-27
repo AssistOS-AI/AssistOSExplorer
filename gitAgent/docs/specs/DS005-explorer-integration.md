@@ -37,7 +37,7 @@ Requirement U6: Explorer selection shall be the source of truth for Git action t
 
 Requirement U7: repository-level pull actions may execute for a selected repository, but commit and push actions shall remain restricted to the selected files within each selected repository.
 
-Requirement U8: autosync/autocommit scheduling shall target only repositories explicitly chosen in autosync settings and shall not infer targets from transient tree selection.
+Requirement U8: autosync/autocommit scheduling shall target only repositories explicitly chosen in autosync settings and shall not infer targets from transient tree selection. When there is no saved repository selection, all AutoSync repository checkboxes and the Select all control start unchecked.
 
 Requirement U9: when an autosync push is explicitly rejected as non-fast-forward, the plugin shall synchronize the selected repository and retry the push at most once. It shall never force-push and shall stop when synchronization conflicts or the bounded retry fails.
 

@@ -14,6 +14,7 @@ const IMPLEMENTED = [
     'userpersisto_profile_update',
     'userpersisto_authorize_capability',
     'userpersisto_user_list',
+    'userpersisto_delegated_user_list',
     'userpersisto_user_update',
     'userpersisto_user_roles_update',
     'userpersisto_roles_list',
@@ -28,6 +29,7 @@ const IMPLEMENTED = [
     'credits_apply',
     'userpersisto_credits_ledger',
     'userpersisto_credits_grant',
+    'userpersisto_delegated_credits_grant',
     'userpersisto_credits_refund',
     'userpersisto_credits_reserve',
     'userpersisto_credits_commit',
@@ -66,6 +68,26 @@ const { resetStoreForTests } = await import('../lib/store.mjs');
 
 after(async () => {
     await resetStoreForTests();
+});
+
+test('delegated user administration checks the active user and their provider capabilities', async () => {
+    await ensureSeedData();
+    const admin = await createUser({ email: 'delegated-admin@example.test', roles: ['admin'] });
+    const member = await createUser({ email: 'delegated-member@example.test', roles: ['user'] });
+    const adminContext = { actorUserId: admin.id, delegatedUser: true };
+    const memberContext = { actorUserId: member.id, actorRoles: ['admin'], delegatedUser: true };
+    const list = 'userpersisto_delegated_user_list';
+    const grant = 'userpersisto_delegated_credits_grant';
+    const search = { search: 'delegated-member@example.test' };
+    const award = { userId: member.id, amount: 3, referenceId: 'delegated-grant-test' };
+    assert.deepEqual((await runTool(list, search, adminContext)).users.map(user => user.id), [member.id]);
+    for (const [tool, args] of [[list, search], [grant, award]]) {
+        await assert.rejects(runTool(tool, args, memberContext), { code: 'admin_required' });
+        await assert.rejects(runTool(tool, args, { actorUserId: admin.id }), { code: 'delegation_required' });
+    }
+    await runTool(grant, award, adminContext);
+    await runTool(grant, award, adminContext);
+    assert.equal((await runTool('userpersisto_credits_balance', {}, memberContext)).balance, 3);
 });
 
 test('document-contract tools dispatch to domain handlers', async () => {
