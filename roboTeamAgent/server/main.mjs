@@ -41,7 +41,7 @@ const runtimeManager = new RuntimeManager({
 });
 runtimeManager.skillsets = new RobotSkillsets({ robotStore,
     workspaceRoot, alaCommand: runtimeManager.alaCommand });
-// Shell and socket only: seeding copies thousands of files per robot and runs after the service is listening.
+// Shell and socket only: tool preparation (`seed: false`) runs after the service is listening, and no plugin tree is copied into homes.
 for (const robot of await robotStore.list()) {
     try { await runtimeManager.prepareOpenCode(robot.id, { seed: false }); }
     catch (error) { console.error('[roboTeamAgent] robot preparation failed:', robot.id, error?.code || 'PREPARATION_FAILED'); }

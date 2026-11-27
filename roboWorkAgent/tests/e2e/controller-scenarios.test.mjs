@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { validateConfig, assertBox, assertVictimUnchanged, assertRefused, assertDeleted, assertEmptyPrivateListing, decodeMcpResult, assertProtectedPathRefusal, sha256 } from './controller/contracts.mjs';
 import { BASELINE_REVISION, BASELINE_METHOD, BASELINE_DIRECTORIES, baselineSymlinkControl } from './controller/baseline-control.mjs';
 import { runVerifiedScenario, dualHome, manifests, grantRefusals, symlinkHelpers, safeDelete, walkUpAndDiscovery, workspaceStorage } from './controller-scenarios.mjs';
@@ -249,16 +250,21 @@ test('I10 retains all eighteen refusals, proves the private workspace targets ex
     assert.ok(!runtime.observations.includes('run_start'), 'No refusal was attempted against a target that was not proven to exist.');
 });
 
-function walkFixture({ recorderRan = true, discoveryEntries = [], turnEntries = [], siblingLoaded = false, parentLoaded = false, ownLoaded = true, discoveryFails = false, turnExit = 0 } = {}) {
-    const state = { discovered: false, turned: false }, calls = [], owned = new Map();
-    const record = entries => ({ cwd: '/task/fixture/controller-w1/child', entries });
-    return { config: config(), calls, state, probes: {
+function walkFixture({ recorderRan = true, discoveryEntries = [], turnEntries = [], siblingLoaded = false, parentLoaded = false, ownLoaded = true, discoveryFails = false, turnExit = 0,
+    unusableModules = false, treeAfterDiscovery = false, treeAfterTurn = false } = {}) {
+    const state = { discovered: false, turned: false }, calls = [], owned = new Map(), planted = [];
+    const usable = { imported: true, providerId: true, providerInfo: true, modelId: true, modelInfo: true };
+    const record = entries => ({ cwd: '/task/fixture/controller-w1/child', entries,
+        plugin: { ...usable, ...(unusableModules ? { modelInfo: false } : {}) }, effect: { imported: true, succeed: true, runSync: true } });
+    return { config: config(), calls, state, planted, probes: {
         owned,
         async create() { calls.push('create'); owned.set('owned-w1', {}); return 'owned-w1'; },
         async remove(id) { assert.equal(id, 'owned-w1'); calls.push('delete'); owned.delete(id); return { ok: true, result: { deleted: true } }; },
     }, async node(id, body, input) {
         calls.push(`node:${input.op}`);
         if (input.op === 'folders') return { ino: 1, dev: 2 };
+        if (input.op === 'plant') { planted.push(input); return true; }
+        if (input.op === 'config') return [...(state.turned ? treeAfterTurn : state.discovered && treeAfterDiscovery) ? ['node_modules', 'package.json'] : [], 'plugins'];
         if (input.op === 'observe') {
             const records = !recorderRan ? [] : state.turned ? [record(discoveryEntries), record(turnEntries)] : state.discovered ? [record(discoveryEntries)] : [];
             return { records, sibling: siblingLoaded, parent: parentLoaded, own: ownLoaded };
@@ -299,10 +305,33 @@ test('W1 fails for each hole it can see and still removes what it created', asyn
     await fails({ turnEntries: ['robots'] }, /robot saw workspace \.data entries/u);
     await fails({ discoveryFails: true }, /Model discovery failed/u);
     await fails({ turnExit: 5 }, /probe turn failed/u);
+    await fails({ unusableModules: true }, /could not use the modules OpenCode provides/u);
+    await fails({ treeAfterDiscovery: true }, /dependency tree appeared in the new robot after model discovery/u);
+    await fails({ treeAfterTurn: true }, /dependency tree appeared in the new robot after the turn/u);
     // A recorder that ran only in discovery proves nothing about the turn.
     const runtime = walkFixture(); const mcp = runtime.mcp;
     runtime.mcp = async (tool, input) => { const answer = await mcp(tool, input); if (tool === 'run_read') runtime.state.turned = false; return answer; };
     await assert.rejects(walkUpAndDiscovery(runtime), /never ran during the turn/u);
+});
+
+test('W1 plants OpenCode 2 default-export plugins, one id each, and the recorder imports both host modules', async () => {
+    const runtime = walkFixture();
+    await walkUpAndDiscovery(runtime);
+    const [plant] = runtime.planted;
+    const sources = [plant.recorder, ...plant.plugins.flatMap(entry => Object.values(entry.sources))];
+    assert.equal(sources.length, 7);
+    const ids = new Set();
+    for (const source of sources) {
+        assert.match(source, /^export default \{ id: "?'?[\w.]+/u);
+        assert.doesNotMatch(source, /export const/u, 'a named-export plugin is reported failed by OpenCode 2.4.2');
+        ids.add(source.match(/id: ['"]([\w.]+)['"]/u)[1]);
+        const file = path.join(os.tmpdir(), `w1-source-${randomUUID()}.mjs`);
+        await fs.writeFile(file, source);
+        try { await promisify(execFile)(process.execPath, ['--check', file]); } finally { await fs.rm(file, { force: true }); }
+    }
+    assert.equal(ids.size, 7, 'no two plugins share an id');
+    assert.match(plant.recorder, /import\('@opencode\/plugin'\)/u);
+    assert.match(plant.recorder, /import\('effect'\)/u);
 });
 
 test('I11 uses a newly provisioned deletion target and rejects changed victim bytes or modes', async () => {

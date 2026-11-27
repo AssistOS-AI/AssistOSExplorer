@@ -33,7 +33,9 @@ proved to exist from RoboWork first) and performs a finite native symlink read t
 the normal default robot WebTTY terminal (existing smoke Playwright/Chromium required).
 W1 uses a new owned robot and owned folders to prove that a sibling folder's OpenCode
 plugin is not loaded while its parent's is, and that a plugin in the robot's own home
-sees an empty workspace .data during a fresh model discovery.
+sees an empty workspace .data during a fresh model discovery, can use the modules
+OpenCode 2 provides to its plugins, and leaves no plugin dependency tree in the new
+robot's .config/opencode. Its plugins are OpenCode 2 default exports.
 M17 sets default and probe robots by normal RT PATCH to the exact free Nemotron
 route. H2 stops and deletes only its own newly provisioned probe and GUI.
 P1 lifecycle orchestration remains pending and exits nonzero before live access.
@@ -314,12 +316,39 @@ export async function grantRefusals(runtime, nativeControl = nativeSymlinkContro
 // ancestor's `.opencode`. This plants the same canary in a sibling of the working folder, in its parent, whose `.opencode` is not
 // prepared, and in the working folder, and a recorder in the robot's own home, then runs a fresh model discovery and a real turn.
 // Discovery and the turn must work. The sibling's and the parent's canaries must stay silent, the working folder's must write
-// (it proves the canary runs), and the recorder must have run and seen an empty `.data`.
-const CANARY = marker => `export const W1Canary = async () => { try { const fs = await import('node:fs'), path = await import('node:path');
-    fs.writeFileSync(path.join(process.cwd(), ${JSON.stringify(marker)}), 'loaded'); } catch {} return {}; };`;
-const RECORDER = root => `export const W1Recorder = async () => { try { const fs = await import('node:fs'), path = await import('node:path');
-    let entry; try { entry = { entries: fs.readdirSync(${JSON.stringify(`${root}/.data`)}) }; } catch (error) { entry = { error: String(error.code || error.message) }; }
-    fs.appendFileSync(path.join(process.env.HOME, 'w1-recorder.jsonl'), JSON.stringify({ cwd: process.cwd(), ...entry }) + '\\n'); } catch {} return {}; };`;
+// (it proves the canary runs), and the recorder must have run and seen an empty `.data`. The recorder also imports the two modules
+// OpenCode 2 gives its plugins, `@opencode/plugin` and `effect`, and must find them usable, and the robot's own
+// `.config/opencode` must hold no dependency tree afterwards. The plugins are OpenCode 2 default exports (`export default
+// { id, setup }`, the shape the live probe in opencode-plugin-free.mjs proved on 2.4.2): OpenCode 2 reports a named-export plugin
+// as failed, and a failed plugin makes model discovery refuse the catalog.
+const CANARY = (marker, id) => `export default { id: ${JSON.stringify(id)}, async setup() { try { const fs = await import('node:fs'), path = await import('node:path');
+    fs.writeFileSync(path.join(process.cwd(), ${JSON.stringify(marker)}), 'loaded'); } catch {} return () => {}; } };`;
+const RECORDER = root => `export default { id: 'w1.recorder', async setup() {
+    const fs = await import('node:fs'), path = await import('node:path');
+    const record = { cwd: process.cwd(), plugin: { imported: false }, effect: { imported: false } };
+    try { record.entries = fs.readdirSync(${JSON.stringify(`${root}/.data`)}); } catch (error) { record.error = String(error.code || error.message); }
+    const attempt = (target, name, work) => { try { target[name] = work() === true; } catch (error) { target[name] = false; } };
+    try {
+        const { Model, Provider } = await import('@opencode/plugin');
+        record.plugin.imported = true;
+        attempt(record.plugin, 'providerId', () => typeof Provider.ID.make('probe') !== 'undefined');
+        attempt(record.plugin, 'providerInfo', () => typeof Provider.Info.empty(Provider.ID.make('probe')) === 'object');
+        attempt(record.plugin, 'modelId', () => typeof Model.ID.make('probe') !== 'undefined');
+        attempt(record.plugin, 'modelInfo', () => typeof Model.Info.default(Provider.ID.make('probe'), Model.ID.make('probe')) === 'object');
+    } catch (error) { record.plugin.error = String(error?.message || error).slice(0, 200); }
+    try {
+        const { Effect } = await import('effect');
+        record.effect.imported = true;
+        attempt(record.effect, 'succeed', () => typeof Effect.succeed === 'function' && typeof Effect.succeed(42) === 'object');
+        attempt(record.effect, 'runSync', () => typeof Effect.runSync !== 'function' || Effect.runSync(Effect.succeed(42)) === 42);
+    } catch (error) { record.effect.error = String(error?.message || error).slice(0, 200); }
+    fs.appendFileSync(path.join(process.env.HOME, 'w1-recorder.jsonl'), JSON.stringify(record) + '\\n');
+    return () => {};
+} };`;
+const W1_TREE_NAMES = Object.freeze(['node_modules', 'package.json', 'package-lock.json']);
+const modulesUsable = record => record?.plugin?.imported === true && record.effect?.imported === true
+    && ['providerId', 'providerInfo', 'modelId', 'modelInfo'].every(name => record.plugin[name] === true)
+    && ['succeed', 'runSync'].every(name => record.effect[name] === true);
 const W1_MARKERS = Object.freeze({ sibling: 'w1-marker-sibling', parent: 'w1-marker-parent', own: 'w1-marker-own' });
 
 export async function walkUpAndDiscovery(runtime) {
@@ -334,15 +363,19 @@ export async function walkUpAndDiscovery(runtime) {
     let observed;
     try {
         await runtime.node(runtime.config.rw, `
-            for (const [directory, file, source] of input.plugins) {
-                for (const name of ['plugin','plugins']) { fs.mkdirSync(path.join(directory,'.opencode',name),{recursive:true}); fs.writeFileSync(path.join(directory,'.opencode',name,file),source); }
+            for (const { directory, file, sources } of input.plugins) {
+                for (const name of ['plugin','plugins']) { fs.mkdirSync(path.join(directory,'.opencode',name),{recursive:true}); fs.writeFileSync(path.join(directory,'.opencode',name,file),sources[name]); }
             }
             const home='/robots/'+input.attacker+'/home/.config/opencode/plugins';
             fs.mkdirSync(home,{recursive:true}); fs.writeFileSync(path.join(home,'w1-recorder.js'),input.recorder);
             console.log('true');
-        `, { op: 'plant', attacker, recorder: RECORDER(workspace), plugins: [
-            [sibling, 'w1-sibling.js', CANARY(W1_MARKERS.sibling)], [parent, 'w1-parent.js', CANARY(W1_MARKERS.parent)],
-            [cwd, 'w1-own.js', CANARY(W1_MARKERS.own)]] });
+        `, { op: 'plant', attacker, recorder: RECORDER(workspace), plugins: [['sibling', sibling], ['parent', parent], ['own', cwd]].map(([name, directory]) => ({
+            directory, file: `w1-${name}.js`,
+            // Two plugins in one folder must not share an id.
+            sources: Object.fromEntries(['plugin', 'plugins'].map(kind => [kind, CANARY(W1_MARKERS[name], `w1.canary.${name}.${kind}`)])) })) });
+        const configNames = async () => runtime.node(runtime.config.rw, `
+            console.log(JSON.stringify(fs.existsSync(input.directory)?fs.readdirSync(input.directory):[]));
+        `, { op: 'config', directory: `/robots/${attacker}/home/.config/opencode` });
         const read = async () => runtime.node(runtime.config.rw, `
             const records=fs.existsSync(input.file)?fs.readFileSync(input.file,'utf8').split('\\n').filter(Boolean).map(line=>JSON.parse(line)):[];
             const present=name=>fs.existsSync(path.join(input.cwd,name));
@@ -353,6 +386,8 @@ export async function walkUpAndDiscovery(runtime) {
         assert.ok(models.ok === true, 'Model discovery failed, so its view of the workspace was not observed.');
         const discovery = await read();
         assert.ok(discovery.records.length > 0, 'The home plugin never ran during model discovery.');
+        for (const record of discovery.records) assert.ok(modulesUsable(record), `The home plugin could not use the modules OpenCode provides: ${JSON.stringify(record)}`);
+        assert.deepEqual((await configNames()).filter(name => W1_TREE_NAMES.includes(name)), [], 'A plugin dependency tree appeared in the new robot after model discovery.');
         assert.equal(discovery.parent, false, 'A parent folder plugin was loaded during model discovery.');
         assert.equal(discovery.sibling, false, 'A sibling folder plugin was loaded during model discovery.');
         // The working folder's canary ran in discovery too; only a new marker says something about the turn.
@@ -378,6 +413,8 @@ export async function walkUpAndDiscovery(runtime) {
         assert.ok(output > 0, 'The probe turn produced no output.');
         observed = await read();
         assert.ok(observed.records.length > discovery.records.length, 'The home plugin never ran during the turn.');
+        for (const record of observed.records) assert.ok(modulesUsable(record), `The home plugin could not use the modules OpenCode provides: ${JSON.stringify(record)}`);
+        assert.deepEqual((await configNames()).filter(name => W1_TREE_NAMES.includes(name)), [], 'A plugin dependency tree appeared in the new robot after the turn.');
         for (const record of observed.records) assert.deepEqual(record.entries, [], `A robot saw workspace .data entries: ${JSON.stringify(record)}`);
         assert.equal(observed.own, true, 'The working folder canary did not run, so the turn proves nothing about plugin loading.');
         assert.equal(observed.parent, false, 'A parent folder plugin was loaded.');
@@ -395,7 +432,7 @@ export async function walkUpAndDiscovery(runtime) {
         `, { op: 'remove', parent, ...owner });
     }
     return { discoveryRecords: observed.records.length, markers: { own: observed.own, parent: observed.parent, sibling: observed.sibling },
-        positiveControl: 'the working folder canary wrote its marker and the home recorder ran in discovery and in the turn' };
+        positiveControl: 'the working folder canary wrote its marker, and the home recorder ran in discovery and in the turn and used the modules OpenCode provides with no dependency tree in the home' };
 }
 
 export async function dualHome(runtime) {
