@@ -989,6 +989,20 @@ remains fail-closed and does not prove managed-bridge activation or
 reachability. Missing or stale assignment evidence, cross-interface assignment,
 a missing or extra listener, a wildcard, or an unrelated bind fails closed.
 
+## Sign-in budget and session reuse
+
+UserPersisto allows 20 password sign-ins per 15 minutes for one request source, and the Router derives that source from the TCP peer address, so every local run shares one budget. The harness therefore signs each configured account (the primary and secondary smoke accounts) in once and reuses the session cookies in later browser contexts, in the account preflight and in other gate invocations. Before a saved session is used, the harness asks `/auth/token` whether the deployment still accepts it for exactly that account; otherwise the file is deleted and one fresh sign-in follows.
+
+| Item | Rule |
+| --- | --- |
+| Location | `SMOKE_SESSION_DIR` (absolute), default `<repo>/.ploinky/test-artifacts/headless-smoke/sessions`, which is untracked. It is not under a per-run artifact directory, so later gate invocations can reuse it. |
+| Protection | The directory is forced to mode 700 and each file is written mode 600 through a temporary file. A file that is group or world accessible, or not owned by the current user, is deleted unread. File names carry the role and a hash, never the account. Cookie values are never printed. |
+| Opt out | `SMOKE_REUSE_SESSIONS=0` (or `false`, `off`) disables reading and writing saved sessions. `signIn(..., { reuseSession: false })` does so for one call. |
+| Specs that always sign in for real | `01-webtty-core` (real logout, browsers with independent sessions), `10-webchat-upload-scope` (sibling session of the same account) and `80-explorer-qa-acceptance` (sign-up and wizard sign-in are the behaviour under test). They call `requireRealSignIns(test)`. Accounts other than the two configured ones never reuse. |
+| Rate limit | A 429 from a same-origin `/auth/` response during sign-in fails with `Sign-in for the <role> smoke account was rate limited by UserPersisto (429)` and the `Retry-After` seconds and reset time when the answer carries a numeric one. The account preflight reports its failure class (`rate_limited`, `roles`, `fixture`, `network` or `sign-in`) and never forwards other messages. |
+
+Delete the sessions directory after a run on a shared machine; the cookies it holds are valid until the deployment expires or revokes them.
+
 ## Coverage
 
 Default smoke checks:

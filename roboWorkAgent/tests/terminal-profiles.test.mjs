@@ -634,6 +634,14 @@ test('a coding agent sandbox runs the agent through a login shell instead of an 
     assert.throws(() => shellArguments('/bin/sh', descriptor), { code: 'PROFILE_REFUSED' });
     assert.deepEqual(options.nativeArgs, []);
     assert.equal(options.systemPrompt, descriptor.systemPrompt);
+    assert.equal(options.nativeMcp, null);
+    descriptor.controlDirectory = '/private/supervisor-channel';
+    await buildShellSandbox(descriptor, { loadSandbox: async () => ({ canMountPrivateProc: () => true,
+        buildNativeSessionLaunch: input => { options = input; return { command: '/usr/bin/bwrap', args: [], options: {} }; } }) });
+    assert.equal(options.nativeMcp.name, 'robowork_worker');
+    assert.deepEqual(options.nativeMcp.args, ['/run/robowork-worker/mcp.mjs']);
+    assert.ok(options.folders.some(folder => folder.source === descriptor.controlDirectory && folder.target === '/run/robowork-worker'));
+
     assert.deepEqual(shellArguments('/bin/sh', descriptor, buildInteractiveCommand), ['-l', '-c', 'exec "$0" "$@"', ...buildInteractiveCommand({ agent: 'opencode', binary })]);
     assert.deepEqual(shellArguments('/bin/sh', { ...descriptor, codingAgentArgs: ['--resume', 'abc-1'] }, buildInteractiveCommand),
         ['-l', '-c', 'exec "$0" "$@"', ...buildInteractiveCommand({ agent: 'opencode', binary, args: ['--resume', 'abc-1'] })]);

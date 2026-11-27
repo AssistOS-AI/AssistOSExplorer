@@ -25,7 +25,7 @@ function gitMentions(text) {
 // [file, line pattern, count, why]
 const REVIEWED = [
     // The Ploinky workflows' checkout lies outside the workspace, and a Box mounts it read-only.
-    ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^for tool in git node curl podman flock; do$/, 1, 'prerequisite presence check'],
+    ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^for tool in git node curl podman flock; do$/, 2, 'prerequisite presence checks in both host bootstrap sessions'],
     ['.github/workflows/deploy-explorer-qa-ploinky.yml', /git ls-remote --symref "\$PLOINKY_URL" HEAD|^git clone --quiet --branch "\$BRANCH" "\$PLOINKY_URL" "\$CHECKOUT"$|git -C "\$CHECKOUT" /, 7, 'BOOTSTRAP_OUTSIDE_BOX'],
     ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^git -C "\$GITHUB_WORKSPACE\/\.qa-bizanso-source" archive --format=tar HEAD \| run_in_box "\$COPY_PROGRAM"$/, 1, 'runs on the GitHub runner, in a checkout actions/checkout just created; no Box can write it'],
     ['.github/workflows/deploy-explorer-qa-ploinky.yml', /^COMMIT="\$\(git -C "\$SOURCE" rev-parse HEAD\)"$|^if ! git -C "\$SOURCE" cat-file -e "\$COMMIT:csvMailAgent\/manifest\.json"; then$|^git -C "\$GITHUB_WORKSPACE\/\.qa-csvmail-source" archive --format=tar "\$CSVMAIL_COMMIT" csvMailAgent \| run_in_box "\$CSVMAIL_PLACE_PROGRAM"$/, 3, 'runs on the GitHub runner, in the simpleCSVMailSend checkout actions/checkout just created; no Box can write it'],
@@ -72,6 +72,15 @@ const REVIEWED = [
     ['tests/smoke/lib/deploy-qa-product-workflows.test.mjs', /^const gitLines = FP_BLOCK\.split\(|^assert\.deepEqual\(gitLines\.map\(/, 2, 'static fingerprint wrapper assertions, no Git execution'],
     ['tests/smoke/lib/deploy-qa-product-workflows.test.mjs', /^const git = \(\.\.\.args\) => \{$|^const result = spawnSync\('git', \['-c', 'core\.autocrlf=false'.*cwd: dir, encoding: 'utf8' \}\);$|^git\('(?:init|add|commit)',|^for \(const \[name, sha\] of Object\.entries\(gitlinks\)\) git\('update-index',|^return \{ dir, rev: git\('rev-parse', 'HEAD'\), git \};$/, 7, 'temporary fingerprint fixture repository and helper'],
     ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'config', '--add', 'remote\.origin\.url', 'https:\/\/example\.invalid\/active'\);$/, 1, 'temporary inventory fixture repository'],
+    ['tests/smoke/lib/deploy-qa-cache-workflows.test.mjs', /^const beforeGit = session\.slice\(0, session\.indexOf\('git ls-remote'\)\);$/, 1, 'inspects the QA workflow text on the runner'],
+    ['tests/smoke/lib/deploy-qa-cache-workflows.test.mjs', /^assert\.match\(beforeGit, \/for tool in git node curl podman flock; do\\s\+if ! command -v "\\\$tool"\[\^\]\*\?exit 1\/\);$/, 1, 'inspects the QA workflow text on the runner'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'add', 'agent'\); git\(source, 'commit', '-qm', 'agent'\);$/, 2, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(catalog, 'add', 'skills'\); git\(catalog, 'commit', '-qm', 'skill'\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'add', '\.agents\/\.ploinky-skill-exports\.json'\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'reset', '-q', 'HEAD', '--', '\.agents\/\.ploinky-skill-exports\.json'\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(catalog, 'rm', '-q', 'skills\/example\/SKILL\.md'\); git\(catalog, 'commit', '-qm', 'remove skill'\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'config', 'extensions\.worktreeConfig', 'true'\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'config', '--worktree', 'core\.excludesFile', excludes\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
 
 ];
 

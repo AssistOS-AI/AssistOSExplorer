@@ -141,22 +141,23 @@ export function createProvider({ getConfig }) {
                 expiresAt: request.expiresAt
             };
         },
-        async sso_handle_callback({ query, providerState }) {
+        async sso_handle_callback({ query, providerState, supportsSessionLifetimeV1 = false }) {
             const config = await getConfig();
             const consumed = await postRuntime(config, 'sso-consume-code', { providerState, code: query?.code });
             return {
                 user: normalizeUser(consumed),
+                ...(supportsSessionLifetimeV1 === true ? { sessionLifetime: 'until-revoked-v1' } : {}),
                 providerSession: {
                     provider: 'userPersistoAgent',
                     userId: consumed.user.id,
                     // Credential replacement/revocation advances the account generation;
                     // the next Router revalidation of an older session is refused.
                     generation: Number.isSafeInteger(consumed.generation) ? consumed.generation : 0,
-                    expiresAt: Date.now() + 4 * 60 * 60 * 1000
+                    expiresAt: supportsSessionLifetimeV1 === true ? null : Date.now() + 4 * 60 * 60 * 1000
                 }
             };
         },
-        async sso_refresh_session({ providerSession, signal }) {
+        async sso_refresh_session({ providerSession, signal, supportsSessionLifetimeV1 = false }) {
             const generation = Number.isSafeInteger(providerSession?.generation) ? providerSession.generation : 0;
             let user;
             try {
@@ -172,7 +173,8 @@ export function createProvider({ getConfig }) {
             }
             return {
                 user,
-                providerSession: { ...providerSession, generation, expiresAt: Date.now() + 4 * 60 * 60 * 1000 }
+                ...(supportsSessionLifetimeV1 === true ? { sessionLifetime: 'until-revoked-v1' } : {}),
+                providerSession: { ...providerSession, generation, expiresAt: supportsSessionLifetimeV1 === true ? null : Date.now() + 4 * 60 * 60 * 1000 }
             };
         },
         async sso_logout({ postLogoutRedirectUri }) {
