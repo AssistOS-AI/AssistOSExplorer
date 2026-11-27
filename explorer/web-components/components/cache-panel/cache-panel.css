@@ -18,6 +18,8 @@ cache-panel { display: block; min-width: 0; }
 /* Page head: title, one muted line, Refresh on the right (the Cloudflare configuration page). */
 .cache-head { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: var(--space-md); }
 .cache-head-text { flex: 1 1 24rem; min-width: 0; }
+/* Settings stretches card action buttons below 720 px; keep their labels centred. */
+.cache-head .gray-button, .cache-host .gray-button { justify-content: center; }
 .cache-panel .cache-title { font-size: var(--font-xl); font-weight: var(--font-semibold); line-height: var(--line-tight); }
 
 /* Cards: stacked and full width on the modal's background; title and controls on one row, the description below. */
