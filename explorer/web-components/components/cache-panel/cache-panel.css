@@ -1,37 +1,98 @@
-cache-panel { display: block; }
-.cache-panel, .cache-panel .settings-card {
+cache-panel { display: block; min-width: 0; }
+.cache-panel {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-md);
+    align-content: start;
+    gap: var(--space-lg);
+    min-width: 0;
+    color: var(--text);
+    font-family: var(--default-font), sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
     overflow-wrap: anywhere;
 }
-.cache-panel .cache-controls {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-sm) var(--space-md);
+.cache-panel h2, .cache-panel h3, .cache-panel p { margin: 0; }
+.cache-panel ul { margin: 0; padding: 0; list-style: none; }
+.cache-panel code { font-family: var(--mono-font); font-size: var(--font-xs); background: transparent; padding: 0; }
+.cache-panel .gray-button { padding: 6px 12px; font-size: var(--font-sm); white-space: nowrap; }
+
+/* Page head: title, one muted line, Refresh on the right (the Cloudflare configuration page). */
+.cache-head { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: var(--space-md); }
+.cache-head-text { flex: 1 1 24rem; min-width: 0; }
+/* Settings stretches card action buttons below 720 px; keep their labels centred. */
+.cache-head .gray-button, .cache-host .gray-button { justify-content: center; }
+.cache-panel .cache-title { font-size: var(--font-xl); font-weight: var(--font-semibold); line-height: var(--line-tight); }
+
+/* Cards: stacked and full width on the modal's background; title and controls on one row, the description below. */
+.cache-panel .settings-card.cache-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-lg); padding: calc(var(--space-lg) + var(--space-xs)); min-width: 0; cursor: default; }
+.cache-card-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm) var(--space-lg); }
+.cache-card-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); flex: 1 1 14rem; min-width: 0; }
+.cache-card-controls { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-sm) var(--space-lg); margin-left: auto; }
+.cache-card-text { display: grid; gap: var(--space-xs); flex: 1 1 100%; color: var(--text-soft); font-size: var(--font-sm); line-height: var(--line-normal); }
+.cache-card-title { color: var(--text); font-size: var(--font-lg); font-weight: var(--font-bold); line-height: var(--line-normal); }
+.cache-card-meta { color: var(--text-soft); font-size: var(--font-sm); line-height: var(--line-normal); }
+.cache-divider { width: 100%; height: 0; margin: 0; border: 0; border-top: 1px solid var(--border); }
+.cache-help { display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; height: 1.25rem; padding: 0 var(--space-xs); border: 1px solid var(--border); border-radius: 999px; color: var(--text-soft); font-size: var(--font-xs); line-height: 1; cursor: help; }
+.cache-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Messages: plain text with one divider, no extra box. */
+.cache-panel .cache-message, .cache-panel .cache-results { padding-left: var(--space-md); border-left: 2px solid var(--border); }
+.cache-panel .cache-message { color: var(--danger); border-left-color: var(--danger); }
+.cache-panel .cache-results { color: var(--text); border-left-color: var(--success); }
+.cache-results ul { margin-top: var(--space-xs); padding-left: var(--space-lg); list-style: disc; }
+
+/* The Application switch and freshness select. */
+.cache-freshness { display: inline-flex; align-items: center; gap: var(--space-sm); }
+.cache-freshness .form-label { display: inline; margin: 0; font-size: var(--font-sm); }
+.cache-panel .cache-freshness select { width: auto; min-width: 0; padding: 6px 10px; }
+.cache-panel .plugin-settings-toggle:disabled { cursor: not-allowed; }
+.cache-panel .plugin-settings-toggle:focus-visible, .cache-panel .gray-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cache-panel .status-badge.warning { color: var(--text); background: color-mix(in srgb, var(--warning) 22%, var(--surface)); }
+
+/* Grouped lists (hosts, routes): one bordered group, a soft head strip, rows divided by a thin line. */
+.cache-list, .cache-routes { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+.cache-routes-head { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); background: var(--surface-soft); border-bottom: 1px solid var(--border); color: var(--text-soft); font-size: var(--font-xs); font-weight: var(--font-medium); }
+.cache-host, .cache-route { padding: var(--space-md); }
+.cache-host + .cache-host, .cache-route + .cache-route { border-top: 1px solid var(--border); }
+
+/* Hosts: host and purge state, last clear, button on the right. */
+.cache-host { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; align-items: center; gap: var(--space-xs) var(--space-md); }
+.cache-host-main { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); min-width: 0; }
+.cache-host-name { font-size: var(--font-base); font-weight: var(--font-semibold); }
+.cache-host .gray-button { justify-self: end; }
+
+/* Routes: path, status, source, then Test and the route switch. The last column has one width on every row so the others line up. */
+.cache-route { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.1fr) minmax(0, 1fr) 8rem; align-items: center; gap: var(--space-xs) var(--space-md); }
+.cache-path { display: block; min-width: 0; overflow: hidden; color: var(--text); font-size: var(--font-sm); text-overflow: ellipsis; white-space: nowrap; }
+.cache-route-status { color: var(--text); font-size: var(--font-sm); }
+.cache-route-source { color: var(--text-soft); font-size: var(--font-xs); }
+.cache-route-state { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); grid-column: 2 / 4; min-width: 0; }
+.cache-route-stale .cache-path { color: var(--text-soft); }
+.cache-route-controls { display: grid; grid-template-columns: auto auto; justify-content: end; align-items: center; gap: var(--space-sm); }
+.cache-route-controls .gray-button { grid-column: 1; padding: 4px 10px; font-size: var(--font-xs); }
+.cache-route-controls .cache-route-switch { grid-column: 2; }
+.cache-route-controls .gray-button:only-child { grid-column: 1 / -1; }
+.cache-check { grid-column: 1 / -1; padding-left: var(--space-sm); border-left: 2px solid var(--accent); color: var(--text-soft); font-size: var(--font-xs); }
+.cache-check strong { color: var(--text); }
+.cache-check.error { color: var(--danger); border-left-color: var(--danger); }
+
+/* The route switch is the Plugins switch without its pill and label, smaller. The longer selectors outrank the Settings rules. */
+.cache-panel .plugin-settings-toggle.cache-route-switch,
+.cache-panel .plugin-settings-toggle.cache-route-switch:hover,
+.cache-panel .plugin-settings-toggle.cache-route-switch.enabled { gap: 0; padding: 0; border: 0; background: transparent; transform: none; }
+.cache-panel .cache-route-switch .plugin-settings-switch-track { width: 34px; height: 20px; flex-basis: 34px; }
+.cache-panel .cache-route-switch .plugin-settings-switch-thumb { top: 2px; left: 2px; width: 14px; height: 14px; }
+.cache-panel .plugin-settings-toggle.cache-route-switch.enabled .plugin-settings-switch-thumb { transform: translateX(14px); }
+
+@media (max-width: 900px) {
+    .cache-host { grid-template-columns: minmax(0, 1fr) auto; }
+    .cache-host-history { grid-column: 1 / -1; grid-row: 2; }
+    .cache-route { grid-template-columns: minmax(0, 1fr) auto; }
+    .cache-route-status, .cache-route-source, .cache-route-state { grid-column: 1 / -1; }
+    .cache-route-controls { grid-column: 2; grid-row: 1; }
 }
-.cache-panel .settings-card { cursor: default; }
-.cache-heading { display: grid; gap: var(--space-sm); }
-.cache-title-row, .cache-card-heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); }
-.cache-panel .cache-title-row h2 { margin: 0; }
-.cache-panel .cache-refresh { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-width: 32px; padding: 6px; }
-.cache-refresh svg { width: 18px; height: 18px; }
-.cache-card-heading { justify-content: space-between; }
-.cache-controls { padding-bottom: var(--space-md); border-bottom: 1px solid var(--border); }
-.cache-freshness { display: flex; align-items: center; gap: var(--space-sm); font-size: 13px; }
-.cache-panel .cache-freshness select { width: 120px; min-width: 100px; }
-.cache-routes { min-width: 0; color: var(--text-soft); font-size: 13px; }
-.cache-routes > summary { width: fit-content; cursor: pointer; }
-.cache-routes li { padding-block: var(--space-xs); }
-.cache-panel .cache-host { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-xs) var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--border); }
-.cache-host-name { min-width: 0; font-size: 13px; }
-.cache-host-history { grid-column: 1 / -1; }
-.cache-panel .cache-host button { justify-self: end; }
-@media (max-width: 520px) {
-    .cache-panel .cache-controls { align-items: flex-start; flex-direction: column; }
-    .cache-panel .cache-host { grid-template-columns: minmax(0, 1fr); }
-    .cache-host-history { grid-column: 1; }
+@media (max-width: 480px) {
+    .cache-card-controls { width: 100%; justify-content: space-between; margin-left: 0; }
+    .cache-host { grid-template-columns: minmax(0, 1fr); }
+    .cache-host .gray-button { justify-self: stretch; }
+    .cache-head > .settings-card-actions { width: 100%; }
 }
-.cache-panel ul { margin-block: var(--space-xs); }
-.cache-panel h3, .cache-panel p { margin: 0; }

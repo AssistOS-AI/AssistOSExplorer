@@ -192,7 +192,7 @@ function inBoxPrograms(source) {
 test('no in-Box program contains a single quote, and each is valid shell', () => {
     const expected = {
         bizanso: ['QA_REGISTRY_PROGRAM', 'DRAIN_ROUTING_PROGRAM', 'DRAIN_AGENTS_PROGRAM', 'DRAIN_RUNNING_PROGRAM', 'PROBE_PROGRAM', 'BIZANSO_READ_PROGRAM', 'BIZANSO_MANIFEST_PROGRAM', 'BIZANSO_PULL_PROGRAM', 'COPY_PROGRAM'],
-        scriptahub: ['DRAIN_ROUTING_PROGRAM', 'DRAIN_AGENTS_PROGRAM', 'DRAIN_RUNNING_PROGRAM', 'PROBE_PROGRAM', 'SCRIPTAHUB_READ_PROGRAM', 'SCRIPTAHUB_DIGEST_PROGRAM', 'SCRIPTAHUB_PULL_PROGRAM', 'SCRIPTAHUB_MERGE_PROGRAM', 'SCRIPTAHUB_TAG_PROGRAM'],
+        scriptahub: ['DRAIN_ROUTING_PROGRAM', 'DRAIN_AGENTS_PROGRAM', 'DRAIN_RUNNING_PROGRAM', 'PROBE_PROGRAM', 'SCRIPTAHUB_READ_PROGRAM', 'SCRIPTAHUB_DIGEST_PROGRAM', 'SCRIPTAHUB_CACHE_GATE_PROGRAM', 'SCRIPTAHUB_PULL_PROGRAM', 'SCRIPTAHUB_MERGE_PROGRAM', 'SCRIPTAHUB_TAG_PROGRAM'],
     };
     for (const key of KEYS) {
         const programs = inBoxPrograms(deployBody(key));
@@ -332,6 +332,7 @@ const MARKERS = {
             '\nprune_images pre\nrequire_free_disk\n',
             'run_in_box "$SCRIPTAHUB_DIGEST_PROGRAM" < /dev/null',
             'if [ "$DISK_NOW_GIB" -lt "$DISK_NEEDED_GIB" ]; then',
+            '| run_in_box "$SCRIPTAHUB_CACHE_GATE_PROGRAM"',
         ],
         mutations: [
             '| run_in_box "$SCRIPTAHUB_PULL_PROGRAM")"',
@@ -402,6 +403,14 @@ const STUBS = {
 fi
 shift 5
 exec "$@"`,
+    // The Box's own Node. The manifest check imports the Ploinky runtime from /opt/ploinky; the stub points that path at
+    // $PLOINKY_STUB, which a test fills with the runtime it wants the Box to have.
+    node: `from='file:///opt/ploinky/'; args=()
+for arg in "$@"; do
+  case "$arg" in *"$from"*) echo "node-in-box cache gate" >> "$STUB/calls.log" ;; esac
+  args+=("\${arg//$from/file://$PLOINKY_STUB/}")
+done
+exec "$REAL_NODE" "\${args[@]}"`,
     sleep: 'exit 0',
     df: '[ "${DF_FAIL:-}" = 1 ] && exit 1; printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/x 1 1 %s 9%% /\\n" "$(cat "$STUB/free_kib")"',
     // One poll is one explorer request: it advances $STUB/routes.plan (explorer bizanso scripta, each CODE or CODE:BODY).
@@ -464,22 +473,33 @@ case "$1" in
     if [ -x "$hook" ]; then "$hook" "$@"; exit $?; fi
     exit 0 ;;
   var) cat >> "$STUB/var.$2" ;;
+  cache)
+    echo "cache-env PLOINKY_ROUTER_HOST_PORT=\${PLOINKY_ROUTER_HOST_PORT:-unset}" >> "$STUB/calls.log"
+    if [ -f "$STUB/cache-answer" ]; then cat "$STUB/cache-answer" >&2; exit 1; fi
+    echo "Cache clear completed." ;;
   *) exit 0 ;;
 esac`,
     // Host podman, Box podman (container exec ... podman) and the Box shell (container exec ... sh -c PROGRAM sh).
     // $STUB/images holds the local images and $STUB/registry the pullable ones: "name id revision digests-or-dash" per line.
-    podman: `if [ "$1" = container ] && [ "$2" = exec ]; then
+    podman: `if [ "$1" = container ] && [ "$2" = inspect ]; then
+  echo "podman $*" >> "$STUB/calls.log"
+  [ ! -f "$STUB/box-id" ] || cat "$STUB/box-id"
+  exit 0
+fi
+if [ "$1" = container ] && [ "$2" = exec ]; then
   shift 2; wd=""
   while [ $# -gt 0 ]; do
     case "$1" in
       -i) shift ;;
-      --user|--env) shift 2 ;;
+      --user) shift 2 ;;
+      --env) export "$2"; shift 2 ;;
       --workdir) wd="$2"; shift 2 ;;
       *) break ;;
     esac
   done
   shift
-  if [ "$1" = sh ]; then cd "$wd" && exec "\${QA_PROGRAM_SHELL:-sh}" -c "$3" sh; fi
+  [ "$wd" != /home/admin/explorerQaWorkspace ] || wd="$QA_WS"
+  if [ "$1" = sh ]; then cd "$wd" && exec "\${QA_PROGRAM_SHELL:-sh}" -c "$3" sh "\${@:5}"; fi
   if [ "$1" = podman ]; then shift; exec "$0" "$@"; fi
   exit 1
 fi
@@ -573,9 +593,29 @@ function makeBox(t) {
         PUBLIC_HOST: 'explorer-qa.axiologic.dev',
         PUBLIC_URL: 'https://explorer-qa.axiologic.dev',
         SOUL_GATEWAY_ROUTER_PORT: '8080',
+        REAL_NODE: process.execPath,
+        QA_WS: path.join(dir, 'ws'),
+        PLOINKY_STUB: path.join(dir, 'ploinky-root'),
         ...extra,
     });
     box.exec = (script, extra = {}) => spawnSync('bash', ['-c', script], { encoding: 'utf8', env: box.env(extra), maxBuffer: 1 << 26 });
+    // The Ploinky runtime the Box has: `new` ships the import-free routeCacheMarkValues.js and validates page, immutable
+    // and never; `old` ships it without never; `legacy` has only routeCacheMarks.js, which a bare Node cannot import
+    // (it needs AgentLib); `absent` has no route cache module at all. These are stand-ins for the exported isRouteCacheMark.
+    box.runtime = (kind) => {
+        const root = path.join(dir, 'ploinky-root');
+        fs.rmSync(root, { recursive: true, force: true });
+        if (kind === 'absent') return;
+        fs.mkdirSync(path.join(root, 'cli/server/policy'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}\n');
+        if (kind === 'legacy') {
+            fs.writeFileSync(path.join(root, 'cli/server/policy/routeCacheMarks.js'), "throw new Error('PLOINKY_AGENTLIB_DIR is not set');\n");
+            return;
+        }
+        const accepted = kind === 'old' ? "['page', 'immutable']" : "['page', 'immutable', 'never']";
+        fs.writeFileSync(path.join(root, 'cli/server/policy/routeCacheMarkValues.js'), `export const isRouteCacheMark = (value) => ${accepted}.includes(value);\n`);
+    };
+    box.runtime('new');
     // Defaults: a healthy graph, healthy routes, 20 GiB free, nothing pullable.
     // Neither Ploinky file marks anything as draining until a test says so.
     fs.writeFileSync(path.join(box.ws, '.ploinky/routing.json'), JSON.stringify({ routes: { explorer: { container: 'ploinky_AchillesIDE_explorer_x' } } }));
@@ -1408,6 +1448,7 @@ const scriptaFiles = (extra = {}) => Object.fromEntries(Object.entries({
     [LOCKFILE]: '{}\n',
     [INPUTS]: `${INPUTS}\n${LOCKFILE}\n`,
     'scriptahubAgent/deployment/start.mjs': 'start\n',
+    'scriptahubAgent/manifest.json': `${JSON.stringify({ routerAccess: { httpRoutes: [{ path: '/health', access: 'public', cache: 'never' }, { path: '/books/*', access: 'public', cache: 'page' }] } })}\n`,
     'scriptahubAgent/site/reader/reader.css': 'body {}\n',
     'README.md': 'one\n',
     ...extra,
@@ -2471,4 +2512,235 @@ test('Bizanso deploy places a published executable-mode change when the image an
     assert.ok(fs.statSync(path.join(box.ws, 'bizanso', file)).mode & 0o111);
     const receipt = JSON.parse(fs.readFileSync(path.join(box.stub, 'bizanso-receipt.json')));
     assert.equal(receipt.installed.find(item => item.path === file).executable, true);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The cache capability gate (D32) and the host purge (D31)
+
+const manifestOf = (httpRoutes) => `${JSON.stringify({ routerAccess: { httpRoutes } })}\n`;
+const dir = (box) => path.join(box.dir, 'ploinky-root');
+const GATE = '| run_in_box "$SCRIPTAHUB_CACHE_GATE_PROGRAM"';
+
+test('cache gate: it is a read-only refusal before the image pull and before the checkout merge, outside every shared block', () => {
+    const body = deployBody('scriptahub');
+    const flow = body.slice(body.indexOf('# BEGIN QA product flow'));
+    const gate = flow.indexOf(GATE);
+    assert.notEqual(gate, -1);
+    assert.equal(flow.split(GATE).length - 1, 1);
+    for (const later of ['run_in_box "$SCRIPTAHUB_PULL_PROGRAM"', 'run_in_box "$SCRIPTAHUB_MERGE_PROGRAM"', 'run_in_box "$SCRIPTAHUB_TAG_PROGRAM"', 'restart_product whole', '# From here on the QA Box changes.']) {
+        assert.ok(gate < flow.indexOf(later), later);
+    }
+    // After the last other refusal, and not inside the checkout-moves branch: it has no condition of its own.
+    assert.ok(gate > flow.indexOf('if [ "$DISK_NOW_GIB" -lt "$DISK_NEEDED_GIB" ]; then'));
+    assert.ok(gate < flow.indexOf('CHECKOUT_MOVES'));
+    const call = flow.slice(flow.lastIndexOf('\n', gate - 200), flow.indexOf('\n', flow.indexOf('Nothing was changed', gate)));
+    assert.match(call, /runner_git show "\$SCRIPTA_HEAD:scriptahubAgent\/manifest\.json" \| run_in_box/);
+    assert.match(call, /Nothing was changed\. Deploy Ploinky with the cache-tab-v2 change through deploy-explorer-qa-ploinky\.yml first\./);
+    assert.match(call, /^\s*if ! GATE_OUTPUT=/m);
+    for (const name of SHARED_BY.scriptahub) assert.equal(block(workflow('scriptahub'), name).includes('CACHE_GATE'), false, name);
+    assert.equal(workflow('bizanso').includes('CACHE_GATE'), false);
+    // The program runs the Box's own Node on the check that the Router imports, and never writes.
+    const program = programOf('scriptahub', 'SCRIPTAHUB_CACHE_GATE_PROGRAM');
+    assert.match(program, /file:\/\/\/opt\/ploinky\/cli\/server\/policy\/routeCacheMarkValues\.js/);
+    assert.match(program, /isRouteCacheMark/);
+    assert.doesNotMatch(program, /routeCacheMarks\.js/, 'the module with imports cannot be loaded by a bare Node');
+    assert.doesNotMatch(program, /writeFile|appendFile|\brm\b|\bmv\b|podman|ploinky /);
+});
+
+test('cache gate: accepted marks pass whether or not the checkout moves, and the gate ran in the Box each time', (t) => {
+    const marks = manifestOf([{ path: '/health', access: 'public', cache: 'never' }, { path: '/books/*', access: 'public', cache: 'page' }, { path: '/a/*', access: 'public', cache: 'immutable' }, { path: '/b', access: 'public' }]);
+    const objectForm = `${JSON.stringify({ routerAccess: { httpRoutes: { '/health': { access: 'public', cache: 'never' }, '/open': 'public' } } })}\n`;
+    for (const [name, options] of Object.entries({
+        'the checkout moves': { headFiles: { 'scriptahubAgent/manifest.json': marks } },
+        'the checkout is already at the head': { image: 'head', old: 'head', headFiles: { 'scriptahubAgent/manifest.json': marks } },
+        'object-form routes': { headFiles: { 'scriptahubAgent/manifest.json': objectForm } },
+        'no routes at all': { headFiles: { 'scriptahubAgent/manifest.json': '{}\n' } },
+        // Only page or immutable (or none): the runtime is never consulted, so any older runtime passes.
+        'page and immutable marks on a runtime that predates never': { runtime: 'old', headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/a', access: 'public', cache: 'page' }, { path: '/b', access: 'public', cache: 'immutable' }]) } },
+        'page marks on a runtime with only the unimportable module': { runtime: 'legacy', headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/a', access: 'public', cache: 'page' }]) } },
+        'page marks on a runtime without any route cache module': { runtime: 'absent', headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/a', access: 'public', cache: 'page' }]) } },
+        'no marks on a runtime without any route cache module': { runtime: 'absent', headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/a', access: 'public' }]) } },
+    })) {
+        const { runtime, ...boxOptions } = options;
+        const box = scriptaBox(t, boxOptions);
+        if (runtime) box.runtime(runtime);
+        const result = runScriptaFlow(box);
+        assert.equal(result.status, 0, `${name}: ${logOf(result)}`);
+        assert.equal(box.calls().filter((line) => line === 'node-in-box cache gate').length, 1, name);
+    }
+});
+
+test('cache gate: a runtime that cannot validate never, or a rejected value, refuses with nothing changed and the recovery command', (t) => {
+    const withNever = manifestOf([{ path: '/health', access: 'public', cache: 'never' }]);
+    const cases = {
+        'a runtime that predates never': { runtime: 'old', files: withNever, reason: /cannot validate route cache marks/ },
+        'a runtime with only the module a bare Node cannot import': { runtime: 'legacy', files: withNever, reason: /cannot validate route cache marks/ },
+        'a runtime without the route cache module': { runtime: 'absent', files: withNever, reason: /cannot validate route cache marks/ },
+        'a value no runtime knows, on a runtime without the module': { runtime: 'absent', files: manifestOf([{ path: '/x', access: 'public', cache: 'forever' }]), reason: /cannot validate route cache marks/ },
+        'a value no runtime knows': { runtime: 'new', files: manifestOf([{ path: '/x', access: 'public', cache: 'forever' }]), reason: /rejects 1 cache value/ },
+        'a non-string value': { runtime: 'new', files: manifestOf([{ path: '/x', access: 'public', cache: true }]), reason: /rejects 1 cache value/ },
+        'a rejected value in object-form routes': { runtime: 'new', files: `${JSON.stringify({ routerAccess: { httpRoutes: { '/x': { access: 'public', cache: 'maybe' } } } })}\n`, reason: /rejects 1 cache value/ },
+        'a manifest that is not JSON': { runtime: 'new', files: 'not json\n', reason: /not valid JSON/ },
+    };
+    // Both with a moving checkout and with one already at the head (where nothing else would run in the Box).
+    for (const [where, options] of Object.entries({ 'checkout moves': {}, 'checkout at the head': { image: 'head', old: 'head' } })) {
+        for (const [name, scenario] of Object.entries(cases)) {
+            const box = scriptaBox(t, { ...options, baseFiles: { 'scriptahubAgent/manifest.json': scenario.files }, headFiles: { 'scriptahubAgent/manifest.json': scenario.files } });
+            box.runtime(scenario.runtime);
+            const before = checkoutHead(box);
+            const result = runScriptaFlow(box);
+            const label = `${where}: ${name}`;
+            assert.notEqual(result.status, 0, label);
+            const log = logOf(result);
+            assert.match(log, /::error::The Ploinky runtime in the QA Box does not accept the route cache marks of main@[0-9a-f]{40} \(/, label);
+            assert.match(log, scenario.reason, label);
+            assert.match(log, /Nothing was changed\. Deploy Ploinky with the cache-tab-v2 change through deploy-explorer-qa-ploinky\.yml first\./, label);
+            assert.doesNotMatch(log, /Post-mutation|restart result/, label);
+            noScriptaMutation(box, before);
+        }
+    }
+});
+
+test('cache gate: it checks the manifest at the selected head from the runner, not the checkout in the Box', (t) => {
+    // The Box checkout (and the image revision) hold a manifest with no mark; only the incoming head carries never.
+    const plain = manifestOf([{ path: '/health', access: 'public' }]);
+    const box = scriptaBox(t, { baseFiles: { 'scriptahubAgent/manifest.json': plain }, headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/health', access: 'public', cache: 'never' }]) } });
+    box.runtime('new');
+    // A runtime that validates only never: the plain checkout would pass it, the incoming head carries never and passes too.
+    fs.writeFileSync(path.join(dir(box), 'cli/server/policy/routeCacheMarkValues.js'), "export const isRouteCacheMark = (value) => value === 'never';\n");
+    assert.equal(fs.readFileSync(path.join(box.clone, 'scriptahubAgent/manifest.json'), 'utf8'), plain);
+    const accepted = runScriptaFlow(box);
+    assert.equal(accepted.status, 0, logOf(accepted));
+    // Same runtime, incoming head with a value it rejects next to never.
+    const rejected = scriptaBox(t, { baseFiles: { 'scriptahubAgent/manifest.json': plain }, headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/x', access: 'public', cache: 'never' }, { path: '/y', access: 'public', cache: 'page' }]) } });
+    fs.writeFileSync(path.join(dir(rejected), 'cli/server/policy/routeCacheMarkValues.js'), "export const isRouteCacheMark = (value) => value === 'never';\n");
+    const result = runScriptaFlow(rejected);
+    assert.notEqual(result.status, 0);
+    assert.match(logOf(result), /rejects 1 cache value[\s\S]*Nothing was changed\. Deploy Ploinky/);
+});
+
+test('cache purge: the flow reports its restart result to the next step, and nothing else', (t) => {
+    const box = scriptaBox(t);
+    assert.equal(runScriptaFlow(box).status, 0);
+    assert.equal(exported(box).QA_RESTART_RESULT, 'whole');
+    const again = scriptaRestartAgain(box);
+    assert.equal(again.status, 0, logOf(again));
+    assert.equal(exported(box).QA_RESTART_RESULT, 'none');
+});
+
+const purgeSource = () => step(workflow('scriptahub'), 'Purge the QA host cache');
+const purgeScript = () => stepScript(workflow('scriptahub'), 'Purge the QA host cache');
+
+test('cache purge: a separate step after the route verification, host-only, with no secret, rule or toggle', () => {
+    const source = workflow('scriptahub');
+    const names = [...source.matchAll(/^ {6}- name: (.+)$/gm)].map((match) => match[1]);
+    const at = names.indexOf('Purge the QA host cache');
+    assert.equal(names[at - 1], 'Verify the QA routes');
+    assert.equal(names[at + 1], 'Create summary');
+    // No condition that could run it after a failure: the default success() applies, so it needs the verification to have passed.
+    assert.doesNotMatch(purgeSource(), /^\s*(?:if|continue-on-error|env):/m);
+    // Outside the blocks that the Bizanso workflow shares byte for byte, and in no shared block of this file.
+    const script = purgeScript();
+    for (const name of [...SHARED_BY.scriptahub, ...Object.keys(OWN)]) assert.equal(block(source, name).includes(script.split('\n')[1]), false, name);
+    assert.equal(source.split("cache clear --host").length - 1, 1);
+    assert.equal(workflow('bizanso').includes('cache clear'), false);
+    // One purge command, for the workflow's own exact host; no other cache or edge command, no rule or toggle.
+    assert.match(script, /sh -c '\$command' sh cache clear --host '\$PUBLIC_HOST'" < \/dev\/null/);
+    assert.match(script, /\[\[ "\$PUBLIC_HOST" == explorer-qa\.axiologic\.dev && "\$ROUTER_PORT" == 8097 /);
+    assert.doesNotMatch(script, /purge-config|\bhold\b|\brelease\b|--zone|--secret|--agent|edge |rule|R2|\bvar\b|curl|secrets\.|TOKEN|CLOUDFLARE|Cloudflare/i);
+    assert.doesNotMatch(source, /CLOUDFLARE|Cloudflare|PURGE_TOKEN|CACHE_RULES/);
+    // The per-command lock and the port variable of the sibling router script.
+    assert.match(script, /lock='flock -n -E 75 --close \/home\/admin\/\.qa-deployment-operation\.lock'/);
+    assert.match(script, /"\$lock podman container exec -i --user podman --workdir '\/home\/admin\/\$WORKSPACE' --env 'PLOINKY_WORKSPACE_ROOT=\/home\/admin\/\$WORKSPACE' --env 'PLOINKY_ROUTER_HOST_PORT=\$ROUTER_PORT' '\$box_id' sh -c/);
+    const sibling = fs.readFileSync(path.join(ROOT, '.github/scripts/qa-cache-router.sh'), 'utf8');
+    assert.ok(sibling.includes("--env 'PLOINKY_ROUTER_HOST_PORT=$ROUTER_PORT' '$box_id' sh -c '$command' sh $*"), 'the sibling form this step copies');
+    assert.match(script, /command='ploinky "\$@" \|\| exit '"\$cli_refused"/);
+    assert.doesNotMatch(script, /\bset \+e\b/);
+});
+
+function purgeBox(t, restart = 'whole') {
+    const box = makeBox(t);
+    box.write('box-id', `${hex('9')}\n`);
+    const sshBin = path.join(box.dir, 'sshbin');
+    fs.mkdirSync(sshBin);
+    fs.writeFileSync(path.join(sshBin, 'ssh'), '#!/bin/bash\neval "${@: -1}"\n', { mode: 0o755 });
+    box.purge = (extra = {}) => {
+        const env = box.env({ QA_RESTART_RESULT: restart, ...extra });
+        return spawnSync('bash', ['-c', purgeScript()], { encoding: 'utf8', env: { ...env, PATH: `${sshBin}:${env.PATH}` } });
+    };
+    return box;
+}
+const purgeCalls = (box) => box.calls().filter((line) => /^(?:ploinky|cache-env|podman container)/.test(line));
+
+test('cache purge: after a restart it clears exactly the QA host once, through the lock, with the Router port, by the Box ID', (t) => {
+    for (const restart of ['whole', 'targeted', 'whole-after-targeted']) {
+        const box = purgeBox(t, restart);
+        const result = box.purge();
+        assert.equal(result.status, 0, logOf(result));
+        assert.deepEqual(purgeCalls(box), [
+            'podman container inspect --format {{.Id}} ploinky-box-explorerqaworkspace-7a31ab7775eb',
+            'ploinky cache clear --host explorer-qa.axiologic.dev',
+            'cache-env PLOINKY_ROUTER_HOST_PORT=8097',
+        ], restart);
+        assert.match(result.stdout, /Purged the QA host cache of explorer-qa\.axiologic\.dev\./);
+        assert.doesNotMatch(logOf(result), /::warning::|::error::/);
+    }
+});
+
+test('cache purge: nothing restarted means no SSH, no Box call and no purge', (t) => {
+    const box = purgeBox(t, 'none');
+    const result = box.purge();
+    assert.equal(result.status, 0, logOf(result));
+    assert.deepEqual(box.calls(), []);
+    assert.match(result.stdout, /Nothing restarted/);
+});
+
+test('cache purge: a missing or unknown restart result fails instead of guessing', (t) => {
+    for (const value of ['', 'failed', 'none\nwhole']) {
+        const box = purgeBox(t);
+        const result = box.purge({ QA_RESTART_RESULT: value });
+        assert.equal(result.status, 1, JSON.stringify(value));
+        assert.match(logOf(result), /::error::The deploy step did not report a restart result\./);
+        assert.deepEqual(box.calls(), [], JSON.stringify(value));
+    }
+});
+
+test('cache purge: a refused, cooling-down, unconfigured or failed answer only warns', (t) => {
+    for (const answer of ['Cache clear failed: cooldown.', 'Cache clear failed: unconfigured.', 'Cache clear failed: failed.', 'Cache clear failed.', 'Private Router request failed.']) {
+        const box = purgeBox(t);
+        box.write('cache-answer', `${answer}\n`);
+        const result = box.purge();
+        assert.equal(result.status, 0, `${answer}: ${logOf(result)}`);
+        assert.match(result.stdout, /::warning::The QA host cache purge was not accepted \(/, answer);
+        assert.ok(result.stdout.includes(answer.replace(/[^A-Za-z0-9 .,:_-]/g, '?')), answer);
+        assert.doesNotMatch(logOf(result), /::error::/, answer);
+        assert.equal(box.calls().filter((line) => line === 'ploinky cache clear --host explorer-qa.axiologic.dev').length, 1, 'no retry');
+    }
+    // Box-written text is reduced to plain characters before it reaches a workflow command.
+    const hostile = purgeBox(t);
+    hostile.write('cache-answer', 'bad\n::error::injected %0A\n');
+    const result = hostile.purge();
+    assert.equal(result.status, 0);
+    assert.doesNotMatch(result.stdout, /^::error::injected/m);
+});
+
+test('cache purge: a held host lock, or an unidentifiable Box, are reported as they are and run no purge', (t) => {
+    const busy = purgeBox(t);
+    busy.write('flock-busy', 'cache clear');
+    const result = busy.purge();
+    assert.equal(result.status, 75, logOf(result));
+    assert.match(result.stdout, /::error::QA host lock, container execution or SSH refused the purge \(exit 75\)\./);
+    assert.equal(busy.calls().some((line) => line === 'ploinky cache clear --host explorer-qa.axiologic.dev'), false);
+
+    const lost = purgeBox(t);
+    fs.rmSync(path.join(lost.stub, 'box-id'));
+    const warned = lost.purge();
+    assert.equal(warned.status, 0, logOf(warned));
+    assert.match(warned.stdout, /::warning::The QA Box could not be identified, so the QA host cache was not purged\./);
+    assert.equal(lost.calls().some((line) => line.startsWith('ploinky')), false);
+
+    const wrong = purgeBox(t);
+    const refused = wrong.purge({ PUBLIC_HOST: 'bizanso.com' });
+    assert.equal(refused.status, 1);
+    assert.deepEqual(wrong.calls(), []);
 });

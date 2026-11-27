@@ -556,10 +556,10 @@ test('modal template and styles provide semantic controls, live status, focus, a
     const registration = webSkel.components.find((component) => component.name === 'terminal-target-modal');
 
     assert.match(template, /role="status"[^>]*aria-live="polite"/);
-    assert.match(template, /<ul[^>]*aria-label="Available terminal targets"/);
+    assert.match(template, /<ul[^>]*aria-label="Available Ploinky containers"/);
     assert.match(template, /data-local-action="closeModal"/);
-    assert.match(template, /data-local-action="retryDiscovery"/);
-    assert.match(template, /data-local-action="refreshTargets"/);
+    assert.doesNotMatch(template, /data-local-action="retryDiscovery"/);
+    assert.doesNotMatch(template, /data-local-action="refreshTargets"/);
     assert.match(styles, /terminal-target-list[\s\S]*max-height:[\s\S]*overflow-y:\s*auto/);
     assert.match(styles, /terminal-target-button:focus-visible/);
     assert.match(source, /document\.createElement/);
@@ -934,7 +934,7 @@ test('dialog starts with no robot, a placeholder only, discovery for {dir} and e
     assert.equal(rows.length, 3);
     for (const row of rows) {
         assert.equal(row.disabled, true);
-        assert.match(textTree(row), /Choose a robot first/);
+        assert.doesNotMatch(textTree(row), /Choose a robot first/);
     }
     assert.equal(page.modal.targetsByLaunch.size, 3);
     assert.match(textTree(page.$('Status')), /Choose a robot/);
@@ -1018,28 +1018,6 @@ test('changing the robot cancels the previous discovery, clears the chosen row a
     }
     assert.equal(page.modal.discoveryId, id32('disc3'));
     assert.ok(!cancelled.includes(page.modal.discoveryId));
-});
-
-test('the HOME disclosure names the robot and adds the Box and non-RoboTeam sentences for the chosen row', async (t) => {
-    const page = pageHarness(t);
-    page.modal.afterRender();
-    await page.settle();
-    assert.equal(page.$('Disclosure').hidden, true);
-
-    await page.chooseRobot('Robot A');
-    const base = "HOME will be Robot A's home folder. Settings the robot wrote there (git, ssh, coding-agent configuration) can run commands when you use those tools here, and logins, history and files you create there are stored where the robot can read them.";
-    const box = 'The Box runs the Ploinky router and controls every agent container.';
-    const toolSetup = "The robot's tool setup is not loaded here.";
-    const sentences = () => page.$('Disclosure').children.map((child) => child.textContent);
-    assert.equal(page.$('Disclosure').hidden, false);
-    assert.deepEqual(sentences(), [base]);
-
-    await page.chooseRow(/Ploinky Box/);
-    assert.deepEqual(sentences(), [base, box, toolSetup]);
-    await page.chooseRow(/Explorer/);
-    assert.deepEqual(sentences(), [base, toolSetup]);
-    await page.chooseRow(/RoboTeam/);
-    assert.deepEqual(sentences(), [base], 'the declaring agent loads the robot tool setup');
 });
 
 test('Open is disabled with a reason when no source, a failing source or no robots is available, and the list stays visible', async (t) => {
@@ -1222,8 +1200,8 @@ test('template and styles carry the robot select and the Open button, and no clo
     const [template, styles, source] = await Promise.all(['html', 'css', 'js'].map((extension) => (
         fs.readFile(path.join(root, `terminal-target-modal.${extension}`), 'utf8'))));
 
-    assert.match(template, /<select id="terminalTargetRobot"[^>]*\brequired\b/);
-    assert.match(template, /<option value="" disabled selected>Choose a robot<\/option>/);
+    assert.match(template, /<input id="terminalTargetRobotSearch"[^>]*role="combobox"/);
+    assert.match(template, /id="terminalTargetRobotOptions"[^>]*role="listbox"/);
     assert.doesNotMatch(template, /No robot/i);
     assert.match(template, /data-local-action="openTerminal"[^>]*disabled/);
     // The chooser shows and sends no close policy.
@@ -1351,22 +1329,22 @@ test('live agents are the default, render every returned agent and launch withou
     const source = { ...WORK_SOURCE, terminalProfiles: { ...WORK_SOURCE.terminalProfiles, liveAgents: true } };
     let empty = false;
     const page = pageHarness(t, { sources: [source], respond: async ({ method, url, body }) => {
-        if (method === 'GET') return { body: { ok: true, profiles: ROBOTS, environments: ENVIRONMENTS } };
+        if (method === 'GET') return { body: { ok: true, profiles: ROBOTS.map(robot => robot.id === 'robot-a' ? { ...robot, label: 'default' } : robot), environments: ENVIRONMENTS } };
         if (method !== 'POST' || url !== '/webtty/target-discoveries') return null;
         const request = JSON.parse(body);
         if (!request.profile) return null;
         const rows = empty ? [] : [
             { ...profiledTargets()[1], launch: id32('work-row'), detail: 'AchillesIDE/roboWorkAgent', label: 'RoboWork' },
-            { ...profiledTargets()[1], launch: id32('git-row'), detail: 'AchillesIDE/gitAgent', label: 'Git' },
+            { ...profiledTargets()[1], launch: id32('git-row'), detail: 'AchillesIDE/roboTeamAgent', label: 'RoboTeam' },
         ];
         return { body: profiledPayload({ ...request.profile, label: 'Robot A' }, rows, id32(empty ? 'empty' : 'live')) };
     } });
-    page.modal.afterRender(); await page.settle(); await page.chooseRobot('Robot A');
-    assert.equal(page.$('Environment').children[0].textContent, 'Running agents');
+    page.modal.afterRender(); await page.settle(); assert.equal(page.modal.selectedRobot().label, 'default');
+    assert.equal(page.$('Environment').children.length, 0, 'no environment choices are offered');
     assert.deepEqual(page.modal.selectedProfile(), { provider: 'roboWorkAgent', id: 'robot-a.default', mode: 'live-agent' });
     assert.equal(page.rows().length, 2);
-    await page.chooseRow(/Git/);
-    assert.match(textTree(page.$('Disclosure')), /Ordinary processes/);
+    await page.chooseRow(/RoboTeam/);
+
     page.modal.currentDiscovery = { ...page.modal.currentDiscovery, profile: { ...page.modal.currentDiscovery.profile, mode: undefined } };
     assert.equal(page.modal.openGate(), null);
     empty = true;
@@ -1375,8 +1353,18 @@ test('live agents are the default, render every returned agent and launch withou
     assert.match(page.$('Warning').textContent, /No eligible running agents/);
     assert.ok(fetchLog(page.log, 'DELETE').length >= 1);
     empty = false;
-    await page.modal.refreshTargets(); await page.chooseRow(/Git/);
+    await page.modal.refreshTargets(); await page.chooseRow(/RoboTeam/);
+    const beforeSwitch = fetchLog(page.log, 'POST').length;
+    const originalRows = page.rows();
+    const originalLaunch = page.modal.selectedLaunch;
+    await page.chooseRobot('Robot B');
+    assert.equal(fetchLog(page.log, 'POST').length, beforeSwitch, 'changing the robot does not rediscover containers');
+    assert.deepEqual(page.rows(), originalRows, 'container DOM remains intact');
+    assert.equal(page.modal.selectedLaunch, originalLaunch);
+    assert.equal(page.$('Open').disabled, false);
     assert.equal(await page.modal.openTerminal(), true);
+    const discoveryCalls = fetchLog(page.log, 'POST').filter(entry => entry[2] === '/webtty/target-discoveries');
+    assert.equal(JSON.parse(discoveryCalls.at(-1)[3]).profile.id, 'robot-b.default');
     assert.ok(!page.log.some(entry => String(entry[2]).endsWith('/prepare')));
 });
 
@@ -1396,79 +1384,14 @@ test('environment declaration survives plugin normalization and validates exact 
         terminalProfiles: { ...WORK_SOURCE.terminalProfiles, environments: false } }] } }).application['terminal-profiles:source'].length, 0);
 });
 
-function environmentPage(t, workTargets = null, environments = ENVIRONMENTS) {
-    let sequence = 0;
-    return pageHarness(t, { sources: [WORK_SOURCE], respond: async ({ method, url, body }) => {
-        if (method === 'GET') return { body: { ok: true, profiles: ROBOTS, environments } };
-        if (url !== '/webtty/target-discoveries' || method !== 'POST') return null;
-        const request = JSON.parse(body);
-        if (!request.profile) return null;
-        sequence++;
-        const row = { ...profiledTargets()[1], launch: id32('work-row'), detail: 'AchillesIDE/roboWorkAgent', label: 'RoboWork' };
-        return { body: profiledPayload({ ...request.profile, label: 'Robot A' },
-            [...profiledTargets(), ...(workTargets ? workTargets(row) : [row])], id32(`work${sequence}`)) };
-    } });
-}
-
-test('environment picker launches only RoboWork and binds preparation to robot plus chosen environment', async t => {
-    const page = environmentPage(t);
-    page.modal.afterRender(); await page.settle();
-    assert.equal(page.$('Environment').hidden, true);
-    await page.chooseRobot('Robot A');
-    assert.equal(page.$('Environment').hidden, false);
-    assert.deepEqual(page.$('Environment').children.map(option => option.textContent),
-        ['RoboWork (default)', 'Chosen agent', 'Unavailable agent (image cannot be pulled; retry download)']);
-    assert.equal(page.$('Environment').children[2].disabled, false);
-    assert.equal(page.rows().length, 1); assert.match(textTree(page.rows()[0]), /RoboWork/);
-    assert.equal(page.modal.targetsByLaunch.has(id32('box')), false);
-    assert.deepEqual(page.modal.currentDiscovery.profile, { provider: 'roboWorkAgent', id: 'robot-a.default', label: 'Robot A' });
-    await page.chooseRow(/RoboWork/);
-    page.modal.handleChange({ target: { id: 'terminalTargetEnvironment', value: 'YWdlbnQ' } });
-    await page.settle();
-    assert.equal(page.$('Open').disabled, true, 'changing environment clears the selected launch');
-    assert.deepEqual(page.modal.currentDiscovery.profile, { provider: 'roboWorkAgent', id: 'robot-a.YWdlbnQ', label: 'Robot A' });
-    await page.chooseRow(/RoboWork/);
-    assert.equal(await page.modal.openTerminal(), true);
-    const prepare = page.log.find(entry => entry[2] === `${WORK_BASE}/robot-a.YWdlbnQ/prepare`);
-    assert.equal(prepare[1], 'POST'); assert.equal(prepare[3], '{}');
-    assert.ok(!page.log.some(entry => String(entry[3]).includes('/home/')));
-});
-
-test('environment flow refuses read-only, absent and ambiguous RoboWork rows', async t => {
-    for (const workTargets of [() => [], row => [{ ...row, access: 'ro' }],
-        row => [row, { ...row, launch: id32('work-duplicate') }]]) {
-        const page = environmentPage(t, workTargets);
-        page.modal.afterRender(); await page.settle(); await page.chooseRobot('Robot A');
-        assert.ok(page.rows().every(row => row.disabled));
-        assert.equal(page.$('Open').disabled, true);
-        assert.equal(await page.modal.openTerminal(), false);
-        assert.ok(!page.log.some(entry => String(entry[2]).endsWith('/prepare')));
-    }
-});
-
-test('cached image pull failure remains visible and can launch a retry from the terminal picker', async t => {
-    const page = environmentPage(t);
+test('environment-only providers cannot launch temporary containers from the chooser', async t => {
+    const page = pageHarness(t, { sources: [WORK_SOURCE], respond: async ({ method }) => method === 'GET'
+        ? { body: { ok: true, profiles: ROBOTS, environments: ENVIRONMENTS } } : null });
     page.modal.afterRender(); await page.settle(); await page.chooseRobot('Robot A');
-    const retry = page.$('Environment').children.find(option => option.value === 'unavailable');
-    assert.equal(retry.disabled, false);
-    assert.match(retry.textContent, /image cannot be pulled.*retry download/u);
-    page.modal.handleChange({ target: { id: 'terminalTargetEnvironment', value: 'unavailable' } });
-    await page.settle();
-    assert.equal(page.modal.selectedProfile().id, 'robot-a.unavailable');
-    await page.chooseRow(/RoboWork/);
-    assert.equal(await page.modal.openTerminal(), true);
-    assert.ok(page.log.some(entry => entry[2] === `${WORK_BASE}/robot-a.unavailable/prepare`));
-});
-
-test('terminal picker keeps malformed and missing images disabled', async t => {
-    for (const reason of ['manifest unavailable', 'templated or invalid image', 'image unavailable', 'other failure']) {
-        const environments = ENVIRONMENTS.map(entry => entry.key === 'unavailable' ? { ...entry, reason } : entry);
-        const page = environmentPage(t, null, environments);
-        page.modal.afterRender(); await page.settle(); await page.chooseRobot('Robot A');
-        assert.equal(page.$('Environment').children[2].disabled, true);
-        page.modal.selectedEnvironmentKey = 'unavailable';
-        assert.equal(page.modal.selectedProfile(), null);
-    }
+    assert.equal(page.modal.selectedProfile(), null);
+    assert.equal(page.$('Open').disabled, true);
+    assert.equal(await page.modal.openTerminal(), false);
+    assert.ok(!page.log.some(entry => String(entry[2]).endsWith('/prepare')));
 });
 
 test('a preparing Environment closes the reserved popup and tells the user to retry Open', async t => {
@@ -1511,4 +1434,25 @@ test('discovery and prepare retry once on a stale proof and re-read the proof he
         },
     }), (error) => error.status === 403 && error.code === 'browser_csrf_invalid');
     assert.equal(seen.length, 2, 'a second stale answer surfaces after exactly one retry');
+});
+
+
+test('robot search filters the visible select without changing the chosen profile', async t => {
+    const page = pageHarness(t);
+    page.modal.afterRender(); await page.settle();
+    const search = new FakeElement('input'); search.id = 'terminalTargetRobotSearch';
+    page.modal.robotSearch = search;
+    const visible = () => page.select.children.filter(option => option.value && !option.hidden).map(option => option.textContent);
+    page.modal.renderRobotOptions();
+    assert.deepEqual(visible(), ['Robot A', 'Robot B']);
+    search.value = 'robot b'; page.modal.boundRobotSearch({ target: search });
+    assert.deepEqual(visible(), ['Robot B']);
+    assert.equal(page.modal.selectedRobot(), null);
+    await page.chooseRobot('Robot B');
+    assert.equal(page.modal.selectedProfile().id, 'robot-b');
+    search.value = 'missing'; page.modal.boundRobotSearch({ target: search });
+    assert.deepEqual(visible(), []);
+    assert.equal(page.modal.selectedProfile().id, 'robot-b');
+    search.value = ''; page.modal.boundRobotSearch({ target: search });
+    assert.deepEqual(visible(), ['Robot A', 'Robot B']);
 });

@@ -92,3 +92,36 @@ test('cache rejects a proof for a different browser origin before posting', asyn
     await assert.rejects(api.setApplication(application), /unavailable for this origin/);
     assert.deepEqual(calls.map((request) => request.url), ['/auth/token']);
 });
+
+test('route and check post exactly their operation fields, with a fresh proof each time', async () => {
+    const path = '/news';
+    const changed = { application, purges: [accepted] };
+    const checked = { check: { host, path, status: 200, cdnHeader: 'max-age=300, stale-if-error=900', cacheControl: 'public, max-age=60' } };
+    const { api, calls } = fixture(reply(controlProof('first')), reply(changed), reply(controlProof('second')), reply(checked));
+    assert.deepEqual(await api.setRoute({ agent, path, setting: 'off', extra: 'ignored' }), changed);
+    assert.deepEqual(await api.checkRoute({ agent, path, setting: 'off' }), checked);
+    assert.deepEqual(calls.map((request) => [request.method ?? 'GET', request.url]), [
+        ['GET', '/auth/token'], ['POST', endpoint], ['GET', '/auth/token'], ['POST', endpoint],
+    ]);
+    assert.equal(calls[1].body, '{"op":"route","agent":"example/app","path":"/news","setting":"off"}');
+    assert.equal(calls[3].body, '{"op":"check","agent":"example/app","path":"/news"}');
+    assert.equal(calls[1].headers['x-ploinky-csrf-token'], 'first');
+    assert.equal(calls[3].headers['x-ploinky-csrf-token'], 'second');
+});
+
+test('route and check retry once on a stale proof and keep Router error codes and retry hints', async () => {
+    const { api, calls } = fixture(reply(controlProof('first')), reply({ error: 'csrf_invalid' }, 403), reply(controlProof('second')), reply({ check: { host, path: '/', status: 200 } }));
+    await api.checkRoute({ agent, path: '/' });
+    assert.deepEqual(calls.map((request) => request.url), ['/auth/token', endpoint, '/auth/token', endpoint]);
+    assert.equal(calls[1].body, calls[3].body);
+    const limited = fixture(reply(controlProof('fresh')), reply({ error: 'rate_limited', retryAfterSeconds: 1 }, 429));
+    await assert.rejects(limited.api.checkRoute({ agent, path: '/' }), (err) => err.status === 429 && err.code === 'rate_limited' && err.retryAfterSeconds === 1 && !cacheAccessDenied(err));
+    for (const [status, error, setting] of [[400, 'route_never', 'page'], [404, 'unknown_route', 'default'], [400, 'route_marked', 'page']]) {
+        const refused = fixture(reply(controlProof('fresh')), reply({ error }, status));
+        await assert.rejects(refused.api.setRoute({ agent, path: '/x', setting }), (err) => err.status === status && err.code === error && err.retryAfterSeconds === undefined);
+        assert.equal(JSON.parse(refused.calls[1].body).setting, setting);
+    }
+    const denied = fixture(reply({ error: 'admin_required' }, 403));
+    await assert.rejects(denied.api.setRoute({ agent, path: '/x', setting: 'off' }), (err) => cacheAccessDenied(err));
+    assert.equal(denied.calls.length, 1);
+});

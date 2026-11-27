@@ -1,3 +1,4 @@
+import { sessionAge } from './session-age.js';
 import { createSessionForm } from './coding-session-form.js';
 import { isAdminUser } from '../../../services/auth/adminUser.js';
 import { codingSessionsRequest } from './coding-sessions-api.js';
@@ -61,7 +62,7 @@ export class CodingSessionsModal {
             }
         }
     }
-    sessionBadges(entries, { title = '', roles = false, running = false } = {}) {
+    sessionBadges(entries, { title = '', roles = false, running = false, timestamp } = {}) {
         const content = document.createElement('span'); content.className = 'coding-session-content';
         for (const entry of entries) {
             const group = document.createElement('span'); group.className = 'coding-session-metadata';
@@ -77,6 +78,12 @@ export class CodingSessionsModal {
         }
         if (title) { const caption = document.createElement('span'); caption.className = 'coding-session-caption'; caption.textContent = title; content.append(caption); }
         if (running) { const status = document.createElement('span'); status.className = 'coding-session-running'; status.textContent = 'running'; content.append(status); }
+        const age = sessionAge(timestamp);
+        if (age) {
+            const time = document.createElement('time'); time.className = 'coding-session-age';
+            time.dateTime = new Date(timestamp).toISOString(); time.title = new Date(timestamp).toLocaleString();
+            time.textContent = age; content.append(time);
+        }
         return content;
     }
     row(label, action, terminalId = null, running = false, content = null) {
@@ -89,7 +96,8 @@ export class CodingSessionsModal {
             text.append(document.createTextNode(' · '));
             const status = document.createElement('span'); status.className = 'coding-session-running'; status.textContent = 'running'; text.append(status);
         }
-        button.setAttribute('aria-label', `${label}${running ? ' · running' : ''}`); button.addEventListener('click', () => { if (!this.busy) action(); }); row.append(button);
+        button.setAttribute('aria-label', `${label}${running ? ' · running' : ''}`);
+        const age = content?.querySelector('time')?.textContent; if (age) button.setAttribute('aria-description', age); button.addEventListener('click', () => { if (!this.busy) action(); }); row.append(button);
         if (terminalId) {
             const menu = document.createElement('details');
             const summary = document.createElement('summary'); summary.textContent = '⋮'; summary.setAttribute('aria-label', `Actions for ${label}`);
@@ -170,7 +178,7 @@ export class CodingSessionsModal {
     }
     savedRow(entry) {
         this.row(`robot: ${entry.robotName || entry.robotId} · coding agent: ${entry.codingAgent} · ${entry.title || entry.id}`,
-            () => this.open(async () => (await this.api('launch', { robot: entry.robotId, codingAgent: entry.codingAgent, resume: entry.id })).attach), null, false, this.sessionBadges([entry], { title: entry.title || entry.id }));
+            () => this.open(async () => (await this.api('launch', { robot: entry.robotId, codingAgent: entry.codingAgent, resume: entry.id })).attach), null, false, this.sessionBadges([entry], { title: entry.title || entry.id, timestamp: entry.updatedAt || entry.createdAt }));
     }
     async render() {
 
@@ -199,7 +207,7 @@ export class CodingSessionsModal {
             this.heading.textContent = 'Coding sessions';
             this.row('+ New coding session', () => { this.draft = {}; this.move({ step: 'new' }); });
             const result = await this.api('overview');
-            for (const entry of result.running || []) this.row(`● robot: ${entry.robotName || entry.robotId} · coding agent: ${entry.codingAgent}${entry.title ? ` · ${entry.title}` : ''}`, () => this.open(() => mintLiveSessionAttach(entry.id)), entry.id, true, this.sessionBadges([entry], { title: entry.title || '', running: true }));
+            for (const entry of result.running || []) this.row(`● robot: ${entry.robotName || entry.robotId} · coding agent: ${entry.codingAgent}${entry.title ? ` · ${entry.title}` : ''}`, () => this.open(() => mintLiveSessionAttach(entry.id)), entry.id, true, this.sessionBadges([entry], { title: entry.title || '', running: true, timestamp: entry.lastActivityAt || entry.createdAt }));
             for (const entry of result.sessions || []) this.savedRow(entry);
             this.notice = result.errors?.length ? `Some histories could not be updated: ${result.errors.join(', ')}. Previously saved sessions are still shown.`
                 : '';
@@ -209,13 +217,13 @@ export class CodingSessionsModal {
                 this.heading.textContent = 'Supervised sessions';
                 this.row('+ New supervised session', () => { this.draft = {}; this.move({ step: 'new' }); });
                 for (const pair of pairs) this.row(`${pair.roles.some(item => item.running) ? '● ' : ''}${pair.roles.map(item => `${item.role === 'worker' ? 'Worker' : 'Supervisor'}: robot: ${item.robotName || item.robotId} · coding agent: ${item.codingAgent}`).join(' → ')} · ${new Date(pair.createdAt).toLocaleString()}`,
-                    () => this.move({ step: 'roles', pairId: pair.id }), null, false, this.sessionBadges(pair.roles, { roles: true, title: new Date(pair.createdAt).toLocaleString(), running: pair.roles.some(item => item.running) }));
+                    () => this.move({ step: 'roles', pairId: pair.id }), null, false, this.sessionBadges(pair.roles, { roles: true, timestamp: pair.updatedAt || pair.createdAt, running: pair.roles.some(item => item.running) }));
             } else {
                 this.heading.textContent = 'Choose a role';
                 const pair = pairs.find(entry => entry.id === this.state.pairId);
                 if (!pair) throw new Error('This supervised session is no longer available. Go back and refresh.');
                 for (const entry of pair.roles) this.row(`${entry.running ? '● ' : ''}${entry.role === 'worker' ? 'Worker' : 'Supervisor'} · robot: ${entry.robotName || entry.robotId} · coding agent: ${entry.codingAgent}`,
-                    () => this.open(async () => (await this.api('open-role', { id: pair.id, role: entry.role })).attach), entry.running ? entry.terminalId : null, entry.running, this.sessionBadges([entry], { roles: true, running: entry.running }));
+                    () => this.open(async () => (await this.api('open-role', { id: pair.id, role: entry.role })).attach), entry.running ? entry.terminalId : null, entry.running, this.sessionBadges([entry], { roles: true, running: entry.running, timestamp: entry.lastActivityAt || pair.updatedAt || pair.createdAt }));
             }
         }
         this.list.scrollTop = scrollTop;
