@@ -7,11 +7,12 @@
 // Prints exactly one line `ROBOWORK_OPENCODE_PLUGIN_FREE_V1 <json>` and exits 0 only when every check passed; any failure prints its
 // reason (and the raw evidence) to stderr, prints no sentinel and exits non-zero.
 //
-// `--offline` re-runs this script inside `unshare -rn`: a new user and network namespace that has no interface and no route. A new
-// network namespace starts with its loopback down, so the script raises `lo` itself (`ip` or `ifconfig`) and then asserts that
-// no non-loopback interface exists and that a connect to a documentation address is refused with no route, before it starts the
-// server. When `unshare`, loopback setup or the isolation assertion is unavailable the probe fails; it never falls back to a run
-// with network.
+// `--offline` re-runs this script in a new network namespace that has no interface and no route: `unshare -rn`, or when that is
+// refused, `bwrap --unshare-net` (the RoboWork container requires bwrap; bubblewrap raises loopback itself). A new namespace made by
+// `unshare` starts with its loopback down, so the script raises `lo` itself (`ip` or `ifconfig`) unless it is already up. It then
+// asserts that no non-loopback interface exists and that a connect to a documentation address is refused for lack of a route, before
+// it starts the server. When neither tool can make the namespace, loopback cannot be raised or the assertion fails, the probe fails;
+// it never falls back to a run with network.
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
@@ -82,21 +83,33 @@ export function parseArguments(argv) {
 
 // ---- offline: a namespace with no route -----------------------------------------------------------------------------------
 
-function offlineCommand(options) {
-    if (process.platform !== 'linux') throw fail(`--offline needs Linux and unshare; this host is ${process.platform}`);
-    const check = spawnSync('unshare', ['-rn', 'true'], { encoding: 'utf8' });
-    if (check.error || check.status !== 0) {
-        throw fail(`--offline needs "unshare -rn" (user and network namespaces), which is unavailable: ${check.error?.message || check.stderr.trim() || `exit ${check.status}`}`);
-    }
+function offlineCommand() {
+    if (process.platform !== 'linux') throw fail(`--offline needs Linux and unshare or bwrap; this host is ${process.platform}`);
     const forwarded = process.argv.slice(2).filter(argument => argument !== '--in-netns');
-    return { command: 'unshare', args: ['-rn', '--', process.execPath, fileURLToPath(import.meta.url), ...forwarded, '--in-netns'], options };
+    const inner = [process.execPath, fileURLToPath(import.meta.url), ...forwarded, '--in-netns'];
+    // Each wrapper is tried with a harmless command first, so a refusal is reported and never turns into a run with network.
+    const wrappers = [
+        { name: 'unshare -rn', command: 'unshare', args: ['-rn', '--'] },
+        { name: 'bwrap --unshare-net', command: 'bwrap', args: ['--dev-bind', '/', '/', '--proc', '/proc', '--unshare-net', '--die-with-parent', '--'] },
+    ];
+    const refusals = [];
+    for (const wrapper of wrappers) {
+        const check = spawnSync(wrapper.command, [...wrapper.args, 'true'], { encoding: 'utf8' });
+        if (!check.error && check.status === 0) return { command: wrapper.command, args: [...wrapper.args, ...inner] };
+        refusals.push(`${wrapper.name}: ${check.error?.message || check.stderr.trim() || `exit ${check.status}`}`);
+    }
+    throw fail(`--offline needs a network namespace and none could be made (${refusals.join('; ')})`);
 }
 
 async function assertNoNetwork() {
-    const lo = [['ip', ['link', 'set', 'lo', 'up']], ['ifconfig', ['lo', 'up']]]
-        .map(([command, args]) => spawnSync(command, args, { encoding: 'utf8' }));
-    if (!lo.some(result => !result.error && result.status === 0)) {
-        throw fail(`Loopback could not be raised inside the network namespace (ip and ifconfig both failed: ${lo.map(result => result.error?.message || result.stderr.trim()).join('; ')})`);
+    // bwrap brings loopback up itself; a bare namespace from unshare does not.
+    const loopbackUp = () => Object.values(os.networkInterfaces()).some(list => (list || []).some(entry => entry.internal));
+    if (!loopbackUp()) {
+        const lo = [['ip', ['link', 'set', 'lo', 'up']], ['ifconfig', ['lo', 'up']]]
+            .map(([command, args]) => spawnSync(command, args, { encoding: 'utf8' }));
+        if (!lo.some(result => !result.error && result.status === 0) || !loopbackUp()) {
+            throw fail(`Loopback could not be raised inside the network namespace (ip and ifconfig both failed: ${lo.map(result => result.error?.message || result.stderr.trim()).join('; ')})`);
+        }
     }
     const external = Object.entries(os.networkInterfaces()).flatMap(([name, list]) => (list || []).filter(entry => !entry.internal).map(() => name));
     if (external.length) throw fail(`The namespace still has a non-loopback interface: ${[...new Set(external)].join(', ')}`);
@@ -152,10 +165,13 @@ async function stopServer(server) {
     signal('SIGKILL');
 }
 
+// OpenCode creates the directory instance, and loads plugins, while serving the first request that needs it, so until one request
+// other than the readiness probe has succeeded a request gets the whole startup budget.
+const STARTUP_PROBES = new Set(['/api/info']);
 function request(server, pathname) {
     return fetch(new URL(pathname, server.base), {
         headers: { authorization: `Basic ${Buffer.from(`opencode:${server.password}`).toString('base64')}`, 'x-opencode-directory': server.workspace },
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(server.instanceReady ? 15000 : server.startupMs),
     });
 }
 
@@ -164,6 +180,7 @@ async function getJson(server, pathname) {
     try { response = await request(server, pathname); } catch (error) { throw fail(`GET ${pathname} failed: ${error.message}`); }
     const text = await response.text();
     if (!response.ok) throw fail(`GET ${pathname} answered HTTP ${response.status}: ${text.slice(0, 500)}`);
+    if (!STARTUP_PROBES.has(pathname)) server.instanceReady = true;
     try { return { body: JSON.parse(text), text }; } catch { throw fail(`GET ${pathname} did not answer JSON: ${text.slice(0, 500)}`); }
 }
 
@@ -258,17 +275,12 @@ async function runProbe(options) {
 
         state.server = startServer(options.binary, home, workspace);
         state.server.workspace = workspace;
+        state.server.startupMs = options.timeoutMs;
         active.server = state.server;
         await waitForServer(state.server, options.timeoutMs);
         await waitForMigration(state.server, Math.min(options.timeoutMs, 120000));
         // Instance creation, and with it plugin setup, may happen on the first request that needs it.
-        let plugins;
-        try {
-            plugins = checkPlugins((await getJson(state.server, '/api/plugin')).body);
-        } catch (error) {
-            if (error.probeFailure) process.stderr.write(`Server output tail:\n${state.server.output.trim().slice(-2000)}\n`);
-            throw error;
-        }
+        const plugins = checkPlugins((await getJson(state.server, '/api/plugin')).body);
         const models = (await getJson(state.server, '/api/model')).body;
         if (!Array.isArray(models?.data)) throw fail(`/api/model answered no data array: ${JSON.stringify(models).slice(0, 500)}`);
         const deadline = Date.now() + options.recordWaitMs;
@@ -279,6 +291,9 @@ async function runProbe(options) {
         checkNoTree(home);
         state.ok = true;
         return { version, plugins: plugins.count, recorder: { ...recorder, listed: plugins.recorder }, models: models.data.length, offline: options.offline, elapsedMs: Date.now() - started };
+    } catch (error) {
+        if (state.server) process.stderr.write(`Server output tail:\n${state.server.output.trim().slice(-2000)}\n`);
+        throw error;
     } finally {
         await stopServer(state.server);
         if (options.keep) process.stderr.write(`Scratch home kept at ${home}\n`);
@@ -289,9 +304,9 @@ async function runProbe(options) {
 async function main() {
     const options = parseArguments(process.argv.slice(2));
     if (options.offline && !options.inNetns) {
-        const { command, args } = offlineCommand(options);
+        const { command, args } = offlineCommand();
         const result = spawnSync(command, args, { stdio: 'inherit' });
-        if (result.error) throw fail(`unshare could not run: ${result.error.message}`);
+        if (result.error) throw fail(`The offline wrapper could not run: ${result.error.message}`);
         process.exitCode = result.status === 0 ? 0 : (result.status || 1);
         return;
     }
