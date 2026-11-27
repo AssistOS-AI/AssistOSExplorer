@@ -73,12 +73,14 @@ const typeOf = async file => {
 async function bytesBelow(base, relative) {
     const target = await realPath(base, relative);
     if (!target || target.unsafe) return null;
+    // A live home changes while it is measured; an entry that vanished meanwhile counts as nothing.
     const walk = async directory => {
         let total = 0;
-        for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+        const entries = await fs.readdir(directory, { withFileTypes: true }).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
+        for (const entry of entries) {
             const file = path.join(directory, entry.name);
-            const stat = await fs.lstat(file);
-            total += stat.isDirectory() ? stat.size + await walk(file) : stat.size;
+            const stat = await lstatOrNull(file);
+            if (stat) total += stat.isDirectory() ? stat.size + await walk(file) : stat.size;
         }
         return total;
     };

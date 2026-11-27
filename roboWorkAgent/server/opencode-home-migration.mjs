@@ -115,7 +115,9 @@ async function treeBytes(file, skip = new Set()) {
     if (!stat) return 0;
     if (!stat.isDirectory()) return stat.size;
     let total = 0;
-    for (const entry of await fs.readdir(file)) total += await treeBytes(path.join(file, entry), skip);
+    // A state directory can change while it is measured; an entry that vanished counts as nothing.
+    const entries = await fs.readdir(file).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
+    for (const entry of entries) total += await treeBytes(path.join(file, entry), skip);
     return total;
 }
 

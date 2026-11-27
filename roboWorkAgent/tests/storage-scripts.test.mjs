@@ -34,9 +34,10 @@ async function flockCommand(t) {
 async function holdLock(f) {
     const file = path.join(f.migrations, 'migration.lock');
     if (!REAL_FLOCK) { await fs.mkdir(`${file}.held`); return async () => fs.rm(`${file}.held`, { recursive: true, force: true }); }
-    const child = spawn('flock', ['--exclusive', '--nonblock', file, 'sleep', '60'], { stdio: 'ignore' });
-    await new Promise(resolve => setTimeout(resolve, 300));
-    return async () => { child.kill(); };
+    // Held the way the service holds it: `cat` keeps the lock until its stdin closes.
+    const child = spawn('flock', ['--exclusive', '--nonblock', file, 'cat'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    await new Promise((resolve, reject) => { child.stdout.once('data', resolve); child.once('exit', () => reject(new Error('flock could not take the lock'))); child.stdin.write('locked\n'); });
+    return async () => { child.stdin.end(); await new Promise(resolve => child.once('exit', resolve)); };
 }
 
 async function layout(t) {
@@ -45,6 +46,8 @@ async function layout(t) {
     const f = { base, dataDir: path.join(base, 'data'), robotsDir: path.join(base, 'robots'), env: await flockCommand(t) };
     f.migrations = path.join(f.dataDir, 'server-state/migrations', ID);
     await fs.mkdir(f.migrations, { recursive: true });
+    // The service has always created the lock file; flock would otherwise create it on the first run and change a digest.
+    await fs.writeFile(path.join(f.migrations, 'migration.lock'), '');
     await fs.mkdir(f.robotsDir, { recursive: true });
     await fs.mkdir(path.join(f.dataDir, 'tool-cache'), { recursive: true });
     return f;
@@ -309,6 +312,14 @@ test('prune: without --apply every flag prints a plan and changes nothing', asyn
     assert.deepEqual([await digest(f.dataDir), await digest(f.robotsDir)], before);
 });
 
+test('prune: a dry run does not create a migration.lock that never existed', async t => {
+    const f = await standardLayout(t);
+    await fs.rm(path.join(f.migrations, 'migration.lock'));
+    const before = [await digest(f.dataDir), await digest(f.robotsDir)];
+    assert.equal((await prune(f, '--plugin-trees', '--snapshots')).code, 0);
+    assert.deepEqual([await digest(f.dataDir), await digest(f.robotsDir)], before);
+});
+
 test('prune: it refuses while migration.lock is held, with and without --apply, and changes nothing', async t => {
     const f = await standardLayout(t);
     const before = [await digest(f.dataDir), await digest(f.robotsDir)];
@@ -378,12 +389,15 @@ test('prune --snapshots refuses unless every labelled robot is complete with its
     await addRobot(f, 'aaa');
     await addRobot(f, 'bbb', { phase: 'failed' });
     await addRobot(f, 'ccc', { journal: false });
+    await addRobot(f, 'ddd');
+    await put(path.join(f.migrations, 'ddd/state.json'), JSON.stringify({ migration: 'opencode-v9-9', phase: 'complete', sessions: 2 }));
     const before = await digest(f.migrations);
     for (const flags of [['--apply', '--snapshots'], ['--snapshots']]) {
         const refused = await prune(f, ...flags);
         assert.equal(refused.code, 1, refused.stderr);
         assert.match(refused.stdout, /refused: robot=bbb journal is failed, not complete/u);
         assert.match(refused.stdout, /refused: robot=ccc journal is missing, not complete/u);
+        assert.match(refused.stdout, /refused: robot=ddd journal is for another migration, not complete/u);
     }
     assert.deepEqual(await digest(f.migrations), before, 'nothing removed, journals intact');
     // Fewer sessions than the snapshot recorded also refuses.

@@ -62,9 +62,10 @@ async function readJson(file) {
 
 async function bytesBelow(directory) {
     let total = 0;
-    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-        const stat = await fs.lstat(path.join(directory, entry.name));
-        total += stat.isDirectory() ? stat.size + await bytesBelow(path.join(directory, entry.name)) : stat.size;
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch(error => { if (error.code !== 'ENOENT') throw error; return []; });
+    for (const entry of entries) {
+        const stat = await lstatOrNull(path.join(directory, entry.name));
+        if (stat) total += stat.isDirectory() ? stat.size + await bytesBelow(path.join(directory, entry.name)) : stat.size;
     }
     return total;
 }
@@ -130,7 +131,11 @@ async function inspect({ dataDir, robotsDir }, migrations) {
 function refusals(robots) {
     const problems = [];
     for (const robot of robots) {
-        if (!robot.complete) { problems.push(`robot=${robot.id} journal is ${robot.state?.phase ?? 'missing'}, not complete`); continue; }
+        if (!robot.complete) {
+            const state = robot.state?.migration && robot.state.migration !== MIGRATION_ID ? 'for another migration' : robot.state?.phase ?? 'missing';
+            problems.push(`robot=${robot.id} journal is ${state}, not complete`);
+            continue;
+        }
         const expected = robot.record?.before?.sessions;
         if (!Array.isArray(expected) || !Number.isInteger(robot.state.sessions) || robot.state.sessions < expected.length) {
             problems.push(`robot=${robot.id} has ${robot.state.sessions ?? 'no'} sessions against ${Array.isArray(expected) ? expected.length : 'an unknown number'} in its snapshot`);
@@ -169,7 +174,9 @@ async function removeDirectory(parent, ...segments) {
 export async function prune(options, log = line => process.stdout.write(`${line}\n`)) {
     const migrations = await realPath(options.dataDir, 'server-state', 'migrations', MIGRATION_ID);
     if (!migrations) throw new Error(`no migration directory under ${options.dataDir}`);
-    const release = await acquireLock(path.join(migrations, 'migration.lock'));
+    // A lock file that does not exist was never taken, so a dry run neither needs it nor creates it.
+    const lockFile = path.join(migrations, 'migration.lock');
+    const release = !options.apply && !await lstatOrNull(lockFile) ? () => {} : await acquireLock(lockFile);
     try {
         const { robots, unlabelled } = await inspect(options, migrations);
         if (unlabelled.length) log(`backups of robots without a label (listed, never deleted): ${unlabelled.join(', ')}`);

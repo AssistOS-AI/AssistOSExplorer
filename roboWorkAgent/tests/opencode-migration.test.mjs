@@ -514,3 +514,38 @@ test('a robot created during the gated window stays gated until the pass ends, t
     await running;
     assert.equal(s.migration.status('late-robot').state, 'complete');
 });
+
+test('restarts over real homes: the first start migrates and retires, later starts only retire, and nothing is migrated twice', async t => {
+    const homes = { aaa: await fixture(t), bbb: await fixture(t) };
+    const s = await service(t, { aaa: null, bbb: null });
+    const upgrades = [];
+    const start = async (upgrade) => {
+        const lines = [], prepared = [];
+        const migration = createOpenCodeMigration({ paths: s.paths, alaEntry: path.join(s.root, 'ala/bin/ala.mjs'), log: line => lines.push(line),
+            lockImpl: async () => () => {}, freeBytes: async () => 100 * GIB, now: () => 0,
+            toolCache: { root: path.join(s.root, 'tool-cache'), prepareCodingAgent: async () => { prepared.push('opencode'); return { binPath: '/tools/bin' }; } },
+            homeOperation: async (id, operation, input) => migrateOpenCodeHome({ home: homes[id].home, backup: input.migrationBackup, binary: input.binary,
+                upgrade: async (...rest) => { upgrades.push(id); return upgrade(id)(...rest); }, freeBytes: () => 100 * GIB }) });
+        await migration.start();
+        return { lines, prepared, migration, summary: lines.find(line => line.startsWith('[opencode-plugin]')) };
+    };
+    const first = await start(id => homes[id].upgrade);
+    assert.equal(first.summary, '[opencode-plugin] retired=2 absent=0 authored=0 customized=0 unsafe=0 failed=0 ms=0');
+    assert.deepEqual(first.prepared, ['opencode']);
+    assert.deepEqual(upgrades, ['aaa', 'bbb']);
+    for (const id of ['aaa', 'bbb']) {
+        assert.equal(first.migration.status(id).state, 'complete');
+        assert.deepEqual(await configNames(homes[id].home), ['plugins', 'soul-gateway-models.mjs']);
+        assert.equal(JSON.parse(await fs.readFile(path.join(s.migrations, id, 'state.json'))).phase, 'complete');
+    }
+    // An older revision seeds one home again; the next start retires it without migrating or downloading anything.
+    await fs.writeFile(path.join(homes.bbb.home, '.config/opencode/package.json'), '{"dependencies":{"@opencode/plugin":"2.4.1"}}');
+    await fs.mkdir(path.join(homes.bbb.home, '.config/opencode/node_modules/@opencode/plugin'), { recursive: true });
+    const second = await start(() => () => { throw new Error('a completed robot must not be migrated again'); });
+    assert.equal(second.summary, '[opencode-plugin] retired=1 absent=1 authored=0 customized=0 unsafe=0 failed=0 ms=0');
+    assert.deepEqual(second.prepared, []);
+    assert.deepEqual(await configNames(homes.bbb.home), ['plugins', 'soul-gateway-models.mjs']);
+    const third = await start(() => () => { throw new Error('a completed robot must not be migrated again'); });
+    assert.equal(third.summary, '[opencode-plugin] retired=0 absent=2 authored=0 customized=0 unsafe=0 failed=0 ms=0');
+    assert.deepEqual(upgrades, ['aaa', 'bbb']);
+});
