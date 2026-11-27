@@ -20,7 +20,9 @@ export function createCacheApi({
         const payload = await response.json().catch(() => null);
         if (!response.ok || !payload || payload.ok === false) {
             const message = payload?.message || payload?.error || `Cache request failed (${response.status}).`;
-            throw Object.assign(new Error(message), { status: response.status, code: payload?.error });
+            const failure = Object.assign(new Error(message), { status: response.status, code: payload?.error });
+            if (Number.isFinite(payload?.retryAfterSeconds)) failure.retryAfterSeconds = payload.retryAfterSeconds;
+            throw failure;
         }
         return payload;
     }
@@ -58,5 +60,7 @@ export function createCacheApi({
         read: ({ signal } = {}) => request({ method: 'GET', signal, headers: { Accept: 'application/json' } }),
         setApplication: ({ agent, enabled, pageSeconds }, options) => mutate({ op: 'set', agent, enabled, pageSeconds }, options),
         purgeHost: ({ host }, options) => mutate({ op: 'purge', host }, options),
+        setRoute: ({ agent, path, setting }, options) => mutate({ op: 'route', agent, path, setting }, options),
+        checkRoute: ({ agent, path }, options) => mutate({ op: 'check', agent, path }, options),
     };
 }
