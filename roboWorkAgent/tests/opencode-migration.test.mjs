@@ -453,7 +453,8 @@ test('with a usable OpenCode already cached and 1.5 GiB free, a journal-less rob
     free = 1.5 * GIB;
     const second = new ToolCache({ root: cacheRoot, versionPins: {}, log: () => {}, freeBytes: async () => free, execFileImpl: cache.execFileImpl });
     const migration = createOpenCodeMigration({ paths: s.paths, alaEntry: path.join(s.root, 'ala/bin/ala.mjs'), log: line => s.lines.push(line),
-        lockImpl: async () => () => {}, toolCache: second,
+        // The service itself no longer looks at the disk; an earlier revision did and would pause this robot at 1.5 GiB.
+        lockImpl: async () => () => {}, toolCache: second, freeBytes: async () => free,
         homeOperation: async (id, operation, input) => migrateOpenCodeHome({ home: f.home, backup: input.migrationBackup, binary: input.binary,
             upgrade: f.upgrade, freeBytes: () => 100 * GIB }) });
     await migration.start();
