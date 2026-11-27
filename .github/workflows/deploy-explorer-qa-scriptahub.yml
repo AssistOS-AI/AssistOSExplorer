@@ -793,21 +793,12 @@ jobs:
           # References are registry-resolved indexes, checked again inside the Box before pulling.
           SCRIPTAHUB_DIGEST_PROGRAM='set -eu
           podman image inspect --format "{{range .RepoDigests}}{{println .}}{{end}}" docker.io/assistos/scriptahub-agent:runtime'
-          # The incoming manifest arrives on stdin. The Box runtime must export the route cache check and accept every cache
-          # value the manifest carries, so a mark that this runtime would ignore never reaches a running Router.
+          # The incoming manifest arrives on stdin. A manifest whose cache values are only page or immutable (or none) passes
+          # without touching the runtime, so an older Box is never refused for it. Any other value needs the Box runtime to
+          # export the import-free route cache check, accept never, and accept every value the manifest carries.
           SCRIPTAHUB_CACHE_GATE_PROGRAM='set -eu
           check=$(cat <<"JS"
           import { readFileSync } from "node:fs";
-          let marks;
-          try {
-            marks = await import("file:///opt/ploinky/cli/server/policy/routeCacheMarks.js");
-          } catch {
-            marks = null;
-          }
-          if (typeof marks?.isRouteCacheMark !== "function" || marks.isRouteCacheMark("never") !== true) {
-            console.error("The Ploinky runtime in the Box cannot validate route cache marks.");
-            process.exit(3);
-          }
           let manifest;
           try {
             manifest = JSON.parse(readFileSync(0, "utf8"));
@@ -817,7 +808,21 @@ jobs:
           }
           const routes = manifest?.routerAccess?.httpRoutes;
           const specs = Array.isArray(routes) ? routes : Object.values(routes || {});
-          const rejected = specs.filter((spec) => spec !== null && typeof spec === "object" && !Array.isArray(spec) && Object.hasOwn(spec, "cache") && marks.isRouteCacheMark(spec.cache) !== true);
+          const values = specs
+            .filter((spec) => spec !== null && typeof spec === "object" && !Array.isArray(spec) && Object.hasOwn(spec, "cache"))
+            .map((spec) => spec.cache);
+          if (values.every((value) => value === "page" || value === "immutable")) process.exit(0);
+          let marks;
+          try {
+            marks = await import("file:///opt/ploinky/cli/server/policy/routeCacheMarkValues.js");
+          } catch {
+            marks = null;
+          }
+          if (typeof marks?.isRouteCacheMark !== "function" || marks.isRouteCacheMark("never") !== true) {
+            console.error("The Ploinky runtime in the Box cannot validate route cache marks.");
+            process.exit(3);
+          }
+          const rejected = values.filter((value) => marks.isRouteCacheMark(value) !== true);
           if (rejected.length) {
             console.error("The Ploinky runtime in the Box rejects " + rejected.length + " cache value(s) of the incoming ScriptaHub manifest.");
             process.exit(5);

@@ -599,16 +599,21 @@ function makeBox(t) {
         ...extra,
     });
     box.exec = (script, extra = {}) => spawnSync('bash', ['-c', script], { encoding: 'utf8', env: box.env(extra), maxBuffer: 1 << 26 });
-    // The Ploinky runtime the Box has: `new` validates page, immutable and never; `old` predates never; `absent` has no
-    // route cache module at all (an older runtime). These are stand-ins for the exported isRouteCacheMark.
+    // The Ploinky runtime the Box has: `new` ships the import-free routeCacheMarkValues.js and validates page, immutable
+    // and never; `old` ships it without never; `legacy` has only routeCacheMarks.js, which a bare Node cannot import
+    // (it needs AgentLib); `absent` has no route cache module at all. These are stand-ins for the exported isRouteCacheMark.
     box.runtime = (kind) => {
         const root = path.join(dir, 'ploinky-root');
         fs.rmSync(root, { recursive: true, force: true });
         if (kind === 'absent') return;
         fs.mkdirSync(path.join(root, 'cli/server/policy'), { recursive: true });
         fs.writeFileSync(path.join(root, 'package.json'), '{"type":"module"}\n');
+        if (kind === 'legacy') {
+            fs.writeFileSync(path.join(root, 'cli/server/policy/routeCacheMarks.js'), "throw new Error('PLOINKY_AGENTLIB_DIR is not set');\n");
+            return;
+        }
         const accepted = kind === 'old' ? "['page', 'immutable']" : "['page', 'immutable', 'never']";
-        fs.writeFileSync(path.join(root, 'cli/server/policy/routeCacheMarks.js'), `export const isRouteCacheMark = (value) => ${accepted}.includes(value);\n`);
+        fs.writeFileSync(path.join(root, 'cli/server/policy/routeCacheMarkValues.js'), `export const isRouteCacheMark = (value) => ${accepted}.includes(value);\n`);
     };
     box.runtime('new');
     // Defaults: a healthy graph, healthy routes, 20 GiB free, nothing pullable.
@@ -2536,8 +2541,9 @@ test('cache gate: it is a read-only refusal before the image pull and before the
     assert.equal(workflow('bizanso').includes('CACHE_GATE'), false);
     // The program runs the Box's own Node on the check that the Router imports, and never writes.
     const program = programOf('scriptahub', 'SCRIPTAHUB_CACHE_GATE_PROGRAM');
-    assert.match(program, /file:\/\/\/opt\/ploinky\/cli\/server\/policy\/routeCacheMarks\.js/);
+    assert.match(program, /file:\/\/\/opt\/ploinky\/cli\/server\/policy\/routeCacheMarkValues\.js/);
     assert.match(program, /isRouteCacheMark/);
+    assert.doesNotMatch(program, /routeCacheMarks\.js/, 'the module with imports cannot be loaded by a bare Node');
     assert.doesNotMatch(program, /writeFile|appendFile|\brm\b|\bmv\b|podman|ploinky /);
 });
 
@@ -2549,8 +2555,15 @@ test('cache gate: accepted marks pass whether or not the checkout moves, and the
         'the checkout is already at the head': { image: 'head', old: 'head', headFiles: { 'scriptahubAgent/manifest.json': marks } },
         'object-form routes': { headFiles: { 'scriptahubAgent/manifest.json': objectForm } },
         'no routes at all': { headFiles: { 'scriptahubAgent/manifest.json': '{}\n' } },
+        // Only page or immutable (or none): the runtime is never consulted, so any older runtime passes.
+        'page and immutable marks on a runtime that predates never': { runtime: 'old', headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/a', access: 'public', cache: 'page' }, { path: '/b', access: 'public', cache: 'immutable' }]) } },
+        'page marks on a runtime with only the unimportable module': { runtime: 'legacy', headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/a', access: 'public', cache: 'page' }]) } },
+        'page marks on a runtime without any route cache module': { runtime: 'absent', headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/a', access: 'public', cache: 'page' }]) } },
+        'no marks on a runtime without any route cache module': { runtime: 'absent', headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/a', access: 'public' }]) } },
     })) {
-        const box = scriptaBox(t, options);
+        const { runtime, ...boxOptions } = options;
+        const box = scriptaBox(t, boxOptions);
+        if (runtime) box.runtime(runtime);
         const result = runScriptaFlow(box);
         assert.equal(result.status, 0, `${name}: ${logOf(result)}`);
         assert.equal(box.calls().filter((line) => line === 'node-in-box cache gate').length, 1, name);
@@ -2561,8 +2574,9 @@ test('cache gate: a runtime that cannot validate never, or a rejected value, ref
     const withNever = manifestOf([{ path: '/health', access: 'public', cache: 'never' }]);
     const cases = {
         'a runtime that predates never': { runtime: 'old', files: withNever, reason: /cannot validate route cache marks/ },
-        'a runtime that predates never, a manifest without marks': { runtime: 'old', files: manifestOf([{ path: '/health', access: 'public' }]), reason: /cannot validate route cache marks/ },
+        'a runtime with only the module a bare Node cannot import': { runtime: 'legacy', files: withNever, reason: /cannot validate route cache marks/ },
         'a runtime without the route cache module': { runtime: 'absent', files: withNever, reason: /cannot validate route cache marks/ },
+        'a value no runtime knows, on a runtime without the module': { runtime: 'absent', files: manifestOf([{ path: '/x', access: 'public', cache: 'forever' }]), reason: /cannot validate route cache marks/ },
         'a value no runtime knows': { runtime: 'new', files: manifestOf([{ path: '/x', access: 'public', cache: 'forever' }]), reason: /rejects 1 cache value/ },
         'a non-string value': { runtime: 'new', files: manifestOf([{ path: '/x', access: 'public', cache: true }]), reason: /rejects 1 cache value/ },
         'a rejected value in object-form routes': { runtime: 'new', files: `${JSON.stringify({ routerAccess: { httpRoutes: { '/x': { access: 'public', cache: 'maybe' } } } })}\n`, reason: /rejects 1 cache value/ },
@@ -2592,14 +2606,14 @@ test('cache gate: it checks the manifest at the selected head from the runner, n
     const plain = manifestOf([{ path: '/health', access: 'public' }]);
     const box = scriptaBox(t, { baseFiles: { 'scriptahubAgent/manifest.json': plain }, headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/health', access: 'public', cache: 'never' }]) } });
     box.runtime('new');
-    // A runtime that validates never but rejects page: the plain checkout passes it, the incoming head must not.
-    fs.writeFileSync(path.join(dir(box), 'cli/server/policy/routeCacheMarks.js'), "export const isRouteCacheMark = (value) => value === 'never';\n");
+    // A runtime that validates only never: the plain checkout would pass it, the incoming head carries never and passes too.
+    fs.writeFileSync(path.join(dir(box), 'cli/server/policy/routeCacheMarkValues.js'), "export const isRouteCacheMark = (value) => value === 'never';\n");
     assert.equal(fs.readFileSync(path.join(box.clone, 'scriptahubAgent/manifest.json'), 'utf8'), plain);
     const accepted = runScriptaFlow(box);
     assert.equal(accepted.status, 0, logOf(accepted));
-    // Same runtime, incoming head with a page mark it rejects.
-    const rejected = scriptaBox(t, { baseFiles: { 'scriptahubAgent/manifest.json': plain }, headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/x', access: 'public', cache: 'page' }]) } });
-    fs.writeFileSync(path.join(dir(rejected), 'cli/server/policy/routeCacheMarks.js'), "export const isRouteCacheMark = (value) => value === 'never';\n");
+    // Same runtime, incoming head with a value it rejects next to never.
+    const rejected = scriptaBox(t, { baseFiles: { 'scriptahubAgent/manifest.json': plain }, headFiles: { 'scriptahubAgent/manifest.json': manifestOf([{ path: '/x', access: 'public', cache: 'never' }, { path: '/y', access: 'public', cache: 'page' }]) } });
+    fs.writeFileSync(path.join(dir(rejected), 'cli/server/policy/routeCacheMarkValues.js'), "export const isRouteCacheMark = (value) => value === 'never';\n");
     const result = runScriptaFlow(rejected);
     assert.notEqual(result.status, 0);
     assert.match(logOf(result), /rejects 1 cache value[\s\S]*Nothing was changed\. Deploy Ploinky/);
