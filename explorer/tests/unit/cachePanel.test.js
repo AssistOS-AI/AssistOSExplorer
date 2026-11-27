@@ -163,7 +163,7 @@ test('renders the page head, Clear cache card, one card per application, and esc
     await presenter.routeAction('check', app.agent, '<script>');
     const html = content.innerHTML;
     assert.match(html, /Held since 2026-11-23T01:00:00Z by &lt;img src=x onerror=1&gt;/);
-    assert.match(html, /data-cache-toggle="org\/&quot; onclick=&quot;bad" disabled/);
+    assert.match(html, /data-cache-toggle="org\/&quot; onclick=&quot;bad" aria-label="Caching for org\/&quot; onclick=&quot;bad" disabled/);
     assert.match(html, /title="&lt;script&gt;"/);
     assert.match(html, /aria-label="Caching for &lt;script&gt;"/);
     assert.match(html, /title="Set by &lt;b&gt;who&lt;\/b&gt; at &lt;img/);
@@ -227,7 +227,7 @@ test('the switch shows its on state in the cache section, as in Plugins', async 
     const data = snapshot();
     const html = renderCachePanel({ snapshot: data });
     const [onApp, offApp] = html.split('<article').slice(1);
-    assert.match(onApp, /<button type="button" role="switch" aria-checked="true" class="plugin-settings-toggle enabled" data-cache-toggle="org\/site">/);
+    assert.match(onApp, /<button type="button" role="switch" aria-checked="true" class="plugin-settings-toggle enabled" data-cache-toggle="org\/site" aria-label="Caching for org\/site">/);
     assert.match(onApp, /class="plugin-settings-switch-track"[^]*class="plugin-settings-switch-thumb"/);
     assert.match(offApp, /aria-checked="false" class="plugin-settings-toggle" data-cache-toggle="org\/plain"/);
     const css = await read('web-components/modals/settings-modal/settings-modal.css');
@@ -335,8 +335,10 @@ test('an action the row does not offer is never sent', async () => {
 
 test('a stale row that shares its path with a live row is resolved on its own: Remove posts, nothing leaks between the rows', async () => {
     const data = snapshot();
+    // As the Router builds the pair: the live `/news` row ignores the unbound setting (it stays cached,
+    // offers off), and the stale twin carries the entry's current mark and offers only the reset.
     data.applications[0].publicRoutes.push(route('/news', {
-        stale: true, choices: ['default'], setting: { setting: 'page', at: '2026-11-20T09:00:00Z', by: 'admin' },
+        manifest: 'page', stale: true, choices: ['default'], setting: { setting: 'off', at: '2026-11-20T09:00:00Z', by: 'admin' },
     }), route('/login/', {
         // As the Router builds it: a stale row carries the entry's current mark, here `never`.
         manifest: 'never', stale: true, choices: ['default'], setting: { setting: 'page', at: '2026-11-20T09:00:00Z', by: 'admin' },
@@ -361,7 +363,9 @@ test('a stale row that shares its path with a live row is resolved on its own: R
     // live row and stale twin on one path: the test result belongs to the live row only
     let [live, stale] = rowsFor(content.innerHTML, '/news');
     assert.deepEqual(actionsOf(live), ['check', 'off']);
+    assert.deepEqual(switchOf(live).slice(1, 3), ['true', 'off'], 'the live row shows the route as cached');
     assert.deepEqual(actionsOf(stale), ['default']);
+    assert.equal(switchOf(stale), null);
     click(element, buttonFrom(live, /cache-route-action="check"/));
     await settle();
     [live, stale] = rowsFor(content.innerHTML, '/news');

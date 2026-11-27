@@ -156,7 +156,7 @@ function renderApplication(app, ui, disabled) {
                 <label class="cache-freshness"><span class="form-label">Page freshness</span><select class="form-input" data-cache-minutes="${agent}"${disabled ? ' disabled' : ''}>
                     ${minutes.map((value) => `<option value="${value}"${value * 60 === app.pageSeconds ? ' selected' : ''}>${value} ${value === 1 ? 'minute' : 'minutes'}</option>`).join('')}
                 </select></label>
-                <button type="button" role="switch" aria-checked="${app.enabled ? 'true' : 'false'}" class="plugin-settings-toggle${app.enabled ? ' enabled' : ''}" data-cache-toggle="${agent}"${disabled || app.held ? ' disabled' : ''}><span class="plugin-settings-switch-track" aria-hidden="true"><span class="plugin-settings-switch-thumb"></span></span><span class="plugin-settings-switch-text">Caching</span></button>
+                <button type="button" role="switch" aria-checked="${app.enabled ? 'true' : 'false'}" class="plugin-settings-toggle${app.enabled ? ' enabled' : ''}" data-cache-toggle="${agent}" aria-label="Caching for ${agent}"${disabled || app.held ? ' disabled' : ''}><span class="plugin-settings-switch-track" aria-hidden="true"><span class="plugin-settings-switch-thumb"></span></span><span class="plugin-settings-switch-text">Caching</span></button>
             </div>
             <div class="cache-card-text"><p>${escapeHtml(describeApplication(app))}</p><p class="cache-card-meta">${hosts}</p></div>
         </div>
@@ -207,7 +207,6 @@ export function renderCachePanel({ snapshot = null, busy = false, unconfirmed = 
         ${apps?.length === 0 ? '<p class="settings-empty-state">No applications have cacheable paths.</p>' : ''}
         ${!apps && !error ? '<p class="settings-status loading" role="status">Loading cache settings…</p>' : ''}`;
 }
-
 
 export class CachePanel {
     constructor(element, invalidate, props = {}) {
