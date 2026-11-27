@@ -41,11 +41,12 @@ export function routeKey(agent, path) {
 
 const isNever = (route) => route.manifest === 'never' || route.source === 'never';
 
-// The one place that decides which actions a row offers: never rows none, stale rows only Reset.
+// The one place that decides which actions a row offers: stale rows only Reset (even on a route
+// that has since become `never`, so the saved setting can always be removed), never rows none.
 export function offeredActions(route) {
-    if (isNever(route)) return [];
     if (route.stale) return ['default'];
-    const choices = Array.isArray(route.choices) ? route.choices.filter((choice) => choice in ACTION_LABELS) : [];
+    if (isNever(route)) return [];
+    const choices = Array.isArray(route.choices) ? route.choices.filter((choice) => Object.hasOwn(ACTION_LABELS, choice)) : [];
     return [...choices, ...(route.checkable === true ? ['check'] : [])];
 }
 
@@ -68,6 +69,7 @@ function describeMark(route) {
 function renderCheck(entry) {
     if (!entry) return '';
     if (entry.error) return `<p class="cache-check error" role="status">${escapeHtml(entry.error)}</p>`;
+    if (!entry.check || typeof entry.check !== 'object') return '<p class="cache-check error" role="status">The Router returned no check result.</p>';
     const { host, path, status, cdnHeader, cacheControl } = entry.check;
     return `<p class="cache-check" role="status"><strong>Checked now:</strong> HTTP ${escapeHtml(status)} from ${escapeHtml(host)}${escapeHtml(path)}. Cloudflare header sent: <code>${escapeHtml(cdnHeader || 'none')}</code>. Application header: <code>${escapeHtml(cacheControl || 'none')}</code>.</p>`;
 }

@@ -281,7 +281,10 @@ test('a stale row that shares its path with a live row is resolved on its own: R
     const data = snapshot();
     data.applications[0].publicRoutes.push(route('/news', {
         stale: true, choices: ['default'], setting: { setting: 'page', at: '2026-11-20T09:00:00Z', by: 'admin' },
-    }), route('/login/', { stale: true, choices: ['default'], setting: { setting: 'page', at: '2026-11-20T09:00:00Z', by: 'admin' } }));
+    }), route('/login/', {
+        // As the Router builds it: a stale row carries the entry's current mark, here `never`.
+        manifest: 'never', stale: true, choices: ['default'], setting: { setting: 'page', at: '2026-11-20T09:00:00Z', by: 'admin' },
+    }));
     const writes = [];
     const checks = [];
     const api = {
