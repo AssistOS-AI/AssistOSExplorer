@@ -200,7 +200,7 @@ sed -n "\${n}p" "${bin}/replies" | tr -d '\\n'
         const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PUBLIC_URL: 'https://explorer-qa.axiologic.dev' } });
         return { ...result, calls: Number(fs.readFileSync(path.join(bin, 'count'), 'utf8')) };
     };
-    const signIn = '302 /auth/login?returnTo=%2FcsvMailAgent%2Fpublic%2F&agent=csvMailAgent';
+    const signIn = '302 /auth/login?returnTo=%2FcsvMailAgent%2Fpublic%2F';
     const passed = run(['404 ', '502 ', signIn]);
     assert.equal(passed.status, 0, passed.stdout + passed.stderr);
     assert.equal(passed.calls, 3);
