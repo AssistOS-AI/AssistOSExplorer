@@ -2,7 +2,7 @@
 // Live probe: OpenCode 2 starts in a home with no plugin dependency tree, loads a plugin that imports the modules the host provides
 // (`@opencode/plugin`, `effect`), and creates no tree of its own. Dependency-free, so the file also runs alone from a container's /tmp.
 //
-//   node opencode-plugin-free.mjs --binary <opencode> [--offline] [--keep] [--timeout-ms <n>] [--record-wait-ms <n>]
+//   node opencode-plugin-free.mjs --binary <opencode> [--offline] [--keep] [--timeout-ms <n>] [--plugin-wait-ms <n>] [--record-wait-ms <n>]
 //
 // Prints exactly one line `ROBOWORK_OPENCODE_PLUGIN_FREE_V1 <json>` and exits 0 only when every check passed; any failure prints its
 // reason (and the raw evidence) to stderr, prints no sentinel and exits non-zero.
@@ -62,7 +62,7 @@ const after = ms => new Promise(resolve => setTimeout(resolve, ms).unref());
 const active = { server: undefined, home: undefined, keep: false };
 
 export function parseArguments(argv) {
-    const options = { offline: false, keep: false, inNetns: false, timeoutMs: 120000, recordWaitMs: 15000 };
+    const options = { offline: false, keep: false, inNetns: false, timeoutMs: 120000, recordWaitMs: 15000, pluginWaitMs: 30000 };
     const numeric = (name, value) => {
         if (!/^[1-9]\d{0,7}$/u.test(value ?? '')) throw fail(`${name} needs a positive integer`);
         return Number(value);
@@ -75,6 +75,7 @@ export function parseArguments(argv) {
         else if (argument === '--in-netns') options.inNetns = true;
         else if (argument === '--timeout-ms') options.timeoutMs = numeric(argument, argv[++index]);
         else if (argument === '--record-wait-ms') options.recordWaitMs = numeric(argument, argv[++index]);
+        else if (argument === '--plugin-wait-ms') options.pluginWaitMs = numeric(argument, argv[++index]);
         else throw fail(`Unknown argument ${argument}`);
     }
     if (!options.binary || !path.isAbsolute(options.binary)) throw fail('--binary needs an absolute path to the opencode executable');
@@ -235,9 +236,9 @@ export function recorderEvidence(records) {
 }
 
 export function checkPlugins(body) {
-    if (!Array.isArray(body?.data)) throw fail(`/api/plugin answered no data array: ${JSON.stringify(body).slice(0, 500)}`);
+    if (!Array.isArray(body?.data)) throw Object.assign(fail(`/api/plugin answered no data array: ${JSON.stringify(body).slice(0, 500)}`), { final: true });
     const failed = body.data.filter(plugin => plugin?.state?.status === 'failed');
-    if (failed.length) throw fail(`/api/plugin reports failed plugins: ${JSON.stringify(failed).slice(0, 1000)}`);
+    if (failed.length) throw Object.assign(fail(`/api/plugin reports failed plugins: ${JSON.stringify(failed).slice(0, 1000)}`), { final: true });
     // `Plugin.Info` is `{ id, source: { type: 'local', path }, features, state: { status: 'active' | 'failed' } }`.
     const recorder = body.data.find(plugin => plugin?.id === RECORDER_ID || (plugin?.source?.type === 'local' && String(plugin.source.path).endsWith(RECORDER_FILE)));
     if (!recorder) throw fail(`/api/plugin does not list the recorder plugin: ${JSON.stringify(body.data).slice(0, 1000)}`);
@@ -253,6 +254,19 @@ export function checkNoTree(home) {
     let entries = [];
     try { entries = fs.readdirSync(cache); } catch (error) { if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error; }
     if (entries.length) throw fail(`OpenCode installed packages into .cache/opencode/npm: ${entries.slice(0, 10).join(', ')}`);
+}
+
+// OpenCode loads plugins in the background after the instance boots, so `/api/plugin` first answers an empty list. Poll until the
+// recorder is listed as active; a failed plugin at any poll fails at once, and at the deadline the last answer decides.
+async function waitForPlugins(server, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const { body } = await getJson(server, '/api/plugin');
+        try { return checkPlugins(body); } catch (error) {
+            if (error.final || Date.now() >= deadline) throw error;
+        }
+        await sleep(250);
+    }
 }
 
 async function runProbe(options) {
@@ -280,9 +294,10 @@ async function runProbe(options) {
         await waitForServer(state.server, options.timeoutMs);
         await waitForMigration(state.server, Math.min(options.timeoutMs, 120000));
         // Instance creation, and with it plugin setup, may happen on the first request that needs it.
-        const plugins = checkPlugins((await getJson(state.server, '/api/plugin')).body);
+        // An empty list is a valid answer: the scratch home configures no provider.
         const models = (await getJson(state.server, '/api/model')).body;
         if (!Array.isArray(models?.data)) throw fail(`/api/model answered no data array: ${JSON.stringify(models).slice(0, 500)}`);
+        const plugins = await waitForPlugins(state.server, options.pluginWaitMs);
         const deadline = Date.now() + options.recordWaitMs;
         while (!readRecords(recordFile).length && Date.now() < deadline) await sleep(100);
         const recorder = recorderEvidence(readRecords(recordFile));

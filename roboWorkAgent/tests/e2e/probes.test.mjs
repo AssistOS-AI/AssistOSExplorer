@@ -240,6 +240,9 @@ if (command !== 'serve') process.exit(2);
 const hostPlugin = MODE === 'unusable'
     ? 'export const Provider = { ID: { make: value => value }, Info: { empty: id => ({ id }) } }; export const Model = { ID: { make: value => value } };'
     : 'export const Provider = { ID: { make: value => value }, Info: { empty: id => ({ id }) } }; export const Model = { ID: { make: value => value }, Info: { default: (provider, id) => ({ provider, id }) } };';
+const started = Date.now();
+// Late modes: the host answers an empty list for the first second, as OpenCode does while it loads plugins in the background.
+const booting = () => (MODE === 'late' || MODE === 'latefailed') && Date.now() - started < 1000;
 const hostEffect = 'export const Effect = { succeed: value => ({ value }), runSync: effect => effect.value };';
 const hooks = 'const modules = ' + JSON.stringify({ '@opencode/plugin': hostPlugin, effect: hostEffect })
     + '; export async function resolve(specifier, context, next) { if (specifier in modules) return { url: "data:text/javascript," + encodeURIComponent(modules[specifier]), shortCircuit: true }; return next(specifier, context); }';
@@ -254,6 +257,7 @@ if (MODE === 'npmcache') fs.mkdirSync(path.join(cache, 'npm', 'pkg'), { recursiv
 let loaded;
 // The host runs each plugin's setup when the instance is created, that is on the first request that needs it.
 const plugins = async () => {
+    if (booting() || MODE === 'unlisted') return [];
     loaded ??= (async () => {
         const directory = path.join(config, 'plugins');
         const list = [];
@@ -262,7 +266,7 @@ const plugins = async () => {
             const plugin = (await import(pathToFileURL(file))).default;
             if (MODE !== 'norecord') await plugin.setup({});
             list.push({ id: plugin.id, source: { type: 'local', path: file }, features: { server: true },
-                state: MODE === 'failed' ? { status: 'failed', error: 'setup threw' } : { status: 'active' } });
+                state: MODE === 'failed' || MODE === 'latefailed' ? { status: 'failed', error: 'setup threw' } : { status: 'active' } });
         }
         return list;
     })();
@@ -289,7 +293,7 @@ function runPluginFreeProbe(mode, extra = [], env = {}) {
     const binary = path.join(root, 'opencode');
     fs.writeFileSync(binary, stubSource(mode), { mode: 0o755 });
     try {
-        const result = spawnSync(process.execPath, [PLUGIN_FREE, '--binary', binary, '--timeout-ms', '20000', '--record-wait-ms', '600', ...extra], {
+        const result = spawnSync(process.execPath, [PLUGIN_FREE, '--binary', binary, '--timeout-ms', '20000', '--record-wait-ms', '600', '--plugin-wait-ms', '5000', ...extra], {
             encoding: 'utf8', timeout: 60000,
             // An inherited config directory must not reach the server, or the absence checks would look at the wrong place.
             env: { ...process.env, TMPDIR: scratch, XDG_CONFIG_HOME: '/nonexistent/xdg', OPENCODE_CONFIG_DIR: '/nonexistent/config', ...env },
@@ -364,4 +368,20 @@ test('plugin-free --keep leaves the scratch home for debugging', () => {
     assert.equal(result.left.length, 1);
     assert.equal(result.stderr.match(/Scratch home kept at (\S+)/u)?.[1], result.left[0]);
     assert.deepEqual(result.plugins, [true]);
+});
+
+test('plugin-free probe waits for plugins that OpenCode loads in the background, and still fails on one that never appears or fails late', () => {
+    // The host answers an empty plugin list for about a second, then lists the active recorder.
+    const late = runPluginFreeProbe('late');
+    assert.equal(late.status, 0, late.stderr);
+    assert.equal(late.stdout.split('\n').filter(Boolean).length, 1);
+    assert.match(late.stdout, /^ROBOWORK_OPENCODE_PLUGIN_FREE_V1 /u);
+    assert.equal(JSON.parse(late.stdout.slice(PLUGIN_FREE_SENTINEL.length + 1)).plugins, 1);
+    assert.deepEqual(late.left, []);
+    // A recorder that is never listed fails after the deadline, not before it.
+    const began = Date.now();
+    assertProbeFails(runPluginFreeProbe('unlisted', ['--plugin-wait-ms', '1500']), /does not list the recorder plugin: \[\]/u);
+    assert.ok(Date.now() - began >= 1500, 'the probe waited for the plugin deadline');
+    // A plugin that turns out failed once the host has loaded it fails the probe.
+    assertProbeFails(runPluginFreeProbe('latefailed'), /\/api\/plugin reports failed plugins/u);
 });
