@@ -54,6 +54,30 @@ async function selectV1Generation(cacheRoot, cacheSchema) {
     return { generation, stamp: found.get(generation), directory: path.join(generationsDirectory, generation) };
 }
 
+// Every entry below a directory, with its type, size and link target, so two trees can be compared without reading content.
+async function treeShape(root) {
+    const shape = new Map();
+    const walk = async (directory, prefix) => {
+        for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+            const file = path.join(directory, entry.name), key = path.posix.join(prefix, entry.name);
+            if (entry.isSymbolicLink()) shape.set(key, `link:${await fs.readlink(file)}`);
+            else if (entry.isDirectory()) { shape.set(key, 'dir'); await walk(file, key); }
+            else shape.set(key, `file:${(await fs.lstat(file)).size}`);
+        }
+    };
+    await walk(root, '');
+    return shape;
+}
+
+// A destination is accepted only when it is the live generation entry for entry: a stamp alone proves nothing, because the
+// copy an interrupted earlier release made was not staged and can hold the stamp without the executables.
+async function sameTree(source, destination) {
+    const [left, right] = await Promise.all([treeShape(source), treeShape(destination)]);
+    if (left.size !== right.size) return false;
+    for (const [key, value] of left) if (right.get(key) !== value) return false;
+    return true;
+}
+
 async function writeCurrent(directory, descriptor) {
     const file = path.join(directory, 'current.json');
     const temporary = `${file}.${randomUUID()}.tmp`;
@@ -94,8 +118,9 @@ export async function retainV1OpenCode({ cacheRoot, root, cacheSchema, rename = 
         await fs.mkdir(generations, { recursive: true, mode: 0o700 });
         const destination = path.join(generations, source.generation);
         let action;
-        if (await v1Stamp(generations, source.generation, cacheSchema)) {
-            // A complete copy from an earlier attempt; the live generation, if any, is left for collection.
+        if (await entryOrNull(destination) && await v1Stamp(generations, source.generation, cacheSchema)
+            && await sameTree(source.directory, destination)) {
+            // A complete copy from an earlier attempt; the live generation is left for collection.
             action = 'present';
         } else {
             await setAside(backup, destination, source.generation);

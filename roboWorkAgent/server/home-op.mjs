@@ -110,7 +110,7 @@ export async function robotStatus(home, input = {}, { env, api = null, unavailab
 export async function homeOperation(operation, input, home = process.env.HOME) {
     if (operation === 'opencode_migrate') {
         const { migrateOpenCodeHome } = await import('./opencode-home-migration.mjs');
-        return migrateOpenCodeHome({ home, backup: '/migration', binary: input.binary, marginBytes: input.marginBytes });
+        return migrateOpenCodeHome({ home, backup: '/migration', binary: input.binary });
     }
     if (operation === 'delete') {
         for (const entry of await fs.readdir(home)) await fs.rm(path.join(home, entry), { recursive: true, force: true });

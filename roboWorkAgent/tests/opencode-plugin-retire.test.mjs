@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { pluginTreeDisposition, retireOpenCodePlugin } from '../server/opencode-plugin-retire.mjs';
 
 const V2 = '@opencode/plugin';
@@ -41,6 +43,7 @@ async function digest(directory) {
             const key = path.posix.join(prefix, entry.name);
             if (entry.isSymbolicLink()) result[key] = `link:${await fs.readlink(file)}`;
             else if (entry.isDirectory()) { result[key] = 'dir'; await walk(file, key); }
+            else if (!entry.isFile()) result[key] = 'special';
             else result[key] = `file:${(await fs.readFile(file)).toString('base64')}`;
         }
     };
@@ -250,6 +253,32 @@ test('unsafe: a link or special file at a managed name, a shared inode, or a lin
             assert.equal((await retireOpenCodePlugin(f.home)).status, 'unsafe');
             assert.deepEqual([await digest(other), await fs.readlink(path.join(f.home, link))], before);
         });
+    }
+});
+
+test('a link inside node_modules is removed as a link: what it points at, even in another home, is never followed', async (t) => {
+    const { root, home, config } = await fixture(t);
+    await writeTree(config);
+    const other = path.join(root, 'other-home/.config/opencode');
+    await fs.mkdir(other, { recursive: true });
+    await fs.writeFile(path.join(other, 'precious'), 'keep');
+    await fs.symlink(other, path.join(config, 'node_modules', 'to-other-home'));
+    await fs.symlink(path.join(other, 'precious'), path.join(config, 'node_modules', '.bin', 'to-file'));
+    assert.deepEqual(await retireOpenCodePlugin(home), { status: 'retired' });
+    assert.equal(await hasNone(config), true);
+    assert.equal(await fs.readFile(path.join(other, 'precious'), 'utf8'), 'keep');
+    assert.deepEqual(await fs.readdir(other), ['precious']);
+});
+
+test('a named pipe at a managed name is a special file: unsafe, nothing removed, and nothing blocks on it', async (t) => {
+    for (const name of ['package.json', 'package-lock.json', 'node_modules']) {
+        const { home, config } = await fixture(t);
+        await writeTree(config);
+        await fs.rm(path.join(config, name), { recursive: true });
+        await promisify(execFile)('mkfifo', [path.join(config, name)]);
+        const before = await digest(config);
+        assert.equal((await retireOpenCodePlugin(home)).status, 'unsafe', name);
+        assert.deepEqual(await digest(config), before, name);
     }
 });
 

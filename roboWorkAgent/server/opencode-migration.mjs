@@ -1,22 +1,25 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { MIGRATION_ID } from './opencode-home-migration.mjs';
 import { robotId, fail } from './robot-paths.mjs';
-import { OPENCODE_MIGRATION_MIN_FREE_BYTES } from './constants.mjs';
 
 // Kernel lock: released even after a killed process or a container restart. Never guess that a PID lock is stale.
+// A held lock rejects with code LOCK_HELD; the returned release resolves once the holder has really exited.
 async function lock(file) {
     const child = spawn('flock', ['--exclusive', '--nonblock', file, 'cat'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let exited = false;
+    const gone = new Promise(resolve => child.once('exit', () => { exited = true; resolve(); }));
     await new Promise((resolve, reject) => {
         child.once('error', reject);
-        child.once('exit', () => reject(new Error('Another OpenCode migration holds the lock')));
+        child.once('exit', () => reject(Object.assign(new Error('Another OpenCode migration holds the lock'), { code: 'LOCK_HELD' })));
         child.stdout.once('data', resolve);
         child.stdin.on('error', reject);
         child.stdin.write('locked\n');
     }).catch(error => { child.stdin.destroy(); child.kill(); throw error; });
-    return () => child.stdin.end();
+    return async () => { if (!exited) child.stdin.end(); await gone; };
 }
 
 // Complete journals only retire what an earlier run left behind; every other robot needs the OpenCode migration.
@@ -27,24 +30,15 @@ async function journalComplete(root, id) {
     } catch { return false; }
 }
 
-// Free bytes where `directory` will be written; a directory that does not exist yet is measured at its nearest parent.
-async function freeBytesAt(directory) {
-    for (let current = directory; ; current = path.dirname(current)) {
-        try {
-            const stat = await fs.statfs(current);
-            return stat.bavail * stat.bsize;
-        } catch (error) {
-            if (error.code !== 'ENOENT' || current === path.dirname(current)) throw error;
-        }
-    }
-}
-
 const RETRY_INTERVAL_MS = 10 * 60 * 1000;
 const RETRY_REQUEST_MS = 60 * 1000;
+// Another process (an operator's prune, a second start) may hold the lock briefly; the service waits for it instead of failing every robot.
+const LOCK_WAIT_MS = 10 * 60 * 1000;
+const LOCK_RETRY_MS = 5 * 1000;
 
-// `lockImpl`, `freeBytes`, `minFreeBytes`, `retryIntervalMs`, `retryRequestMs` and `now` exist for tests.
+// `lockImpl`, `retryIntervalMs`, `retryRequestMs`, `lockWaitMs`, `lockRetryMs` and `now` exist for tests.
 export function createOpenCodeMigration({ paths, toolCache, homeOperation, alaEntry, log = console.log, lockImpl = lock, now = Date.now,
-    freeBytes = freeBytesAt, minFreeBytes = OPENCODE_MIGRATION_MIN_FREE_BYTES, retryIntervalMs = RETRY_INTERVAL_MS, retryRequestMs = RETRY_REQUEST_MS }) {
+    retryIntervalMs = RETRY_INTERVAL_MS, retryRequestMs = RETRY_REQUEST_MS, lockWaitMs = LOCK_WAIT_MS, lockRetryMs = LOCK_RETRY_MS }) {
     let ready = false;
     let failed;
     const failures = new Map();
@@ -59,13 +53,17 @@ export function createOpenCodeMigration({ paths, toolCache, homeOperation, alaEn
     let timer;
     let work;
 
-    // The OpenCode executable every non-complete robot needs. It is downloaded only when the tool-cache filesystem has room.
+    // The OpenCode executable every non-complete robot needs. The tool cache reuses a usable generation without checking the
+    // disk and refuses a real installation below its floor (code INSUFFICIENT_SPACE); only then do the robots wait.
     async function prepareTools() {
-        const free = await freeBytes(toolCache.root);
-        if (free < minFreeBytes) return { reason: 'INSUFFICIENT_SPACE', neededBytes: minFreeBytes, freeBytes: free };
-        const prepared = await toolCache.prepareCodingAgent('opencode');
-        tools = { binary: path.join(prepared.binPath, 'opencode') };
-        return tools;
+        try {
+            const prepared = await toolCache.prepareCodingAgent('opencode');
+            tools = { binary: path.join(prepared.binPath, 'opencode') };
+            return tools;
+        } catch (error) {
+            if (error?.code === 'INSUFFICIENT_SPACE') return { reason: 'INSUFFICIENT_SPACE', neededBytes: error.neededBytes, freeBytes: error.freeBytes };
+            throw error;
+        }
     }
 
     function pause(id, details) {
@@ -86,12 +84,16 @@ export function createOpenCodeMigration({ paths, toolCache, homeOperation, alaEn
             if (counts && Object.hasOwn(counts, result.plugin)) counts[result.plugin]++;
             paused.delete(id);
             log(`[opencode-migration] robot=${id} ${result.repeated ? 'already complete' : 'complete'}`);
+            // A home left alone is not an error, but an operator needs to know why.
+            if (['failed', 'customized', 'unsafe'].includes(result.plugin)) {
+                log(`[opencode-migration] robot=${id} plugin tree left alone (${result.plugin})${result.pluginDetail ? `: ${result.pluginDetail}` : ''}`);
+            }
             return 'done';
         } catch (error) {
             if (wasComplete) {
                 // The migration finished earlier; only the cleanup failed, and a later start retries it.
                 if (counts) counts.failed++;
-                log(`[opencode-migration] robot=${id} plugin cleanup failed; migration state remains complete`);
+                log(`[opencode-migration] robot=${id} plugin cleanup failed (${error?.code || 'FAILED'}); migration state remains complete`);
                 return 'done';
             }
             paused.delete(id);
@@ -127,8 +129,9 @@ export function createOpenCodeMigration({ paths, toolCache, homeOperation, alaEn
             log(`[opencode-migration] robot=${id} resume attempt failed: ${error?.code || error?.message}`);
             return false;
         } finally {
-            release?.();
+            await release?.();
             retrying.delete(id);
+            if (!paused.has(id)) requested.delete(id);
             if (!paused.size && timer) { clearInterval(timer); timer = undefined; }
         }
     }
@@ -170,7 +173,14 @@ export function createOpenCodeMigration({ paths, toolCache, homeOperation, alaEn
             work = (async () => {
                 const startedAt = now();
                 await fs.mkdir(root, { recursive: true, mode: 0o700 });
-                const release = await lockImpl(path.join(root, 'migration.lock'));
+                let release;
+                for (let waited = 0; ; waited += lockRetryMs) {
+                    try { release = await lockImpl(path.join(root, 'migration.lock')); break; } catch (error) {
+                        if (error?.code !== 'LOCK_HELD' || waited >= lockWaitMs) throw error;
+                        if (waited === 0) log('[opencode-migration] waiting for migration.lock, held by another process');
+                        await delay(lockRetryMs);
+                    }
+                }
                 try {
                     const alaRoot = path.dirname(path.dirname(await fs.realpath(alaEntry)));
                     const contract = await import(pathToFileURL(path.join(alaRoot,
@@ -198,7 +208,7 @@ export function createOpenCodeMigration({ paths, toolCache, homeOperation, alaEn
                     }
                     log(`[opencode-plugin] retired=${counts.retired} absent=${counts.absent} authored=${counts.authored} `
                         + `customized=${counts.customized} unsafe=${counts.unsafe} failed=${counts.failed} ms=${now() - startedAt}`);
-                } finally { release(); }
+                } finally { await release(); }
             })().catch(error => {
                 failed = error;
                 log(`[opencode-migration] blocked: ${error.message}`);

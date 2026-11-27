@@ -155,7 +155,11 @@ export async function migrateOpenCodeHome({ home, backup, binary, upgrade = upgr
     });
     if (state.migration !== MIGRATION_ID) throw new Error('Unknown migration journal');
     // A finished migration only retires what an earlier run left behind; that never fails the robot.
-    if (state.phase === 'complete') return { phase: 'complete', repeated: true, plugin: (await retireOpenCodePlugin(home)).status };
+    if (state.phase === 'complete') {
+        const retired = await retireOpenCodePlugin(home);
+        const detail = retired.reason ?? retired.error;
+        return { phase: 'complete', repeated: true, plugin: retired.status, ...(detail ? { pluginDetail: String(detail).slice(0, 300) } : {}) };
+    }
     const snapshot = path.join(backup, 'snapshot');
     try {
         const snapshotted = await exists(path.join(backup, 'snapshot.json'));

@@ -4,7 +4,8 @@ import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { DATA_DIR, TOOL_REFRESH_INTERVAL_MS, TOOL_FALLBACK_RETRY_MS, BROWSER_IMAGE, DESKTOP_IMAGE } from './constants.mjs';
+import { DATA_DIR, TOOL_REFRESH_INTERVAL_MS, TOOL_FALLBACK_RETRY_MS, BROWSER_IMAGE, DESKTOP_IMAGE, OPENCODE_MIGRATION_MIN_FREE_BYTES } from './constants.mjs';
+import { freeBytesAt } from './free-space.mjs';
 import { RUNTIME_BUNDLE_FILES } from './runtime-bundle.mjs';
 import { collectToolCache } from './tool-cache-gc.mjs';
 
@@ -124,6 +125,9 @@ export class ToolCache {
         this.refreshIntervalMs = Math.max(60000, Number(options.refreshIntervalMs) || TOOL_REFRESH_INTERVAL_MS);
         this.fallbackRetryMs = Math.max(1000, Number(options.fallbackRetryMs) || TOOL_FALLBACK_RETRY_MS);
         this.now = options.now || Date.now;
+        // A coding agent is installed only with this much free space where the cache lives; reusing a usable generation never checks.
+        this.freeBytes = options.freeBytes || freeBytesAt;
+        this.minInstallFreeBytes = options.minInstallFreeBytes ?? OPENCODE_MIGRATION_MIN_FREE_BYTES;
         if (options.versionPins) {
             for (const name of Object.keys(options.versionPins)) {
                 if (!Object.hasOwn(PIN_VARIABLES, name)) throw new TypeError(`unknown version pin: ${name}`);
@@ -628,9 +632,12 @@ export class ToolCache {
         const target = path.join(generationsRoot, generation);
         try {
             await fs.mkdir(generationsRoot, { recursive: true, mode: 0o700 });
-            if (!(await this._generationIsUsable(target, plan.validate)) && plan.inPlace) {
+            const usable = await this._generationIsUsable(target, plan.validate);
+            // Only a real installation needs room; a usable generation is reused without looking at the disk.
+            if (!usable) await this._requireInstallSpace(name);
+            if (!usable && plan.inPlace) {
                 await this._installInPlace(name, target, generation, plan);
-            } else if (!(await this._generationIsUsable(target, plan.validate))) {
+            } else if (!usable) {
                 const stagingRoot = path.join(bundleRoot, 'staging');
                 const staging = path.join(stagingRoot, crypto.randomUUID());
                 await fs.mkdir(staging, { recursive: true, mode: 0o700 });
@@ -660,6 +667,15 @@ export class ToolCache {
             return plan.result(target);
         } catch (error) {
             return this._fallback(name, error);
+        }
+    }
+
+    async _requireInstallSpace(name) {
+        if (!Object.hasOwn(CODING_AGENT_PACKAGES, name)) return;
+        const free = await this.freeBytes(this.root);
+        if (free < this.minInstallFreeBytes) {
+            throw Object.assign(new Error(`not enough free space to install ${name}: ${free} bytes free, ${this.minInstallFreeBytes} needed`),
+                { code: 'INSUFFICIENT_SPACE', neededBytes: this.minInstallFreeBytes, freeBytes: free });
         }
     }
 
@@ -752,7 +768,9 @@ export class ToolCache {
                 fallback: true,
             };
         } catch (fallbackError) {
-            throw new Error(`could not prepare ${name} tools: ${cause.message}; no valid fallback cache: ${fallbackError.message}`);
+            // The cause's code survives, so a caller can tell a refusal for lack of space from any other failure.
+            throw Object.assign(new Error(`could not prepare ${name} tools: ${cause.message}; no valid fallback cache: ${fallbackError.message}`),
+                cause?.code === 'INSUFFICIENT_SPACE' ? { code: cause.code, neededBytes: cause.neededBytes, freeBytes: cause.freeBytes } : {});
         }
     }
 }

@@ -139,6 +139,39 @@ test('an interrupted earlier backup: a complete destination is kept as is; a par
     assert.equal(await fs.readFile(path.join(partial.root, 'v1-tool-cache/partial', aside[0], 'lib/payload.bin'), 'utf8'), 'half');
 });
 
+test('a partial backup that holds the stamp but not the executables is never trusted: the live generation is moved and the partial set aside', async t => {
+    const f = await fixture(t);
+    const live = await generation(f, V1, '1.19.6');
+    await generation(f, V2, '2.4.2');
+    await setCurrent(f, V2, '2.4.2');
+    const original = await digest(live);
+    // What an unstaged earlier copy leaves when it is killed: the stamp, but no payload and no link.
+    const half = path.join(f.root, 'v1-tool-cache/generations', V1);
+    await fs.mkdir(half, { recursive: true });
+    await fs.copyFile(path.join(live, 'stamp.json'), path.join(half, 'stamp.json'));
+    assert.deepEqual(await retainV1OpenCode(f.args), { generation: V1, action: 'moved' });
+    assert.deepEqual(await digest(path.join(f.root, 'v1-tool-cache/generations', V1)), original, 'the backup holds the complete generation');
+    assert.equal(await exists(live), false, 'moved from the live cache');
+    const aside = await fs.readdir(path.join(f.root, 'v1-tool-cache/partial'));
+    assert.equal(aside.length, 1);
+    assert.deepEqual(Object.keys(await digest(path.join(f.root, 'v1-tool-cache/partial', aside[0]))), ['/stamp.json']);
+    // Collection can now take whatever it likes from the live cache: the only complete copy is in the backup.
+    const { collectToolCache } = await import('../server/tool-cache-gc.mjs');
+    await collectToolCache({ root: f.cacheRoot, bundles: ['opencode'], retiredBundles: [], keepBundles: [], cacheSchema: SCHEMA, now: Date.now(), leftoverMs: 1 });
+    assert.deepEqual(await digest(path.join(f.root, 'v1-tool-cache/generations', V1)), original);
+});
+
+test('a destination that differs from the live generation in size or link is not accepted either', async t => {
+    const f = await fixture(t);
+    const live = await generation(f, V1, '1.19.6');
+    const destination = path.join(f.root, 'v1-tool-cache/generations', V1);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.cp(live, destination, { recursive: true, verbatimSymlinks: true });
+    await fs.writeFile(path.join(destination, 'lib/payload.bin'), 'truncated');
+    assert.equal((await retainV1OpenCode(f.args)).action, 'moved');
+    assert.equal((await fs.readdir(path.join(f.root, 'v1-tool-cache/partial'))).length, 1);
+});
+
 test('what an earlier whole-bundle copy left in the backup is never removed, and its descriptor is replaced by one naming V1', async t => {
     const f = await fixture(t);
     await generation(f, V1, '1.19.6');

@@ -194,6 +194,6 @@ export async function retireOpenCodePlugin(home) {
         await fs.rm(path.join(directory, 'package.json'), { force: true });
         return { status: 'retired' };
     } catch (error) {
-        return { status: 'failed', error: error?.message || String(error) };
+        return { status: 'failed', error: error?.message || String(error), code: error?.code };
     }
 }
