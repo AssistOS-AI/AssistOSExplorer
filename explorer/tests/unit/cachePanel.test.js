@@ -42,6 +42,8 @@ function publicRoutes() {
             stale: true, choices: ['default'],
             setting: { setting: 'page', at: '2026-11-20T09:00:00Z', by: 'admin' },
         }),
+        route('/api/submit', { publicProtocol: true, checkable: false }),
+        route('/files/*', { checkable: false }),
     ];
 }
 
@@ -185,6 +187,8 @@ test('rows show mark, header and only the actions each row offers: never rows no
         ['/login/', []],
         ['/p/abc', []],
         ['/old', ['default']],
+        ['/api/submit', []],
+        ['/files/*', []],
     ]);
     for (const [path, actions] of rows) assert.deepEqual(actionsOf(rowOf(html, path)), actions, path);
     const news = rowOf(html, '/news');
@@ -202,6 +206,11 @@ test('rows show mark, header and only the actions each row offers: never rows no
         assert.doesNotMatch(row, /<button/);
     }
     assert.match(rowOf(html, '/p/abc'), /Covered by \/p\/\*/);
+    for (const path of ['/api/submit', '/files/*']) {
+        const row = rowOf(html, path);
+        assert.match(row, />Not cached<\/span>/);
+        assert.doesNotMatch(row, /<button|cache-locked|Locked/, `${path} is not a never route, so it has no lock`);
+    }
     const stale = rowOf(html, '/old');
     assert.match(stale, />Stale<\/span>/);
     assert.match(stale, /no longer matches this route/);
@@ -256,7 +265,7 @@ test('Switch off and Allow caching ask inside the row first, then send the exact
 
 test('an action the row does not offer is never sent', async () => {
     const calls = [];
-    const api = new Proxy({ read: async () => snapshot() }, { get: (target, name) => target[name] || ((...args) => { calls.push([name, ...args]); return new Promise(() => {}); }) });
+    const api = new Proxy({ read: async () => snapshot() }, { get: (target, name) => target[name] || (async (...args) => { calls.push([name, ...args]); return { application: snapshot().applications[0], purges: [], check: {} }; }) });
     const { presenter } = panel(snapshot(), api);
     await presenter.afterRender();
     for (const [path, action] of [['/login/', 'off'], ['/login/', 'page'], ['/login/', 'check'], ['/p/abc', 'default'], ['/old', 'check'], ['/old', 'off'],
@@ -266,6 +275,48 @@ test('an action the row does not offer is never sent', async () => {
     }
     assert.equal(presenter.confirming, null);
     assert.deepEqual(calls, []);
+});
+
+test('a stale row that shares its path with a live row is resolved on its own: Reset posts, nothing leaks between the rows', async () => {
+    const data = snapshot();
+    data.applications[0].publicRoutes.push(route('/news', {
+        stale: true, choices: ['default'], setting: { setting: 'page', at: '2026-11-20T09:00:00Z', by: 'admin' },
+    }), route('/login/', { stale: true, choices: ['default'], setting: { setting: 'page', at: '2026-11-20T09:00:00Z', by: 'admin' } }));
+    const writes = [];
+    const checks = [];
+    const api = {
+        setRoute: async (body) => { writes.push(body); return { application: data.applications[0], purges: [] }; },
+        checkRoute: async (body) => { checks.push(body); return { check: { host: 'first.example', path: '/news', status: 200, cdnHeader: PAGE, cacheControl: null } }; },
+        read: async () => structuredClone(data),
+    };
+    const { presenter, element, content } = panel(structuredClone(data), api);
+    await presenter.afterRender();
+    const rowsFor = (path) => content.innerHTML.split('<tr data-cache-route>').slice(1).map((chunk) => chunk.split('</tr>')[0]).filter((chunk) => chunk.includes(`title="${path}"`));
+    // never row and its stale twin on one path: only the twin can be reset
+    const [never, neverStale] = rowsFor('/login/');
+    assert.deepEqual(actionsOf(never), []);
+    assert.deepEqual(actionsOf(neverStale), ['default']);
+    click(element, buttonFrom(neverStale, /cache-route-action="default"/));
+    await settle();
+    assert.deepEqual(writes, [{ agent: 'org/site', path: '/login/', setting: 'default' }]);
+    // live row and stale twin on one path: confirm and check state belong to the live row only
+    let [live, stale] = rowsFor('/news');
+    assert.deepEqual(actionsOf(live), ['off', 'check']);
+    assert.deepEqual(actionsOf(stale), ['default']);
+    click(element, buttonFrom(live, /cache-route-action="off"/));
+    [live, stale] = rowsFor('/news');
+    assert.deepEqual(actionsOf(live), ['confirm', 'cancel']);
+    assert.deepEqual(actionsOf(stale), ['default']);
+    click(element, buttonFrom(live, /cache-route-action="cancel"/));
+    click(element, buttonFrom(rowsFor('/news')[0], /cache-route-action="check"/));
+    await settle();
+    [live, stale] = rowsFor('/news');
+    assert.match(live, /Checked now/);
+    assert.doesNotMatch(stale, /Checked now/);
+    assert.deepEqual(checks, [{ agent: 'org/site', path: '/news' }]);
+    click(element, buttonFrom(stale, /cache-route-action="default"/));
+    await settle();
+    assert.deepEqual(writes[1], { agent: 'org/site', path: '/news', setting: 'default' });
 });
 
 test('Check sends the exact body, shows the result in its row and leaves everything else alone', async () => {

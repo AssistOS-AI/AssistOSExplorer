@@ -39,9 +39,11 @@ export function routeKey(agent, path) {
     return JSON.stringify([agent, path]);
 }
 
+const isNever = (route) => route.manifest === 'never' || route.source === 'never';
+
 // The one place that decides which actions a row offers: never rows none, stale rows only Reset.
 export function offeredActions(route) {
-    if (route.manifest === 'never' || route.source === 'never') return [];
+    if (isNever(route)) return [];
     if (route.stale) return ['default'];
     const choices = Array.isArray(route.choices) ? route.choices.filter((choice) => choice in ACTION_LABELS) : [];
     return [...choices, ...(route.checkable === true ? ['check'] : [])];
@@ -73,9 +75,10 @@ function renderCheck(entry) {
 function renderActions(app, route, ui, disabled) {
     const key = routeKey(app.agent, route.path);
     const attributes = `data-cache-agent="${escapeHtml(app.agent)}" data-cache-path="${escapeHtml(route.path)}"`;
-    if (ui.confirming && routeKey(ui.confirming.agent, ui.confirming.path) === key) {
+    // A stale row can share its path with the live row; only the live row carries confirm and check state.
+    if (!route.stale && ui.confirming && routeKey(ui.confirming.agent, ui.confirming.path) === key) {
         const prompt = ui.confirming.setting === 'off'
-            ? 'Switch off caching for this route? Cached copies on the application’s hosts are cleared.'
+            ? 'Switch off caching for this route? Cached copies on the application’s hosts may be cleared.'
             : `Allow Cloudflare to cache this route for ${app.pageSeconds / 60} ${app.pageSeconds === 60 ? 'minute' : 'minutes'}? Every visitor can then get the same copy, so allow it only for pages that do not differ by visitor.`;
         return `<p class="cache-confirm" role="alert">${escapeHtml(prompt)}</p><div class="cache-actions">
             <button type="button" class="general-button" data-cache-route-action="confirm" ${attributes}${disabled ? ' disabled' : ''}>Confirm</button>
@@ -83,6 +86,7 @@ function renderActions(app, route, ui, disabled) {
     }
     const actions = offeredActions(route);
     if (!actions.length) {
+        if (!isNever(route)) return '';
         const reason = escapeHtml(route.neverBy && route.neverBy !== route.path ? `Never cached (covered by ${route.neverBy})` : 'Never cached');
         return `<span class="cache-locked" title="${reason}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Locked</span>`;
     }
@@ -98,7 +102,7 @@ function renderRouteRow(app, route, ui, disabled) {
     return `<tr data-cache-route>
         <td data-label="Path"><code class="cache-path" title="${escapeHtml(route.path)}">${escapeHtml(route.path)}</code></td>
         <td data-label="Mark"><span class="status-badge cache-mark ${mark.tone}">${escapeHtml(mark.label)}</span>${notes.map((note) => `<span class="cache-note">${escapeHtml(note)}</span>`).join('')}</td>
-        <td data-label="Cloudflare header for an anonymous request"><code>${escapeHtml(route.cdnHeader)}</code>${renderCheck(ui.checks.get(routeKey(app.agent, route.path)))}</td>
+        <td data-label="Cloudflare header for an anonymous request"><code>${escapeHtml(route.cdnHeader)}</code>${renderCheck(route.stale ? null : ui.checks.get(routeKey(app.agent, route.path)))}</td>
         <td data-label="Actions" class="cache-actions-cell">${renderActions(app, route, ui, disabled)}</td>
     </tr>`;
 }
@@ -230,9 +234,10 @@ export class CachePanel {
         this.content.innerHTML = renderCachePanel(this);
     }
 
-    findRoute(agent, path) {
+    // Rows can share a path (a stale setting beside the live entry): pick the one that offers the action.
+    findRoute(agent, path, action) {
         const app = this.snapshot?.applications.find((entry) => entry.agent === agent);
-        return app?.publicRoutes?.find((entry) => entry.path === path);
+        return app?.publicRoutes?.find((entry) => entry.path === path && offeredActions(entry).includes(action));
     }
 
     change(agent, patch) {
@@ -264,8 +269,8 @@ export class CachePanel {
             ({ agent, path } = this.confirming);
             action = this.confirming.setting;
         }
-        const route = this.findRoute(agent, path);
-        if (!route || !offeredActions(route).includes(action) || this.busy || this.unconfirmed || this.denied) return;
+        const route = this.findRoute(agent, path, action);
+        if (!route || this.busy || this.unconfirmed || this.denied) return;
         if (action === 'check') return this.check(agent, path);
         if (action !== 'default' && !(this.confirming?.agent === agent && this.confirming.path === path && this.confirming.setting === action)) {
             this.confirming = { agent, path, setting: action };
