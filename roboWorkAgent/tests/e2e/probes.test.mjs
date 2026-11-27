@@ -220,3 +220,148 @@ test('a failed probe prints no success sentinel', () => {
     const result = spawnSync(process.execPath, [script, '--probe', 'symlink', '--robot', 'robot-a', '--victim', 'robot-b', '--workspace', '/fixture'], { encoding: 'utf8' });
     assert.equal(result.status, 1); assert.equal(result.stdout, ''); assert.match(result.stderr, /controller acceptance/u);
 });
+
+// ---- opencode-plugin-free.mjs: stub `opencode` executables, so no real OpenCode, network or provider is involved ----------------
+// Each negative stub is the correct stub with exactly one deviation, so a failure names that deviation and nothing else.
+const PLUGIN_FREE = fileURLToPath(new URL('./opencode-plugin-free.mjs', import.meta.url));
+const PLUGIN_FREE_SENTINEL = 'ROBOWORK_OPENCODE_PLUGIN_FREE_V1';
+
+const stubSource = mode => `#!${process.execPath}
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import module from 'node:module';
+import { pathToFileURL } from 'node:url';
+const MODE = ${JSON.stringify(mode)};
+const [command, ...rest] = process.argv.slice(2);
+if (command === '--version') { console.log('opencode 2.4.2-stub'); process.exit(0); }
+if (command !== 'serve') process.exit(2);
+// What the host provides to a plugin: modules that exist nowhere on disk. The resolve hook plays the host's module registry.
+const hostPlugin = MODE === 'unusable'
+    ? 'export const Provider = { ID: { make: value => value }, Info: { empty: id => ({ id }) } }; export const Model = { ID: { make: value => value } };'
+    : 'export const Provider = { ID: { make: value => value }, Info: { empty: id => ({ id }) } }; export const Model = { ID: { make: value => value }, Info: { default: (provider, id) => ({ provider, id }) } };';
+const hostEffect = 'export const Effect = { succeed: value => ({ value }), runSync: effect => effect.value };';
+const hooks = 'const modules = ' + JSON.stringify({ '@opencode/plugin': hostPlugin, effect: hostEffect })
+    + '; export async function resolve(specifier, context, next) { if (specifier in modules) return { url: "data:text/javascript," + encodeURIComponent(modules[specifier]), shortCircuit: true }; return next(specifier, context); }';
+module.register('data:text/javascript,' + encodeURIComponent(hooks));
+const home = process.env.HOME;
+const config = path.join(process.env.XDG_CONFIG_HOME, 'opencode');
+const cache = path.join(process.env.XDG_CACHE_HOME, 'opencode');
+if (!process.env.OPENCODE_PASSWORD || !home || !process.env.XDG_CONFIG_HOME.startsWith(home + path.sep)) { console.error('stub: the probe did not isolate HOME and XDG'); process.exit(3); }
+if (MODE === 'tree') fs.mkdirSync(path.join(config, 'node_modules'), { recursive: true });
+if (MODE === 'bunlock') fs.writeFileSync(path.join(config, 'bun.lock'), '');
+if (MODE === 'npmcache') fs.mkdirSync(path.join(cache, 'npm', 'pkg'), { recursive: true });
+let loaded;
+// The host runs each plugin's setup when the instance is created, that is on the first request that needs it.
+const plugins = async () => {
+    loaded ??= (async () => {
+        const directory = path.join(config, 'plugins');
+        const list = [];
+        for (const name of fs.readdirSync(directory)) {
+            const file = path.join(directory, name);
+            const plugin = (await import(pathToFileURL(file))).default;
+            if (MODE !== 'norecord') await plugin.setup({});
+            list.push({ id: plugin.id, source: { type: 'local', path: file }, features: { server: true },
+                state: MODE === 'failed' ? { status: 'failed', error: 'setup threw' } : { status: 'active' } });
+        }
+        return list;
+    })();
+    return loaded;
+};
+const server = http.createServer(async (req, res) => {
+    const answer = (status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (req.headers.authorization !== 'Basic ' + Buffer.from('opencode:' + process.env.OPENCODE_PASSWORD).toString('base64')) return answer(401, {});
+    if (req.url === '/api/info') return answer(200, { version: '2.4.2' });
+    if (req.url === '/api/experimental/migration/v1') return answer(200, { status: 'completed' });
+    if (req.url === '/api/plugin') return answer(200, { data: await plugins() });
+    if (req.url === '/api/model') { await plugins(); return answer(200, { data: [] }); }
+    return answer(404, {});
+});
+const port = Number(rest[rest.indexOf('--port') + 1]);
+server.listen(port, '127.0.0.1', () => console.log('opencode server listening on http://127.0.0.1:' + server.address().port));
+process.on('SIGTERM', () => process.exit(0));
+`;
+
+function runPluginFreeProbe(mode, extra = [], env = {}) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'robowork-plugin-free-test-')));
+    const scratch = path.join(root, 'tmp');
+    fs.mkdirSync(scratch);
+    const binary = path.join(root, 'opencode');
+    fs.writeFileSync(binary, stubSource(mode), { mode: 0o755 });
+    try {
+        const result = spawnSync(process.execPath, [PLUGIN_FREE, '--binary', binary, '--timeout-ms', '20000', '--record-wait-ms', '600', ...extra], {
+            encoding: 'utf8', timeout: 60000,
+            // An inherited config directory must not reach the server, or the absence checks would look at the wrong place.
+            env: { ...process.env, TMPDIR: scratch, XDG_CONFIG_HOME: '/nonexistent/xdg', OPENCODE_CONFIG_DIR: '/nonexistent/config', ...env },
+        });
+        const left = fs.readdirSync(scratch).map(name => path.join(scratch, name));
+        return { ...result, left, plugins: left.map(home => fs.existsSync(path.join(home, '.config', 'opencode', 'plugins', 'robowork-plugin-free-recorder.js'))) };
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+function assertProbeFails(result, reason) {
+    assert.notEqual(result.status, 0, `the probe must fail: ${result.stdout}${result.stderr}`);
+    assert.equal(result.stdout, '', 'a failed probe prints nothing on stdout');
+    assert.ok(!result.stdout.includes(PLUGIN_FREE_SENTINEL) && !result.stderr.includes(PLUGIN_FREE_SENTINEL));
+    assert.match(result.stderr, reason);
+    assert.deepEqual(result.left, [], 'the scratch home is removed after a failed run');
+}
+
+test('plugin-free probe prints its sentinel when OpenCode behaves (positive control for the three failing controls)', () => {
+    const result = runPluginFreeProbe('good');
+    assert.equal(result.status, 0, result.stderr);
+    const lines = result.stdout.split('\n').filter(Boolean);
+    assert.equal(lines.length, 1, 'exactly one stdout line');
+    assert.ok(lines[0].startsWith(`${PLUGIN_FREE_SENTINEL} `));
+    const evidence = JSON.parse(lines[0].slice(PLUGIN_FREE_SENTINEL.length + 1));
+    assert.equal(evidence.version, '2.4.2-stub');
+    assert.equal(evidence.plugins, 1);
+    assert.equal(evidence.offline, false);
+    assert.ok(Number.isInteger(evidence.elapsedMs) && evidence.elapsedMs >= 0);
+    assert.equal(evidence.recorder.id, 'robowork.opencode-plugin-free-recorder');
+    assert.deepEqual(evidence.recorder.plugin, { imported: true, providerId: true, providerInfo: true, modelId: true, modelInfo: true });
+    assert.deepEqual(evidence.recorder.effect, { imported: true, succeed: true, runSync: true });
+    assert.deepEqual(result.left, [], 'the scratch home is removed after a passing run');
+});
+
+test('plugin-free probe fails when OpenCode creates a node_modules under .config/opencode', () => {
+    assertProbeFails(runPluginFreeProbe('tree'), /created a dependency tree under \.config\/opencode: node_modules/u);
+});
+
+test('plugin-free probe fails when /api/plugin reports the recorder failed', () => {
+    assertProbeFails(runPluginFreeProbe('failed'), /\/api\/plugin reports failed plugins:.*robowork\.opencode-plugin-free-recorder/u);
+});
+
+test('plugin-free probe fails when the recorder never runs, although every endpoint answers', () => {
+    assertProbeFails(runPluginFreeProbe('norecord'), /recorder plugin never ran/u);
+});
+
+test('plugin-free probe fails on an unusable host export, a bun.lock and a package cache entry', () => {
+    assertProbeFails(runPluginFreeProbe('unusable'), /could not use @opencode\/plugin \(modelInfo not true\)/u);
+    assertProbeFails(runPluginFreeProbe('bunlock'), /dependency tree under \.config\/opencode: bun\.lock/u);
+    assertProbeFails(runPluginFreeProbe('npmcache'), /installed packages into \.cache\/opencode\/npm: pkg/u);
+});
+
+test('plugin-free probe fails on a missing binary, a missing --binary and an unknown argument', () => {
+    const run = args => spawnSync(process.execPath, [PLUGIN_FREE, ...args], { encoding: 'utf8' });
+    for (const [args, reason] of [[['--binary', '/nonexistent/opencode'], /--version failed/u], [[], /--binary needs an absolute path/u], [['--binary', '/x', '--online'], /Unknown argument/u]]) {
+        const result = run(args);
+        assert.notEqual(result.status, 0);
+        assert.equal(result.stdout, '');
+        assert.match(result.stderr, reason);
+    }
+});
+
+test('plugin-free --offline fails instead of running online when no network namespace can be made', () => {
+    // No `unshare` on PATH (and, off Linux, no namespaces at all): the probe must refuse, not fall back to a run with network.
+    const result = runPluginFreeProbe('good', ['--offline'], { PATH: '/nonexistent' });
+    assertProbeFails(result, /--offline needs/u);
+});
+
+test('plugin-free --keep leaves the scratch home for debugging', () => {
+    const result = runPluginFreeProbe('good', ['--keep']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.left.length, 1);
+    assert.equal(result.stderr.match(/Scratch home kept at (\S+)/u)?.[1], result.left[0]);
+    assert.deepEqual(result.plugins, [true]);
+});
