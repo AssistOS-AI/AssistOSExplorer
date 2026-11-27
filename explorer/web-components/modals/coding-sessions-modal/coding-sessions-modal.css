@@ -90,3 +90,5 @@ coding-sessions-modal .coding-session-role { font-weight: 600; margin-right: 4px
 coding-sessions-modal .coding-session-pill { display: inline-block; max-width: 100%; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-soft); font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
 coding-sessions-modal .coding-session-pill.is-agent { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); font-weight: 600; }
 coding-sessions-modal .coding-session-caption { color: var(--text-soft); overflow-wrap: anywhere; }
+
+coding-sessions-modal .coding-session-age { color: var(--text-soft); font-size: 12px; white-space: nowrap; }
