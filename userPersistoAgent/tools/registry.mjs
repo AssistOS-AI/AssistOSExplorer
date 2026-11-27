@@ -20,6 +20,15 @@ async function requireAdmin(context, capability = 'admin.users.manage') {
     return actor;
 }
 
+function requireDelegatedUser(context) {
+    if (!context.delegatedUser) {
+        throw Object.assign(new Error('User delegation is required.'), {
+            code: 'delegation_required',
+            statusCode: 403,
+        });
+    }
+}
+
 async function requireAuthMethod(method) {
     if (!(await isAuthMethodEnabled(method))) {
         throw Object.assign(new Error(`${method} authentication is not enabled.`), {
@@ -78,6 +87,10 @@ const HANDLERS = {
             includeRoleCounts: args.includeRoleCounts ?? false,
         });
         return { ...result, availableRoles: (await listRoles()).map((role) => role.name) };
+    },
+    userpersisto_delegated_user_list: (args, context) => {
+        requireDelegatedUser(context);
+        return HANDLERS.userpersisto_user_list(args, context);
     },
     userpersisto_user_update: async (args, context) => {
         const actorId = await requireAdmin(context);
@@ -173,6 +186,10 @@ const HANDLERS = {
             referenceId: args.referenceId || '',
             actorId: context.actorUserId
         });
+    },
+    userpersisto_delegated_credits_grant: (args, context) => {
+        requireDelegatedUser(context);
+        return HANDLERS.userpersisto_credits_grant(args, context);
     },
     userpersisto_credits_reserve: async (args, context) => credits.reserve({
         userId: await requireOwnedUser(args, context),
