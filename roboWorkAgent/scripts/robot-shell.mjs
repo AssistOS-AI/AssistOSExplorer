@@ -92,6 +92,7 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
     const folders = [...shown.folders, { source: descriptor.cacheRoot, target: descriptor.cacheRoot },
         { source: descriptor.innerEnvironment ? '/workspace/roboteam-soul' : path.join(descriptor.robotsDir, descriptor.id, 'run/soul'),
             target: '/workspace/roboteam-soul' }];
+    if (descriptor.controlDirectory) folders.push({ source: descriptor.controlDirectory, target: '/run/robowork-worker' });
     const env = nativeEnvironment({ PATH: '/usr/local/bin:/usr/bin:/bin', TERM: descriptor.term || 'xterm-256color', LANG: 'C.UTF-8' }, target);
     // The folder is opened once and bound by descriptor. The robot home has no private project data to mask.
     const pin = descriptor.cwd ? api.pinDirectory(descriptor.cwd, descriptor.cwdIdentity) : null;
@@ -102,7 +103,9 @@ export async function buildShellSandbox(descriptor, { loadSandbox = async entry 
         }
         const launch = api.buildNativeSessionLaunch({
             agent: descriptor.codingAgent, binary: path.join(descriptor.binPath, descriptor.codingAgent),
-            nativeArgs: descriptor.codingAgentArgs || [], systemPrompt: descriptor.systemPrompt, loginShell: shell, home,
+            nativeArgs: descriptor.codingAgentArgs || [], systemPrompt: descriptor.systemPrompt,
+            nativeMcp: descriptor.controlDirectory ? { name: 'robowork_worker', command: process.execPath,
+                args: ['/run/robowork-worker/mcp.mjs'], extension: '/run/robowork-worker/mcp.mjs' } : null, loginShell: shell, home,
             workspace: descriptor.cwd || home, workspaceTarget: cwd, workspaceFd: pin?.fd ?? null,
             ignoredPaths: shown.ignoredPaths, folders, env, bwrap, chdir: cwd,
         });
@@ -132,16 +135,18 @@ export async function buildTerminalLaunch(descriptor, paths, { environment = new
             ala: { source: codeRoot, target: '/opt/robowork-terminal', entry: '/opt/robowork-terminal/scripts/robot-shell.mjs' },
             bwrap: { source: descriptor.bwrap, target: '/opt/robowork-bwrap' },
             soul: { source: paths.soul(descriptor.id), target: '/workspace/roboteam-soul' },
-            folders: [{ source: path.dirname(path.dirname(descriptor.alaEntry)), target: '/opt/robowork-ala', readOnly: true }],
+            folders: [...(descriptor.controlDirectory ? [{ source: descriptor.controlDirectory, target: '/run/robowork-worker', readOnly: true }] : []), { source: path.dirname(path.dirname(descriptor.alaEntry)), target: '/opt/robowork-ala', readOnly: true }],
             tty: true, args: ['--inner', JSON.stringify({ ...descriptor, innerEnvironment: true,
-                alaEntry: '/opt/robowork-ala/bin/ala.mjs', bwrap: '/opt/robowork-bwrap' })], env: {} });
+                alaEntry: '/opt/robowork-ala/bin/ala.mjs', bwrap: '/opt/robowork-bwrap',
+                ...(descriptor.controlDirectory ? { controlDirectory: '/run/robowork-worker' } : {}) })], env: {} });
         return { ...launch, options: { ...launch.options, stdio: 'inherit', detached: false } };
     }
     const stateRoot = path.join(paths.dataDir, 'server-state', 'terminal');
     const directory = await fs.mkdtemp(path.join(stateRoot, 'launch-'));
     try {
         const launch = await buildPrivateLaunch({ paths, id: descriptor.id, directory, command: process.execPath,
-            args: [script, '--inner', JSON.stringify(descriptor)], env: { PATH: '/usr/local/bin:/usr/bin:/bin' } });
+            args: [script, '--inner', JSON.stringify(descriptor)],
+            extraBindings: descriptor.controlDirectory ? [[descriptor.controlDirectory, descriptor.controlDirectory]] : [], env: { PATH: '/usr/local/bin:/usr/bin:/bin' } });
         return { ...launch, directory, options: { ...launch.options, stdio: 'inherit', detached: false } };
     } catch (error) { await fs.rm(directory, { recursive: true, force: true }); throw error; }
 }

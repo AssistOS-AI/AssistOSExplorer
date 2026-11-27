@@ -31,4 +31,6 @@ test('the home helper lists the folder conversations through the ALA catalog of 
     assert.deepEqual(await listCodingSessions(home, { codingAgent: 'omp', cwd: '/work/project' }, { alaRoot }), { sessions: [] });
     assert.deepEqual(await codingSessionArguments(alaRoot, 'omp', { resume: 'omp-1' }), ['--resume', 'omp-1']);
     assert.equal(await presetsSessionId(alaRoot, 'omp'), false);
+    assert.deepEqual(await listCodingSessions(home, { codingAgent: 'vibe', cwd: '/work/project' }, { alaRoot }),
+        { sessions: [], sessionBindingSupported: true });
 });
