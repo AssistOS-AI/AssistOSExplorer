@@ -243,7 +243,8 @@ const hostPlugin = MODE === 'unusable'
 const started = Date.now();
 // Late modes: the host answers an empty list for the first second, as OpenCode does while it loads plugins in the background.
 const booting = () => (MODE === 'late' || MODE === 'latefailed') && Date.now() - started < 1000;
-const hostEffect = 'export const Effect = { succeed: value => ({ value }), runSync: effect => effect.value };';
+const hostEffect = MODE === 'norunsync' ? 'export const Effect = { succeed: value => ({ value }) };'
+    : 'export const Effect = { succeed: value => ({ value }), runSync: effect => effect.value };';
 const hooks = 'const modules = ' + JSON.stringify({ '@opencode/plugin': hostPlugin, effect: hostEffect })
     + '; export async function resolve(specifier, context, next) { if (specifier in modules) return { url: "data:text/javascript," + encodeURIComponent(modules[specifier]), shortCircuit: true }; return next(specifier, context); }';
 module.register('data:text/javascript,' + encodeURIComponent(hooks));
@@ -342,6 +343,7 @@ test('plugin-free probe fails when the recorder never runs, although every endpo
 
 test('plugin-free probe fails on an unusable host export, a bun.lock and a package cache entry', () => {
     assertProbeFails(runPluginFreeProbe('unusable'), /could not use @opencode\/plugin \(modelInfo not true\)/u);
+    assertProbeFails(runPluginFreeProbe('norunsync'), /could not use effect \(runSync not true\)/u);
     assertProbeFails(runPluginFreeProbe('bunlock'), /dependency tree under \.config\/opencode: bun\.lock/u);
     assertProbeFails(runPluginFreeProbe('npmcache'), /installed packages into \.cache\/opencode\/npm: pkg/u);
 });

@@ -302,7 +302,8 @@ test('prune: without --apply every flag prints a plan and changes nothing', asyn
     assert.match(result.stdout, /plan: remove snapshot plugin tree robot=aaa bytes=\d+/u);
     assert.match(result.stdout, /plan: remove snapshot robot=bbb/u);
     assert.match(result.stdout, /plan: remove v1-tool-cache/u);
-    assert.match(result.stdout, /backups of robots without a label \(listed, never deleted\): orphan-robot/u);
+    assert.match(result.stdout, /backups of robots without a label \(listed, never deleted\): orphan-robot$/mu, 'the V1 backup directory is not a robot backup');
+    assert.match(result.stdout, /advisory: this dry run does not hold migration\.lock/u);
     assert.match(result.stdout, /dry run/u);
     const normalized = await prune(f, '--normalize-v1-tools');
     assert.equal(normalized.code, 0, normalized.stderr);
@@ -320,20 +321,21 @@ test('prune: a dry run does not create a migration.lock that never existed', asy
     assert.deepEqual([await digest(f.dataDir), await digest(f.robotsDir)], before);
 });
 
-test('prune: it refuses while migration.lock is held, with and without --apply, and changes nothing', async t => {
+test('prune: --apply refuses while migration.lock is held and changes nothing; a dry run takes no lock and says it is advisory', async t => {
     const f = await standardLayout(t);
     const before = [await digest(f.dataDir), await digest(f.robotsDir)];
     const release = await holdLock(f);
     try {
-        for (const flags of [['--apply', '--plugin-trees'], ['--apply', '--snapshots', '--v1-tools'], ['--plugin-trees']]) {
+        for (const flags of [['--apply', '--plugin-trees'], ['--apply', '--snapshots', '--v1-tools'], ['--apply', '--normalize-v1-tools']]) {
             const result = await prune(f, ...flags);
             assert.notEqual(result.code, 0, flags.join(' '));
             assert.match(result.stderr, /migration\.lock is held/u);
         }
+        const dry = await prune(f, '--plugin-trees', '--snapshots', '--v1-tools');
+        assert.equal(dry.code, 0, dry.stderr);
+        assert.match(dry.stdout, /advisory: this dry run does not hold migration\.lock/u);
     } finally { await release(); }
-    const after = [await digest(f.dataDir), await digest(f.robotsDir)];
-    // The stand-in lock directory is the only difference it may leave, and it is gone once released.
-    assert.deepEqual(after, before);
+    assert.deepEqual([await digest(f.dataDir), await digest(f.robotsDir)], before);
     assert.equal((await prune(f, '--apply', '--plugin-trees')).code, 0, 'free again, it runs');
 });
 
@@ -438,7 +440,7 @@ test('prune --v1-tools refuses with one non-complete robot and otherwise removes
     assert.equal(await exists(path.join(f.migrations, 'aaa/snapshot')), true, 'snapshots need their own flag');
 });
 
-test('prune --normalize-v1-tools names the V1 generation the backup holds and removes only OpenCode 2 generations from the backup', async t => {
+test('prune --normalize-v1-tools only names the V1 generation the backup holds: every generation and file stays', async t => {
     const f = await standardLayout(t);
     const root = path.join(f.migrations, 'v1-tool-cache');
     await put(path.join(root, 'generations', gen('c'), 'stamp.json'), '{ not a stamp');
@@ -446,13 +448,21 @@ test('prune --normalize-v1-tools names the V1 generation the backup holds and re
     assert.equal(result.code, 0, result.stderr);
     const current = JSON.parse(await fs.readFile(path.join(root, 'current.json'), 'utf8'));
     assert.deepEqual(current, { schema: SCHEMA, name: 'opencode', generation: gen('1'), versions: { opencode: '1.19.6' } });
-    assert.deepEqual((await fs.readdir(path.join(root, 'generations'))).sort(), [gen('1'), gen('c')], 'V2 is gone, V1 and an unreadable stamp stay');
+    assert.deepEqual((await fs.readdir(path.join(root, 'generations'))).sort(), [gen('1'), gen('a'), gen('c')], 'normalizing deletes nothing');
+    assert.match(result.stdout, /keep: generation aaaaaaaaaaaa stays in the backup/u);
     assert.equal(await fs.readFile(path.join(root, 'generations', gen('1'), 'lib/payload'), 'utf8'), 'payload-1.19.6');
     assert.equal(await exists(path.join(f.migrations, 'aaa/snapshot')), true, 'nothing else changes');
-    assert.match(result.stdout, /keep: generation cccccccccccc/u);
     const settled = await digest(f.migrations);
     assert.equal((await prune(f, '--apply', '--normalize-v1-tools')).code, 0);
     assert.deepEqual(await digest(f.migrations), settled, 'idempotent');
+    // A V1 generation that holds only its stamp is not a rollback target.
+    const stampOnly = await layout(t);
+    await addRobot(stampOnly, 'aaa');
+    await backupTools(stampOnly);
+    await fs.rm(path.join(stampOnly.migrations, 'v1-tool-cache/generations', gen('1'), 'lib'), { recursive: true });
+    const hollow = await prune(stampOnly, '--apply', '--normalize-v1-tools');
+    assert.equal(hollow.code, 1);
+    assert.match(hollow.stdout, /refused: generation 111111111111 in the backup holds only its stamp/u);
     const none = await layout(t);
     await addRobot(none, 'aaa');
     await backupTools(none, { v1: false });
@@ -524,4 +534,77 @@ test('prune: --plugin-trees works from a directory that holds only the script an
     const missing = await execute(f, path.join(alone, 'prune-opencode-migration.mjs'), '--plugin-trees');
     assert.equal(missing.code, 2);
     assert.match(missing.stderr, /opencode-plugin-retire\.mjs not found/u);
+});
+
+// ---- journal files are service-written: a large valid record is fine, an unreadable one is never replaced ----
+
+async function bigRecord(f, id) {
+    const file = path.join(f.migrations, id, 'snapshot.json');
+    const record = JSON.parse(await fs.readFile(file, 'utf8'));
+    record.before.messages = Array.from({ length: 40000 }, (_, index) => ({ id: `msg_${String(index).padStart(8, '0')}_${'x'.repeat(48)}`, session_id: SESSIONS[index % 2] }));
+    await fs.writeFile(file, JSON.stringify(record, null, 2));
+    assert.ok((await fs.stat(file)).size > 4 * 1024 * 1024, 'the record is over the 4 MiB home-file bound');
+    return record;
+}
+
+test('prune and report handle a snapshot record of 40,000 messages: --snapshots works and --plugin-trees keeps every field', async t => {
+    const f = await layout(t);
+    await addRobot(f, 'aaa');
+    await addRobot(f, 'bbb');
+    const record = await bigRecord(f, 'aaa');
+    const reported = (await report(f)).robots.find(robot => robot.id === 'aaa');
+    assert.equal(reported.snapshot.sessions, 2, 'the report reads the large record');
+    const trees = await prune(f, '--apply', '--plugin-trees');
+    assert.equal(trees.code, 0, trees.stderr);
+    const after = JSON.parse(await fs.readFile(path.join(f.migrations, 'aaa/snapshot.json'), 'utf8'));
+    assert.deepEqual({ ...after, excluded: [], pluginTreePrunedAt: undefined }, { ...record, excluded: [], pluginTreePrunedAt: undefined }, 'nothing but the exclusion changed');
+    assert.deepEqual(after.excluded, ['.config/opencode/node_modules']);
+    assert.equal(after.before.messages.length, 40000);
+    assert.equal(await exists(path.join(f.migrations, 'aaa/snapshot/.config/opencode/node_modules')), false);
+    const snapshots = await prune(f, '--apply', '--snapshots');
+    assert.equal(snapshots.code, 0, snapshots.stderr);
+    assert.equal(await exists(path.join(f.migrations, 'aaa/snapshot')), false);
+});
+
+test('prune --plugin-trees skips a robot whose snapshot.json is unparsable, not an object, or over the bound, and changes nothing for it', async t => {
+    const f = await layout(t);
+    await addRobot(f, 'broken');
+    await addRobot(f, 'array');
+    await addRobot(f, 'huge');
+    await addRobot(f, 'fine');
+    await fs.writeFile(path.join(f.migrations, 'broken/snapshot.json'), '{ "included": [".config/opencode"], "before": { "sess');
+    await fs.writeFile(path.join(f.migrations, 'array/snapshot.json'), '[1,2,3]');
+    // Sparse: 257 MiB of apparent size, refused on its size before a byte is read.
+    await fs.truncate(path.join(f.migrations, 'huge/snapshot.json'), 257 * 1024 * 1024);
+    const sizes = async id => Object.fromEntries(await Promise.all(['snapshot.json', 'state.json', 'snapshot/.config/opencode/node_modules/@opencode-ai/plugin/payload.bin']
+        .map(async name => [name, (await fs.stat(path.join(f.migrations, id, name))).size])));
+    const before = { broken: await digest(path.join(f.migrations, 'broken')), array: await digest(path.join(f.migrations, 'array')), huge: await sizes('huge') };
+    const result = await prune(f, '--apply', '--plugin-trees');
+    assert.equal(result.code, 0, result.stderr);
+    for (const [id, why] of [['broken', 'not valid JSON'], ['array', 'not a JSON object'], ['huge', 'over the size limit or not a plain file']]) {
+        assert.match(result.stdout, new RegExp(`skip plugin tree robot=${id}: snapshot\\.json is ${why}; left untouched`, 'u'));
+    }
+    assert.deepEqual(await digest(path.join(f.migrations, 'broken')), before.broken);
+    assert.deepEqual(await digest(path.join(f.migrations, 'array')), before.array);
+    assert.deepEqual(await sizes('huge'), before.huge);
+    assert.equal(await exists(path.join(f.migrations, 'huge/snapshot/.config/opencode/node_modules')), true);
+    assert.equal(await exists(path.join(f.migrations, 'fine/snapshot/.config/opencode/node_modules')), false, 'a healthy robot is still pruned');
+});
+
+test('prune --snapshots and --v1-tools refuse when no robot is labelled', async t => {
+    const f = await layout(t);
+    await backupTools(f);
+    const before = await digest(f.migrations);
+    for (const flag of ['--snapshots', '--v1-tools']) {
+        const result = await prune(f, '--apply', flag);
+        assert.equal(result.code, 1, flag);
+        assert.match(result.stdout, /refused: no robot is labelled/u);
+    }
+    assert.deepEqual(await digest(f.migrations), before);
+});
+
+test('report: the V1 backup directory and its partial directory are not backups of an unlabelled robot', async t => {
+    const f = await standardLayout(t);
+    await put(path.join(f.migrations, 'partial/x/stamp.json'), '{}');
+    assert.deepEqual((await report(f)).unlabelledBackups, ['orphan-robot']);
 });

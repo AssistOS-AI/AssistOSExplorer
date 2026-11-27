@@ -6,9 +6,10 @@
 //   node robot-storage-report.mjs --data-dir /root --robots-dir /robots [--json]
 //
 // It follows no link: every path segment below the two given directories is checked with lstat, and the only files it reads
-// are `state.json` and `snapshot.json` of a migration journal, a tool `stamp.json` and `current.json`, and in each home
-// `.config/opencode/package.json`, `package-lock.json`, `opencode.json` and `opencode.jsonc`, each bounded to 4 MiB. Anything
-// else is measured with lstat or listed by name only, and nothing is written.
+// are `state.json` and `snapshot.json` of a migration journal (written by the service, so bounded to 256 MiB), a tool
+// `stamp.json` and `current.json`, and in each home `.config/opencode/package.json`, `package-lock.json`, `opencode.json` and
+// `opencode.jsonc` (writable by a robot, so bounded to 4 MiB). Anything else is measured with lstat or listed by name only, and
+// nothing is written.
 
 import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
@@ -16,6 +17,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const MAX_BYTES = 4 * 1024 * 1024;
+const JOURNAL_LIMIT = 256 * 1024 * 1024;
+const JOURNAL_FILES = new Set(['state.json', 'snapshot.json']);
+// Entries of the migration directory that are not robot backups.
+const NOT_ROBOT_BACKUPS = new Set(['v1-tool-cache', 'partial', 'generations']);
 const MIGRATION_ID = 'opencode-v2-1';
 const ROBOT_ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
 const GENERATION = /^[0-9a-f]{64}$/u;
@@ -46,7 +51,7 @@ async function readFile(file) {
     try {
         handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
         const stat = await handle.stat();
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_BYTES) return { unsafe: true };
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > (JOURNAL_FILES.has(path.basename(file)) ? JOURNAL_LIMIT : MAX_BYTES)) return { unsafe: true };
         return { text: await handle.readFile('utf8') };
     } catch (error) {
         if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return { missing: true };
@@ -283,7 +288,7 @@ export async function storageReport({ dataDir, robotsDir }) {
     const migrationDirectory = await realPath(path.dirname(migrations), path.basename(migrations));
     const unlabelledBackups = !migrationDirectory || migrationDirectory.unsafe ? []
         : (await fs.readdir(migrationDirectory, { withFileTypes: true })).filter(entry => entry.isDirectory() && !entry.isSymbolicLink()
-            && ROBOT_ID.test(entry.name) && !labelled.has(entry.name)).map(entry => entry.name).sort();
+            && ROBOT_ID.test(entry.name) && !NOT_ROBOT_BACKUPS.has(entry.name) && !labelled.has(entry.name)).map(entry => entry.name).sort();
     return {
         dataDir, robotsDir,
         freeBytes: { dataDir: await freeBytes(dataDir), robotsDir: await freeBytes(robotsDir) },

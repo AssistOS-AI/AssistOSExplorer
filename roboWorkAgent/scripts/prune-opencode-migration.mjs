@@ -1,20 +1,27 @@
 #!/usr/bin/env node
 // Operator removal of what the OpenCode migration keeps for rollback. Nothing here runs automatically: Daniel decides when the
-// migration is verified. Without --apply it prints the plan and changes nothing.
+// migration is verified. Without --apply it prints the plan and changes nothing; that plan is advisory, because a dry run does
+// not hold the migration lock and a RoboWork start can change what it lists.
 //
 //   node prune-opencode-migration.mjs --data-dir /root --robots-dir /robots [--apply]
 //        [--plugin-trees] [--snapshots] [--v1-tools] [--normalize-v1-tools]
 //
-//   --plugin-trees        remove a snapshot's `.config/opencode/node_modules`, only for a robot whose journal is complete and whose
-//                         snapshot manifest and lock classify as `managed` (the retire module's rules); records the exclusion
+//   --plugin-trees        per robot, remove its snapshot's `.config/opencode/node_modules`, only when that robot's journal is complete,
+//                         its `snapshot.json` reads as a plain JSON object, and the snapshot manifest and lock classify as `managed`
+//                         (the retire module's rules); records the exclusion in `snapshot.json` and keeps every other field. A robot
+//                         that does not qualify is skipped with its reason and left byte-identical
 //   --snapshots           remove every labelled robot's snapshot directory; keeps `state.json` and `snapshot.json`, so a completed
-//                         robot is never migrated again. Refused unless every labelled robot's journal is complete
-//   --v1-tools            remove the retained V1 OpenCode generation (`v1-tool-cache`). Same refusal as --snapshots
-//   --normalize-v1-tools  make the backup `current.json` name the V1 generation the backup holds, and remove the OpenCode 2
-//                         generations an earlier whole-bundle copy left there; deletes nothing else
+//                         robot is never migrated again. Refused unless at least one robot is labelled and every labelled robot's
+//                         journal is complete
+//   --v1-tools            remove the whole retained V1 OpenCode backup (`v1-tool-cache`, including any OpenCode 2 generation an
+//                         earlier whole-bundle copy left there). Same refusal as --snapshots
+//   --normalize-v1-tools  delete nothing: rewrite the backup `current.json` to name the V1 generation the backup holds, after
+//                         checking that generation's stamp and contents. Ignored with --v1-tools
 //
-// Backup directories of robots without a label are listed and never deleted. The script holds the migration's kernel lock for
-// the whole run (the command named by ROBOWORK_FLOCK, `flock` by default) and refuses while another process holds it. Every
+// Backup directories of robots without a label are listed and never deleted. With --apply the script holds the migration's
+// kernel lock for the whole run (the command named by ROBOWORK_FLOCK, `flock` by default) and refuses while another process
+// holds it. Do not start or deploy RoboWork while --apply runs: the service waits for the lock for up to ten minutes and then
+// treats a held lock as a failure of the whole pass, and a prune that overlaps a start could remove what the start needs. Every
 // path segment below the two given directories is checked with lstat and no link is followed. `--plugin-trees` imports the
 // classification from ../server/opencode-plugin-retire.mjs, or from a copy of that file beside this script.
 
@@ -27,6 +34,12 @@ import { randomUUID } from 'node:crypto';
 
 const MIGRATION_ID = 'opencode-v2-1';
 const MAX_BYTES = 4 * 1024 * 1024;
+// The service writes `state.json` and `snapshot.json` without a bound and robots cannot write them, so they get a far larger one
+// (a record of 40,000 messages is about 5 MB). They are still opened without following a link and must have one name.
+const JOURNAL_LIMIT = 256 * 1024 * 1024;
+const JOURNAL_FILES = new Set(['state.json', 'snapshot.json']);
+// Entries of the migration directory that are not robot backups.
+const NOT_ROBOT_BACKUPS = new Set(['v1-tool-cache', 'partial', 'generations']);
 const ROBOT_ID = /^[a-z0-9][a-z0-9-]{2,63}$/u;
 const GENERATION = /^[0-9a-f]{64}$/u;
 const TREE = '.config/opencode/node_modules';
@@ -51,7 +64,7 @@ async function readJson(file) {
     try {
         handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
         const stat = await handle.stat();
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_BYTES) return { unsafe: true };
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > (JOURNAL_FILES.has(path.basename(file)) ? JOURNAL_LIMIT : MAX_BYTES)) return { unsafe: true };
         try { return { value: JSON.parse(await handle.readFile('utf8')) }; } catch { return { invalid: true }; }
     } catch (error) {
         if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return { missing: true };
@@ -119,17 +132,20 @@ async function inspect({ dataDir, robotsDir }, migrations) {
         const directory = await realPath(migrations, id);
         const state = directory ? await readJson(path.join(directory, 'state.json')) : { missing: true };
         const record = directory ? await readJson(path.join(directory, 'snapshot.json')) : { missing: true };
-        robots.push({ id, directory, state: state.value ?? null, record: record.value ?? null,
+        const plain = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+        robots.push({ id, directory, state: plain(state.value) ? state.value : null, record: plain(record.value) ? record.value : null,
+            recordProblem: record.missing ? 'missing' : record.unsafe ? 'over the size limit or not a plain file' : record.invalid ? 'not valid JSON' : plain(record.value) ? null : 'not a JSON object',
             complete: state.value?.migration === MIGRATION_ID && state.value?.phase === 'complete' });
     }
     const unlabelled = (await fs.readdir(migrations, { withFileTypes: true })).filter(entry => entry.isDirectory() && !entry.isSymbolicLink()
-        && ROBOT_ID.test(entry.name) && !labelled.includes(entry.name)).map(entry => entry.name).sort();
+        && ROBOT_ID.test(entry.name) && !NOT_ROBOT_BACKUPS.has(entry.name) && !labelled.includes(entry.name)).map(entry => entry.name).sort();
     return { robots, unlabelled };
 }
 
 // The journals must prove that every robot finished migrating with all its sessions before a rollback copy goes.
 function refusals(robots) {
     const problems = [];
+    if (!robots.length) problems.push('no robot is labelled, so nothing proves the migration finished');
     for (const robot of robots) {
         if (!robot.complete) {
             const state = robot.state?.migration && robot.state.migration !== MIGRATION_ID ? 'for another migration' : robot.state?.phase ?? 'missing';
@@ -174,9 +190,9 @@ async function removeDirectory(parent, ...segments) {
 export async function prune(options, log = line => process.stdout.write(`${line}\n`)) {
     const migrations = await realPath(options.dataDir, 'server-state', 'migrations', MIGRATION_ID);
     if (!migrations) throw new Error(`no migration directory under ${options.dataDir}`);
-    // A lock file that does not exist was never taken, so a dry run neither needs it nor creates it.
-    const lockFile = path.join(migrations, 'migration.lock');
-    const release = !options.apply && !await lstatOrNull(lockFile) ? () => {} : await acquireLock(lockFile);
+    // Only --apply holds the lock; a dry run changes nothing, so it neither contends with a RoboWork start nor creates the file.
+    const release = options.apply ? await acquireLock(path.join(migrations, 'migration.lock')) : () => {};
+    if (!options.apply) log('advisory: this dry run does not hold migration.lock');
     try {
         const { robots, unlabelled } = await inspect(options, migrations);
         if (unlabelled.length) log(`backups of robots without a label (listed, never deleted): ${unlabelled.join(', ')}`);
@@ -190,6 +206,7 @@ export async function prune(options, log = line => process.stdout.write(`${line}
                 const snapshot = robot.directory ? await realPath(robot.directory, 'snapshot') : null;
                 if (!snapshot) { log(`skip plugin tree robot=${robot.id}: no snapshot`); continue; }
                 if (!robot.complete) { log(`skip plugin tree robot=${robot.id}: journal is ${robot.state?.phase ?? 'missing'}`); continue; }
+                if (robot.recordProblem) { log(`skip plugin tree robot=${robot.id}: snapshot.json is ${robot.recordProblem}; left untouched`); continue; }
                 const disposition = await pluginTreeDisposition(snapshot);
                 if (disposition.status !== 'managed') { log(`skip plugin tree robot=${robot.id}: snapshot is ${disposition.status}`); continue; }
                 const excluded = Array.isArray(robot.record?.excluded) && robot.record.excluded.includes(TREE);
@@ -211,13 +228,16 @@ export async function prune(options, log = line => process.stdout.write(`${line}
         }
         if (options.v1Tools && !refused.length && backup) actions.push({ kind: 'v1-tools', bytes: await bytesBelow(backup) });
         if (options.normalizeV1Tools && !options.v1Tools) {
-            const held = backup ? await v1Generations(backup) : { v1: [], v2: [], unknown: [] };
+            const held = backup ? await v1Generations(backup) : { v1: [], v2: [], unknown: [], directory: null };
             if (!held.v1.length) refused.push('no OpenCode 1 generation in the backup to name');
             else {
-                const current = backup ? (await readJson(path.join(backup, 'current.json'))).value : null;
+                const current = (await readJson(path.join(backup, 'current.json'))).value;
                 const chosen = held.v1.find(entry => entry.generation === current?.generation)
                     ?? [...held.v1].sort((a, b) => (Date.parse(b.stamp.preparedAt) || 0) - (Date.parse(a.stamp.preparedAt) || 0) || (a.generation < b.generation ? 1 : -1))[0];
-                actions.push({ kind: 'normalize', backup, chosen, remove: held.v2, keptUnknown: held.unknown, from: current?.generation ?? null });
+                // A stamp alone proves nothing: the generation must hold something besides it.
+                const contents = (await fs.readdir(path.join(held.directory, chosen.generation))).filter(name => name !== 'stamp.json');
+                if (!contents.length) refused.push(`generation ${chosen.generation.slice(0, 12)} in the backup holds only its stamp`);
+                else actions.push({ kind: 'normalize', backup, chosen, others: [...held.v2, ...held.unknown], from: current?.generation ?? null });
             }
         }
 
@@ -228,8 +248,7 @@ export async function prune(options, log = line => process.stdout.write(`${line}
             if (action.kind === 'v1-tools') log(`plan: remove v1-tool-cache bytes=${action.bytes}`);
             if (action.kind === 'normalize') {
                 log(`plan: name generation ${action.chosen.generation.slice(0, 12)} in the backup current.json (now ${action.from ? action.from.slice(0, 12) : 'missing'})`);
-                for (const generation of action.remove) log(`plan: remove OpenCode 2 generation ${generation.slice(0, 12)} from the backup`);
-                for (const generation of action.keptUnknown) log(`keep: generation ${generation.slice(0, 12)} in the backup has no readable stamp`);
+                for (const generation of action.others) log(`keep: generation ${generation.slice(0, 12)} stays in the backup; --v1-tools removes the whole backup`);
             }
         }
         if (refused.length) { log('nothing was changed'); return { code: 1, actions: [] }; }
@@ -239,9 +258,11 @@ export async function prune(options, log = line => process.stdout.write(`${line}
         for (const action of actions) {
             if (action.kind === 'plugin-tree') {
                 const { robot, snapshot } = action;
-                if (action.hasTree) await removeDirectory(snapshot, '.config/opencode/node_modules');
+                // The record is read again and must still be a plain object before anything is removed; it is never replaced by `{}`.
                 const recordFile = path.join(robot.directory, 'snapshot.json');
-                const record = (await readJson(recordFile)).value ?? {};
+                const record = (await readJson(recordFile)).value;
+                if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error(`snapshot.json of robot=${robot.id} is no longer a readable JSON object; nothing was removed for it`);
+                if (action.hasTree) await removeDirectory(snapshot, '.config/opencode/node_modules');
                 const excluded = new Set(Array.isArray(record.excluded) ? record.excluded : []);
                 excluded.add(TREE);
                 await writeAtomic(recordFile, { ...record, excluded: [...excluded], pluginTreePrunedAt: new Date().toISOString() });
@@ -255,7 +276,6 @@ export async function prune(options, log = line => process.stdout.write(`${line}
             } else if (action.kind === 'normalize') {
                 await writeAtomic(path.join(action.backup, 'current.json'), { schema: action.chosen.stamp.schema, name: 'opencode',
                     generation: action.chosen.generation, versions: action.chosen.stamp.versions });
-                for (const generation of action.remove) await removeDirectory(action.backup, 'generations', generation);
                 log(`normalized: backup current.json names ${action.chosen.generation.slice(0, 12)}`);
             }
         }

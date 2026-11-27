@@ -9,7 +9,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { validateConfig, assertBox, assertVictimUnchanged, assertRefused, assertDeleted, assertEmptyPrivateListing, decodeMcpResult, assertProtectedPathRefusal, sha256 } from './controller/contracts.mjs';
 import { BASELINE_REVISION, BASELINE_METHOD, BASELINE_DIRECTORIES, baselineSymlinkControl } from './controller/baseline-control.mjs';
-import { runVerifiedScenario, dualHome, manifests, grantRefusals, symlinkHelpers, safeDelete, walkUpAndDiscovery, workspaceStorage } from './controller-scenarios.mjs';
+import { runVerifiedScenario, dualHome, manifests, grantRefusals, symlinkHelpers, safeDelete, walkUpAndDiscovery, workspaceStorage, runControllerScenario } from './controller-scenarios.mjs';
 import { explorerProtectedListing } from './controller/explorer-api.mjs';
 import { ControllerRuntime } from './controller/runtime.mjs';
 import { FREE_MODEL } from './controller/robots.mjs';
@@ -312,6 +312,26 @@ test('W1 fails for each hole it can see and still removes what it created', asyn
     const runtime = walkFixture(); const mcp = runtime.mcp;
     runtime.mcp = async (tool, input) => { const answer = await mcp(tool, input); if (tool === 'run_read') runtime.state.turned = false; return answer; };
     await assert.rejects(walkUpAndDiscovery(runtime), /never ran during the turn/u);
+});
+
+test('W1 --baseline skips only the absence assertions and records that it did', async () => {
+    for (const options of [{ treeAfterDiscovery: true }, { treeAfterTurn: true }]) {
+        const runtime = walkFixture(options);
+        runtime.baseline = true;
+        const result = await walkUpAndDiscovery(runtime);
+        assert.equal(result.baseline, true);
+        assert.deepEqual(result.skipped, ['absence of a plugin dependency tree in .config/opencode']);
+    }
+    // Everything else still counts on a baseline run.
+    for (const [options, pattern] of [[{ unusableModules: true }, /could not use the modules/u], [{ siblingLoaded: true }, /sibling folder plugin was loaded/u],
+        [{ recorderRan: false }, /never ran during model discovery/u], [{ ownLoaded: false }, /working folder canary did not run/u]]) {
+        const runtime = walkFixture(options);
+        runtime.baseline = true;
+        await assert.rejects(walkUpAndDiscovery(runtime), pattern);
+    }
+    assert.equal((await walkUpAndDiscovery(walkFixture())).baseline, undefined, 'a normal run records no baseline');
+    await assert.rejects(walkUpAndDiscovery(walkFixture({ treeAfterTurn: true })), /dependency tree appeared/u);
+    await assert.rejects(runControllerScenario({}, 'I2', { baseline: true }), /--baseline applies to W1 only/u);
 });
 
 test('W1 plants OpenCode 2 default-export plugins, one id each, and the recorder imports both host modules', async () => {

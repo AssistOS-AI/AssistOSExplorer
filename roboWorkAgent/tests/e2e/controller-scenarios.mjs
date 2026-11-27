@@ -13,7 +13,9 @@ import { nativeSymlinkControl } from './controller/native-terminal.mjs';
 import { SENTINEL, assertNoAgentExec, assertVictimUnchanged, assertDualHome, assertDeleted,
     assertEmptyPrivateListing, assertNoMarker, createMarkerStreamGuard, assertRefused, sha256, pending } from './controller/contracts.mjs';
 
-export const HELP = `Usage: node controller-scenarios.mjs --config <private-json> --scenario <I2|I8|I9|I10|I11|W1|H2|H3>
+export const HELP = `Usage: node controller-scenarios.mjs --config <private-json> --scenario <I2|I8|I9|I10|I11|W1|H2|H3> [--baseline]
+--baseline (W1 only) skips the absence of a plugin dependency tree in the new robot's home and records that it did: use it on a
+revision that still seeds that tree, to show the rest of W1 passes there before the candidate is judged.
 Run on the selected apparatus host. No SSH or model prompt is issued.
 Config: engine (podman/docker), canonical fixture host path, workspace in-Box path,
 box {id,image,startedAt}, rt/rw immutable IDs, ploinkyRoot/ploinkyRevision,
@@ -340,12 +342,12 @@ const RECORDER = root => `export default { id: 'w1.recorder', async setup() {
         const { Effect } = await import('effect');
         record.effect.imported = true;
         attempt(record.effect, 'succeed', () => typeof Effect.succeed === 'function' && typeof Effect.succeed(42) === 'object');
-        attempt(record.effect, 'runSync', () => typeof Effect.runSync !== 'function' || Effect.runSync(Effect.succeed(42)) === 42);
+        attempt(record.effect, 'runSync', () => typeof Effect.runSync === 'function' && Effect.runSync(Effect.succeed(42)) === 42);
     } catch (error) { record.effect.error = String(error?.message || error).slice(0, 200); }
     fs.appendFileSync(path.join(process.env.HOME, 'w1-recorder.jsonl'), JSON.stringify(record) + '\\n');
     return () => {};
 } };`;
-const W1_TREE_NAMES = Object.freeze(['node_modules', 'package.json', 'package-lock.json']);
+const W1_TREE_NAMES = Object.freeze(['node_modules', 'package.json', 'package-lock.json', 'bun.lock', 'bun.lockb']);
 const modulesUsable = record => record?.plugin?.imported === true && record.effect?.imported === true
     && ['providerId', 'providerInfo', 'modelId', 'modelInfo'].every(name => record.plugin[name] === true)
     && ['succeed', 'runSync'].every(name => record.effect[name] === true);
@@ -354,6 +356,8 @@ const W1_MARKERS = Object.freeze({ sibling: 'w1-marker-sibling', parent: 'w1-mar
 export async function walkUpAndDiscovery(runtime) {
     const { workspace } = runtime.config;
     const attacker = await runtime.probes.create(runtime.config.attacker);
+    // A baseline run is made on a revision that still seeds the tree, so only the absence assertions are skipped.
+    const baseline = runtime.baseline === true;
     const parent = `${workspace}/controller-w1-${randomUUID()}`;
     const cwd = `${parent}/child`, sibling = `${parent}/sibling`;
     const owner = await runtime.node(runtime.config.rw, `
@@ -387,7 +391,8 @@ export async function walkUpAndDiscovery(runtime) {
         const discovery = await read();
         assert.ok(discovery.records.length > 0, 'The home plugin never ran during model discovery.');
         for (const record of discovery.records) assert.ok(modulesUsable(record), `The home plugin could not use the modules OpenCode provides: ${JSON.stringify(record)}`);
-        assert.deepEqual((await configNames()).filter(name => W1_TREE_NAMES.includes(name)), [], 'A plugin dependency tree appeared in the new robot after model discovery.');
+        const absent = async when => { if (!baseline) assert.deepEqual((await configNames()).filter(name => W1_TREE_NAMES.includes(name)), [], `A plugin dependency tree appeared in the new robot ${when}.`); };
+        await absent('after model discovery');
         assert.equal(discovery.parent, false, 'A parent folder plugin was loaded during model discovery.');
         assert.equal(discovery.sibling, false, 'A sibling folder plugin was loaded during model discovery.');
         // The working folder's canary ran in discovery too; only a new marker says something about the turn.
@@ -414,7 +419,7 @@ export async function walkUpAndDiscovery(runtime) {
         observed = await read();
         assert.ok(observed.records.length > discovery.records.length, 'The home plugin never ran during the turn.');
         for (const record of observed.records) assert.ok(modulesUsable(record), `The home plugin could not use the modules OpenCode provides: ${JSON.stringify(record)}`);
-        assert.deepEqual((await configNames()).filter(name => W1_TREE_NAMES.includes(name)), [], 'A plugin dependency tree appeared in the new robot after the turn.');
+        await absent('after the turn');
         for (const record of observed.records) assert.deepEqual(record.entries, [], `A robot saw workspace .data entries: ${JSON.stringify(record)}`);
         assert.equal(observed.own, true, 'The working folder canary did not run, so the turn proves nothing about plugin loading.');
         assert.equal(observed.parent, false, 'A parent folder plugin was loaded.');
@@ -431,7 +436,8 @@ export async function walkUpAndDiscovery(runtime) {
             fs.rmSync(input.parent,{recursive:true}); console.log('true');
         `, { op: 'remove', parent, ...owner });
     }
-    return { discoveryRecords: observed.records.length, markers: { own: observed.own, parent: observed.parent, sibling: observed.sibling },
+    return { ...(baseline ? { baseline: true, skipped: ['absence of a plugin dependency tree in .config/opencode'] } : {}),
+        discoveryRecords: observed.records.length, markers: { own: observed.own, parent: observed.parent, sibling: observed.sibling },
         positiveControl: 'the working folder canary wrote its marker, and the home recorder ran in discovery and in the turn and used the modules OpenCode provides with no dependency tree in the home' };
 }
 
@@ -502,11 +508,13 @@ export async function workspaceStorage(runtime) {
     return { namedVolumes: 0, workspaceBind: true, privateDataKiB: Number(match[1]) };
 }
 
-export async function runControllerScenario(config, scenario) {
+export async function runControllerScenario(config, scenario, { baseline = false } = {}) {
     if (!['I2', 'I8', 'I9', 'I10', 'I11', 'W1', 'H2', 'H3'].includes(scenario)) {
         pending(scenario, 'Controller scenario is not fully implemented; authenticated API, sandbox control or lifecycle evidence remains pending.');
     }
+    if (baseline && scenario !== 'W1') throw new Error('--baseline applies to W1 only');
     const runtime = new ControllerRuntime(config);
+    runtime.baseline = baseline;
     return runVerifiedScenario(runtime, scenario);
 }
 
@@ -558,10 +566,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     try {
         if (process.argv.length === 3 && process.argv[2] === '--help') console.log(HELP);
         else {
-            const options = argumentsFrom(process.argv.slice(2));
+            const argv = process.argv.slice(2);
+            const baseline = argv.includes('--baseline');
+            const options = argumentsFrom(argv.filter(argument => argument !== '--baseline'));
             assert.deepEqual(Object.keys(options).sort(), ['config', 'scenario']);
             const config = JSON.parse(await fs.readFile(options.config, 'utf8'));
-            console.log(JSON.stringify(await runControllerScenario(config, options.scenario)));
+            console.log(JSON.stringify(await runControllerScenario(config, options.scenario, { baseline })));
         }
     } catch (error) {
         console.error(JSON.stringify({ status: error.code === 'ACCEPTANCE_PENDING' ? 'PENDING' : 'FAILED',

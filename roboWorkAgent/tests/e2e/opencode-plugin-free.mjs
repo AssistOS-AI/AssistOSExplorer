@@ -48,7 +48,7 @@ export const recorderSource = recordFile => `export default { id: ${JSON.stringi
         const { Effect } = await import('effect');
         record.effect.imported = true;
         attempt(record.effect, 'succeed', () => typeof Effect.succeed === 'function' && typeof Effect.succeed(42) === 'object');
-        attempt(record.effect, 'runSync', () => typeof Effect.runSync !== 'function' || Effect.runSync(Effect.succeed(42)) === 42);
+        attempt(record.effect, 'runSync', () => typeof Effect.runSync === 'function' && Effect.runSync(Effect.succeed(42)) === 42);
     } catch (error) { record.effect.error = String(error?.message || error).slice(0, 200); }
     fs.appendFileSync(${JSON.stringify(recordFile)}, JSON.stringify(record) + '\\n');
     return () => {};
