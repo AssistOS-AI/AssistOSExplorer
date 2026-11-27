@@ -1920,8 +1920,8 @@ jobs:
       - name: Verify CSV Mail
         run: |
           set -euo pipefail
-          route='/base-agent-additional-server/csvMailAgent/3100/'
-          expected="/auth/login?returnTo=%2Fbase-agent-additional-server%2FcsvMailAgent%2F3100%2F"
+          route='/csvMailAgent/public/'
+          expected="/auth/login?returnTo=%2FcsvMailAgent%2Fpublic%2F&agent=csvMailAgent"
           for attempt in $(seq 1 60); do
             reply="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code} %header{location}' "${PUBLIC_URL%/}$route" || true)"
             if [ "$reply" = "302 $expected" ]; then
@@ -2062,7 +2062,7 @@ jobs:
             echo "- Public URL: \`${PUBLIC_URL}\`"
             echo "- Bizanso: \`${PUBLIC_URL}/base-agent-additional-server/bizanso/8787/\`"
             echo "- ScriptaHub: \`${PUBLIC_URL}/base-agent-additional-server/scriptahubAgent/3002/\`"
-            echo "- CSV Mail: \`${PUBLIC_URL}/base-agent-additional-server/csvMailAgent/3100/\` from simpleCSVMailSend \`${CSVMAIL_COMMIT:-not-resolved}\`"
+            echo "- CSV Mail: \`${PUBLIC_URL}/csvMailAgent/public/\` from simpleCSVMailSend \`${CSVMAIL_COMMIT:-not-resolved}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup

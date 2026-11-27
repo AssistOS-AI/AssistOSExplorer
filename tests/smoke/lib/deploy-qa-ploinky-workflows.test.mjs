@@ -200,20 +200,20 @@ sed -n "\${n}p" "${bin}/replies" | tr -d '\\n'
         const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PUBLIC_URL: 'https://explorer-qa.axiologic.dev' } });
         return { ...result, calls: Number(fs.readFileSync(path.join(bin, 'count'), 'utf8')) };
     };
-    const signIn = '302 /auth/login?returnTo=%2Fbase-agent-additional-server%2FcsvMailAgent%2F3100%2F';
+    const signIn = '302 /auth/login?returnTo=%2FcsvMailAgent%2Fpublic%2F&agent=csvMailAgent';
     const passed = run(['404 ', '502 ', signIn]);
     assert.equal(passed.status, 0, passed.stdout + passed.stderr);
     assert.equal(passed.calls, 3);
-    assert.match(fs.readFileSync(path.join(bin, 'args'), 'utf8'), /https:\/\/explorer-qa\.axiologic\.dev\/base-agent-additional-server\/csvMailAgent\/3100\/\n/);
+    assert.match(fs.readFileSync(path.join(bin, 'args'), 'utf8'), /https:\/\/explorer-qa\.axiologic\.dev\/csvMailAgent\/public\/\n/);
     // An unpublished route, a page served without sign-in, or a redirect elsewhere never passes.
-    for (const reply of ['404 ', '200 ', '302 /auth/login?returnTo=%2F', '302 https://elsewhere.test/auth/login?returnTo=%2Fbase-agent-additional-server%2FcsvMailAgent%2F3100%2F']) {
+    for (const reply of ['404 ', '200 ', '302 /auth/login?returnTo=%2F', '302 https://elsewhere.test/auth/login?returnTo=%2FcsvMailAgent%2Fpublic%2F']) {
         const failed = run([reply]);
         assert.equal(failed.status, 1, reply);
         assert.equal(failed.calls, 60, reply);
-        assert.match(failed.stdout, /::error::\/base-agent-additional-server\/csvMailAgent\/3100\/ was not published behind sign-in; last reply: /, reply);
+        assert.match(failed.stdout, /::error::\/csvMailAgent\/public\/ was not published behind sign-in; last reply: /, reply);
     }
     const summary = step(deploy, 'Create summary');
-    assert.match(summary, /CSV Mail: .*csvMailAgent\/3100\/.*\$\{CSVMAIL_COMMIT:-not-resolved\}/);
+    assert.match(summary, /CSV Mail: .*csvMailAgent\/public\/.*\$\{CSVMAIL_COMMIT:-not-resolved\}/);
 });
 
 test('deploy: the retiring second agent is not enabled, awaited, required or probed by any QA deploy workflow', () => {
