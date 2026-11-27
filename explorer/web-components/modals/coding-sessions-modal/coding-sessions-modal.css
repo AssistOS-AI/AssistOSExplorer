@@ -1,0 +1,94 @@
+dialog.coding-sessions-modal-dialog { --modal-width: 1040px; --modal-max-width: 1040px; }
+coding-sessions-modal { display: block; min-width: 0; color: var(--text); }
+coding-sessions-modal .coding-sessions-shell { display: flex; flex-direction: column; height: min(640px, calc(90dvh - 2 * var(--space-xl, 24px))); min-height: 0; overflow: hidden; }
+coding-sessions-modal .coding-session-heading { min-width: 0; }
+coding-sessions-modal .coding-session-directory { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--text-soft); font-size: 13px; }
+coding-sessions-modal .coding-session-directory img { width: 16px; height: 16px; opacity: .65; }
+coding-sessions-modal #codingDirectory { overflow-wrap: anywhere; }
+coding-sessions-modal .coding-session-navigation { display: flex; align-items: center; gap: 20px; border-bottom: 1px solid var(--border); }
+coding-sessions-modal .coding-session-back,
+coding-sessions-modal .coding-session-refresh { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 10px; border: 0; border-radius: var(--radius-md, 8px); background: transparent; color: var(--text-soft); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+coding-sessions-modal .coding-session-back:hover:not(:disabled),
+coding-sessions-modal .coding-session-refresh:hover:not(:disabled) { color: var(--text); background: var(--surface-soft); }
+coding-sessions-modal .coding-session-back:disabled { opacity: .35; cursor: default; }
+coding-sessions-modal .coding-session-tabs { display: flex; gap: 24px; align-self: stretch; min-width: 0; }
+coding-sessions-modal [role="tab"] { position: relative; padding: 15px 2px; border: 0; background: transparent; color: var(--text-soft); font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; }
+coding-sessions-modal [role="tab"]::after { content: ''; position: absolute; bottom: -1px; left: 0; right: 0; height: 3px; border-radius: 3px 3px 0 0; background: transparent; }
+coding-sessions-modal [role="tab"][aria-selected="true"] { color: var(--accent); font-weight: 650; }
+coding-sessions-modal [role="tab"][aria-selected="true"]::after { background: var(--accent); }
+coding-sessions-modal [role="tab"]:hover { color: var(--accent); }
+coding-sessions-modal button:focus-visible,
+coding-sessions-modal summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+coding-sessions-modal .coding-session-section { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 24px 0 14px; }
+coding-sessions-modal #codingStep { margin: 0; font-size: 15px; font-weight: 650; color: var(--text); }
+coding-sessions-modal #codingStatus { margin: 0 0 12px; padding: 10px 12px; border-radius: var(--radius-md, 8px); background: var(--surface-soft); color: var(--text-soft); font-size: 13px; }
+coding-sessions-modal #codingStatus:empty { display: none; }
+coding-sessions-modal .coding-session-list { display: grid; grid-auto-rows: max-content; align-content: start; gap: 10px; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 2px 6px 16px 2px; }
+coding-sessions-modal .coding-session-list[aria-busy="true"] { opacity: .65; }
+coding-sessions-modal .coding-session-row { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius-lg, 12px); background: var(--surface); transition: border-color 120ms, background-color 120ms; }
+coding-sessions-modal .coding-session-row:hover { border-color: var(--accent); background: var(--surface-soft); }
+coding-sessions-modal .coding-session-choice { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex: 1; min-width: 0; padding: 17px 18px; border: 0; border-radius: inherit; background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.5; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+coding-sessions-modal .coding-session-choice::after { content: '›'; flex-shrink: 0; color: var(--text-soft); font-size: 22px; line-height: 1; }
+coding-sessions-modal .coding-session-row.is-new { border-style: dashed; background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
+coding-sessions-modal .is-new .coding-session-choice { color: var(--accent); font-weight: 600; }
+coding-sessions-modal details { position: relative; margin-right: 8px; }
+coding-sessions-modal summary { cursor: pointer; padding: 5px 10px; border-radius: var(--radius-md, 8px); color: var(--text-soft); font-size: 22px; line-height: 1; list-style: none; }
+coding-sessions-modal summary::-webkit-details-marker { display: none; }
+coding-sessions-modal summary:hover, coding-sessions-modal details[open] summary { color: var(--text); background: var(--surface-soft); }
+coding-sessions-modal details > button { position: absolute; top: calc(100% + 6px); right: 0; z-index: 2; min-width: 132px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-md, 8px); background: var(--surface); color: var(--danger, #b42318); box-shadow: 0 8px 24px #0002; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+@media (max-width: 520px) {
+    coding-sessions-modal .coding-session-navigation { gap: 10px; flex-wrap: wrap; }
+    coding-sessions-modal .coding-session-back { padding-left: 0; }
+    coding-sessions-modal .coding-session-tabs { gap: 18px; }
+    coding-sessions-modal [role="tab"] { padding-top: 12px; font-size: 13px; }
+    coding-sessions-modal .coding-session-choice { padding: 14px 12px; }
+}
+
+coding-sessions-modal .modal-body { flex: 1; min-height: 0; overflow: hidden; }
+coding-sessions-modal .coding-session-navigation,
+coding-sessions-modal .coding-session-section,
+coding-sessions-modal #codingStatus { flex-shrink: 0; }
+coding-sessions-modal #codingPanel { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+coding-sessions-modal [hidden] { display: none !important; }
+coding-sessions-modal .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+coding-sessions-modal .coding-session-form { min-width: 0; padding: 4px 2px; }
+coding-sessions-modal .coding-session-configs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
+coding-sessions-modal .coding-session-configs.coding .coding-session-config { border: 0; border-radius: 0; padding: 0; background: transparent; }
+coding-sessions-modal .coding-session-configs.supervised { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+coding-sessions-modal .coding-session-config { min-width: 0; margin: 0; padding: 18px 22px 24px; border: 1px solid var(--border); border-radius: var(--radius-lg, 12px); background: var(--surface); }
+coding-sessions-modal .coding-session-config legend { padding: 0 8px; font-size: 16px; font-weight: 650; }
+coding-sessions-modal .coding-session-role-note { min-height: 40px; margin: 0 0 22px; color: var(--text-soft); font-size: 13px; line-height: 1.5; }
+coding-sessions-modal .coding-session-config label { display: block; margin-bottom: 8px; color: var(--text); font-size: 13px; font-weight: 600; }
+coding-sessions-modal .coding-session-config .form-input { box-sizing: border-box; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md, 8px); background: var(--surface); color: var(--text); font: inherit; font-size: 14px; }
+coding-sessions-modal .coding-session-config .form-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+coding-sessions-modal .coding-session-config .form-input:disabled { opacity: .5; }
+coding-sessions-modal .coding-robot-picker { position: relative; margin-bottom: 22px; }
+coding-sessions-modal .coding-robot-options { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 4; max-height: 170px; overflow-y: auto; overscroll-behavior: contain; padding: 5px; border: 1px solid var(--border); border-radius: var(--radius-md, 8px); background: var(--surface); box-shadow: 0 8px 24px #0002; }
+coding-sessions-modal .coding-robot-options [role="option"] { padding: 10px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+coding-sessions-modal .coding-robot-options [role="option"]:hover,
+coding-sessions-modal .coding-robot-options [aria-selected="true"] { background: var(--surface-soft); color: var(--accent); }
+coding-sessions-modal .coding-robot-options p { padding: 8px; color: var(--text-soft); font-size: 13px; }
+coding-sessions-modal .coding-session-form-footer { display: flex; justify-content: flex-end; margin-top: 24px; }
+coding-sessions-modal .coding-session-form-footer button { padding: 12px 20px; font: inherit; font-size: 14px; cursor: pointer; }
+coding-sessions-modal .coding-session-form-footer button:disabled { opacity: .45; cursor: default; }
+coding-sessions-modal .coding-session-field-error { margin: 10px 0 0; color: var(--danger, #b42318); font-size: 13px; }
+coding-sessions-modal .coding-session-field-error:empty { display: none; }
+@media (max-width: 700px) {
+    coding-sessions-modal .coding-session-configs.supervised { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+    coding-sessions-modal .coding-session-config { padding: 14px 16px 18px; }
+}
+
+coding-sessions-modal .coding-session-config .coding-robot-picker input.form-input { padding-right: 32px; background-image: url("/explorer/shared/assets/icons/arrow.svg"); background-repeat: no-repeat; background-position: right 12px center; background-size: 12px; }
+
+.coding-session-running { color: var(--success); }
+
+coding-sessions-modal .has-actions .coding-session-choice::after { content: none; }
+coding-sessions-modal .coding-session-content { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; min-width: 0; }
+coding-sessions-modal .coding-session-metadata { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+coding-sessions-modal .coding-session-role { font-weight: 600; margin-right: 4px; }
+coding-sessions-modal .coding-session-pill { display: inline-block; max-width: 100%; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-soft); font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+coding-sessions-modal .coding-session-pill.is-agent { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); font-weight: 600; }
+coding-sessions-modal .coding-session-caption { color: var(--text-soft); overflow-wrap: anywhere; }
+
+coding-sessions-modal .coding-session-age { color: var(--text-soft); font-size: 12px; white-space: nowrap; }

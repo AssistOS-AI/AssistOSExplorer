@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises';
+import { createCodingSessionIndex } from './coding-session-index.mjs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { directoryIdentity, fail, robotId } from './robot-paths.mjs';
 import { CODING_AGENT_NAMES, robotCodingAgents } from './coding-agents.mjs';
 import { SKILL_CONTENT_LIMIT, SKILL_NAME } from './coding-agent-skill.mjs';
 import { TOOL_SESSION_CHECK_MS } from './constants.mjs';
-import { NATIVE_SESSION_ID, codingSessionArguments, presetsSessionId } from './coding-sessions.mjs';
+import { NATIVE_SESSION_ID, codingSessionArguments, codingSessionInterrupt, presetsSessionId } from './coding-sessions.mjs';
 
 export const TERMINAL_PROFILE_ADMIN_REQUIRED = 'administrator access by a signed-in user is required';
 // RoboTeam creates this robot and never deletes it; a launch without a robot name uses it.
@@ -45,16 +46,18 @@ const validDirectory = directory => typeof directory === 'string' && directory.l
 
 // The bodies of the coding session routes: exactly these keys, robot a name, an id or null for the default robot.
 export function codingSessionInput(route, body) {
+    if (route === 'index') return plainBody(body, ['directory']) && validDirectory(body.directory) ? { directory: body.directory } : null;
     if (route === 'robots') return plainBody(body, []) ? {} : null;
     if (route === 'agents') return plainBody(body, ['robot']) && validRobot(body.robot) ? { robot: body.robot } : null;
-    if (route === 'history') {
+    if ((route === 'history' || route === 'sync-history')) {
         return plainBody(body, ['robot', 'codingAgent', 'directory']) && validRobot(body.robot) && validAgent(body.codingAgent)
             && validDirectory(body.directory) ? { robot: body.robot, codingAgent: body.codingAgent, directory: body.directory } : null;
     }
     if (route === 'launch') {
         // Instructions configure the native session without submitting a user turn.
         if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
-        const optional = ['skill', 'systemPrompt'];
+        const optional = ['skill', 'systemPrompt', 'controlId'];
+        if (body.controlId !== undefined && !/^[a-f0-9-]{36}$/u.test(body.controlId)) return null;
         const systemPrompt = body.systemPrompt ?? null;
         if (systemPrompt !== null && (typeof systemPrompt !== 'string' || systemPrompt.includes('\0')
             || Buffer.byteLength(systemPrompt) > 16384)) return null;
@@ -65,7 +68,7 @@ export function codingSessionInput(route, body) {
         return plainBody(body, ['robot', 'codingAgent', 'directory', 'resume', ...optional].filter(key => key in body))
             && validRobot(body.robot) && validAgent(body.codingAgent) && validDirectory(body.directory)
             && (body.resume === null || (typeof body.resume === 'string' && NATIVE_SESSION_ID.test(body.resume)))
-            ? { robot: body.robot, codingAgent: body.codingAgent, directory: body.directory, resume: body.resume, skill, ...(systemPrompt !== null ? { systemPrompt } : {}) }
+            ? { robot: body.robot, codingAgent: body.codingAgent, directory: body.directory, resume: body.resume, skill, ...(body.controlId ? { controlId: body.controlId } : {}), ...(systemPrompt !== null ? { systemPrompt } : {}) }
             : null;
     }
     return null;
@@ -100,12 +103,29 @@ export async function removeTerminalState(paths, id) {
     for (const name of await fs.readdir(stateRoot).catch(() => [])) if (name.startsWith(id + '.')) await fs.rm(path.join(stateRoot, name), { force: true });
 }
 
-export function createTerminalProfiles({ paths, robots, toolCache, homeOperation, environment, runtimeBundle,
-    sessionCatalogs = { argumentsFor: codingSessionArguments, presetsSessionId } }) {
+export function createTerminalProfiles({ workerControl = null, paths, robots, toolCache, homeOperation, environment, runtimeBundle,
+    sessionCatalogs = { argumentsFor: codingSessionArguments, interruptFor: codingSessionInterrupt, presetsSessionId } }) {
     const stateRoot = path.join(paths.dataDir, 'server-state', 'terminal');
     const stub = id => path.join(paths.robot(id), 'terminal');
     const recordPath = profile => path.join(stateRoot, profile + '.json');
     const prepareOperations = new Map();
+    const indexRoot = path.join(paths.dataDir, 'server-state', 'coding-session-index');
+    const sessionIndex = createCodingSessionIndex({ root: indexRoot,
+        ensureDirectory: async () => {
+            await terminalDirectory(path.dirname(indexRoot), { create: true });
+            await terminalDirectory(indexRoot, { create: true });
+        },
+        robots: async () => (await sessionRobots()).robots, agents: CODING_AGENT_NAMES,
+        history: async (robot, codingAgent, directory) => {
+            await requireWorkingFolder(directory);
+            const result = await homeOperation(robot, 'coding_sessions', { codingAgent, cwd: absoluteFolder(directory), all: true });
+            return Array.isArray(result.sessions) ? result.sessions : [];
+        },
+    });
+    async function indexedSessions(input) {
+        await requireWorkingFolder(input.directory);
+        return sessionIndex.list(input.directory);
+    }
 
     async function selection(profile) {
         const { id, key, codingAgent, resume, sessionId } = parseTerminalProfile(profile);
@@ -178,7 +198,8 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         const records = await knownRobots();
         const isDefault = record => String(record.name || '').toLowerCase() === DEFAULT_ROBOT_NAME;
         records.sort((a, b) => Number(isDefault(b)) - Number(isDefault(a)) || String(a.name).localeCompare(String(b.name)) || a.id.localeCompare(b.id));
-        return { ok: true, robots: records.map(record => ({ id: record.id, name: record.name, default: isDefault(record) })) };
+        return { ok: true, robots: records.map(record => ({ id: record.id, name: record.name, default: isDefault(record) })),
+            codingAgents: [...CODING_AGENT_NAMES] };
     }
 
     async function sessionAgents(input) {
@@ -193,14 +214,26 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         await requireWorkingFolder(input.directory);
         const robot = await findRobot(input.robot);
         const codingAgent = supportedCodingAgent(input.codingAgent);
-        const { sessions } = await homeOperation(robot.id, 'coding_sessions', { codingAgent, cwd: absoluteFolder(input.directory) });
-        return { ok: true, robot: { id: robot.id, name: robot.name }, codingAgent, sessions: Array.isArray(sessions) ? sessions : [] };
+        const { sessions, sessionBindingSupported } = await homeOperation(robot.id, 'coding_sessions', { codingAgent, cwd: absoluteFolder(input.directory) });
+        await sessionIndex.record(input.directory, robot, codingAgent, Array.isArray(sessions) ? sessions : []);
+        return { ok: true, robot: { id: robot.id, name: robot.name }, codingAgent, sessions: Array.isArray(sessions) ? sessions : [],
+            ...(sessionBindingSupported ? { sessionBindingSupported: true } : {}) };
+    }
+
+    async function syncHistory(input) {
+        await requireWorkingFolder(input.directory);
+        const robot = await findRobot(input.robot);
+        const codingAgent = supportedCodingAgent(input.codingAgent);
+        const { sessions = [] } = await homeOperation(robot.id, 'coding_sessions',
+            { codingAgent, cwd: absoluteFolder(input.directory), all: true });
+        await sessionIndex.record(input.directory, robot, codingAgent, sessions);
+        return { ok: true };
     }
 
     // Prepares a coding session for a robot: the caller opens the returned profile like any other terminal profile,
     // in the folder of its choice. A new conversation of an agent that accepts an identifier chosen in advance
     // carries it, so the caller knows which native session the terminal holds.
-    async function launch(input) {
+    async function launch(input, principal = null) {
         await requireWorkingFolder(input.directory);
         const robot = await findRobot(input.robot);
         const codingAgent = supportedCodingAgent(input.codingAgent);
@@ -213,10 +246,14 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         const skill = input.skill
             ? (await homeOperation(robot.id, 'coding_agent_skill', { codingAgent, ...input.skill })).installed === true
             : false;
-        const profile = `${robot.id}.default.${codingAgent}${input.systemPrompt ? `.p-${randomUUID()}` : conversation}`;
-        await prepareNow(profile, input.systemPrompt ? { systemPrompt: input.systemPrompt,
+        const profile = `${robot.id}.default.${codingAgent}${input.systemPrompt || input.controlId ? `.p-${randomUUID()}` : conversation}`;
+        const controlDirectory = input.controlId ? workerControl?.claim(input.controlId, principal, profile) : null;
+        if (input.controlId && !controlDirectory) throw fail('CONTROL_UNAVAILABLE', 'Worker control unavailable', 409);
+        await prepareNow(profile, input.systemPrompt || controlDirectory ? { systemPrompt: input.systemPrompt || '', controlDirectory,
             resume: input.resume, sessionId: input.resume ? null : nativeSessionId } : null);
-        return { ok: true, profile, robot: { id: robot.id, name: robot.name }, codingAgent, nativeSessionId, skill };
+        await sessionIndex.launched(input.directory, robot, codingAgent);
+        return { ok: true, profile, robot: { id: robot.id, name: robot.name }, codingAgent, nativeSessionId, skill,
+            ...(sessionCatalogs.interruptFor ? { interruptInput: await sessionCatalogs.interruptFor(alaPath, codingAgent) } : {}) };
     }
 
     async function catalog() {
@@ -294,7 +331,7 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
                 cacheRoot: toolCache.root, alaEntry: bundle.ala.entry || path.join(bundle.ala.path, 'bin', 'ala.mjs'), bwrap: bundle.bwrap.bin,
                 stub: { path: stub(selected.id), dev: stat.dev, ino: stat.ino },
                 ...(selected.codingAgent ? { codingAgent: selected.codingAgent, codingAgentArgs } : {}),
-                ...(instructions ? { systemPrompt: instructions.systemPrompt } : {}) };
+                ...(instructions ? { systemPrompt: instructions.systemPrompt, ...(instructions.controlDirectory ? { controlDirectory: instructions.controlDirectory } : {}) } : {}) };
             const temporary = path.join(stateRoot, '.' + randomUUID());
             await fs.writeFile(temporary, JSON.stringify(descriptor), { mode: 0o600, flag: 'wx' });
             await fs.rename(temporary, recordPath(profile));
@@ -330,12 +367,23 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         const pathname = url.pathname.replace(/^\/base-agent-additional-server\/roboWorkAgent\/3001/u, '');
         const body = access.body ? JSON.parse(access.body.toString('utf8') || '{}') : {};
         if (pathname === '/api/terminal-profiles' && req.method === 'GET') return reply(200, await catalog());
-        const sessionRoute = pathname.match(/^\/api\/coding-sessions\/(robots|agents|history|launch)$/u);
+        const controlRoute = pathname.match(/^\/api\/coding-sessions\/control-(create|poll|close)$/u);
+        if (controlRoute && req.method === 'POST' && workerControl) {
+            const operation = controlRoute[1];
+            if (operation === 'create' && plainBody(body, [])) return reply(200, await workerControl.create(access.principal));
+            if (operation === 'poll' && (plainBody(body, ['id', 'results', 'profile'])
+                || plainBody(body, ['id', 'results', 'profile', 'validateOnly']) && body.validateOnly === true)
+                && typeof body.profile === 'string') return reply(200, workerControl.poll(body.id, access.principal, body.results, body.profile, body.validateOnly === true));
+            if (operation === 'close' && plainBody(body, ['id'])) return reply(200, await workerControl.remove(body.id, access.principal));
+            return reply(400, { ok: false, error: 'Invalid control request' });
+        }
+        const sessionRoute = pathname.match(/^\/api\/coding-sessions\/(robots|agents|history|sync-history|launch|index)$/u);
         if (sessionRoute && req.method === 'POST') {
             const input = codingSessionInput(sessionRoute[1], body);
             if (!input) return reply(400, { ok: false, error: 'Invalid coding session request' });
-            const operation = { robots: sessionRobots, agents: sessionAgents, history: sessionHistory, launch }[sessionRoute[1]];
-            try { return reply(200, await operation(input)); }
+            const operation = { robots: sessionRobots, agents: sessionAgents, history: sessionHistory, 'sync-history': syncHistory, launch,
+                index: input => indexedSessions(input) }[sessionRoute[1]];
+            try { return reply(200, await operation(input, access.principal)); }
             catch (error) {
                 if (!error.statusCode) throw error;
                 return reply(error.statusCode, { ok: false, code: error.code, error: error.message });
@@ -358,5 +406,5 @@ export function createTerminalProfiles({ paths, robots, toolCache, homeOperation
         }
         return reply(404, { ok: false, error: 'not_found' });
     }
-    return { handle, catalog, resolve, resolveLive, prepare, launch, sessionRobots, sessionAgents, sessionHistory };
+    return { handle, catalog, resolve, resolveLive, prepare, launch, sessionRobots, sessionAgents, sessionHistory, indexedSessions, sessionIndex };
 }

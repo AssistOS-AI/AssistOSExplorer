@@ -1,4 +1,4 @@
-import { getStore, flush } from './store.mjs';
+import { getStore, flush, commitStagedPersistence } from './store.mjs';
 import { recordAudit } from './audit.mjs';
 import { serializePersisted as serialize } from './serial.mjs';
 import { withPersistenceScope } from './persistence-scope.mjs';
@@ -238,9 +238,18 @@ export function updateUser(userId, patch = {}, { actorId = 'system' } = {}) {
             }
             update.status = patch.status;
         }
-        if (!Object.keys(update).length) throw userError('no_changes_requested', 'No changes were submitted.');
+        const rolePlan = patch.roles === undefined ? null : await prepareUserRoles(userId, patch.roles);
+        if (!Object.keys(update).length && !rolePlan) throw userError('no_changes_requested', 'No changes were submitted.');
         const changedFields = Object.keys(update);
         update.updatedAt = new Date().toISOString();
+        if (rolePlan) {
+            return commitStagedPersistence(async () => {
+                const next = await store.updateUser(user.id, update);
+                await applyUserRoles(rolePlan, { actorId, save: false });
+                if (changedFields.length) await recordAudit({ actorId, action: 'user.update', target: user.id, reason: changedFields.join(',') }, { save: false });
+                return { ...sanitizeUser(next), roles: rolePlan.uniqueNames.slice().sort() };
+            });
+        }
         const next = await store.updateUser(user.id, update);
         await recordAudit({ actorId, action: 'user.update', target: user.id, reason: changedFields.join(',') });
         await flush();
@@ -399,7 +408,7 @@ async function assertAnotherActiveAdmin(excludedUserId) {
     throw userError('last_admin_required', 'At least one active admin user is required.');
 }
 
-async function setUserRolesInternal(userId, roleNames, { actorId = 'system', audit = true, save = true } = {}) {
+async function prepareUserRoles(userId, roleNames) {
     const store = await getStore();
     const user = await getUserById(userId);
     if (!user) throw userError('user_not_found', 'User not found.');
@@ -415,6 +424,11 @@ async function setUserRolesInternal(userId, roleNames, { actorId = 'system', aud
         roles.push(role);
     }
     const existing = await store.getUserRolesObjectsByUserId(userId) || [];
+    return { userId, uniqueNames, roles, existing };
+}
+
+async function applyUserRoles({ userId, uniqueNames, roles, existing }, { actorId = 'system', audit = true, save = true } = {}) {
+    const store = await getStore();
     const existingByRoleId = new Map(existing.map((link) => [link.roleId, link]));
     const requestedRoleIds = new Set(roles.map((role) => role.id));
 
@@ -432,6 +446,10 @@ async function setUserRolesInternal(userId, roleNames, { actorId = 'system', aud
     if (audit) await recordAudit({ actorId, action: 'user.roles.update', target: userId, reason: uniqueNames.join(',') }, { save });
     if (save) await flush();
     return uniqueNames.sort();
+}
+
+async function setUserRolesInternal(userId, roleNames, options = {}) {
+    return applyUserRoles(await prepareUserRoles(userId, roleNames), options);
 }
 
 export function setUserRoles(userId, roleNames, options = {}) {

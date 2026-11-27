@@ -1,10 +1,54 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { inspectSources } from '../../../.github/scripts/qaSourceInventory.mjs';
+import { assessSources } from '../../../.github/scripts/qaSourceReport.mjs';
+
+test('only proven default skill projections are removed from untracked inventory', t => {
+    const { workspace, tooling, repo } = fixture(t);
+    const source = path.join(workspace, 'checkout');
+    const catalog = path.join(workspace, 'DocumentationSkills');
+    repo(source, 'https://example.invalid/project');
+    repo(catalog, 'https://github.com/AssistOS-AI/DocumentationSkills.git');
+    fs.mkdirSync(path.join(source, 'agent'));
+    fs.writeFileSync(path.join(source, 'agent/manifest.json'), '{}');
+    git(source, 'add', 'agent'); git(source, 'commit', '-qm', 'agent');
+    fs.mkdirSync(path.join(catalog, 'skills/example'), { recursive: true });
+    fs.writeFileSync(path.join(catalog, 'skills/example/SKILL.md'), 'skill');
+    git(catalog, 'add', 'skills'); git(catalog, 'commit', '-qm', 'skill');
+    fs.mkdirSync(path.join(source, '.agents/skills'), { recursive: true });
+    const link = path.join(source, '.agents/skills/example');
+    const target = path.relative(path.dirname(link), path.join(catalog, 'skills/example'));
+    fs.symlinkSync(target, link);
+    fs.symlinkSync('.agents', path.join(source, '.claude'));
+    const digest = crypto.createHash('sha256').update(JSON.stringify(['', 'symlink', fs.lstatSync(link).mode & 0o777])).update(JSON.stringify(target)).digest('hex');
+    const ledger = { version: 1, entries: { example: { owner: 'defaults:DocumentationSkills', digest, kind: 'symlink', source: { name: 'DocumentationSkills' } } }, consumers: { 'defaults:DocumentationSkills': { selection: 'all', source: 'DocumentationSkills' } }, compatLinks: { '.claude': { target: '.agents' } } };
+    const ledgerPath = path.join(source, '.agents/.ploinky-skill-exports.json');
+    const write = value => fs.writeFileSync(ledgerPath, `${JSON.stringify(value, null, 2)}\n`);
+    write(ledger);
+    fs.writeFileSync(path.join(source, '.agents/skills/private'), 'private');
+    const files = () => inspectSources({ scope: 'full', workspace, tooling }).repos.find(item => item.name === 'checkout').files;
+    assert.deepEqual(files(), [{ status: '??', path: '.agents/skills/private' }]);
+    fs.writeFileSync(ledgerPath, JSON.stringify(ledger));
+    assert.equal(files().length, 4);
+    write({ ...ledger, extra: 'private' });
+    assert.equal(files().length, 4);
+    write(ledger);
+    git(source, 'add', '.agents/.ploinky-skill-exports.json');
+    assert.equal(files().length, 4);
+    git(source, 'reset', '-q', 'HEAD', '--', '.agents/.ploinky-skill-exports.json');
+    fs.unlinkSync(link); fs.symlinkSync('wrong', link);
+    assert.equal(files().length, 4);
+    fs.unlinkSync(link); fs.symlinkSync(target, link);
+    git(catalog, 'rm', '-q', 'skills/example/SKILL.md'); git(catalog, 'commit', '-qm', 'remove skill');
+    fs.mkdirSync(path.join(catalog, 'skills/example'), { recursive: true });
+    fs.writeFileSync(path.join(catalog, 'skills/example/SKILL.md'), 'untracked');
+    assert.equal(files().length, 4);
+});
 
 function git(cwd, ...args) {
     const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -149,4 +193,64 @@ test('origin identity selects an active alias despite a retired registration usi
     assert.deepEqual(result.errors, []);
     assert.deepEqual(result.repos.map(item => item.name), ['active']);
     assert.ok(result.repos[0].files.some(file => file.path === 'agent/manifest.json'));
+});
+
+test('inventories Ploinky worktree configuration without hiding managed excludes', async t => {
+    const { workspace, tooling, repo } = fixture(t);
+    const source = path.join(workspace, 'checkout');
+    repo(source, 'https://example.invalid/project');
+    fs.mkdirSync(path.join(source, 'agent'));
+    fs.writeFileSync(path.join(source, 'agent/manifest.json'), '{}');
+    git(source, 'add', 'agent'); git(source, 'commit', '-qm', 'agent');
+    git(source, 'config', 'extensions.worktreeConfig', 'true');
+    const excludes = path.join(source, '.git/ploinky-skill-exports.exclude');
+    fs.writeFileSync(excludes, 'hidden\n');
+    git(source, 'config', '--worktree', 'core.excludesFile', excludes);
+    const inspect = () => inspectSources({ scope: 'full', workspace, tooling });
+    assert.deepEqual(inspect().errors, []);
+    fs.writeFileSync(path.join(source, 'hidden'), 'unpublished');
+    const inventory = inspect();
+    assert.deepEqual(inventory.repos[0].files, [{ status: '??', path: 'hidden' }]);
+    const assessment = await assessSources({ ...inventory, copies: [] }, {
+        publication: async entry => ({ branch: entry.branch, commits: new Set(entry.commits.map(commit => commit.id)) }),
+        receipts: {}, incoming: {},
+    });
+    assert.deepEqual(assessment.blockers[0].files, [{ status: '??', path: 'hidden' }]);
+    fs.writeFileSync(path.join(source, '.gitignore'), 'ignored\n');
+    fs.writeFileSync(path.join(source, 'ignored'), 'ignored');
+    assert.deepEqual(inspect().repos[0].files.map(file => file.path), ['.gitignore', 'hidden']);
+});
+
+test('rejects unsupported or incomplete worktree configuration during alias discovery', t => {
+    const { workspace, tooling, repo } = fixture(t);
+    const source = path.join(workspace, 'checkout');
+    repo(source, 'https://example.invalid/project');
+    fs.mkdirSync(path.join(source, 'agent'));
+    fs.writeFileSync(path.join(source, 'agent/manifest.json'), '{}');
+    const config = path.join(source, '.git/config');
+    const worktree = path.join(source, '.git/config.worktree');
+    fs.appendFileSync(config, '\n[remote "Origin"]\nurl = https://example.invalid/other\n');
+    const base = fs.readFileSync(config, 'utf8');
+    const extension = '\n[extensions]\nworktreeConfig = true\n';
+    const expected = path.join(source, '.git/ploinky-skill-exports.exclude');
+    const inspect = () => inspectSources({ scope: 'full', workspace, tooling });
+    const rejected = () => assert.equal(inspect().errors.length, 1);
+    assert.deepEqual(inspect().errors, [], 'remote names that differ in case remain distinct');
+    fs.writeFileSync(config, base + extension);
+    rejected();
+    fs.writeFileSync(worktree, `[core]\nexcludesFile = ${expected}\nother = true\n`);
+    rejected();
+    fs.writeFileSync(worktree, '[core]\nexcludesFile = /tmp/other\n');
+    rejected();
+    fs.writeFileSync(worktree, `[core]\nexcludesFile = ${expected}\nexcludesFile = ${expected}\n`);
+    rejected();
+    fs.writeFileSync(worktree, `[core]\nexcludesFile = ${expected}\n`);
+    fs.writeFileSync(config, base);
+    rejected();
+    fs.writeFileSync(config, base + extension + extension);
+    rejected();
+    fs.writeFileSync(config, base + extension);
+    fs.unlinkSync(worktree);
+    fs.symlinkSync(config, worktree);
+    rejected();
 });

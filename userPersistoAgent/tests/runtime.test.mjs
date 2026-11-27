@@ -87,6 +87,22 @@ test('provider account projections preserve optional fields and an email-only ac
         const login = await provider.sso_begin_login({ redirectUri: 'http://localhost:8080/auth/callback' });
         const issued = await issueAuthCode({ providerState: login.providerState, userId: member.user.id });
         const session = await provider.sso_handle_callback({ providerState: login.providerState, query: { code: issued.code } });
+        assert.equal(Object.hasOwn(session, 'sessionLifetime'), false);
+        assert.ok(session.providerSession.expiresAt > Date.now());
+        const upgraded = await provider.sso_refresh_session({ ...session, supportsSessionLifetimeV1: true });
+        assert.equal(upgraded.sessionLifetime, 'until-revoked-v1');
+        assert.equal(upgraded.providerSession.expiresAt, null);
+        const downgraded = await provider.sso_refresh_session(upgraded);
+        assert.equal(Object.hasOwn(downgraded, 'sessionLifetime'), false);
+        assert.ok(downgraded.providerSession.expiresAt > Date.now());
+        const durableLogin = await provider.sso_begin_login({ redirectUri: 'http://localhost:8080/auth/callback' });
+        const durableCode = await issueAuthCode({ providerState: durableLogin.providerState, userId: member.user.id });
+        const durable = await provider.sso_handle_callback({ providerState: durableLogin.providerState, query: { code: durableCode.code }, supportsSessionLifetimeV1: true });
+        assert.equal(durable.sessionLifetime, 'until-revoked-v1');
+        assert.equal(durable.providerSession.expiresAt, null);
+        const durableRefresh = await provider.sso_refresh_session({ ...durable, supportsSessionLifetimeV1: true });
+        assert.equal(durableRefresh.sessionLifetime, 'until-revoked-v1');
+        assert.equal(durableRefresh.providerSession.expiresAt, null);
         assert.equal(session.user.username, '');
         assert.equal(session.user.email, 'member@example.test');
         assert.equal((await provider.sso_refresh_session(session)).user.username, '');
@@ -140,6 +156,7 @@ test('provider account projections preserve optional fields and an email-only ac
         await (await getStore()).updateUser(member.user.id, { authGeneration: 1 });
         await flush();
         await assert.rejects(provider.sso_refresh_session(session), (error) => error.code === 'session_revoked' && error.statusCode === 401);
+        await assert.rejects(provider.sso_refresh_session({ ...durable, supportsSessionLifetimeV1: true }), (error) => error.code === 'session_revoked' && error.statusCode === 401);
     } finally {
         if (server?.listening) await new Promise((resolve) => server.close(resolve));
         await resetStoreForTests();

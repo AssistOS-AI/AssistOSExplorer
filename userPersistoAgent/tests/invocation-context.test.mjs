@@ -55,3 +55,20 @@ test('service identity is bound to the verified matching caller and actor', asyn
     assert.equal((await derive({...grant,usr:{id:'member'}})).agentId,undefined);
     assert.equal((await derive({...grant, usr: {id:'member'}, scope: ['agent-dependency']})).agentDependency, undefined);
 });
+
+test('delegated administration requires the verified user grant from the calling agent', async () => {
+    const principal = 'agent:Example/service';
+    const grant = {
+        iss: 'ploinky-router',
+        sub: principal,
+        actor: { kind: 'agent', id: principal },
+        caller: { kind: 'agent', id: principal },
+        usr: { id: 'member' },
+        delegation: { jti: 'verified-delegation', sourceAgentId: principal },
+    };
+    const derive = async invocation => actorContext(await authInfoFromEnvelope({ metadata: { invocation } }));
+    assert.equal((await derive(grant)).delegatedUser, true);
+    assert.equal((await derive({ ...grant, delegation: null })).delegatedUser, undefined);
+    assert.equal((await derive({ ...grant, caller: { kind: 'agent', id: 'agent:Another/service' } })).delegatedUser, undefined);
+    assert.equal((await derive({ ...grant, usr: null })).delegatedUser, undefined);
+});

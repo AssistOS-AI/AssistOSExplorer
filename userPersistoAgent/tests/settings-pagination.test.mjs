@@ -22,7 +22,7 @@ test('settings can navigate beyond 100 users and update a role on the last page'
     const calls = [];
     panel.callTool = async (name, args) => {
         calls.push({ name, args });
-        if (name === 'userpersisto_user_roles_update') {
+        if (name === 'userpersisto_user_update') {
             users.find((user) => user.id === args.userId).roles = args.roles;
             return {};
         }
@@ -38,14 +38,14 @@ test('settings can navigate beyond 100 users and update a role on the last page'
     assert.equal(panel.state.users[0].id, 'user-200');
     assert.equal(panel.usersNextButton.disabled, true);
     assert.equal(panel.usersPageLabel.textContent, '201–201 of 201 users');
-    await panel.updateUser(roleRow('user-200', ['selfRegistered']), 'roles');
+    await panel.updateUser(roleRow('user-200', ['selfRegistered']));
     assert.deepEqual(panel.state.users[0].roles, ['selfRegistered']);
     assert.equal(panel.state.usersStart, 200);
     panel.userSearchInput.value = 'user200';
     assert.equal(panel.filteredUsers()[0].id, 'user-200');
     await panel.previousUsersPage();
     assert.equal(panel.state.usersStart, 100);
-    assert.ok(calls.some((call) => call.name === 'userpersisto_user_roles_update' && call.args.userId === 'user-200'));
+    assert.ok(calls.some((call) => call.name === 'userpersisto_user_update' && call.args.userId === 'user-200'));
 });
 
 test('page load failure preserves the previous users and restores navigation', async () => {
@@ -76,7 +76,7 @@ test('settings default uses sole-role counts and searches all 603 accounts befor
     const calls = [];
     panel.callTool = async (name, args) => {
         calls.push({ name, args });
-        if (name === 'userpersisto_user_roles_update') {
+        if (name === 'userpersisto_user_update') {
             users.find((user) => user.id === args.userId).roles = args.roles;
             return {};
         }
@@ -97,7 +97,7 @@ test('settings default uses sole-role counts and searches all 603 accounts befor
     assert.deepEqual(panel.state.users.map((user) => user.id), ['user-600']);
     assert.equal(calls.at(-1).args.excludeOnlyRole, '');
     assert.equal(calls.at(-1).args.includeRoleCounts, true);
-    await panel.updateUser(roleRow('user-600', ['user']), 'roles');
+    await panel.updateUser(roleRow('user-600', ['user']));
     assert.equal(panel.state.selfRegisteredCount, 601);
     panel.userSearchInput.value = '';
     await panel.loadUsersPage(0);

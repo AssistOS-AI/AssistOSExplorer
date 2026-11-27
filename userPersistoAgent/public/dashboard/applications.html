@@ -22,19 +22,13 @@
                 </nav>
             </header>
             <main id="management-root" data-initial-panel="applications" data-settings-scope="page">
-                <div class="page-heading"><div class="page-heading-copy"><h1>Applications</h1><p>Manage applications that use your account to sign in.</p></div><a class="account-sign-out" href="/auth/logout">Sign out</a></div>
+                <div class="page-heading"><div class="page-heading-copy"><div class="users-title-row"><h1>Applications</h1><button type="button" class="userpersisto-search-icon" data-admin-only hidden data-oidc-control data-local-action="refreshApplications" aria-label="Refresh applications" title="Refresh applications"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.4-5.7M20 4v5h-5"/></svg></button></div><p>Manage applications that use your account to sign in.</p></div><div class="users-heading-actions"><button type="button" class="general-button" data-admin-only hidden data-oidc-control data-local-action="newApplication">New application</button><a class="account-sign-out" href="/auth/logout">Sign out</a></div></div>
                 <p id="userpersistoStatus" class="userpersisto-status" role="status" aria-live="polite">Loading…</p>
                 <a id="management-login" class="button-link" href="/auth/login" hidden>Sign in again</a>
                 <fieldset id="management-controls" class="management-controls" disabled hidden>
                     <legend class="visually-hidden">Applications</legend>
                     <section class="userpersisto-panel" data-section="applications" data-admin-only>
-                        <div class="userpersisto-auth-methods-header">
-                            <div>
-                                <div class="userpersisto-card-title">OAuth / OpenID Connect applications</div>
-                                <div class="userpersisto-card-description">Register applications that use your account to sign in or access an API.</div>
-                            </div>
-                        </div>
-                        <div id="oidcProviderStatus" class="userpersisto-provider-status" role="status">Loading provider…</div>
+                        <details class="application-provider-info"><summary>Provider information</summary><div id="oidcProviderStatus" class="userpersisto-provider-status" role="status">Loading provider…</div></details>
                         <div id="applicationSecretBox" class="userpersisto-auth-methods-card" hidden>
                             <label class="form-item">
                                 <span class="form-label">New client secret — shown once</span>
@@ -45,10 +39,10 @@
                                 <button type="button" class="gray-button" data-local-action="clearApplicationSecret">Dismiss secret</button>
                             </div>
                         </div>
-                        <div class="userpersisto-auth-methods-card">
+                        <div id="applicationEditor" class="userpersisto-auth-methods-card application-editor" hidden>
                             <div class="userpersisto-auth-methods-header">
                                 <div id="applicationEditorTitle" class="userpersisto-card-title">Create application</div>
-                                <button type="button" class="gray-button" data-oidc-control data-local-action="newApplication">New application</button>
+                                <button type="button" class="userpersisto-search-icon" data-oidc-control data-local-action="closeApplicationEditor" aria-label="Close application editor" title="Close">×</button>
                             </div>
                             <div class="userpersisto-card-description">Saving changes or rotating a secret revokes this application's existing grants and tokens. Users will sign in and consent again.</div>
                             <div class="userpersisto-grid">
@@ -91,12 +85,9 @@
                                 <label><input type="checkbox" data-client-grant="client_credentials" data-oidc-control> Client credentials (separate confidential application; api scope only; no redirects)</label>
                             </fieldset>
                             <label class="form-label"><input type="checkbox" data-client-field="enabled" data-oidc-control checked> Application enabled</label>
-                            <div class="userpersisto-actions">
+                            <div class="userpersisto-actions application-save">
                                 <button type="button" class="general-button" data-oidc-control data-local-action="saveApplication">Save application</button>
                             </div>
-                        </div>
-                        <div class="userpersisto-actions">
-                            <button type="button" class="gray-button" data-oidc-control data-local-action="refreshApplications">Refresh applications</button>
                         </div>
                         <div id="applicationsList" class="userpersisto-list"></div>
                         <nav class="userpersisto-actions" aria-label="Application pages">

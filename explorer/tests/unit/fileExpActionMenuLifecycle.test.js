@@ -44,6 +44,10 @@ test('context menu renders all items before its single visible open', () => {
             this.state.openMenuPath = path;
             calls.push('state');
         },
+        startCodingReadiness(path) {
+            assert.equal(path, '/workspace/file.txt');
+            calls.push('readiness');
+        },
         refreshContextMenuItems() {
             assert.equal(opened, false);
             calls.push('items');
@@ -61,6 +65,7 @@ test('context menu renders all items before its single visible open', () => {
 
     fileExp.openActionMenu('/workspace/file.txt', { invalidate: true });
     assert.equal(calls.filter((entry) => entry === 'open').length, 1);
+    assert.ok(calls.indexOf('readiness') < calls.indexOf('items'));
     assert.ok(calls.indexOf('items') < calls.indexOf('render'));
     assert.ok(calls.indexOf('render') < calls.indexOf('open'));
 });
@@ -132,4 +137,15 @@ test('outside pointerdown closes the menu without consuming or replacing the cli
     assert.deepEqual(closeArguments, [false]);
     assert.equal(prevented, false);
     assert.equal(propagationStopped, false);
+});
+
+test('closing an action menu always disposes its readiness observer', () => {
+    let stopped = 0;
+    const host = { state: { openMenuPath: null }, stopCodingReadiness: () => stopped++ };
+    attachFsActions(host);
+    assert.equal(host.closeActionMenu(false), false);
+    assert.equal(stopped, 1);
+    assert.equal(host.stopCodingReadiness, null);
+    host.closeActionMenu(false);
+    assert.equal(stopped, 1);
 });

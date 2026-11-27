@@ -67,6 +67,7 @@ export class UserpersistoSettings {
         this.panelTabs = Array.from(this.element.querySelectorAll("[data-panel]"));
         this.usersListEl = this.element.querySelector("#usersList");
         this.userSearchInput = this.element.querySelector("#userSearchInput");
+        this.userSearchClearButton = this.element.querySelector('[data-local-action="clearUserSearch"]');
         this.selfRegisteredCountEl = this.element.querySelector("#selfRegisteredCount");
         this.usersPageLabel = this.element.querySelector("#usersPageLabel");
         this.usersPreviousButton = this.element.querySelector("#usersPreviousButton");
@@ -89,6 +90,7 @@ export class UserpersistoSettings {
         this.applicationsPreviousButton = this.element.querySelector("#applicationsPreviousButton");
         this.applicationsNextButton = this.element.querySelector("#applicationsNextButton");
         this.oidcStatusEl = this.element.querySelector("#oidcProviderStatus");
+        this.applicationEditor = this.element.querySelector("#applicationEditor");
         this.applicationEditorTitle = this.element.querySelector("#applicationEditorTitle");
         this.applicationSecretBox = this.element.querySelector("#applicationSecretBox");
         this.applicationSecretInput = this.element.querySelector("#applicationSecret");
@@ -105,6 +107,7 @@ export class UserpersistoSettings {
         if (this.element.dataset.userpersistoBound === "true") return;
         this.element.dataset.userpersistoBound = "true";
         this.userSearchInput?.addEventListener("input", () => {
+            this.syncUserSearchClear();
             clearTimeout(this.searchTimer);
             this.searchTimer = setTimeout(() => { void this.searchUsers(); }, 250);
         });
@@ -348,13 +351,19 @@ export class UserpersistoSettings {
         this.revokeAdministrativeAccess();
     }
 
+    syncUserSearchClear() {
+        if (this.userSearchClearButton) this.userSearchClearButton.hidden = !this.userSearchInput?.value;
+    }
+
     searchUsers() {
+        this.syncUserSearchClear();
         clearTimeout(this.searchTimer);
         return this.loadUsersPage(0);
     }
 
     clearUserSearch() {
         if (this.userSearchInput) this.userSearchInput.value = "";
+        this.userSearchInput?.focus?.();
         return this.searchUsers();
     }
 
@@ -439,35 +448,63 @@ export class UserpersistoSettings {
         this.usersListEl.innerHTML = users.map((user) => {
             const roles = userRoles(user);
             const choices = [...new Set([...this.state.availableRoles, ...roles])];
+            const name = user.displayName || user.username || user.email || "User";
+            const initials = name.trim().split(/\s+/u).slice(0, 2).map(part => Array.from(part)[0] || "").join("").toLocaleUpperCase();
+            const status = ["active", "blocked"].includes(user.status) ? user.status : "unknown";
+            const statusLabel = { active: "Active", blocked: "Blocked", unknown: "Unknown" }[status];
             const textField = (label, field, type = "text", extra = "") => `<label class="form-item"><span class="form-label">${label}</span><input class="form-input" data-user-field="${field}" type="${type}" value="${escapeHtml(user[field] || "")}" ${extra}></label>`;
             return `
-                <section class="userpersisto-row user-editor" data-user-id="${escapeHtml(user.id)}" aria-label="${escapeHtml(user.email || user.id)}">
-                    <div>
-                        <h3 class="userpersisto-row-title">${escapeHtml(user.email || user.id)}</h3>
-                        <p class="userpersisto-row-meta">Roles: ${escapeHtml(roles.join(", ") || "none")} · Status: ${escapeHtml(user.status || "unknown")} · Email: ${user.emailVerifiedAt ? "verified" : "unverified"}</p>
-                    </div>
-                    <div class="userpersisto-user-fields">
-                        <div class="form-item"><span class="form-label">Email</span><span class="userpersisto-row-meta">${escapeHtml(user.email || "")}</span></div>
-                        ${textField("Username (optional)", "username", "text", 'minlength="3" maxlength="64" autocomplete="off"')}
-                        ${textField("Display name", "displayName", "text", 'maxlength="200" autocomplete="off"')}
-                        <label class="form-item"><span class="form-label">Status</span><select class="form-input" data-user-field="status">${["active", "blocked"].map((status) => `<option value="${status}" ${user.status === status ? "selected" : ""}>${status === "active" ? "Active" : "Blocked"}</option>`).join("")}</select></label>
-                    </div>
-                    <div><button type="button" class="general-button" data-user-action="details">Save details</button></div>
-                    <details class="userpersisto-role-picker" data-role-picker>
-                        <summary>${escapeHtml(this.roleSummary(roles))}</summary>
-                        <div class="userpersisto-role-menu">
-                            <label class="form-item"><span class="form-label">Search roles</span><input class="form-input" data-role-search type="search" autocomplete="off" placeholder="Find a role"></label>
-                            <fieldset class="userpersisto-role-choices"><legend class="visually-hidden">Select roles</legend>${choices.map((role) => `<label><input type="checkbox" data-user-role value="${escapeHtml(role)}" ${roles.includes(role) ? "checked" : ""}> <span>${escapeHtml(role)}</span></label>`).join("")}</fieldset>
-                            <p class="userpersisto-card-description" data-role-empty hidden>No matching roles.</p>
-                            <p class="userpersisto-card-description">Select one or more roles, then save.</p>
+                <section class="userpersisto-row user-editor userpersisto-user-card" data-user-id="${escapeHtml(user.id)}" aria-label="${escapeHtml(name)}">
+                    <header class="userpersisto-user-header">
+                        <div class="userpersisto-user-avatar-group">
+                            <span class="userpersisto-user-avatar" aria-hidden="true">${escapeHtml(initials)}</span>
+                            <span class="userpersisto-user-status" data-status="${status}"><span aria-hidden="true">${status === "active" ? "●" : status === "blocked" ? "⊘" : "○"}</span>${statusLabel}</span>
                         </div>
-                    </details>
-                    <div><button type="button" class="gray-button" data-user-action="roles">Save roles</button></div>
+                        <div class="userpersisto-user-identity">
+                            <h3 class="userpersisto-row-title">${escapeHtml(name)}</h3>
+                            <p class="userpersisto-user-email">${escapeHtml(user.email || "No email address")}</p>
+                            <div class="userpersisto-user-meta">
+                                <span class="userpersisto-user-roles"><span class="userpersisto-user-meta-label">${roles.length > 1 ? "Roles:" : "Role:"}</span>${roles.length ? roles.map(role => `<span class="userpersisto-user-role">${escapeHtml(role)}</span>`).join("") : '<span class="userpersisto-row-meta">No roles</span>'}</span>
+                                <span class="userpersisto-user-verification">${user.emailVerifiedAt ? "Email verified" : "Email not verified"}</span>
+                            </div>
+                        </div>
+                        <button type="button" class="userpersisto-user-manage" aria-expanded="false" aria-controls="user-editor-${escapeHtml(user.id)}">Manage user <span aria-hidden="true">⌄</span></button>
+                    </header>
+                    <div class="userpersisto-user-management" hidden>
+                        <form id="user-editor-${escapeHtml(user.id)}" class="userpersisto-user-form">
+                            <div class="userpersisto-user-fields">
+                                ${textField("Username (optional)", "username", "text", 'minlength="3" maxlength="64" autocomplete="off"')}
+                                ${textField("Display name", "displayName", "text", 'maxlength="200" autocomplete="off"')}
+                                <label class="form-item"><span class="form-label">Status</span><select class="form-input" data-user-field="status">${["active", "blocked"].map((status) => `<option value="${status}" ${user.status === status ? "selected" : ""}>${status === "active" ? "Active" : "Blocked"}</option>`).join("")}</select></label>
+                                <div class="form-item">
+                                    <span class="form-label">Roles and access</span>
+                                    <details class="userpersisto-role-picker" data-role-picker>
+                                        <summary>${escapeHtml(this.roleSummary(roles))}</summary>
+                                        <div class="userpersisto-role-menu">
+                                            <label class="form-item"><span class="form-label">Search roles</span><input class="form-input" data-role-search type="search" autocomplete="off" placeholder="Find a role"></label>
+                                            <fieldset class="userpersisto-role-choices"><legend class="visually-hidden">Select roles</legend>${choices.map((role) => `<label><input type="checkbox" data-user-role value="${escapeHtml(role)}" ${roles.includes(role) ? "checked" : ""}> <span>${escapeHtml(role)}</span></label>`).join("")}</fieldset>
+                                            <p class="userpersisto-card-description" data-role-empty hidden>No matching roles.</p>
+                                            <p class="userpersisto-card-description">Select one or more roles, then save.</p>
+                                        </div>
+                                    </details>
+                                </div>
+                            </div>
+                            <div class="userpersisto-user-save"><button type="submit" class="general-button">Save changes</button></div>
+                        </form>
+                    </div>
                 </section>`;
         }).join("");
-        this.usersListEl.querySelectorAll("[data-user-action]").forEach((button) => {
+        this.usersListEl.querySelectorAll(".userpersisto-user-manage").forEach((button) => {
             button.addEventListener("click", () => {
-                void this.updateUser(button.closest("[data-user-id]"), button.dataset.userAction);
+                const editor = button.closest("[data-user-id]").querySelector(".userpersisto-user-management");
+                editor.hidden = !editor.hidden;
+                button.setAttribute("aria-expanded", String(!editor.hidden));
+            });
+        });
+        this.usersListEl.querySelectorAll(".userpersisto-user-form").forEach((form) => {
+            form.addEventListener("submit", (event) => {
+                event.preventDefault();
+                void this.updateUser(form.closest("[data-user-id]"));
             });
         });
         this.usersListEl.querySelectorAll("[data-role-picker]").forEach((picker) => {
@@ -502,37 +539,30 @@ export class UserpersistoSettings {
         picker.querySelector("[data-role-empty]").hidden = matches > 0;
     }
 
-    async updateUser(row, action) {
+    async updateUser(row) {
         if (!this.isAdministrator() || this.state.userBusy || !row?.dataset.userId) return;
         const userId = row.dataset.userId;
-        let name;
-        let args;
-        let success;
-        if (action === "details") {
-            const fields = [...row.querySelectorAll("[data-user-field]")];
-            if (fields.some((input) => input.reportValidity?.() === false)) return;
-            name = "userpersisto_user_update";
-            args = { userId, ...Object.fromEntries(fields.map((input) => [input.dataset.userField, input.value.trim()])) };
-            success = "User details saved.";
-        } else if (action === "roles") {
-            name = "userpersisto_user_roles_update";
-            args = { userId, roles: [...row.querySelectorAll("[data-user-role]:checked")].map((input) => input.value) };
-            if (!args.roles.length) {
-                this.setStatus("Select at least one role.", "error");
-                return;
-            }
-            success = "User roles saved.";
-        } else return;
+        const fields = [...row.querySelectorAll("[data-user-field]")];
+        if (fields.some((input) => input.reportValidity?.() === false)) return;
+        const args = {
+            userId,
+            ...Object.fromEntries(fields.map((input) => [input.dataset.userField, input.value.trim()])),
+            roles: [...row.querySelectorAll("[data-user-role]:checked")].map((input) => input.value),
+        };
+        if (!args.roles.length) {
+            this.setStatus("Select at least one role.", "error");
+            return;
+        }
         this.state.userBusy = true;
         const buttons = [...row.querySelectorAll("button")];
         buttons.forEach((button) => { button.disabled = true; });
         try {
-            await this.callTool(name, args);
+            await this.callTool("userpersisto_user_update", args);
             if (!this.isAdministrator()) return;
             // Recheck permissions after edits to the signed-in account, including self-demotion.
             if (userId === this.state.authProfile?.user?.id) await this.refreshAuthProfile();
             else await this.refreshUsers();
-            if (this.isAdministrator()) this.setStatus(success);
+            if (this.isAdministrator()) this.setStatus("User changes saved.");
         } catch (error) {
             if (authorizationFailure(error)) this.revokeAdministrativeAccess();
             this.setStatus(error?.message || "Failed to update user.", "error");
@@ -571,6 +601,7 @@ export class UserpersistoSettings {
     }
 
     resetApplicationForm() {
+        if (this.applicationEditor) this.applicationEditor.hidden = true;
         this.state.applicationEditId = null;
         const values = {
             client_id: "", client_name: "", redirect_uris: "", post_logout_redirect_uris: "",
@@ -592,6 +623,14 @@ export class UserpersistoSettings {
         if (!this.isAdministrator() || this.state.applicationBusy) return;
         this.clearApplicationSecret();
         this.resetApplicationForm();
+        if (this.applicationEditor) this.applicationEditor.hidden = false;
+        this.applicationInputs?.client_name?.focus?.();
+    }
+
+    closeApplicationEditor() {
+        if (this.state.applicationBusy) return;
+        this.clearApplicationSecret();
+        this.resetApplicationForm();
     }
 
     editApplication(_target, clientId) {
@@ -610,6 +649,8 @@ export class UserpersistoSettings {
             if (input) input.checked = client.grant_types.includes(grant);
         }
         if (this.applicationEditorTitle) this.applicationEditorTitle.textContent = "Edit application";
+        if (this.applicationEditor) this.applicationEditor.hidden = false;
+        this.applicationEditor?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
         this.applicationInputs?.client_name?.focus?.();
     }
 
@@ -718,19 +759,21 @@ export class UserpersistoSettings {
     renderApplications() {
         if (!this.applicationsListEl) return;
         this.applicationsListEl.innerHTML = this.state.applications.length ? this.state.applications.map((client) => `
-            <div class="userpersisto-row">
-                <div>
+            <article class="userpersisto-row application-card">
+                <div class="application-identity">
                     <div class="userpersisto-row-title">${escapeHtml(client.client_name || client.client_id)}</div>
-                    <div class="userpersisto-row-meta">${escapeHtml(client.client_id)} · ${client.enabled ? "Enabled" : "Disabled"}</div>
-                    <div class="userpersisto-row-meta">${escapeHtml(client.token_endpoint_auth_method)} · ${escapeHtml(client.grant_types.join(", "))}</div>
+                    <div class="userpersisto-row-meta">Client ID: ${escapeHtml(client.client_id)}</div>
+                    <div class="userpersisto-row-meta">${client.token_endpoint_auth_method === "none" ? "Public application" : "Confidential application"} · ${escapeHtml(client.grant_types.map(grant => ({ authorization_code: "Authorization code", refresh_token: "Refresh token", client_credentials: "Client credentials" }[grant] || grant)).join(", "))}</div>
                 </div>
-                <div class="userpersisto-actions">
-                    <button type="button" class="gray-button" data-oidc-control data-client-action="edit" data-client-id="${escapeHtml(client.client_id)}">Edit</button>
+                <div class="application-card-actions"><span class="application-state" data-enabled="${client.enabled}">${client.enabled ? "● Enabled" : "○ Disabled"}</span>
+                    <button type="button" class="userpersisto-user-manage" data-oidc-control data-client-action="edit" data-client-id="${escapeHtml(client.client_id)}">Manage application</button>
+                    <details class="application-more"><summary aria-label="More application actions">⋮</summary><div class="application-menu">
                     <button type="button" class="gray-button" data-oidc-control data-client-action="toggle" data-client-id="${escapeHtml(client.client_id)}">${client.enabled ? "Disable" : "Enable"}</button>
                     ${client.token_endpoint_auth_method !== "none" ? `<button type="button" class="gray-button" data-oidc-control data-client-action="rotate" data-client-id="${escapeHtml(client.client_id)}">Rotate secret</button>` : ""}
                     <button type="button" class="gray-button" data-oidc-control data-client-action="delete" data-client-id="${escapeHtml(client.client_id)}">Delete</button>
+                    </div></details>
                 </div>
-            </div>`).join("") : '<div class="userpersisto-result">No applications registered.</div>';
+            </article>`).join("") : '<div class="userpersisto-result">No applications registered.</div>';
         this.applicationsListEl.querySelectorAll("[data-client-action]").forEach((button) => {
             button.addEventListener("click", () => {
                 const actions = { edit: "editApplication", toggle: "toggleApplication", rotate: "rotateApplicationSecret", delete: "deleteApplication" };

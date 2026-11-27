@@ -74,9 +74,28 @@
             "env": { "TOOL_NAME": "userpersisto_user_list" }
         },
         {
+            "name": "userpersisto_delegated_user_list",
+            "title": "List users on behalf of an administrator",
+            "description": "Search the user directory with a verified user delegation and account-management permission.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "start": { "type": "integer", "minimum": 0 },
+                    "pageSize": { "type": "integer", "minimum": 1, "maximum": 500 },
+                    "search": { "type": "string", "maxLength": 200 }
+                },
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_delegated_user_list" }
+        },
+        {
             "name": "userpersisto_user_update",
             "title": "Update user",
-            "description": "Admin: update a user's username, display name or status. Sign-in email addresses cannot be changed here.",
+            "description": "Admin: update a user's username, display name, status and optional role assignments in one save. Sign-in email addresses cannot be changed here.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -87,7 +106,8 @@
                     "userId": { "type": "string", "minLength": 1 },
                     "username": { "type": "string", "maxLength": 64 },
                     "displayName": { "type": "string" },
-                    "status": { "type": "string", "enum": ["active", "blocked"] }
+                    "status": { "type": "string", "enum": ["active", "blocked"] },
+                    "roles": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
                 },
                 "required": ["userId"],
                 "additionalProperties": false
@@ -378,6 +398,27 @@
             },
             "tags": ["admin"],
             "env": { "TOOL_NAME": "userpersisto_credits_grant" }
+        },
+        {
+            "name": "userpersisto_delegated_credits_grant",
+            "title": "Grant credits on behalf of an administrator",
+            "description": "Grant credits with a verified user delegation and billing-management permission.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string", "minLength": 1 },
+                    "amount": { "type": "integer", "minimum": 1 },
+                    "reason": { "type": "string" },
+                    "referenceId": { "type": "string", "minLength": 1, "maxLength": 256 }
+                },
+                "required": ["userId", "amount", "referenceId"],
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_delegated_credits_grant" }
         },
         {
             "name": "userpersisto_credits_refund",

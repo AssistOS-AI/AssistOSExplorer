@@ -22,19 +22,22 @@
                 </nav>
             </header>
             <main id="management-root" data-initial-panel="users" data-settings-scope="page">
-                <div class="page-heading"><div class="page-heading-copy"><h1>Users</h1><p>Find accounts, manage their details and choose who can access your workspace.</p><p data-admin-only hidden>Accounts are created when people sign in with Google or a verified email code. There is no separate account-creation form here.</p></div><a class="account-sign-out" href="/auth/logout">Sign out</a></div>
+                <div class="page-heading"><div class="page-heading-copy"><div class="users-title-row"><h1>Users</h1><details class="users-account-help" data-admin-only hidden><summary aria-label="How accounts are created" title="How accounts are created"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/></svg></summary><p>Accounts are created when people sign in with Google or a verified email code. There is no separate account-creation form here.</p></details></div></div><div class="users-heading-actions">
+                    <div class="users-search-group" data-admin-only hidden>
+                    <div class="userpersisto-user-search" role="search">
+                        <input id="userSearchInput" class="form-input" type="search" placeholder="Search by name or email" aria-label="Search all users by name or email" spellcheck="false" maxlength="200">
+                        <button type="button" class="userpersisto-search-icon" data-local-action="clearUserSearch" aria-label="Clear search" title="Clear search" hidden><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+                        <button type="button" class="userpersisto-search-icon" data-local-action="searchUsers" aria-label="Search users" title="Search users"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg></button>
+                    </div>
+                    <div id="selfRegisteredCount" class="userpersisto-card-description users-search-description" role="status"></div>
+                    </div>
+                    <a class="account-sign-out" href="/auth/logout">Sign out</a>
+                </div></div>
                 <p id="userpersistoStatus" class="userpersisto-status" role="status" aria-live="polite">Loading…</p>
                 <a id="management-login" class="button-link" href="/auth/login" hidden>Sign in again</a>
                 <fieldset id="management-controls" class="management-controls" disabled hidden>
                     <legend class="visually-hidden">Users</legend>
                     <section class="userpersisto-panel" data-section="users" data-admin-only>
-                        <div class="userpersisto-actions userpersisto-actions-split">
-                            <input id="userSearchInput" class="form-input" type="search" placeholder="Search all users" aria-label="Search all users by name or email" spellcheck="false" maxlength="200">
-                            <button type="button" class="general-button" data-local-action="searchUsers">Search</button>
-                            <button type="button" class="gray-button" data-local-action="clearUserSearch">Clear search</button>
-                        </div>
-                        <div id="selfRegisteredCount" class="userpersisto-card-description" role="status"></div>
-                        <h2>Manage users</h2>
                         <div id="usersList" class="userpersisto-list"></div>
                         <nav class="userpersisto-actions" aria-label="User pages">
                             <button id="usersPreviousButton" type="button" class="gray-button" data-local-action="previousUsersPage" disabled>Previous</button>

@@ -111,7 +111,7 @@ test('every account page keeps sign out with the page heading and navigation in 
         const header = html.match(/<header class="account-header">([\s\S]*?)<\/header>/)?.[1];
         assert.ok(header, file);
         assert.doesNotMatch(header, /account-sign-out/, file);
-        assert.match(html, /<div class="page-heading"><div class="page-heading-copy">[\s\S]*?<\/div><a class="account-sign-out" href="\/auth\/logout">Sign out<\/a><\/div>/, file);
+        assert.match(html, /<div class="page-heading"><div class="page-heading-copy">[\s\S]*?<a class="account-sign-out" href="\/auth\/logout">Sign out<\/a>\s*<\/div>/, file);
         assert.equal([...html.matchAll(/class="account-sign-out"/g)].length, 1, file);
         assert.doesNotMatch(html, /account-brand|>UserPersisto<\/a>/, file);
     }

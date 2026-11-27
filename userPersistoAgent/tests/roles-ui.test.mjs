@@ -23,8 +23,8 @@ function fixture({ roles = [role], profile = manager } = {}) {
         });
         return nodes.get(id);
     }
-    const links = ['admin.users.manage', 'admin.agentSettings.manage'].map((capability) => ({ dataset: { capability }, hidden: false }));
-    const document = { getElementById: node, querySelectorAll: () => links };
+    const links = ['admin.users.manage', 'admin.agentSettings.manage'].map((capability) => ({ dataset: { capability }, hidden: false, getAttribute: () => './', setAttribute() {} }));
+    const document = { baseURI: 'https://account.example.test/service/dashboard/roles.html', getElementById: node, querySelectorAll: () => links };
     const host = { handlers: {}, location: { pathname: '/service/dashboard/roles.html', reload() { host.reloaded = true; } }, addEventListener(name, callback) { this.handlers[name] = callback; } };
     const calls = [];
     const page = new RolesPage(document, host, async (name, args) => {
@@ -55,6 +55,28 @@ test('role catalog pages beyond 500 roles and searches across the complete catal
     page.renderRoles();
     assert.equal(node('roles-page').textContent, '1–1 of 1 roles');
     assert.equal(node('roles-next').disabled, true);
+});
+
+test('the role editor starts collapsed and is moved into the selected card without losing draft fields', () => {
+    const { page, node } = fixture();
+    const editor = node('role-editor');
+    const movements = [];
+    node('role-editor-home').append = element => movements.push(['home', element]);
+    const card = { dataset: { roleId: role.id }, append: element => movements.push(['card', element]) };
+    node('roles-list').querySelectorAll = () => [card];
+    page.renderRoles();
+    assert.equal(editor.hidden, true);
+    assert.match(node('roles-list').innerHTML, /aria-expanded="false"/);
+    page.editRole(role);
+    assert.equal(editor.hidden, false);
+    assert.deepEqual(movements.at(-1), ['card', editor]);
+    node('role-description').value = 'Unsaved draft';
+    page.renderRoles();
+    assert.equal(node('role-description').value, 'Unsaved draft');
+    assert.deepEqual(movements.slice(-2), [['home', editor], ['card', editor]]);
+    page.clearAccess();
+    assert.equal(editor.hidden, true);
+    assert.equal(page.state.editorOpen, false);
 });
 
 test('built-in roles are inspectable but cannot be saved or deleted even if a caller invokes the methods', async () => {

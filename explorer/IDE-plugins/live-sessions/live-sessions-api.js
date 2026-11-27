@@ -18,7 +18,7 @@ const ROW_KEYS = [
 // Shell-only optional keys. Agent rows keep the shared required set and reject all of these.
 const SHELL_OPTIONAL_KEYS = [
     'endedAt', 'exitReason', 'closePolicy', 'pendingStopUntil', 'ownerViewOpen', 'profileLabel',
-    'profileProvider', 'profileId', 'cwd',
+    'profileProvider', 'profileId', 'cwd', 'lastOutputAt',
     'closure', 'closureScope', 'recordCleanup',
 ];
 
@@ -58,6 +58,7 @@ export function parseLiveSessionsPayload(payload) {
             || !displayText(row.ownerLabel, 128)
             || !Number.isSafeInteger(row.viewerCount) || row.viewerCount < 0 || row.viewerCount > 8
             || !timestamp(row.startedAt) || !timestamp(row.lastActivityAt)
+            || (Object.hasOwn(row, 'lastOutputAt') && row.lastOutputAt !== null && !timestamp(row.lastOutputAt))
             || !exactKeys(row.capabilities, ['watch', 'input', 'stop', 'message'])
             || row.capabilities.watch !== true || row.capabilities.input !== row.isOwner
             || row.capabilities.stop !== true || row.capabilities.message !== false

@@ -793,6 +793,43 @@ jobs:
           # References are registry-resolved indexes, checked again inside the Box before pulling.
           SCRIPTAHUB_DIGEST_PROGRAM='set -eu
           podman image inspect --format "{{range .RepoDigests}}{{println .}}{{end}}" docker.io/assistos/scriptahub-agent:runtime'
+          # The incoming manifest arrives on stdin. A manifest whose cache values are only page or immutable (or none) passes
+          # without touching the runtime, so an older Box is never refused for it. Any other value needs the Box runtime to
+          # export the import-free route cache check, accept never, and accept every value the manifest carries.
+          SCRIPTAHUB_CACHE_GATE_PROGRAM='set -eu
+          check=$(cat <<"JS"
+          import { readFileSync } from "node:fs";
+          let manifest;
+          try {
+            manifest = JSON.parse(readFileSync(0, "utf8"));
+          } catch {
+            console.error("The incoming ScriptaHub manifest is not valid JSON.");
+            process.exit(4);
+          }
+          const routes = manifest?.routerAccess?.httpRoutes;
+          const specs = Array.isArray(routes) ? routes : Object.values(routes || {});
+          const values = specs
+            .filter((spec) => spec !== null && typeof spec === "object" && !Array.isArray(spec) && Object.hasOwn(spec, "cache"))
+            .map((spec) => spec.cache);
+          if (values.every((value) => value === "page" || value === "immutable")) process.exit(0);
+          let marks;
+          try {
+            marks = await import("file:///opt/ploinky/cli/server/policy/routeCacheMarkValues.js");
+          } catch {
+            marks = null;
+          }
+          if (typeof marks?.isRouteCacheMark !== "function" || marks.isRouteCacheMark("never") !== true) {
+            console.error("The Ploinky runtime in the Box cannot validate route cache marks.");
+            process.exit(3);
+          }
+          const rejected = values.filter((value) => marks.isRouteCacheMark(value) !== true);
+          if (rejected.length) {
+            console.error("The Ploinky runtime in the Box rejects " + rejected.length + " cache value(s) of the incoming ScriptaHub manifest.");
+            process.exit(5);
+          }
+          JS
+          )
+          exec node --input-type=module -e "$check"'
           SCRIPTAHUB_PULL_PROGRAM='set -eu
           read -r agent
           read -r robot
@@ -1160,6 +1197,14 @@ jobs:
             exit 1
           fi
 
+          # Refusal 8: the capability gate. The incoming manifest at the selected head must use only cache values that the
+          # runtime in the Box validates. It runs whether or not the checkout moves, because a Box that cannot validate a mark
+          # must not be given one by a later move either.
+          if ! GATE_OUTPUT="$(runner_git show "$SCRIPTA_HEAD:scriptahubAgent/manifest.json" | run_in_box "$SCRIPTAHUB_CACHE_GATE_PROGRAM" 2>&1)"; then
+            echo "::error::The Ploinky runtime in the QA Box does not accept the route cache marks of $SCRIPTA_BRANCH@$SCRIPTA_HEAD ($(printable "${GATE_OUTPUT##*$'\n'}")). Nothing was changed. Deploy Ploinky with the cache-tab-v2 change through deploy-explorer-qa-ploinky.yml first."
+            exit 1
+          fi
+
           # From here on the QA Box changes. Each later failure says what is left changed.
           AGENT_REF="docker.io/assistos/scriptahub-agent@$SCRIPTA_AGENT_INDEX"
           ROBOT_REF="docker.io/assistos/roboteam-agent@$SCRIPTA_ROBOTEAM_INDEX"
@@ -1243,6 +1288,7 @@ jobs:
             echo "[deploy-qa-scriptahub] agent image $AGENT_ID; RoboTeam image $ROBOT_ID; roboteam-agent:runtime before ${ROBOTEAM_ID:-none}"
           fi
           echo "[deploy-qa-scriptahub] restart result: $RESTART_RESULT"
+          printf 'QA_RESTART_RESULT=%s\n' "$RESTART_RESULT" >> "$GITHUB_ENV"
           if [ -n "$PRODUCT_CHECK_SUMMARY" ]; then
             while IFS= read -r summary_line; do
               echo "[deploy-qa-scriptahub] $summary_line"
@@ -1291,6 +1337,51 @@ jobs:
             fi
             sleep 5
           done
+
+      # Host purge only, against the purge configuration the sibling QA workflows stored in the Box. This workflow holds no
+      # purge credential, changes no cache rule and does not switch the page-cache rule off. A refused, cooling-down or
+      # unconfigured answer only warns: a stored copy stays bounded by its freshness.
+      - name: Purge the QA host cache
+        run: |
+          set -euo pipefail
+          case "${QA_RESTART_RESULT:-}" in
+            none)
+              echo '[deploy-qa-scriptahub] Nothing restarted, so the QA host cache is not purged.'
+              exit 0
+              ;;
+            targeted|whole|whole-after-targeted) ;;
+            *)
+              echo '::error::The deploy step did not report a restart result.'
+              exit 1
+              ;;
+          esac
+          [[ "$PUBLIC_HOST" == explorer-qa.axiologic.dev && "$ROUTER_PORT" == 8097 && "$WORKSPACE" == explorerQaWorkspace ]] || {
+            echo '::error::Invalid Explorer QA purge configuration.'
+            exit 1
+          }
+          ssh_qa=(ssh -T -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" -o ConnectTimeout=15
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "${SSH_USER}@${SSH_HOST}")
+          lock='flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock'
+          cli_refused=42
+          box_id="$("${ssh_qa[@]}" "podman container inspect --format '{{.Id}}' ploinky-box-explorerqaworkspace-7a31ab7775eb" < /dev/null)" || box_id=''
+          if [[ ! "$box_id" =~ ^[0-9a-f]{64}$ ]]; then
+            echo '::warning::The QA Box could not be identified, so the QA host cache was not purged.'
+            exit 0
+          fi
+          # Plain podman exec does not inherit the Box's physical Router host port, which the host launcher normally passes;
+          # without it the in-Box CLI assumes 8080 and refuses the active generation compiled for QA's port.
+          command='ploinky "$@" || exit '"$cli_refused"
+          status=0
+          output="$("${ssh_qa[@]}" "$lock podman container exec -i --user podman --workdir '/home/admin/$WORKSPACE' --env 'PLOINKY_WORKSPACE_ROOT=/home/admin/$WORKSPACE' --env 'PLOINKY_ROUTER_HOST_PORT=$ROUTER_PORT' '$box_id' sh -c '$command' sh cache clear --host '$PUBLIC_HOST'" < /dev/null 2>&1)" || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "[deploy-qa-scriptahub] Purged the QA host cache of $PUBLIC_HOST."
+          elif [ "$status" -eq "$cli_refused" ]; then
+            echo "::warning::The QA host cache purge was not accepted ($(printf '%s' "${output##*$'\n'}" | tr -c 'A-Za-z0-9 .,:_-' '?')). Stored copies stay until their freshness ends."
+          else
+            echo "::error::QA host lock, container execution or SSH refused the purge (exit $status)."
+            exit "$status"
+          fi
 
       - name: Create summary
         if: always()

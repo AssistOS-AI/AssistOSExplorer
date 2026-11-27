@@ -28,39 +28,49 @@
                 <fieldset id="management-controls" class="management-controls" disabled hidden>
                     <legend class="visually-hidden">Authentication policy</legend>
                     <section class="userpersisto-panel" data-section="policy" data-admin-only>
-                        <div class="userpersisto-policy">
-                            <h2 class="userpersisto-card-title">Workspace authentication policy</h2>
-                            <div class="userpersisto-auth-methods-card">
-                                <div class="userpersisto-card-description">Administrator controls for everyone in this workspace. Choose the allowed sign-in methods and registration rules. The first to complete the initial password admin, a password sign-up (verified or direct) or a Google sign-in became the administrator; after that, self-registration governs public sign-up and new accounts receive the restricted selfRegistered role. Password sign-up is available without email delivery by default; requiring email verification at sign-up restores the emailed-code step and needs working email delivery. Manage your own password, passkeys and authenticator app under Sign-in &amp; security on My Account.</div>
-                                <div class="userpersisto-grid">
-                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="password"> Password</span></label>
-                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="emailCode"> Email code</span></label>
-                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="passkey"> Passkey</span></label>
-                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="totp"> TOTP</span></label>
-                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="google"> Google</span></label>
-                                    <label class="form-item"><span class="form-label"><input id="selfRegistrationEnabled" type="checkbox"> Self-registration enabled</span></label>
-                                    <label class="form-item"><span class="form-label"><input id="signupEmailVerificationRequired" type="checkbox"> Require email verification at sign-up</span></label>
-                                    <label class="form-item">
-                                        <span class="form-label">Additional allowed redirect origins (one per line)</span>
-                                        <textarea id="allowedRedirectOrigins" class="form-input" rows="3" spellcheck="false"></textarea>
-                                    </label>
-                                </div>
-                                <div id="emailDeliveryStatus" class="userpersisto-provider-status" role="status"></div>
-                                <div id="authPolicySource" class="userpersisto-card-description" role="status"></div>
-                                <div class="userpersisto-auth-methods-card" role="group" aria-labelledby="managedOriginsTitle">
+                        <div class="userpersisto-policy policy-layout">
+                            <div class="policy-column">
+                                <section class="userpersisto-auth-methods-card policy-card" aria-labelledby="policy-methods-title">
+                                    <h2 id="policy-methods-title">Sign-in methods</h2>
+                                    <p class="userpersisto-card-description">Choose how people can sign in. Keep at least one method enabled.</p>
+                                    <div class="policy-methods">
+                                        <label class="policy-method"><input type="checkbox" data-auth-method="password"><span><strong>Password</strong><small>Sign in with an account password.</small></span></label>
+                                        <label class="policy-method"><input type="checkbox" data-auth-method="emailCode"><span><strong>Email code</strong><small>Send a one-time code to the sign-in email.</small></span></label>
+                                        <label class="policy-method"><input type="checkbox" data-auth-method="passkey"><span><strong>Passkey</strong><small>Use a device or security key.</small></span></label>
+                                        <label class="policy-method"><input type="checkbox" data-auth-method="totp"><span><strong>Authenticator app (TOTP)</strong><small>Use a code from an authenticator app.</small></span></label>
+                                        <label class="policy-method"><input type="checkbox" data-auth-method="google"><span><strong>Google</strong><small>Sign in with a Google account.</small></span></label>
+                                    </div>
+                                    <div id="emailDeliveryStatus" class="userpersisto-provider-status" role="status"></div>
+                                </section>
+                                <section class="userpersisto-auth-methods-card policy-card" aria-labelledby="policy-registration-title">
+                                    <h2 id="policy-registration-title">Registration</h2>
+                                    <label class="policy-check"><input id="selfRegistrationEnabled" type="checkbox"><span>Self-registration enabled</span></label>
+                                    <label class="policy-check"><input id="signupEmailVerificationRequired" type="checkbox"><span>Require email verification at sign-up</span></label>
+                                    <details class="policy-help"><summary>How registration works</summary>
+                                        <div class="userpersisto-card-description">Administrator controls for everyone in this workspace. Choose the allowed sign-in methods and registration rules. The first to complete the initial password admin, a password sign-up (verified or direct) or a Google sign-in became the administrator; after that, self-registration governs public sign-up and new accounts receive the restricted selfRegistered role. Password sign-up is available without email delivery by default; requiring email verification at sign-up restores the emailed-code step and needs working email delivery. Manage your own password, passkeys and authenticator app under Sign-in &amp; security on My Account.</div>
+                                    </details>
+                                </section>
+                            </div>
+                            <div class="policy-column">
+                                <section class="userpersisto-auth-methods-card policy-card" aria-labelledby="policy-redirect-title">
+                                    <h2 id="policy-redirect-title">Redirect origins</h2>
+                                    <label class="form-item"><span class="form-label">Additional allowed redirect origins (one per line)</span><textarea id="allowedRedirectOrigins" class="form-input" rows="3" spellcheck="false"></textarea></label>
+                                </section>
+                                <section class="userpersisto-auth-methods-card policy-card" role="group" aria-labelledby="managedOriginsTitle">
                                     <div id="managedOriginsTitle" class="userpersisto-card-title">Workspace Router addresses</div>
                                     <div class="userpersisto-card-description">Read-only. Addresses published by the workspace Router binding are trusted automatically unless USERPERSISTO_TRUST_ROUTER_ORIGINS is false. They follow rebinding and port changes and are never saved in the additional origins above. Loopback addresses (localhost, 127.0.0.1 and [::1]) are always allowed.</div>
                                     <div id="managedOriginStatus" class="userpersisto-provider-status" role="status">Loading workspace Router addresses…</div>
                                     <div id="managedRedirectOrigins" class="userpersisto-provider-status" aria-label="Trusted workspace Router addresses"></div>
-                                </div>
-                                <div class="userpersisto-auth-methods-card">
-                                    <div class="userpersisto-card-title">Google sign-in</div>
+                                </section>
+                                <details class="userpersisto-auth-methods-card policy-card policy-provider">
+                                    <summary class="userpersisto-card-title">Google sign-in · Provider details</summary>
                                     <div id="googleProviderStatus" class="userpersisto-provider-status" role="status">Loading Google readiness…</div>
                                     <div class="userpersisto-card-description">A workspace operator configures the Google Web application credentials through Ploinky. After setup, new Google accounts receive selfRegistered. Linking an existing account requires explicit consent plus fresh proof: a link code sent to its verified sign-in email, its password, or an enrolled passkey or authenticator app. When email codes are enabled, a Google account that is authoritative for that exact verified email may link with consent alone.</div>
-                                </div>
-                                <div class="userpersisto-actions">
-                                    <button type="button" class="general-button" data-local-action="saveAuthPolicy">Save authentication policy</button>
-                                </div>
+                                </details>
+                            </div>
+                            <div class="policy-footer">
+                                <div id="authPolicySource" class="userpersisto-card-description" role="status"></div>
+                                <button type="button" class="general-button" data-local-action="saveAuthPolicy">Save authentication policy</button>
                             </div>
                         </div>
                     </section>

@@ -40,9 +40,12 @@ export function actorContext(authInfo = {}) {
         && caller.id === invocation.actor.id && caller.id === invocation.subject ? caller.id : '';
     const agentDependency = agentId && Array.isArray(invocation.scope)
         && invocation.scope.includes('agent-dependency');
+    const delegatedUser = authInfo.user && caller?.kind === 'agent'
+        && invocation.delegation?.jti && invocation.delegation.sourceAgentId === caller.id;
     return {
         ...(agentId ? { agentId } : {}),
         ...(agentDependency ? { agentDependency: true } : {}),
+        ...(delegatedUser ? { delegatedUser: true } : {}),
         actorUserId: String(userId).replace(/^user:/, ''),
         actorRoles: roles.map(String),
     };

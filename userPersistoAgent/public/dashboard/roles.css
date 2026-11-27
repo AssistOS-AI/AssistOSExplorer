@@ -1,7 +1,7 @@
-.roles-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+.roles-toolbar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .roles-search { flex: 1; min-width: 180px; }
-.roles-layout { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); align-items: start; gap: 24px; }
-.roles-list { display: grid; gap: 12px; max-height: 60vh; overflow: auto; padding: 3px; }
+.roles-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.roles-list { display: grid; gap: 12px; }
 .role-card { padding: 18px; border: 1px solid var(--account-border); background: var(--account-surface); border-radius: 10px; }
 .role-card h2 { font-size: 16px; overflow-wrap: anywhere; }
 .role-card .card-heading { align-items: start; flex-wrap: wrap; }
@@ -12,7 +12,7 @@
 #role-form { display: grid; gap: 14px; }
 #role-form > .card-description { margin: 0; }
 #role-name:read-only { background: var(--account-soft); }
-#role-save { justify-self: start; }
+#role-save { justify-self: end; }
 .role-permission-picker { min-width: 0; }
 .role-permission-picker summary { padding: 11px 14px; border: 1px solid var(--account-border-strong); border-radius: 7px; cursor: pointer; }
 .role-permission-menu { margin-top: 8px; padding: 12px; border: 1px solid var(--account-border); border-radius: 7px; }
@@ -27,3 +27,40 @@
 .role-delete-confirmation { margin-top: 12px; padding: 12px; border: 1px solid var(--account-border); border-radius: 7px; overflow-wrap: anywhere; }
 .role-delete-confirmation .roles-toolbar { margin-bottom: 0; }
 @media (max-width: 800px) { .roles-layout { grid-template-columns: 1fr; } }
+
+#roles-root .page-heading-copy { flex: 1; }
+#roles-root .page-heading { margin-bottom: 12px; }
+#roles-heading-search { width: 540px; }
+.roles-search-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.roles-search-row > .userpersisto-user-search { flex: 1; min-width: 180px; }
+.roles-search-row > .roles-toolbar { flex: none; margin: 0; padding: 0; border: 0; min-width: 0; }
+.roles-search-row .general-button { white-space: nowrap; }
+#roles-root #roles-status:empty { display: none; }
+.role-card-heading { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: start; gap: 12px; }
+.role-card-avatar { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 8px; background: var(--account-soft); font-size: 14px; font-weight: 650; }
+.role-card-copy { min-width: 0; }
+.role-card h2 { margin: 0; line-height: 1.4; }
+.role-card-copy p { margin: 4px 0 0; font-size: 13px; }
+.role-card-copy .role-card-meta { font-size: 12px; }
+.role-editor { position: relative; padding: 16px 0 0; margin-top: 14px; border-top: 1px solid var(--account-border); }
+.role-editor[hidden] { display: none; }
+#role-editor-home:empty { display: none; }
+#role-editor-home > .role-editor:not([hidden]) { padding: 18px; margin: 0 0 12px; border: 1px solid var(--account-border); border-radius: 10px; background: var(--account-surface); }
+.role-editor-close { position: absolute; right: 0; top: 10px; font-size: 22px; }
+#role-editor-home .role-editor-close { right: 12px; }
+#role-editor-title { margin: 0 40px 6px 0; font-size: 16px; }
+#role-editor-note { margin: 0 40px 16px 0; }
+#role-form { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+#role-form > .form-item:has(#role-description) { grid-column: 2; grid-row: 1 / 3; }
+#role-name-help { grid-column: 1; }
+#role-form > .role-permission-picker, #role-form > .card-description:not(#role-name-help), #role-save { grid-column: 1 / -1; }
+@media (max-width: 800px) { #roles-root .page-heading { flex-wrap: wrap; } }
+@media (max-width: 520px) {
+    .roles-search-row { flex-wrap: wrap; }
+    .roles-search-row > .roles-toolbar { margin-left: auto; }
+    .role-card { padding: 14px; }
+    .role-card-heading { grid-template-columns: 40px minmax(0, 1fr); }
+    .role-card-heading > button { grid-column: 2; justify-self: end; }
+    #role-form { grid-template-columns: minmax(0, 1fr); }
+    #role-form > .form-item:has(#role-description) { grid-column: 1; grid-row: auto; }
+}

@@ -26,8 +26,9 @@ export async function listCodingSessions(home, input, { alaRoot }) {
     if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.length > 4096) throw fail('INVALID_INPUT', 'Invalid folder');
     const catalog = await loadSessionCatalog(alaRoot, codingAgent);
     if (!catalog) return { sessions: [] };
-    const sessions = await catalog.listInteractiveSessions({ home, cwd, limit: SESSION_LIST_LIMIT });
-    return { sessions: sessions.filter(session => NATIVE_SESSION_ID.test(session.id)) };
+    const sessions = await catalog.listInteractiveSessions({ home, cwd, limit: SESSION_LIST_LIMIT, ...(input.all === true ? { all: true } : {}) });
+    return { sessions: sessions.filter(session => NATIVE_SESSION_ID.test(session.id)),
+        ...(catalog.sessionBindingSupported ? { sessionBindingSupported: true } : {}) };
 }
 
 // The native arguments that open a new conversation, under an identifier chosen in advance when the coding
@@ -47,4 +48,10 @@ export async function codingSessionArguments(alaRoot, codingAgent, { resume = nu
 
 export async function presetsSessionId(alaRoot, codingAgent) {
     return (await loadSessionCatalog(alaRoot, codingAgent))?.presetSessionId === true;
+}
+
+export async function codingSessionInterrupt(alaRoot, codingAgent) {
+    const { getAgent } = await import(pathToFileURL(path.join(alaRoot, 'src/coding-agents/registry.mjs')).href);
+    const input = getAgent(codingAgent)?.nativeInterrupt;
+    return typeof input === 'string' && input.length <= 8 ? input : null;
 }

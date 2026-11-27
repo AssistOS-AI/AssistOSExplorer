@@ -72,6 +72,13 @@ const REVIEWED = [
     ['tests/smoke/lib/qa-source-inventory.test.mjs', /git\(tooling, '(?:update-index|rev-parse|config)'/, 5, 'temporary inventory fixture repository on the runner'],
 
     ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'config', '--add', 'remote\.origin\.url', 'https:\/\/example\.invalid\/active'\);$/, 1, 'temporary inventory fixture repository'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'add', 'agent'\); git\(source, 'commit', '-qm', 'agent'\);$/, 2, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(catalog, 'add', 'skills'\); git\(catalog, 'commit', '-qm', 'skill'\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'add', '\.agents\/\.ploinky-skill-exports\.json'\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'reset', '-q', 'HEAD', '--', '\.agents\/\.ploinky-skill-exports\.json'\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(catalog, 'rm', '-q', 'skills\/example\/SKILL\.md'\); git\(catalog, 'commit', '-qm', 'remove skill'\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'config', 'extensions\.worktreeConfig', 'true'\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
+    ['tests/smoke/lib/qa-source-inventory.test.mjs', /^git\(source, 'config', '--worktree', 'core\.excludesFile', excludes\);$/, 1, 'temporary default-skill export or worktree configuration fixture'],
 
 ];
 

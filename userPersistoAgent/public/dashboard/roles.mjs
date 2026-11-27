@@ -40,11 +40,11 @@ export class RolesPage {
         this.document = document;
         this.host = host;
         this.callTool = callTool;
-        this.state = { profile: null, roles: [], permissions: [], roleId: null, start: 0, busy: false, status: '' };
+        this.state = { profile: null, roles: [], permissions: [], roleId: null, editorOpen: false, start: 0, busy: false, status: '' };
         this.disposed = false;
         this.generation = 0;
         this.nodes = Object.fromEntries([
-            'roles-root', 'roles-controls', 'roles-login', 'roles-status', 'roles-search', 'roles-list',
+            'role-editor-home', 'roles-refresh', 'roles-toolbar-controls', 'roles-heading-search', 'roles-clear', 'roles-root', 'roles-controls', 'roles-login', 'roles-status', 'roles-search', 'roles-list',
             'roles-previous', 'roles-next', 'roles-page', 'role-editor', 'role-editor-title', 'role-editor-note',
             'role-form', 'role-name', 'role-description', 'role-permission-picker', 'role-permission-summary',
             'role-permission-search', 'role-permissions', 'role-permissions-empty', 'role-save',
@@ -70,10 +70,17 @@ export class RolesPage {
         updateAccountNavigation(this.document, this.state.profile);
         this.nodes['roles-controls'].hidden = !allowed;
         this.nodes['roles-controls'].disabled = !allowed || this.state.busy;
+        this.nodes['roles-toolbar-controls'].disabled = !allowed || this.state.busy;
         this.nodes['roles-login'].hidden = !!this.state.profile;
+        this.nodes['roles-heading-search'].hidden = !allowed;
+        this.nodes['roles-refresh'].hidden = !allowed;
+        this.nodes['roles-refresh'].disabled = !allowed || this.state.busy;
     }
 
     clearAccess(profile = null) {
+        this.nodes['role-editor-home'].append?.(this.nodes['role-editor']);
+        this.nodes['role-editor'].hidden = true;
+        this.state.editorOpen = false;
         this.generation++;
         this.state.profile = profile;
         this.state.roles = [];
@@ -124,7 +131,7 @@ export class RolesPage {
         try {
             if (!await this.checkAccess(generation)) return;
             if (await this.loadCatalog(generation)) {
-                this.editRole(null);
+                this.editRole(null, false);
                 this.setStatus('');
             }
         } catch (error) {
@@ -151,6 +158,10 @@ export class RolesPage {
     }
 
     renderRoles() {
+        const editor = this.nodes['role-editor'];
+        this.nodes['role-editor-home'].append?.(editor);
+        editor.hidden = !this.state.editorOpen;
+        this.nodes['roles-clear'].hidden = !this.nodes['roles-search'].value;
         const roles = this.filteredRoles();
         const lastStart = Math.max(0, Math.floor((roles.length - 1) / PAGE_SIZE) * PAGE_SIZE);
         this.state.start = Math.min(this.state.start, lastStart);
@@ -158,13 +169,19 @@ export class RolesPage {
         this.nodes['roles-list'].innerHTML = page.map((role) => {
             const builtin = isBuiltin(role);
             const capabilities = role.capabilities || [];
-            return `<article class="role-card"${role.id === this.state.roleId ? ' aria-current="true"' : ''}>
-                <div class="card-heading"><h2>${escapeHtml(role.name)}</h2>${builtin ? '<span class="pill">Built-in</span>' : ''}</div>
+            return `<article class="role-card" data-role-id="${escapeHtml(role.id)}"${role.id === this.state.roleId ? ' aria-current="true"' : ''}>
+                <div class="role-card-heading"><div class="role-card-avatar" aria-hidden="true">${escapeHtml(Array.from(role.name || 'R')[0].toLocaleUpperCase())}</div><div class="role-card-copy"><h2>${escapeHtml(role.name)}</h2>
                 <p class="card-description">${escapeHtml(role.description || 'No description.')}</p>
-                <p class="card-description">${escapeHtml(role.userCount || 0)} users · ${capabilities.length} permissions</p>
-                <button type="button" class="gray-button" data-role-action="edit" data-role-id="${escapeHtml(role.id)}">${builtin ? 'View permissions' : 'Edit role'}</button>
+                <p class="card-description role-card-meta">${escapeHtml(role.userCount || 0)} users · ${capabilities.length} permissions${builtin ? ' · Built-in' : ''}</p></div>
+                <button type="button" class="userpersisto-user-manage" aria-expanded="${this.state.editorOpen && role.id === this.state.roleId}" aria-controls="role-editor" data-role-action="edit" data-role-id="${escapeHtml(role.id)}">${builtin ? 'View permissions' : 'Manage role'} <span aria-hidden="true">⌄</span></button></div>
             </article>`;
         }).join('') || '<p class="card-description">No matching roles.</p>';
+        if (this.state.editorOpen && this.state.roleId) {
+            const card = [...(this.nodes['roles-list'].querySelectorAll?.('.role-card') || [])]
+                .find(item => item.dataset?.roleId === this.state.roleId);
+            if (card) card.append(editor);
+            else editor.hidden = true;
+        }
         this.nodes['roles-page'].textContent = roles.length
             ? `${this.state.start + 1}–${Math.min(this.state.start + PAGE_SIZE, roles.length)} of ${roles.length} roles`
             : '0 roles';
@@ -172,7 +189,8 @@ export class RolesPage {
         this.nodes['roles-next'].disabled = this.state.start + PAGE_SIZE >= roles.length;
     }
 
-    editRole(role) {
+    editRole(role, open = true) {
+        this.state.editorOpen = open;
         this.state.roleId = role?.id || null;
         const builtin = isBuiltin(role);
         this.nodes['role-editor-title'].textContent = builtin ? 'Built-in role' : role ? 'Edit role' : 'Create role';
@@ -237,7 +255,7 @@ export class RolesPage {
             await this.callTool(name, args);
             if (!this.allowed() || generation !== this.generation || !await this.checkAccess(generation)) return;
             if (await this.loadCatalog(generation)) {
-                this.editRole(null);
+                this.editRole(null, false);
                 this.setStatus(success);
             }
         } catch (error) {
@@ -286,7 +304,7 @@ export class RolesPage {
         this.syncAccess();
         try {
             if (await this.checkAccess(generation) && await this.loadCatalog(generation)) {
-                this.editRole(null);
+                this.editRole(null, false);
                 this.setStatus('Roles refreshed.');
             }
         } catch (error) {
@@ -299,6 +317,7 @@ export class RolesPage {
 
     bind() {
         this.nodes['role-form'].addEventListener('submit', (event) => { event.preventDefault(); void this.save(); });
+        this.nodes['roles-search'].addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); this.state.start = 0; this.renderRoles(); } });
         this.nodes['roles-search'].addEventListener('input', () => { this.state.start = 0; this.renderRoles(); });
         this.nodes['role-permission-search'].addEventListener('input', () => this.filterPermissions());
         this.nodes['role-permissions'].addEventListener('change', () => this.updatePermissionSummary());
@@ -316,6 +335,11 @@ export class RolesPage {
             if (action === 'edit') {
                 const role = this.state.roles.find((item) => item.id === button.dataset.roleId);
                 if (role) { this.editRole(role); this.nodes['role-name'].focus(); }
+            }
+            if (action === 'close-editor') { this.state.editorOpen = false; this.renderRoles(); }
+            if (action === 'search' || action === 'clear-search') {
+                if (action === 'clear-search') this.nodes['roles-search'].value = '';
+                this.state.start = 0; this.renderRoles(); this.nodes['roles-search'].focus();
             }
             if (action === 'previous') { this.state.start = Math.max(0, this.state.start - PAGE_SIZE); this.renderRoles(); }
             if (action === 'next') { this.state.start += PAGE_SIZE; this.renderRoles(); }

@@ -180,8 +180,11 @@ test('user administration ignores authority and protected fields, deactivates re
     assert.equal(updated.response.status, 200);
     assert.equal(updated.data.result.displayName, 'Managed Reader');
     assert.equal(updated.data.result.email, 'managed@example.test', 'sign-in email is not an editable field');
-    assert.deepEqual(await getUserRoles(userId), ['user']);
+    assert.deepEqual(await getUserRoles(userId), ['admin']);
     assert.doesNotMatch(JSON.stringify(updated.data), /passwordHash|injected-hash/);
+    const invalid = await adminRequest('users/update', { body: { userId, displayName: 'Must not save', roles: ['missing-role'] } });
+    assert.equal(invalid.response.status, 400);
+    assert.equal((await getUserById(userId)).displayName, 'Managed Reader');
     const emailOnly = await adminRequest('users/update', { body: { userId, email: 'hijacked@example.test' } });
     assert.equal(emailOnly.response.status, 400);
     assert.equal((await getUserById(userId)).email, 'managed@example.test');
@@ -199,6 +202,7 @@ test('user administration ignores authority and protected fields, deactivates re
         ['users/delete', { userId: admin.id }],
         ['users/update', { userId: admin.id, status: 'blocked' }],
         ['users/roles', { userId: admin.id, roles: ['user'] }],
+        ['users/update', { userId: admin.id, displayName: 'Must not save', roles: ['user'] }],
     ]) {
         const result = await adminRequest(endpoint, { body });
         assert.equal(result.response.status, 400, endpoint);

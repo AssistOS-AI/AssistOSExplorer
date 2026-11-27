@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createWorkerControl } from './worker-control.mjs';
 import { RobotPaths } from './robot-paths.mjs';
 import { ToolCache } from './tool-cache.mjs';
 import { RuntimeBundle } from './runtime-bundle.mjs';
@@ -63,7 +64,8 @@ const collection = await toolCache.collectGarbage({ terminalStateDir: path.join(
     console.error(`[tool-cache] garbage collection failed: ${error?.code || 'FAILED'}`);
     return { cleanup: async () => {} };
 });
-const terminal = createTerminalProfiles({ paths, robots, toolCache, homeOperation, environment, runtimeBundle });
+const workerControl = createWorkerControl({ root: path.join(paths.dataDir, 'server-state', 'worker-control') });
+const terminal = createTerminalProfiles({ workerControl, paths, robots, toolCache, homeOperation, environment, runtimeBundle });
 const migrationReady = migration.start();
 const server = createRoboWorkServer({ robots, runs, environment, gui, terminal, internalToken, publicBasePath: PUBLIC_BASE_PATH,
     proxyHttp: proxySessionHttp, proxyWebSocket: proxySessionWebSocket });
@@ -103,7 +105,7 @@ async function close() {
     closing = (async () => {
         csvMailGit?.close();
         csvMailGit?.closeAllConnections();
-        server.close(); await runs.close(); await gui.shutdown(); await runtimeBundle.close(); await soulGateway.close(); await gitCredentials.sockets.close(); server.closeAllConnections();
+        server.close(); await workerControl.close(); await runs.close(); await gui.shutdown(); await runtimeBundle.close(); await soulGateway.close(); await gitCredentials.sockets.close(); server.closeAllConnections();
     })();
     return closing;
 }

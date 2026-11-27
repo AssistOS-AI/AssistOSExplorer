@@ -28,7 +28,7 @@ export class GitCredentialsPrompt {
             autocommitReposLoaded: false,
             autocommitIntervalMinutes: 15,
             autocommitRepos: [],
-            autocommitSelected: null,
+            autocommitSelected: [],
             showAgentRepos: false,
             autoresolveConflicts: false,
             autoresolveDirty: false,
@@ -811,7 +811,6 @@ export class GitCredentialsPrompt {
     }
 
     normalizeRepoSelection(list) {
-        if (list === null || list === undefined) return null;
         const selected = Array.isArray(list) ? list : [];
         return selected.map((entry) => String(entry || '').trim()).filter(Boolean);
     }
@@ -952,8 +951,7 @@ export class GitCredentialsPrompt {
             this.autocommitToggleAllInput.disabled = true;
             return;
         }
-        const selectedList = Array.isArray(this.state.autocommitSelected) ? this.state.autocommitSelected : null;
-        const selected = new Set(selectedList === null ? repoPaths : selectedList);
+        const selected = new Set(this.state.autocommitSelected);
         const selectedCount = repoPaths.reduce((count, repoPath) => count + (selected.has(repoPath) ? 1 : 0), 0);
         this.autocommitToggleAllInput.disabled = false;
         this.autocommitToggleAllInput.checked = selectedCount === repoPaths.length;
@@ -975,13 +973,7 @@ export class GitCredentialsPrompt {
             container.textContent = 'No repositories found.';
             return;
         }
-        const selectedList = Array.isArray(this.state.autocommitSelected)
-            ? this.state.autocommitSelected
-            : null;
-        const selected = new Set(
-            selectedList === null ? repos.map((repo) => repo.path) : selectedList
-        );
-        this.state.autocommitSelected = selectedList === null ? null : Array.from(selected);
+        const selected = new Set(this.state.autocommitSelected);
         const groups = [
             { title: 'Workspace Repositories', repos: repos.filter((repo) => repo.group !== 'agents') },
             { title: 'Agent Repositories', repos: repos.filter((repo) => repo.group === 'agents') }

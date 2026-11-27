@@ -232,6 +232,37 @@ test('account discovery uses the existing tool catalog when Explorer has not loa
     assert.deepEqual(calls, [{ agent: 'explorer', tool: 'collect_ide_plugins', args: {} }]);
 });
 
+test('a new Settings tab discovers the account before checking administration permissions', async (t) => {
+    const originalWindow = globalThis.window, originalFetch = globalThis.fetch;
+    let releaseCatalog;
+    const calls = [];
+    globalThis.window = {
+        assistOS: { rawRuntimePlugins: null, runtimePlugins: null },
+        webSkel: { appServices: { callTool(_agent, tool) {
+            calls.push(tool);
+            return new Promise(resolve => { releaseCatalog = resolve; });
+        } } },
+    };
+    globalThis.fetch = async (url) => { calls.push(url); return response(['admin.users.manage']); };
+    t.after(() => { globalThis.window = originalWindow; globalThis.fetch = originalFetch; });
+    const controller = {
+        state: { activeTab: 'agents', usersAccess: false, accountSettingsAccess: false },
+        requestedInitialTab: 'users',
+        updateTabUI() {},
+    };
+    const pending = usersController.refreshUsersAccess.call(controller);
+    assert.deepEqual(calls, ['collect_ide_plugins']);
+    assert.equal(controller.state.usersAccess, false);
+    releaseCatalog({ json: { agentSettings: [{ key: 'userpersisto-settings', settingsUrl: dashboard }] } });
+    await pending;
+    assert.deepEqual(calls, ['collect_ide_plugins', dashboard + 'api/profile']);
+    assert.equal(controller.state.usersAccess, true);
+    assert.equal(controller.state.activeTab, 'users');
+    assert.equal(controller.requestedInitialTab, '');
+    const bootstrap = await fs.readFile(new URL('../../main.js', import.meta.url), 'utf8');
+    assert.match(bootstrap, /assistOS\.rawRuntimePlugins = null;/);
+});
+
 test('missing account metadata shows an error and does not contact a guessed profile endpoint', async (t) => {
     const originalFetch = globalThis.fetch, originalWindow = globalThis.window;
     globalThis.window = { assistOS: { rawRuntimePlugins: { agentSettings: [] } } };

@@ -23,14 +23,33 @@ function fixture({ userId = 'member', roles = ['user'], fields = {} } = {}) {
     return { panel, row, inputs, buttons, calls };
 }
 
-test('user details preserve empty optional fields, trim edits, submit status independently of roles, and never include email', async () => {
+test('clear search is visible only for nonempty input and restores the first page and input focus', async () => {
+    const { panel } = fixture();
+    let focused = false;
+    const pages = [];
+    panel.userSearchInput = { value: '', focus: () => { focused = true; } };
+    panel.userSearchClearButton = { hidden: false };
+    panel.loadUsersPage = async (start) => { pages.push(start); };
+    panel.syncUserSearchClear();
+    assert.equal(panel.userSearchClearButton.hidden, true);
+    panel.userSearchInput.value = 'Alex';
+    await panel.searchUsers();
+    assert.equal(panel.userSearchClearButton.hidden, false);
+    await panel.clearUserSearch();
+    assert.equal(panel.userSearchInput.value, '');
+    assert.equal(panel.userSearchClearButton.hidden, true);
+    assert.equal(focused, true);
+    assert.deepEqual(pages, [0, 0]);
+});
+
+test('one user save includes optional details, status and roles, and never includes email', async () => {
     const { panel, row, calls } = fixture({ fields: { username: '', displayName: '', status: 'blocked' } });
-    await panel.updateUser(row, 'details');
+    await panel.updateUser(row);
     assert.deepEqual(calls, [
-        { name: 'userpersisto_user_update', args: { userId: 'member', username: '', displayName: '', status: 'blocked' } },
+        { name: 'userpersisto_user_update', args: { userId: 'member', username: '', displayName: '', status: 'blocked', roles: ['user'] } },
         { refresh: true },
     ]);
-    assert.equal(panel.state.status, 'User details saved.');
+    assert.equal(panel.state.status, 'User changes saved.');
     assert.ok(!Object.hasOwn(calls[0].args, 'email'), 'details updates never send an email field');
 });
 
@@ -50,8 +69,11 @@ test('user rows show roles, status and mailbox verification without displaying t
         { id: 'USER.8', email: 'unverified@example.test', roles: ['user'], status: 'active', emailVerifiedAt: '' },
     ];
     panel.renderUsers();
-    assert.match(panel.usersListEl.innerHTML, /<p class="userpersisto-row-meta">Roles: admin, user · Status: active · Email: verified<\/p>/);
-    assert.match(panel.usersListEl.innerHTML, /<p class="userpersisto-row-meta">Roles: user · Status: active · Email: unverified<\/p>/);
+    assert.match(panel.usersListEl.innerHTML, /class="userpersisto-user-role">admin<\/span>/);
+    assert.match(panel.usersListEl.innerHTML, /class="userpersisto-user-role">user<\/span>/);
+    assert.match(panel.usersListEl.innerHTML, /data-status="active"/);
+    assert.match(panel.usersListEl.innerHTML, /class="userpersisto-user-verification">Email verified<\/span>/);
+    assert.match(panel.usersListEl.innerHTML, /class="userpersisto-user-verification">Email not verified<\/span>/);
     assert.match(panel.usersListEl.innerHTML, /data-user-id="USER\.7"/, 'the row still carries the ID for updates');
     assert.doesNotMatch(panel.usersListEl.innerHTML, />[^<]*USER\.7/, 'no visible text shows the ID');
 });
@@ -64,8 +86,8 @@ test('role editing preserves custom and multiple selected roles and renders them
     assert.match(panel.usersListEl.innerHTML, /value="book-reviewer" checked/);
     assert.match(panel.usersListEl.innerHTML, /value="user" checked/);
     assert.doesNotMatch(panel.usersListEl.innerHTML, /<script>|value="" autofocus/);
-    await panel.updateUser(row, 'roles');
-    assert.deepEqual(calls[0], { name: 'userpersisto_user_roles_update', args: { userId: 'member', roles } });
+    await panel.updateUser(row);
+    assert.deepEqual(calls[0], { name: 'userpersisto_user_update', args: { userId: 'member', roles } });
 });
 
 test('the role dropdown includes catalog roles not yet assigned to the displayed user', async () => {
@@ -136,7 +158,7 @@ test('filtering many roles retains selections outside the visible results', () =
 
 test('saving an empty selection reports an error without sending a role update', async () => {
     const { panel, row, calls } = fixture({ roles: [] });
-    await panel.updateUser(row, 'roles');
+    await panel.updateUser(row);
     assert.equal(calls.length, 0);
     assert.equal(panel.state.status, 'Select at least one role.');
 });
@@ -144,8 +166,6 @@ test('saving an empty selection reports an error without sending a role update',
 test('the create-user form and password reset are no longer available from the dashboard', async () => {
     const { panel, row, calls } = fixture({ fields: { username: 'x' } });
     assert.equal(typeof panel.createUser, 'undefined', 'createUser() was removed with the create-user form');
-    await panel.updateUser(row, 'password');
-    assert.equal(calls.length, 0, 'a retired action performs no update and issues no tool call');
 });
 
 test('the user editor never renders a password field or a password reset action', () => {
@@ -160,7 +180,7 @@ test('the user editor never renders a password field or a password reset action'
 test('validation failures retain edited fields and restore row controls for retry', async () => {
     const { panel, row, inputs, buttons, calls } = fixture({ fields: { username: 'edited', displayName: 'Edited Name' } });
     panel.callTool = async () => { throw new Error('username_already_exists'); };
-    await panel.updateUser(row, 'details');
+    await panel.updateUser(row);
     assert.deepEqual(inputs.map((input) => input.value), ['edited', 'Edited Name']);
     assert.equal(panel.state.status, 'username_already_exists');
     assert.equal(panel.state.userBusy, false);
@@ -168,7 +188,7 @@ test('validation failures retain edited fields and restore row controls for retr
     assert.equal(calls.length, 0, 'failed writes do not refresh and discard edits');
     panel.callTool = async () => { calls.push('unexpected'); };
     inputs[0].reportValidity = () => false;
-    await panel.updateUser(row, 'details');
+    await panel.updateUser(row);
     assert.equal(calls.length, 0, 'invalid browser fields never submit');
 });
 
@@ -176,10 +196,10 @@ test('one in-flight user write blocks repeated and competing actions', async () 
     const { panel, row, buttons, calls } = fixture({ fields: { username: 'member' } });
     let complete;
     panel.callTool = (name, args) => { calls.push({ name, args }); return new Promise((resolve) => { complete = resolve; }); };
-    const pending = panel.updateUser(row, 'details');
+    const pending = panel.updateUser(row);
     assert.deepEqual(buttons.map((button) => button.disabled), [true, true]);
-    await panel.updateUser(row, 'details');
-    await panel.updateUser(row, 'roles');
+    await panel.updateUser(row);
+    await panel.updateUser(row);
     assert.equal(calls.length, 1);
     complete({ ok: true });
     await pending;
@@ -194,12 +214,12 @@ test('authorization errors clear stale user rows and stop subsequent mutations',
     panel.state.selfRegisteredCount = 8;
     let requests = 0;
     panel.callTool = async () => { requests++; throw Object.assign(new Error('admin_required'), { code: 'admin_required', statusCode: 403 }); };
-    await panel.updateUser(row, 'details');
+    await panel.updateUser(row);
     assert.equal(panel.state.authProfile, null);
     assert.deepEqual(panel.state.users, []);
     assert.equal(panel.state.selfRegisteredCount, 0);
     assert.doesNotMatch(panel.usersListEl.innerHTML, /private-account/);
-    await panel.updateUser(row, 'roles');
+    await panel.updateUser(row);
     assert.equal(requests, 1);
 });
 
@@ -213,12 +233,30 @@ test('editing the current account rechecks authority before another write', asyn
         calls.push({ name, args });
         return name === 'userpersisto_profile_get' ? { user: { id: 'manager' }, capabilities: [] } : { ok: true };
     };
-    await panel.updateUser(row, 'roles');
-    assert.deepEqual(calls.map((call) => call.name), ['userpersisto_user_roles_update', 'userpersisto_profile_get']);
+    await panel.updateUser(row);
+    assert.deepEqual(calls.map((call) => call.name), ['userpersisto_user_update', 'userpersisto_profile_get']);
     assert.deepEqual(panel.state.users, []);
     assert.equal(panel.state.usersTotal, 0);
     assert.equal(panel.state.selfRegisteredCount, 0);
     assert.doesNotMatch(panel.usersListEl.innerHTML, /private-account|private@example/);
-    await panel.updateUser(row, 'details');
+    await panel.updateUser(row);
     assert.equal(calls.length, 2, 'authority is rechecked, so a further write after demotion is blocked');
+});
+
+
+test('user cards summarize identity and disclose editing without changing account action contracts', () => {
+    const { panel } = fixture();
+    panel.state.users = [{ id: 'USER.9', displayName: 'Alex <Admin>', email: 'alex@example.test', roles: ['admin'], status: 'blocked' }];
+    panel.renderUsers();
+    const html = panel.usersListEl.innerHTML;
+    assert.match(html, /<h3 class="userpersisto-row-title">Alex &lt;Admin&gt;<\/h3>/);
+    assert.match(html, /data-status="blocked"/);
+    assert.match(html, /<div class="userpersisto-user-management" hidden>/);
+    assert.match(html, /class="userpersisto-user-manage" aria-expanded="false" aria-controls="user-editor-USER.9"/);
+    assert.match(html, /<form id="user-editor-USER.9" class="userpersisto-user-form">/);
+    assert.match(html, /type="submit" class="general-button">Save changes/);
+    assert.doesNotMatch(html, /Save details|Save roles/);
+    assert.match(html, /data-user-field="username"/);
+    assert.match(html, /data-role-picker/);
+    assert.doesNotMatch(html, /<Admin>/);
 });

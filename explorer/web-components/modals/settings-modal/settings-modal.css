@@ -82,6 +82,8 @@ settings-modal .modal-actions {
     background: var(--surface);
 }
 
+settings-modal .modal-actions[hidden],
+settings-modal[data-active-tab="theme"] .modal-actions,
 settings-modal[data-active-tab="users"] .modal-actions {
     display: none !important;
 }
@@ -614,7 +616,8 @@ settings-modal .plugin-settings-open {
     gap: 8px;
 }
 
-settings-modal [data-section="plugins"] .plugin-settings-toggle {
+settings-modal [data-section="plugins"] .plugin-settings-toggle,
+settings-modal [data-section="cache"] .plugin-settings-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: flex-start;
@@ -625,7 +628,8 @@ settings-modal [data-section="plugins"] .plugin-settings-toggle {
     background: color-mix(in srgb, var(--surface) 86%, var(--bg) 14%);
 }
 
-settings-modal [data-section="plugins"] .plugin-settings-toggle.enabled {
+settings-modal [data-section="plugins"] .plugin-settings-toggle.enabled,
+settings-modal [data-section="cache"] .plugin-settings-toggle.enabled {
     border-color: color-mix(in srgb, var(--accent) 54%, var(--border));
     background: color-mix(in srgb, var(--accent) 14%, var(--surface));
     color: var(--accent);
@@ -654,12 +658,14 @@ settings-modal .plugin-settings-switch-thumb {
     transition: transform 120ms ease, background 120ms ease;
 }
 
-settings-modal [data-section="plugins"] .plugin-settings-toggle.enabled .plugin-settings-switch-track {
+settings-modal [data-section="plugins"] .plugin-settings-toggle.enabled .plugin-settings-switch-track,
+settings-modal [data-section="cache"] .plugin-settings-toggle.enabled .plugin-settings-switch-track {
     background: var(--accent);
     border-color: var(--accent);
 }
 
-settings-modal [data-section="plugins"] .plugin-settings-toggle.enabled .plugin-settings-switch-thumb {
+settings-modal [data-section="plugins"] .plugin-settings-toggle.enabled .plugin-settings-switch-thumb,
+settings-modal [data-section="cache"] .plugin-settings-toggle.enabled .plugin-settings-switch-thumb {
     transform: translateX(18px);
     background: var(--white);
 }
