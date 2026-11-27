@@ -28,6 +28,23 @@ const publicClient = (index) => ({
     post_logout_redirect_uris: [], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], scope: 'openid', enabled: true
 });
 
+test('application editor opens on request and closes with cleared fields and secrets', () => {
+    const panel = fixture();
+    panel.applicationEditor = { hidden: true };
+    panel.newApplication();
+    assert.equal(panel.applicationEditor.hidden, false);
+    panel.applicationInputs.client_name.value = 'Draft';
+    panel.showApplicationSecret('temporary-secret');
+    panel.closeApplicationEditor();
+    assert.equal(panel.applicationEditor.hidden, true);
+    assert.equal(panel.applicationInputs.client_name.value, '');
+    assert.equal(panel.applicationSecretInput.value, '');
+    assert.equal(panel.applicationSecretBox.hidden, true);
+    panel.state.applicationBusy = true;
+    panel.newApplication();
+    assert.equal(panel.applicationEditor.hidden, true);
+});
+
 test('applications create/edit use structured metadata and show a confidential secret only once', async () => {
     const panel = fixture();
     const calls = [];

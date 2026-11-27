@@ -86,6 +86,7 @@ const HANDLERS = {
             username: args.username,
             displayName: args.displayName,
             status: args.status,
+            roles: args.roles,
         }, { actorId });
     },
     userpersisto_user_roles_update: async (args, context) => {

@@ -15,7 +15,7 @@ textarea.form-input { resize: vertical; }
 .gray-button { background: var(--account-soft); color: var(--account-text); }
 button:disabled { opacity: .55; cursor: default; }
 .userpersisto-list { max-height: none; overflow: visible; }
-.userpersisto-user-fields { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.userpersisto-user-fields { display: grid; align-items: start; gap: 16px 20px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .userpersisto-row.user-editor { display: grid; grid-template-columns: 1fr; gap: 16px; padding: 20px; background: var(--account-surface); }
 .userpersisto-policy { border: 0; }
 .userpersisto-policy > h2 { margin: 0 0 16px; }
@@ -36,3 +36,134 @@ button:disabled { opacity: .55; cursor: default; }
 .userpersisto-role-choices label[hidden], .userpersisto-role-menu [hidden] { display: none; }
 .userpersisto-role-choices span { overflow-wrap: anywhere; }
 .userpersisto-role-choices input { width: auto; min-height: auto; }
+
+/* Compact account summaries; editing is disclosed per user rather than filling the list. */
+#usersList { gap: 12px; }
+#usersList .userpersisto-user-card {
+    gap: 0;
+    border-color: var(--account-border);
+    border-radius: 10px;
+    padding: 18px 20px;
+}
+.userpersisto-user-header { display: grid; grid-template-columns: minmax(48px, auto) minmax(0, 1fr) auto; grid-template-rows: auto auto auto; align-items: start; gap: 4px 12px; min-width: 0; }
+.userpersisto-user-avatar-group { display: contents; }
+.userpersisto-user-avatar {
+    display: grid; place-items: center; grid-column: 1; grid-row: 1 / 3; justify-self: center; width: 40px; height: 40px;
+    border-radius: 8px; background: var(--account-soft); color: var(--account-text);
+    font-size: 14px; font-weight: 650;
+}
+.userpersisto-user-identity { display: contents; }
+.userpersisto-user-identity .userpersisto-row-title { grid-column: 2; grid-row: 1; min-width: 0; margin: 0; font-size: 16px; line-height: 1.4; overflow-wrap: anywhere; }
+.userpersisto-user-email { grid-column: 2; grid-row: 2; min-width: 0; margin: 0; color: var(--account-muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.userpersisto-user-status { grid-column: 1; grid-row: 3; align-self: baseline; justify-self: center; white-space: nowrap; color: var(--account-muted); font-size: 11px; line-height: 1.4; }
+.userpersisto-user-status[data-status="active"] { color: var(--account-success); }
+.userpersisto-user-status[data-status="blocked"] { color: var(--account-danger); }
+.userpersisto-user-status > span { margin-right: 4px; font-size: 8px; }
+.userpersisto-user-meta { display: flex; grid-column: 2; grid-row: 3; align-self: baseline; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; min-width: 0; }
+.userpersisto-user-roles { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.userpersisto-user-header > .userpersisto-user-manage { grid-column: 3; grid-row: 1; }
+.userpersisto-user-meta-label { color: var(--account-muted); font-size: 12px; }
+.userpersisto-user-role { padding: 3px 8px; border-radius: 4px; background: var(--account-soft); color: var(--account-text); font-size: 12px; overflow-wrap: anywhere; }
+.userpersisto-user-verification { color: var(--account-muted); font-size: 12px; }
+.userpersisto-user-management { min-width: 0; }
+.userpersisto-user-manage { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--account-link); cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; line-height: 24px; white-space: nowrap; }
+.userpersisto-user-manage:hover { text-decoration: underline; text-underline-offset: 3px; }
+.userpersisto-user-manage:focus-visible { outline: 2px solid var(--account-primary); outline-offset: 4px; }
+.userpersisto-user-management:not([hidden]) { margin-top: 14px; border-top: 1px solid var(--account-border); }
+.userpersisto-user-save { display: flex; justify-content: flex-end; }
+.userpersisto-user-management .userpersisto-role-picker { max-width: none; }
+.userpersisto-user-form .userpersisto-role-picker > summary { min-height: 40px; padding: 9px 11px; line-height: 20px; }
+@media (max-width: 520px) {
+    #usersList .userpersisto-user-card { padding: 14px; }
+    .userpersisto-user-header { column-gap: 10px; }
+}
+
+.userpersisto-user-form { display: grid; gap: 20px; min-width: 0; padding-top: 16px; }
+
+#management-root[data-initial-panel="users"] .page-heading-copy { flex: 1; }
+.users-heading-actions { display: flex; align-items: flex-start; gap: 16px; min-width: 0; }
+.users-search-group { width: 400px; max-width: 100%; min-width: 0; }
+.users-search-group[hidden] { display: none; }
+.page-heading .users-search-description { margin: 6px 0 0; color: var(--account-muted); font-size: 12px; line-height: 1.4; }
+.users-title-row { display: flex; align-items: center; gap: 8px; }
+.users-account-help { position: relative; color: var(--account-muted); font-size: 12px; }
+.users-account-help > summary { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 4px; cursor: pointer; list-style: none; }
+.users-account-help > summary::-webkit-details-marker { display: none; }
+.users-account-help > summary svg { width: 18px; height: 18px; }
+.users-account-help > summary:hover { background: var(--account-soft); color: var(--account-text); }
+.users-account-help > summary:focus-visible { outline: 2px solid var(--account-primary); outline-offset: 2px; }
+.page-heading .users-account-help p { position: absolute; z-index: 3; top: 100%; left: -72px; width: min(300px, calc(100vw - 64px)); margin: 6px 0 0; padding: 12px; border: 1px solid var(--account-border); border-radius: 7px; background: var(--account-surface); box-shadow: 0 8px 24px var(--account-shadow); color: var(--account-text); font-size: 12px; line-height: 1.5; }
+#management-root[data-initial-panel="users"] .page-heading { margin-bottom: 12px; }
+#management-root[data-initial-panel="users"] .userpersisto-status:empty { display: none; }
+.userpersisto-user-search { display: flex; align-items: center; gap: 2px; width: 100%; padding: 3px; border: 1px solid var(--account-border-strong); border-radius: 7px; background: var(--account-surface); }
+.userpersisto-user-search[hidden], .userpersisto-search-icon[hidden] { display: none; }
+.userpersisto-user-search:focus-within { outline: 2px solid var(--account-primary); outline-offset: 2px; }
+.userpersisto-user-search .form-input { flex: 1; width: 0; min-height: 36px; border: 0; padding: 7px 8px; background: transparent; outline: none; }
+.userpersisto-user-search input::-webkit-search-cancel-button { appearance: none; }
+.userpersisto-search-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 36px; width: 36px; height: 36px; padding: 8px; border: 0; border-radius: 4px; background: transparent; color: var(--account-link); cursor: pointer; }
+.userpersisto-search-icon svg { width: 20px; height: 20px; }
+.userpersisto-search-icon:hover { background: var(--account-soft); }
+.userpersisto-search-icon:focus-visible { outline: 2px solid var(--account-primary); outline-offset: -2px; }
+@media (max-width: 800px) {
+    #management-root[data-initial-panel="users"] .page-heading { flex-wrap: wrap; }
+    .users-heading-actions { width: 100%; }
+    .users-search-group { flex: 1; width: auto; }
+}
+
+#management-root[data-initial-panel="applications"] .page-heading { margin-bottom: 12px; }
+#management-root[data-initial-panel="applications"] .userpersisto-status:empty { display: none; }
+#management-root[data-initial-panel="applications"] .page-heading-copy { flex: 1; }
+.application-provider-info { color: var(--account-muted); font-size: 12px; }
+.application-provider-info > summary { cursor: pointer; width: fit-content; }
+.application-provider-info .userpersisto-provider-status { padding: 10px 0; }
+.application-editor[hidden] { display: none; }
+.application-editor .userpersisto-grid { align-items: start; gap: 16px 20px; }
+.application-save { justify-content: flex-end; }
+.application-card { padding: 18px 20px; border-color: var(--account-border); border-radius: 10px; align-items: start; gap: 16px; background: var(--account-surface); }
+.application-identity { min-width: 0; }
+.application-identity .userpersisto-row-title { font-size: 16px; }
+.application-identity .userpersisto-row-meta { margin-top: 5px; color: var(--account-muted); font-size: 12px; }
+.application-card-actions { display: grid; grid-template-columns: auto 28px; align-items: center; justify-items: end; gap: 6px 8px; }
+.application-state { grid-column: 1 / -1; font-size: 11px; color: var(--account-muted); }
+.application-state[data-enabled="true"] { color: var(--account-success); }
+.application-more { position: relative; }
+.application-more > summary { display: grid; place-items: center; width: 28px; height: 28px; cursor: pointer; list-style: none; font-size: 20px; color: var(--account-link); }
+.application-more > summary::-webkit-details-marker { display: none; }
+.application-more > summary:hover { background: var(--account-soft); }
+.application-more > summary:focus-visible { outline: 2px solid var(--account-primary); outline-offset: 2px; }
+.application-menu { position: absolute; right: 0; top: 100%; z-index: 2; display: grid; gap: 4px; min-width: 150px; padding: 6px; border: 1px solid var(--account-border); border-radius: 7px; background: var(--account-surface); box-shadow: 0 8px 24px var(--account-shadow); }
+.application-menu button { text-align: left; }
+.policy-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.policy-column { display: grid; gap: 16px; min-width: 0; }
+.policy-card { border-color: var(--account-border); padding: 18px 20px; }
+.policy-card h2 { margin: 0; font-size: 16px; line-height: 1.4; }
+.policy-card > p { margin: 0; }
+.policy-methods { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.policy-method { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 10px; border: 1px solid var(--account-border); border-radius: 7px; cursor: pointer; }
+.policy-method:hover { background: var(--account-soft); }
+.policy-method:has(input:checked) {background: var(--account-soft); }
+.policy-method input, .policy-check input { flex: none; margin: 3px 0 0; }
+.policy-method strong { display: block; font-size: 13px; font-weight: 550; }
+.policy-method small { display: block; margin-top: 4px; color: var(--account-muted); font-size: 12px; line-height: 1.4; }
+.policy-check { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; cursor: pointer; }
+.policy-help > summary, .policy-provider > summary { cursor: pointer; }
+.policy-help { color: var(--account-muted); font-size: 12px; }
+.policy-help > div { margin-top: 10px; }
+details.policy-provider { display: block; }
+.policy-provider[open] > div { margin-top: 12px; }
+.policy-footer { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 14px; border-top: 1px solid var(--account-border); }
+.policy-footer > button { flex: none; margin-left: auto; }
+#management-root[data-initial-panel="policy"] .page-heading { margin-bottom: 12px; }
+#management-root[data-initial-panel="policy"] .userpersisto-status:empty { display: none; }
+@media (max-width: 800px) {
+    #management-root[data-initial-panel="applications"] .page-heading { flex-wrap: wrap; }
+    .policy-layout { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 520px) {
+    .policy-methods { grid-template-columns: minmax(0, 1fr); }
+    .policy-card { padding: 14px; }
+    .policy-footer { flex-wrap: wrap; }
+    .application-editor .userpersisto-grid { grid-template-columns: minmax(0, 1fr); }
+    .application-card { grid-template-columns: minmax(0, 1fr); padding: 14px; }
+    .application-card-actions { justify-self: end; }
+}

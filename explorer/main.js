@@ -292,7 +292,8 @@ async function start() {
     assistOS.webSkel = webSkel;
     assistOS.appServices = assistosSDK;
     assistOS.runtimePlugins = null;
-    assistOS.rawRuntimePlugins = {};
+    // Null means discovery has not completed; an object, including {}, is a loaded catalog.
+    assistOS.rawRuntimePlugins = null;
     assistOS.pluginSettings = {};
 
     const runtimeContext = {

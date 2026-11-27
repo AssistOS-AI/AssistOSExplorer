@@ -74,6 +74,37 @@ test('late Settings access replies cannot change the route after unload', () => 
     assert.deepEqual(p.element.dataset, {});
 });
 
+test('theme selection applies and persists immediately without closing Settings or marking drafts saved', t => {
+    const previousWindow = globalThis.window, previousDocument = globalThis.document;
+    t.after(() => { globalThis.window = previousWindow; globalThis.document = previousDocument; });
+    const storage = new Map(), classes = new Set(), events = [];
+    let rootTheme;
+    globalThis.document = { documentElement: {
+        classList: { contains: name => classes.has(name), toggle(name, on) { if (on) classes.add(name); else classes.delete(name); } },
+        setAttribute(name, value) { if (name === 'theme') rootTheme = value; },
+    } };
+    globalThis.window = { localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) }, dispatchEvent: event => events.push(event) };
+    const p = settings();
+    p.element = { dataset: {}, querySelectorAll: () => [], closest: () => null };
+    p.updateAccountLinks = () => {};
+    p.actionsEl = {};
+    p.state.activeTab = 'theme';
+    p.updateTabUI();
+    assert.equal(p.actionsEl.hidden, true, 'Theme needs neither Save nor Cancel');
+    p.selectTheme(null, 'dark');
+    assert.equal(rootTheme, 'dark');
+    assert.equal(storage.get('assistosExplorerTheme'), 'dark');
+    assert.equal(events.at(-1).detail.theme, 'dark');
+    assert.equal(p.confirmDiscardChanges('close'), true, 'an applied theme is not an unsaved draft');
+    p.state.editorAutoSaveEnabled = true;
+    const saved = p.savedPreferences;
+    p.selectTheme(null, 'light');
+    assert.equal(rootTheme, 'light');
+    assert.equal(storage.get('assistosExplorerTheme'), 'light');
+    assert.equal(p.savedPreferences, saved, 'applying a theme must not mark other edits saved');
+    assert.notEqual(p.preferenceSignature(), p.savedPreferences);
+});
+
 test('Save forwards settings through the shell and persists editor preferences', t => {
     const previousWindow = globalThis.window;
     t.after(() => { globalThis.window = previousWindow; });

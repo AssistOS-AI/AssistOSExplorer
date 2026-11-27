@@ -13,25 +13,25 @@ function renderHost(name, hosts, disabled) {
     const host = hosts.find((entry) => entry.host === name);
     const last = host?.lastPurge;
     return `<div class="cache-host">
-        <strong>${escapeHtml(name)}</strong>
+        <strong class="cache-host-name">${escapeHtml(name)}</strong>
         <button type="button" class="gray-button" data-purge-host="${escapeHtml(name)}"${disabled || !host?.purgeConfigured ? ' disabled' : ''}>Clear cache now</button>
         ${!host?.purgeConfigured ? '<span class="settings-card-meta">Purge unconfigured</span>' : ''}
-        <span class="settings-card-meta">${last ? `Last recorded clear: ${describePurge(last)} at ${escapeHtml(last.at)} by ${escapeHtml(last.by)}` : 'No recorded clear'}</span>
+        <span class="settings-card-meta cache-host-history">${last ? `Last recorded clear: ${describePurge(last)} at ${escapeHtml(last.at)} by ${escapeHtml(last.by)}` : 'No recorded clear'}</span>
     </div>`;
 }
 
 function renderApplication(app, hosts, disabled) {
     const agent = escapeHtml(app.agent);
     return `<article class="settings-card settings-card-static">
-        <header><h3 class="settings-card-title">${agent}</h3>${app.held ? `<span class="status-badge">Held since ${escapeHtml(app.held.since)} by ${escapeHtml(app.held.by)}</span>` : ''}</header>
+        <div class="cache-card-heading"><h3 class="settings-card-title">${agent}</h3>${app.held ? `<span class="status-badge">Held since ${escapeHtml(app.held.since)} by ${escapeHtml(app.held.by)}</span>` : ''}</div>
         <div class="cache-controls">
             <label class="editor-settings-toggle"><input type="checkbox" role="switch" data-cache-toggle="${agent}"${app.enabled ? ' checked' : ''}${disabled || app.held ? ' disabled' : ''}><span>Enable caching</span></label>
-            <label>Page freshness <select class="form-input" data-cache-minutes="${agent}"${disabled ? ' disabled' : ''}>
+            <label class="cache-freshness"><span>Page freshness</span><select class="form-input" data-cache-minutes="${agent}"${disabled ? ' disabled' : ''}>
                 ${minutes.map((value) => `<option value="${value}"${value * 60 === app.pageSeconds ? ' selected' : ''}>${value} ${value === 1 ? 'minute' : 'minutes'}</option>`).join('')}
             </select></label>
         </div>
-        <div><strong class="settings-card-title">Cacheable paths</strong><ul>${app.routes.map((route) =>
-            `<li><code>${escapeHtml(route.path)}</code> · ${escapeHtml(route.cache)}</li>`).join('')}</ul></div>
+        <details class="cache-routes"><summary>Cacheable paths (${app.routes.length})</summary><ul>${app.routes.map((route) =>
+            `<li><code>${escapeHtml(route.path)}</code> · ${escapeHtml(route.cache)}</li>`).join('')}</ul></details>
         ${app.hosts.length ? app.hosts.map((name) => renderHost(name, hosts, disabled)).join('') : '<p class="settings-card-meta">No published hosts.</p>'}
     </article>`;
 }
@@ -87,11 +87,11 @@ export class CachePanel {
         }
         const disabled = this.busy || Boolean(this.error);
         const apps = this.snapshot?.applications;
-        this.content.innerHTML = `<header><h2 class="settings-section-title">Cache</h2>
-            <p class="settings-section-description">Versioned files are cached for one year while caching is enabled. This page cannot see Cloudflare’s rules or cached objects.</p></header>
-            <div><button type="button" class="gray-button" data-cache-refresh${this.busy ? ' disabled' : ''}>Refresh</button></div>
+        this.content.innerHTML = `<div class="cache-heading"><div class="cache-title-row"><h2 class="settings-section-title">Cache</h2>
+            <button type="button" class="gray-button cache-refresh" data-cache-refresh aria-label="Refresh cache settings" title="Refresh cache settings"${this.busy ? ' disabled' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.4-5.7M20 4v5h-5"/></svg></button></div>
+            <p class="settings-section-description">Versioned files are cached for one year while caching is enabled. This page cannot see Cloudflare’s rules or cached objects.</p></div>
             ${this.error ? `<p class="settings-status error" role="alert">${escapeHtml(this.error)}</p>` : ''}
-            ${this.results.length ? `<div role="status"><strong>Clear request results</strong><p class="settings-card-meta">Response received at ${escapeHtml(this.receivedAt)}</p><ul>${this.results.map((item) =>
+            ${this.results.length ? `<div class="settings-card settings-card-static cache-results" role="status"><strong>Clear request results</strong><p class="settings-card-meta">Response received at ${escapeHtml(this.receivedAt)}</p><ul>${this.results.map((item) =>
                 `<li>${escapeHtml(item.host)} · ${describePurge(item)}</li>`).join('')}</ul></div>` : ''}
             ${apps ? apps.map((app) => renderApplication(app, this.snapshot.hosts, disabled)).join('') : ''}
             ${apps?.length === 0 ? '<p class="settings-empty-state">No applications have cacheable paths.</p>' : ''}

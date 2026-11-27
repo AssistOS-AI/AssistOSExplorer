@@ -23,18 +23,22 @@
                 </nav>
             </header>
             <main id="roles-root">
-                <div class="page-heading"><div class="page-heading-copy"><h1>Roles</h1><p>Create roles and choose the permissions they give to people in your workspace.</p></div><a class="account-sign-out" href="/auth/logout">Sign out</a></div>
+                <div class="page-heading"><div class="page-heading-copy"><div class="users-title-row"><h1>Roles</h1><button id="roles-refresh" type="button" hidden disabled class="userpersisto-search-icon" data-role-action="refresh" aria-label="Refresh roles" title="Refresh roles"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.4-5.7M20 4v5h-5"/></svg></button></div></div><div class="users-heading-actions"><div class="users-search-group" id="roles-heading-search" hidden>
+                    <div class="roles-search-row"><div class="userpersisto-user-search" role="search">
+                        <input id="roles-search" type="search" class="form-input" maxlength="200" placeholder="Search roles or permissions" aria-label="Search roles">
+                        <button type="button" class="userpersisto-search-icon" id="roles-clear" data-role-action="clear-search" aria-label="Clear search" title="Clear search" hidden>×</button>
+                        <button type="button" class="userpersisto-search-icon" data-role-action="search" aria-label="Search roles" title="Search roles"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg></button>
+                    </div><fieldset id="roles-toolbar-controls" class="roles-toolbar" disabled><legend class="visually-hidden">Role actions</legend>
+
+                        <button type="button" class="general-button" data-role-action="new">New role</button>
+                    </fieldset></div><p class="users-search-description">Find roles and manage workspace permissions.</p></div><a class="account-sign-out" href="/auth/logout">Sign out</a></div></div>
                 <p id="roles-status" class="account-status" role="status" aria-live="polite">Loading…</p>
                 <a id="roles-login" class="button-link" href="/auth/login" hidden>Sign in again</a>
                 <fieldset id="roles-controls" class="management-controls" disabled hidden>
                     <legend class="visually-hidden">Role administration</legend>
-                    <div class="roles-toolbar">
-                        <label class="form-item roles-search"><span class="form-label">Search roles</span><input id="roles-search" type="search" class="form-input" maxlength="200" placeholder="Name, description or permission"></label>
-                        <button type="button" class="gray-button" data-role-action="refresh">Refresh roles</button>
-                        <button type="button" class="general-button" data-role-action="new">New role</button>
-                    </div>
                     <div class="roles-layout">
                         <section aria-label="Role catalog">
+                            <div id="role-editor-home"></div>
                             <div id="roles-list" class="roles-list" role="region" aria-label="Role results" tabindex="0"></div>
                             <nav class="roles-pagination" aria-label="Role pages">
                                 <button id="roles-previous" type="button" class="gray-button" data-role-action="previous" disabled>Previous</button>
@@ -42,7 +46,8 @@
                                 <button id="roles-next" type="button" class="gray-button" data-role-action="next" disabled>Next</button>
                             </nav>
                         </section>
-                        <section id="role-editor" class="account-card role-editor" aria-labelledby="role-editor-title">
+                        <section id="role-editor" class="role-editor" aria-labelledby="role-editor-title" hidden>
+                            <button type="button" class="role-editor-close userpersisto-search-icon" data-role-action="close-editor" aria-label="Close role editor" title="Close">×</button>
                             <h2 id="role-editor-title">Create role</h2>
                             <p id="role-editor-note" class="card-description">Create a role, then assign it to accounts on the Users page.</p>
                             <form id="role-form">

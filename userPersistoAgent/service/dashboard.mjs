@@ -40,7 +40,7 @@ const ADMIN_OPERATIONS = new Map([
     // Accounts come from sign-in; there is no administrator creation, password
     // or sign-in email mutation here. Other profile, role and status updates remain.
     ['users/list', { tool: 'userpersisto_user_list', fields: ['start', 'pageSize', 'search', 'excludeOnlyRole', 'includeRoleCounts'] }],
-    ['users/update', { tool: 'userpersisto_user_update', fields: ['userId', 'username', 'displayName', 'status'] }],
+    ['users/update', { tool: 'userpersisto_user_update', fields: ['userId', 'username', 'displayName', 'status', 'roles'] }],
     ['users/roles', { tool: 'userpersisto_user_roles_update', fields: ['userId', 'roles'] }],
     ['users/delete', { tool: 'userpersisto_user_update', fields: ['userId'], fixed: { status: 'blocked' } }],
     ['roles/list', { tool: 'userpersisto_roles_list', fields: [] }],

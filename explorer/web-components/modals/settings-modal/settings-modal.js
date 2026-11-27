@@ -298,6 +298,7 @@ export class SettingsModal {
                 || this.state.activeTab === "cache"
                 || this.state.activeTab === "avatar"
                 || this.state.activeTab === "agents"
+                || this.state.activeTab === "theme"
                 || this.state.activeTab === "account";
         }
         this.syncEditorSettingsUi();
@@ -404,7 +405,7 @@ export class SettingsModal {
     }
 
     selectTheme(_target, theme) {
-        this.state.selectedTheme = theme === "dark" ? "dark" : "light";
+        this.state.selectedTheme = setTheme(theme === "dark" ? "dark" : "light");
         this.updateThemeSelection();
     }
 
@@ -466,7 +467,6 @@ export class SettingsModal {
     preferenceSignature() {
         return JSON.stringify([
             Object.entries(this.state.keymap).sort(([a], [b]) => a.localeCompare(b)),
-            this.state.selectedTheme,
             Boolean(this.state.editorAutoSaveEnabled),
             this.state.editorAutoSaveIntervalSeconds
         ]);

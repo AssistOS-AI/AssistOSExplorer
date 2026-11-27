@@ -17,7 +17,7 @@ export function mountManagement(document, host = window) {
     panel.afterRender();
     const actions = new Set([
         'searchUsers', 'clearUserSearch', 'previousUsersPage', 'nextUsersPage',
-        'saveAuthPolicy', 'newApplication', 'saveApplication', 'refreshApplications',
+        'saveAuthPolicy', 'newApplication', 'closeApplicationEditor', 'saveApplication', 'refreshApplications',
         'clearApplicationSecret', 'previousApplicationsPage', 'nextApplicationsPage',
     ]);
     root.addEventListener('click', (event) => {

@@ -87,8 +87,9 @@ test('document-contract tools dispatch to domain handlers', async () => {
         /admin/i
     );
     // Profile and status updates remain; a sign-in email mutation is refused.
-    const renamed = await runTool('userpersisto_user_update', { userId: member.id, displayName: 'Renamed' }, { actorUserId: admin.id, actorRoles: ['admin'] });
+    const renamed = await runTool('userpersisto_user_update', { userId: member.id, displayName: 'Renamed', roles: ['user', 'selfRegistered'] }, { actorUserId: admin.id, actorRoles: ['admin'] });
     assert.equal(renamed.displayName, 'Renamed');
+    assert.deepEqual(renamed.roles, ['selfRegistered', 'user']);
     await assert.rejects(
         () => runTool('userpersisto_user_update', { userId: member.id, email: 'hijack@x.com' }, { actorUserId: admin.id, actorRoles: ['admin'] }),
         (error) => error?.code === 'email_change_unsupported'

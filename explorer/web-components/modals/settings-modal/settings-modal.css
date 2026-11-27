@@ -82,6 +82,8 @@ settings-modal .modal-actions {
     background: var(--surface);
 }
 
+settings-modal .modal-actions[hidden],
+settings-modal[data-active-tab="theme"] .modal-actions,
 settings-modal[data-active-tab="users"] .modal-actions {
     display: none !important;
 }
