@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import test from 'node:test';
 import {
-    acceptanceLedger, roboWorkRestartLedger, selectAcceptanceCases, validateAcceptanceProfile, assertLedgerResults,
+    acceptanceLedger, roboWorkRestartLedger, terminalAgentLedger, prodGatesLedger, selectAcceptanceCases, validateAcceptanceProfile, assertLedgerResults,
     collectAcceptancePreflight, assertAcceptanceGeneration,
 } from './acceptance-profile.mjs';
 import { assertAccountRoles, assertMarketplaceLifecycleFixture } from './account-preflight.mjs';
@@ -585,4 +585,30 @@ test('production gates select exactly one separate identity for either captured 
     }
     assert.throws(() => validateAcceptanceProfile(args, {}), /zero required/u);
     assert.equal(acceptanceLedger.identities.length, 46);
+});
+
+test('production gates validate for execution, not only for listing, through the supported runner preflight', () => {
+    const runArgs = ['--project=chromium', '--workers=1', '--retries=0', 'specs/62-prod-gates.spec.mjs'];
+    for (const value of ['true', 'false']) {
+        const profile = validateAcceptanceProfile(runArgs, { ...baseEnv, SMOKE_EXPECT_PROD: value });
+        assert.equal(profile.coverage, 'prod-gates');
+        assert.equal(profile.box, true);
+        assert.equal(profile.cases.length, 1);
+        for (const name of ['SMOKE_PLOINKY_BOX_CONTAINER', 'SMOKE_RELEASE_MANIFEST', 'SMOKE_LOGIN_EMAIL']) {
+            const env = { ...baseEnv, SMOKE_EXPECT_PROD: value }; delete env[name];
+            assert.throws(() => validateAcceptanceProfile(runArgs, env), new RegExp(name), name);
+        }
+    }
+});
+
+test('every ledger identity declares its required flags and private inputs', () => {
+    const ledgers = { acceptanceLedger, roboWorkRestartLedger, terminalAgentLedger, prodGatesLedger };
+    for (const [name, ledger] of Object.entries(ledgers)) {
+        assert.ok(ledger.identities.length > 0, name);
+        for (const entry of ledger.identities) {
+            assert.ok(Array.isArray(entry.privateInputNamesOrCategories), `${name} ${entry.identity} privateInputNamesOrCategories`);
+            assert.equal(typeof entry.requiredFlags, 'object', `${name} ${entry.identity} requiredFlags`);
+            assert.ok(entry.requiredFlags && !Array.isArray(entry.requiredFlags), `${name} ${entry.identity} requiredFlags`);
+        }
+    }
 });

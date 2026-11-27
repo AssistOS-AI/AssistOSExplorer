@@ -7,6 +7,7 @@
       "cohort": "prod-gates",
       "selection": { "spec": "specs/62-prod-gates.spec.mjs", "title": "captured production policy controls Git and Marketplace" },
       "requiredFlags": {},
+      "privateInputNamesOrCategories": [],
       "disposition": "separate-profile",
       "expectedExecutionOutcome": "passed"
     }
